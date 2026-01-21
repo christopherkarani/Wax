@@ -1,6 +1,6 @@
 # 🕯️ Wax
 
-**The Swift-native memory engine that turns your app into an AI-powered genius.**
+**The Swift-native single-file memory engine**
 
 > 🚀 **Built for iOS 26 & macOS 26** | 🧠 **On-device RAG** | 🔍 **Hybrid Search** | 💾 **Single-file persistence**
 
@@ -203,7 +203,7 @@ let compact = try await memory.compactIndexes()
                                Fast RAG context
 ```
 
-## Smart Architectural Choices
+## Architectural Choices
 
 - **Actor-owned core (`Wax`)**: isolates mutable state and I/O, making correctness the default on mobile.
 - **Append-only frames + WAL**: fast writes, safe recovery, and predictable performance under load.
