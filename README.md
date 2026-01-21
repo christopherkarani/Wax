@@ -31,7 +31,10 @@ Wax is a crash-safe, single-file memory store that brings production-grade RAG (
 
 ```swift
 // Your AI assistant that never forgets
-let memory = try await MemoryOrchestrator(at: documentsURL)
+var config = OrchestratorConfig.default
+config.enableVectorSearch = false  // Text-only mode (no embedder needed)
+
+let memory = try await MemoryOrchestrator(at: documentsURL, config: config)
 
 // Every conversation gets remembered
 try await memory.remember("User: I prefer Python over JavaScript")
@@ -45,13 +48,13 @@ let context = try await memory.recall(query: "programming preferences")
 ### Turn Documents into Searchable Knowledge
 
 ```swift
-// Ingest your entire documentation
+// Ingest your entire documentation (using the memory instance from above)
 let documents = ["API Reference", "User Guide", "Troubleshooting"]
 for doc in documents {
     try await memory.remember(doc)  
 }
 
-// Semantic search across everything
+// Search across everything
 let results = try await memory.recall(query: "how to authenticate users")
 ```
 
@@ -63,6 +66,7 @@ testSuite.run {
     let context = try await memory.recall(query: $0.query)
     assert(context.totalTokens == $0.expectedTokenCount)
 }
+```
 
 ## 🏁 Get Started in 30 Seconds
 
@@ -80,7 +84,13 @@ import Wax
 
 ```swift
 // 1️⃣ Create your memory palace
-let memory = try await MemoryOrchestrator(at: documentsURL.appendingPathComponent("brain.mv2s"))
+var config = OrchestratorConfig.default
+config.enableVectorSearch = false  // Text-only mode
+
+let memory = try await MemoryOrchestrator(
+    at: documentsURL.appendingPathComponent("brain.mv2s"),
+    config: config
+)
 
 // 2️⃣ Feed it knowledge
 try await memory.remember("Swift 6.2 introduces improved concurrency")
@@ -102,7 +112,12 @@ try await memory.close()
 import Wax
 
 let url = URL(fileURLWithPath: "/tmp/example.mv2s")
-let memory = try await MemoryOrchestrator(at: url)
+
+// Text-only mode (no embedder required)
+var config = OrchestratorConfig.default
+config.enableVectorSearch = false
+
+let memory = try await MemoryOrchestrator(at: url, config: config)
 
 try await memory.remember("Swift is safe and fast.")
 try await memory.remember("Rust is fearless.")
@@ -132,7 +147,7 @@ try await vec.add(frameId: frameId, vector: [Float](repeating: 0.01, count: 384)
 try await text.commit()
 try await vec.commit()
 
-let request = SearchRequest(query: "Hello", mode: .hybrid(), topK: 10)
+let request = SearchRequest(query: "Hello", mode: .hybrid(alpha: 0.5), topK: 10)
 let response = try await wax.search(request)
 print(response.results)
 
@@ -145,7 +160,10 @@ try await wax.close()
 import Wax
 
 let builder = FastRAGContextBuilder()
-let config = FastRAGConfig(maxContextTokens: 800, searchMode: .hybrid())
+let config = FastRAGConfig(
+    maxContextTokens: 800,
+    searchMode: .hybrid(alpha: 0.5)
+)
 
 let context = try await builder.build(query: "swift concurrency", wax: wax, config: config)
 print(context.totalTokens)
@@ -161,7 +179,12 @@ import Wax
 public actor MyEmbedder: EmbeddingProvider {
     public let dimensions = 384
     public let normalize = true
-    public let identity = EmbeddingIdentity(provider: "MyModel", model: "v1", dimensions: 384, normalized: true)
+    public let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "MyModel",
+        model: "v1",
+        dimensions: 384,
+        normalized: true
+    )
 
     public func embed(_ text: String) async throws -> [Float] {
         // Return a 384-dim vector.
@@ -169,7 +192,10 @@ public actor MyEmbedder: EmbeddingProvider {
     }
 }
 
-let memory = try await MemoryOrchestrator(at: url, embedder: MyEmbedder())
+var config = OrchestratorConfig.default
+config.enableVectorSearch = true
+
+let memory = try await MemoryOrchestrator(at: url, config: config, embedder: MyEmbedder())
 ```
 
 ## MiniLM (Built-in Embeddings)
@@ -187,8 +213,8 @@ let memory = try await MemoryOrchestrator.openMiniLM(at: url)
 Wax supports background maintenance for stable retrieval quality.
 
 ```swift
-let report = try await memory.optimizeSurrogates()
-let compact = try await memory.compactIndexes()
+let surrogateReport = try await memory.optimizeSurrogates()
+let compactReport = try await memory.compactIndexes()
 ```
 
 ## Architecture at a Glance
