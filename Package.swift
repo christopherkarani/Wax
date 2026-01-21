@@ -17,19 +17,27 @@ let package = Package(
         .library(name: "WaxCore", targets: ["WaxCore"]),
         .library(name: "WaxTextSearch", targets: ["WaxTextSearch"]),
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
+        .library(name: "WaxVectorSearchMiniLM", targets: ["WaxVectorSearchMiniLM"]),
+    ],
+    traits: [
+        .default(enabledTraits: ["MiniLMEmbeddings"]),
+        .init(
+            name: "MiniLMEmbeddings",
+            description: "Includes the built-in MiniLM embedding provider",
+            enabledTraits: []
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.23.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
         .package(url: "https://github.com/narner/TiktokenSwift.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/christopherkarani/similarity-search-kit.git", branch: "main"),
     ],
     targets: [
         .target(
             name: "WaxCore",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-            ],
+            dependencies: [],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
@@ -49,8 +57,25 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
+            name: "WaxVectorSearchMiniLM",
+            dependencies: [
+                "WaxVectorSearch",
+                .product(name: "SimilaritySearchKit", package: "similarity-search-kit"),
+                .product(name: "SimilaritySearchKitMiniLMAll", package: "similarity-search-kit"),
+            ],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "Wax",
-            dependencies: ["WaxCore", "WaxTextSearch", "WaxVectorSearch"],
+            dependencies: [
+                "WaxCore",
+                "WaxTextSearch",
+                "WaxVectorSearch",
+                .target(
+                    name: "WaxVectorSearchMiniLM",
+                    condition: .when(traits: ["MiniLMEmbeddings"])
+                ),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
