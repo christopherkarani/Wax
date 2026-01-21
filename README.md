@@ -2,7 +2,7 @@
 
 **The Swift-native single-file memory engine**
 
-> 🚀 **Built for iOS 26 & macOS 26** | 🧠 **On-device RAG** | 🔍 **Hybrid Search** | 💾 **Single-file persistence**
+| 🧠 **On-device RAG** | 🔍 **Hybrid Search** | 💾 **Single-file persistence**
 
 Wax is a crash-safe, single-file memory store that brings production-grade RAG (Retrieval-Augmented Generation) to mobile and desktop apps. Zero external dependencies. Maximum performance. Deterministic results.
 
