@@ -1,3 +1,7 @@
+
+
+![unnamed-11](https://github.com/user-attachments/assets/5740a66d-21c2-4980-b6be-06ab1ff1bc68)
+
 # 🍯 Wax
 
 **The Swift-native single-file memory engine**
