@@ -1,4 +1,4 @@
-# 🕯️ Wax
+# 🍯 Wax
 
 **The Swift-native single-file memory engine**
 
