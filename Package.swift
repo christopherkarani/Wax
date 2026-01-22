@@ -54,6 +54,7 @@ let package = Package(
                 "WaxCore",
                 .product(name: "USearch", package: "USearch"),
             ],
+            resources: [.process("Shaders")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(

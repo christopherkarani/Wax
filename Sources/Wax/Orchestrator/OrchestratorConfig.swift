@@ -9,6 +9,7 @@ public struct OrchestratorConfig: Sendable {
     public var ingestConcurrency: Int = 1
     public var ingestBatchSize: Int = 32
     public var embeddingCacheCapacity: Int = 2_048
+    public var useMetalVectorSearch: Bool = false
 
     public init() {}
 
