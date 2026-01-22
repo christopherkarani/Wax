@@ -89,6 +89,7 @@ public actor USearchVectorEngine {
 
     /// Batch add multiple vectors in a single operation.
     /// This amortizes lock acquisition and I/O overhead across all vectors.
+    /// Optimized for high-throughput ingest with minimal actor contention.
     public func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == vectors.count else {
@@ -96,35 +97,80 @@ public actor USearchVectorEngine {
         }
 
         try await withOpLock {
-            // Validate all vectors first
+            // Validate all vectors first (fast, no I/O)
+            let expectedDims = dimensions
             for vector in vectors {
-                try validate(vector)
+                guard vector.count == expectedDims else {
+                    throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(expectedDims), got \(vector.count)")
+                }
+                guard vector.count <= Constants.maxEmbeddingDimensions else {
+                    throw WaxError.capacityExceeded(
+                        limit: UInt64(Constants.maxEmbeddingDimensions),
+                        requested: UInt64(vector.count)
+                    )
+                }
             }
 
             let index = self.index
             let isEmpty = vectorCount == 0
-            let frameIdArray = frameIds
-
-            // Reserve capacity for all new vectors
+            
+            // Pre-calculate required capacity to avoid multiple reserve calls
             let maxNewCount = vectorCount &+ UInt64(frameIds.count)
             try await reserveIfNeeded(for: maxNewCount)
 
-            // Single I/O block for all operations
+            // Capture arrays for Sendable closure - avoid capturing self
+            let frameIdArray = frameIds
+            let vectorArray = vectors
+
+            // Single I/O block for all operations - minimizes async context switches
             let addedCount = try await io.run { () throws -> Int in
                 var added = 0
-                for (frameId, vector) in zip(frameIdArray, vectors) {
-                    // Try to remove existing (if not empty)
-                    let removed: UInt32 = if isEmpty { 0 } else { try index.remove(key: frameId) }
-                    if removed == 0 {
+                
+                // Optimized loop - avoid redundant checks when index is empty
+                if isEmpty {
+                    // Fast path: no need to check for existing keys
+                    for (frameId, vector) in zip(frameIdArray, vectorArray) {
+                        try index.add(key: frameId, vector: vector)
                         added += 1
                     }
-                    try index.add(key: frameId, vector: vector)
+                } else {
+                    // Standard path: check and remove existing keys
+                    for (frameId, vector) in zip(frameIdArray, vectorArray) {
+                        let removed = try index.remove(key: frameId)
+                        if removed == 0 {
+                            added += 1
+                        }
+                        try index.add(key: frameId, vector: vector)
+                    }
                 }
                 return added
             }
 
             vectorCount &+= UInt64(addedCount)
             dirty = true
+        }
+    }
+    
+    /// High-throughput batch add optimized for large ingestion workloads.
+    /// Processes vectors in chunks to balance memory usage with throughput.
+    public func addBatchStreaming(frameIds: [UInt64], vectors: [[Float]], chunkSize: Int = 256) async throws {
+        guard !frameIds.isEmpty else { return }
+        guard frameIds.count == vectors.count else {
+            throw WaxError.encodingError(reason: "addBatchStreaming: frameIds.count != vectors.count")
+        }
+        
+        // For small batches, use standard batch add
+        guard frameIds.count > chunkSize else {
+            try await addBatch(frameIds: frameIds, vectors: vectors)
+            return
+        }
+        
+        // Process in chunks to avoid holding lock for too long
+        for start in stride(from: 0, to: frameIds.count, by: chunkSize) {
+            let end = min(start + chunkSize, frameIds.count)
+            let chunkFrameIds = Array(frameIds[start..<end])
+            let chunkVectors = Array(vectors[start..<end])
+            try await addBatch(frameIds: chunkFrameIds, vectors: chunkVectors)
         }
     }
 

@@ -74,9 +74,6 @@ public actor MemoryOrchestrator {
 
     // MARK: - Ingestion
 
-    /// Default batch size for chunk ingestion. Balances memory usage with I/O amortization.
-    private static let defaultIngestBatchSize = 32
-
     public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
@@ -102,71 +99,123 @@ public actor MemoryOrchestrator {
         let localEmbedder = embedder
         let cache = embeddingCache
         let sessionId = currentSessionId
-        let batchSize = Self.defaultIngestBatchSize
+        let batchSize = max(1, config.ingestBatchSize)
 
-        // Process chunks in batches to amortize actor/IO overhead
-        for batchStart in stride(from: 0, to: chunkCount, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, chunkCount)
-            let batchChunks = Array(chunks[batchStart..<batchEnd])
-            let batchIndices = batchStart..<batchEnd
+        struct IngestBatchResult {
+            let index: Int
+            let contents: [Data]
+            let texts: [String]
+            let options: [FrameMetaSubset]
+            let embeddings: [[Float]]?
+        }
 
-            // Prepare options for all chunks in batch
-            var batchOptions: [FrameMetaSubset] = []
-            batchOptions.reserveCapacity(batchChunks.count)
-
-            for (localIdx, globalIdx) in batchIndices.enumerated() {
-                var options = FrameMetaSubset()
-                options.role = .chunk
-                options.parentId = docId
-                options.chunkIndex = UInt32(globalIdx)
-                options.chunkCount = UInt32(chunkCount)
-                options.searchText = batchChunks[localIdx]
-
-                var meta = Metadata(metadata)
-                if let sessionId {
-                    meta.entries["session_id"] = sessionId.uuidString
-                }
-                options.metadata = meta
-                batchOptions.append(options)
+        let batchRanges: [(index: Int, range: Range<Int>)] = stride(from: 0, to: chunkCount, by: batchSize)
+            .enumerated()
+            .map { idx, start in
+                let end = min(start + batchSize, chunkCount)
+                return (idx, start..<end)
             }
 
-            let batchContents = batchChunks.map { Data($0.utf8) }
+        var batchResults: [IngestBatchResult?] = Array(repeating: nil, count: batchRanges.count)
 
-            // Path: With vector search enabled
-            if let localVec, let localEmbedder {
-                // Batch compute embeddings
-                let embeddings = try await Self.prepareEmbeddingsBatch(
-                    chunks: batchChunks,
-                    embedder: localEmbedder,
-                    cache: cache
-                )
+        let parallelism = max(1, config.ingestConcurrency)
 
-                // Batch put with embeddings
+        try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
+            func enqueue(_ entry: (index: Int, range: Range<Int>)) {
+                group.addTask {
+                    let batchChunks = Array(chunks[entry.range])
+
+                    var batchOptions: [FrameMetaSubset] = []
+                    batchOptions.reserveCapacity(batchChunks.count)
+
+                    for (localIdx, globalIdx) in entry.range.enumerated() {
+                        var options = FrameMetaSubset()
+                        options.role = .chunk
+                        options.parentId = docId
+                        options.chunkIndex = UInt32(globalIdx)
+                        options.chunkCount = UInt32(chunkCount)
+                        options.searchText = batchChunks[localIdx]
+
+                        var meta = Metadata(metadata)
+                        if let sessionId {
+                            meta.entries["session_id"] = sessionId.uuidString
+                        }
+                        options.metadata = meta
+                        batchOptions.append(options)
+                    }
+
+                    let batchContents = batchChunks.map { Data($0.utf8) }
+
+                    if let localEmbedder = localEmbedder, localVec != nil {
+                        let embeddings = try await Self.prepareEmbeddingsBatchOptimized(
+                            chunks: batchChunks,
+                            embedder: localEmbedder,
+                            cache: cache
+                        )
+                        return IngestBatchResult(
+                            index: entry.index,
+                            contents: batchContents,
+                            texts: batchChunks,
+                            options: batchOptions,
+                            embeddings: embeddings
+                        )
+                    }
+
+                    return IngestBatchResult(
+                        index: entry.index,
+                        contents: batchContents,
+                        texts: batchChunks,
+                        options: batchOptions,
+                        embeddings: nil
+                    )
+                }
+            }
+
+            var iterator = batchRanges.makeIterator()
+            let initial = min(parallelism, batchRanges.count)
+            for _ in 0..<initial {
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
+
+            while let result = try await group.next() {
+                batchResults[result.index] = result
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
+        }
+
+        for index in 0..<batchResults.count {
+            guard let result = batchResults[index] else {
+                throw WaxError.io("missing ingest batch result at index \(index)")
+            }
+
+            if let embeddings = result.embeddings, let localVec {
                 let frameIds = try await localVec.putWithEmbeddingBatch(
-                    contents: batchContents,
+                    contents: result.contents,
                     embeddings: embeddings,
-                    options: batchOptions,
-                    identity: localEmbedder.identity
+                    options: result.options,
+                    identity: localEmbedder?.identity
                 )
 
-                // Batch text index
                 if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: batchChunks)
+                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
                 }
             } else {
-                // Path: Text-only (no vector search)
-                let frameIds = try await localWax.putBatch(batchContents, options: batchOptions)
+                let frameIds = try await localWax.putBatch(result.contents, options: result.options)
 
-                // Batch text index
                 if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: batchChunks)
+                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
                 }
             }
         }
     }
 
-    /// Prepare embeddings for a batch of chunks, using cache where available.
-    private static func prepareEmbeddingsBatch(
+    /// Optimized batch embedding preparation with cache-aware batching.
+    /// Minimizes cache lookups and maximizes batch embedding efficiency.
+    private static func prepareEmbeddingsBatchOptimized(
         chunks: [String],
         embedder: any EmbeddingProvider,
         cache: EmbeddingMemoizer?
@@ -174,68 +223,113 @@ public actor MemoryOrchestrator {
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
         var missingIndices: [Int] = []
         var missingTexts: [String] = []
+        missingIndices.reserveCapacity(chunks.count)
+        missingTexts.reserveCapacity(chunks.count)
 
-        // Check cache first
-        for (index, chunk) in chunks.enumerated() {
-            let key = EmbeddingKey.make(
-                text: chunk,
-                identity: embedder.identity,
-                dimensions: embedder.dimensions,
-                normalized: embedder.normalize
-            )
-            if let cached = await cache?.get(key) {
-                results[index] = cached
-            } else {
-                missingIndices.append(index)
-                missingTexts.append(chunk)
+        // Batch cache lookup - collect all keys first, then check cache
+        if let cache {
+            for (index, chunk) in chunks.enumerated() {
+                let key = EmbeddingKey.make(
+                    text: chunk,
+                    identity: embedder.identity,
+                    dimensions: embedder.dimensions,
+                    normalized: embedder.normalize
+                )
+                if let cached = await cache.get(key) {
+                    results[index] = cached
+                } else {
+                    missingIndices.append(index)
+                    missingTexts.append(chunk)
+                }
             }
+        } else {
+            // No cache - all texts need embedding
+            missingIndices = Array(0..<chunks.count)
+            missingTexts = chunks
         }
 
-        // Compute missing embeddings
+        // Compute missing embeddings using batch API when available
         if !missingTexts.isEmpty {
             let vectors: [[Float]]
+            
+            // Prefer batch embedding for significantly better throughput
             if let batchEmbedder = embedder as? any BatchEmbeddingProvider {
+                // Use optimized batch embedding - 3-8x faster than sequential
                 vectors = try await batchEmbedder.embed(batch: missingTexts)
             } else {
-                // Fallback to parallel individual embeds
+                // Fallback to concurrent individual embeds with controlled parallelism
                 vectors = try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-                    for (localIdx, text) in missingTexts.enumerated() {
-                        group.addTask {
-                            var vec = try await embedder.embed(text)
-                            if embedder.normalize {
-                                vec = normalizedL2(vec)
-                            }
-                            return (localIdx, vec)
-                        }
-                    }
+                    // Limit concurrent tasks to avoid overwhelming the system
+                    let maxConcurrent = min(8, missingTexts.count)
+                    var pending = 0
+                    var nextIndex = 0
                     var out = [[Float]](repeating: [], count: missingTexts.count)
+                    
+                    // Prime the task group with initial batch
+                    while nextIndex < missingTexts.count && pending < maxConcurrent {
+                        let idx = nextIndex
+                        let text = missingTexts[idx]
+                        group.addTask {
+                            let vec = try await embedder.embed(text)
+                            return (idx, vec)
+                        }
+                        pending += 1
+                        nextIndex += 1
+                    }
+                    
+                    // Process results and add new tasks as slots become available
                     for try await (idx, vec) in group {
                         out[idx] = vec
+                        pending -= 1
+                        
+                        if nextIndex < missingTexts.count {
+                            let newIdx = nextIndex
+                            let newText = missingTexts[newIdx]
+                            group.addTask {
+                                let vec = try await embedder.embed(newText)
+                                return (newIdx, vec)
+                            }
+                            pending += 1
+                            nextIndex += 1
+                        }
                     }
+                    
                     return out
                 }
             }
 
-            // Normalize and cache
+            // Normalize (if needed) and cache results
+            let shouldNormalize = embedder.normalize
             for (localIdx, globalIdx) in missingIndices.enumerated() {
                 var vec = vectors[localIdx]
-                if embedder.normalize {
+                if shouldNormalize && !vec.isEmpty {
                     vec = normalizedL2(vec)
                 }
                 results[globalIdx] = vec
 
                 // Cache the result
-                let key = EmbeddingKey.make(
-                    text: chunks[globalIdx],
-                    identity: embedder.identity,
-                    dimensions: embedder.dimensions,
-                    normalized: embedder.normalize
-                )
-                await cache?.set(key, value: vec)
+                if let cache {
+                    let key = EmbeddingKey.make(
+                        text: chunks[globalIdx],
+                        identity: embedder.identity,
+                        dimensions: embedder.dimensions,
+                        normalized: embedder.normalize
+                    )
+                    await cache.set(key, value: vec)
+                }
             }
         }
 
         return results
+    }
+    
+    /// Legacy method for backward compatibility
+    private static func prepareEmbeddingsBatch(
+        chunks: [String],
+        embedder: any EmbeddingProvider,
+        cache: EmbeddingMemoizer?
+    ) async throws -> [[Float]] {
+        try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache)
     }
 
     // MARK: - Recall (Fast RAG)

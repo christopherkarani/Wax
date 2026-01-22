@@ -130,6 +130,95 @@ public final class WALRingWriter {
         return sequence
     }
 
+    /// Append multiple payloads in a single pass, reusing padding and wrap calculations.
+    /// Returns the sequence numbers for the appended data records (padding records are excluded).
+    public func appendBatch(payloads: [Data], flags: WALFlags = []) throws -> [UInt64] {
+        guard !payloads.isEmpty else { return [] }
+        guard walSize > 0 else {
+            throw WaxError.capacityExceeded(limit: 0, requested: 0)
+        }
+
+        let headerSize = UInt64(WALRecord.headerSize)
+        var operations: [(offset: UInt64, bytes: Data)] = []
+        var sequences: [UInt64] = []
+
+        var localWritePos = writePos
+        var localPendingBytes = pendingBytes
+        var localLastSequence = lastSequence
+        var totalWritten: UInt64 = 0
+
+        func appendOperation(offset: UInt64, data: Data) {
+            operations.append((offset: offset, bytes: data))
+            totalWritten &+= UInt64(data.count)
+        }
+
+        for payload in payloads {
+            guard !payload.isEmpty else {
+                throw WaxError.encodingError(reason: "wal payload must be non-empty")
+            }
+            guard payload.count <= Int(UInt32.max) else {
+                throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: UInt64(payload.count))
+            }
+
+            let entrySize = headerSize + UInt64(payload.count)
+            if entrySize > walSize {
+                throw WaxError.capacityExceeded(limit: walSize, requested: entrySize)
+            }
+
+            var remaining = walSize - localWritePos
+            if remaining < headerSize {
+                if remaining > 0 {
+                    let zeroTail = Data(repeating: 0, count: Int(remaining))
+                    appendOperation(offset: walOffset + localWritePos, data: zeroTail)
+                    localPendingBytes &+= remaining
+                }
+                localWritePos = 0
+                remaining = walSize
+            }
+
+            if remaining < entrySize {
+                let skipBytes = remaining - headerSize
+                guard skipBytes <= UInt64(UInt32.max) else {
+                    throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: skipBytes)
+                }
+                let paddingSeq = localLastSequence &+ 1
+                let paddingRecord = WALRecord.padding(sequence: paddingSeq, skipBytes: UInt32(skipBytes))
+                let paddingData = try paddingRecord.encode()
+                appendOperation(offset: walOffset + localWritePos, data: paddingData)
+                localLastSequence = paddingSeq
+                localPendingBytes &+= remaining
+                localWritePos = 0
+            }
+
+            if localPendingBytes + entrySize > walSize {
+                throw WaxError.capacityExceeded(limit: walSize, requested: localPendingBytes + entrySize)
+            }
+
+            let sequence = localLastSequence &+ 1
+            let record = WALRecord.data(sequence: sequence, flags: flags, payload: payload)
+            let recordData = try record.encode()
+            appendOperation(offset: walOffset + localWritePos, data: recordData)
+
+            sequences.append(sequence)
+            localLastSequence = sequence
+            localPendingBytes &+= entrySize
+            localWritePos = (localWritePos + entrySize) % walSize
+        }
+
+        for op in operations {
+            try file.writeAll(op.bytes, at: op.offset)
+        }
+
+        lastSequence = localLastSequence
+        pendingBytes = localPendingBytes
+        writePos = localWritePos
+        bytesSinceFsync &+= totalWritten
+
+        try writeSentinel()
+        try maybeFsync()
+        return sequences
+    }
+
     public func canAppend(payloadSize: Int) -> Bool {
         guard payloadSize > 0 else { return false }
         guard walSize > 0 else { return false }

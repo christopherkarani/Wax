@@ -157,6 +157,60 @@ public final class FDFile {
         }
     }
 
+    /// Ensure the file is at least the requested size, extending with zeros if needed.
+    public func ensureSize(atLeast size: UInt64) throws {
+        let current = try self.size()
+        if current < size {
+            try truncate(to: size)
+        }
+    }
+
+    /// Map a writable region of the file at the given offset and length.
+    /// The returned region must be closed to unmap the memory.
+    public func mapWritable(length: Int, at offset: UInt64) throws -> MappedWritableRegion {
+        try ensureOpen()
+        guard length > 0 else {
+            throw WaxError.io("mapWritable length must be > 0")
+        }
+        let endOffset = offset + UInt64(length)
+        try ensureSize(atLeast: endOffset)
+
+        let pageSize = UInt64(getpagesize())
+        let alignedOffset = (offset / pageSize) * pageSize
+        let offsetDelta = Int(offset - alignedOffset)
+        let mapLength = length + offsetDelta
+
+        guard mapLength > 0 else {
+            throw WaxError.io("mapWritable mapLength invalid: \(mapLength)")
+        }
+        guard mapLength <= Int.max else {
+            throw WaxError.io("mapWritable mapLength exceeds Int.max: \(mapLength)")
+        }
+
+        let ptr = mmap(
+            nil,
+            mapLength,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            off_t(alignedOffset)
+        )
+        if ptr == MAP_FAILED {
+            throw WaxError.io("mmap failed: \(stringError())")
+        }
+
+        guard let base = ptr else {
+            munmap(ptr, mapLength)
+            throw WaxError.io("mmap returned nil pointer")
+        }
+        let advanced = base.advanced(by: offsetDelta)
+        return MappedWritableRegion(
+            basePointer: base,
+            mappedLength: mapLength,
+            bufferPointer: UnsafeMutableRawBufferPointer(start: advanced, count: length)
+        )
+    }
+
     public func close() throws {
         if isClosed { return }
         let result = Darwin.close(fd)
@@ -227,3 +281,34 @@ public final class FDFile {
 }
 
 extension FDFile: @unchecked Sendable {}
+
+/// RAII wrapper around a writable mmap region.
+public final class MappedWritableRegion: @unchecked Sendable {
+    private let basePointer: UnsafeMutableRawPointer
+    private let mappedLength: Int
+    public let buffer: UnsafeMutableRawBufferPointer
+    private var isClosed = false
+
+    init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeMutableRawBufferPointer) {
+        self.basePointer = basePointer
+        self.mappedLength = mappedLength
+        self.buffer = bufferPointer
+    }
+
+    public func close() {
+        if isClosed { return }
+        _ = munmap(basePointer, mappedLength)
+        isClosed = true
+    }
+
+    public func copyBytes(from data: Data) {
+        precondition(data.count <= buffer.count, "data length exceeds mapped buffer")
+        buffer.copyBytes(from: data)
+    }
+
+    deinit {
+        if !isClosed {
+            _ = munmap(basePointer, mappedLength)
+        }
+    }
+}

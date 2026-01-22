@@ -532,23 +532,29 @@ public actor Wax {
             let storedBytesArray = prepared.map { $0.storedBytes }
             let walPayloadsArray = prepared.map { $0.walPayload }
 
-            // Single I/O operation for all payloads and WAL entries
-            let sequences = try await io.run { () throws -> [UInt64] in
-                // Write all payloads
-                var writeOffset = startOffset
-                for storedBytes in storedBytesArray {
-                    try file.writeAll(storedBytes, at: writeOffset)
-                    writeOffset += UInt64(storedBytes.count)
-                }
+            // Single mapped write for payloads
+            let payloadLength = totalPayloadSize
+            try await io.run {
+                try file.ensureSize(atLeast: startOffset + UInt64(payloadLength))
+                let region = try file.mapWritable(length: payloadLength, at: startOffset)
+                defer { region.close() }
 
-                // Append all WAL entries
-                var seqs: [UInt64] = []
-                seqs.reserveCapacity(walPayloadsArray.count)
-                for walPayload in walPayloadsArray {
-                    let seq = try wal.append(payload: walPayload)
-                    seqs.append(seq)
+                var cursor = 0
+                guard let base = region.buffer.baseAddress else {
+                    throw WaxError.io("mapped region baseAddress is nil")
                 }
-                return seqs
+                for storedBytes in storedBytesArray {
+                    storedBytes.withUnsafeBytes { src in
+                        guard let srcBase = src.baseAddress else { return }
+                        base.advanced(by: cursor).copyMemory(from: srcBase, byteCount: storedBytes.count)
+                    }
+                    cursor += storedBytes.count
+                }
+            }
+
+            // Batch append WAL entries
+            let sequences = try await io.run {
+                try wal.appendBatch(payloads: walPayloadsArray)
             }
 
             // Update state
@@ -633,15 +639,8 @@ public actor Wax {
             let wal = self.wal
             let walPayloadsArray = walPayloads  // Copy to let binding
 
-            // Single I/O operation for all WAL entries
-            let sequences = try await io.run { () throws -> [UInt64] in
-                var seqs: [UInt64] = []
-                seqs.reserveCapacity(walPayloadsArray.count)
-                for payload in walPayloadsArray {
-                    let seq = try wal.append(payload: payload)
-                    seqs.append(seq)
-                }
-                return seqs
+            let sequences = try await io.run {
+                try wal.appendBatch(payloads: walPayloadsArray)
             }
 
             // Update state

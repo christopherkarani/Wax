@@ -3,11 +3,13 @@ import Foundation
 import Testing
 @testable import WaxCore
 
+private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWalSize + 4096
+
 @Test func headerPageEncodeDecodeWithChecksum() throws {
     let header = MV2SHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 5,
-        footerOffset: 10_000_000,
+        footerOffset: testFooterOffset,
         walOffset: Constants.walOffset,
         walSize: Constants.defaultWalSize,
         walWritePos: 1024,
@@ -30,7 +32,7 @@ import Testing
     let header = MV2SHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 0,
-        footerOffset: 10_000_000,
+        footerOffset: testFooterOffset,
         walOffset: Constants.walOffset,
         walSize: Constants.defaultWalSize,
         walWritePos: 0,
@@ -75,7 +77,7 @@ import Testing
         specMinor: 1,
         headerPageGeneration: 1,
         fileGeneration: 0,
-        footerOffset: 10_000_000,
+        footerOffset: testFooterOffset,
         walOffset: Constants.walOffset,
         walSize: Constants.defaultWalSize,
         walWritePos: 0,
@@ -100,7 +102,7 @@ import Testing
     let a = MV2SHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 0,
-        footerOffset: 10_000_000,
+        footerOffset: testFooterOffset,
         walOffset: Constants.walOffset,
         walSize: Constants.defaultWalSize,
         walWritePos: 0,
@@ -111,7 +113,7 @@ import Testing
     let b = MV2SHeaderPage(
         headerPageGeneration: 2,
         fileGeneration: 0,
-        footerOffset: 20_000_000,
+        footerOffset: testFooterOffset + 10_000,
         walOffset: Constants.walOffset,
         walSize: Constants.defaultWalSize,
         walWritePos: 0,
@@ -126,7 +128,7 @@ import Testing
     let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)
     #expect(selected != nil)
     #expect(selected?.pageIndex == 1)
-    #expect(selected?.page.footerOffset == 20_000_000)
+    #expect(selected?.page.footerOffset == testFooterOffset + 10_000)
 }
 
 @Test func footerRoundtrip() throws {

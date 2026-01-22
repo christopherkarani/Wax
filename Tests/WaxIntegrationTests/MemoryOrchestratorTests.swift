@@ -233,6 +233,83 @@ func memoryOrchestratorRecallWithEmbeddingPolicyUsesEmbedderWhenAvailable() asyn
     }
 }
 
+@Test
+func memoryOrchestratorRespectsIngestBatchingAndOrder() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.ingestBatchSize = 4
+        config.ingestConcurrency = 2
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.chunking = .tokenCount(targetTokens: 5, overlapTokens: 0)
+
+        let embedder = RecordingBatchEmbedder(dimensions: 8)
+
+        let text = String(repeating: "Swift concurrency uses actors and tasks. ", count: 80)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+        try await orchestrator.remember(text)
+        try await orchestrator.flush()
+        try await orchestrator.close()
+
+        // Validate batching behavior
+        let batches = await embedder.batches
+        #expect(!batches.isEmpty)
+        #expect(batches.dropLast().allSatisfy { $0.count == config.ingestBatchSize })
+        #expect(batches.last?.count ?? 0 > 0)
+        #expect(batches.last!.count <= config.ingestBatchSize)
+
+        // Validate chunk ordering persisted
+        let reopened = try await Wax.open(at: url)
+        let metas = await reopened.frameMetas()
+        let chunkMetas = metas.dropFirst()
+        let chunkCount = chunkMetas.count
+
+        // Ensure we exercised multi-batch ingest
+        #expect(chunkCount >= config.ingestBatchSize * 2)
+
+        let uniqueChunkTexts = Set(chunkMetas.compactMap { $0.searchText })
+        let embeddedCount = batches.flatMap { $0 }.count
+        #expect(embeddedCount >= uniqueChunkTexts.count)
+        #expect(embeddedCount <= chunkCount)
+
+        let indices = chunkMetas.map { $0.chunkIndex }
+        let counts = chunkMetas.map { $0.chunkCount }
+        #expect(indices == Array(0..<UInt32(chunkCount)))
+        #expect(Set(counts) == [UInt32(chunkCount)])
+        try await reopened.close()
+    }
+}
+
+private actor RecordingBatchEmbedder: BatchEmbeddingProvider {
+    let dimensions: Int
+    let normalize: Bool = false
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "BatchRecorder",
+        dimensions: 8,
+        normalized: false
+    )
+
+    private(set) var batches: [[String]] = []
+
+    init(dimensions: Int) {
+        self.dimensions = dimensions
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        try await embed(batch: [text]).first ?? []
+    }
+
+    func embed(batch texts: [String]) async throws -> [[Float]] {
+        batches.append(texts)
+        return texts.enumerated().map { index, _ in
+            let base = Float(index + 1)
+            return [base, base, base, base, base, base, base, base]
+        }
+    }
+}
+
 private struct TestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
     let normalize: Bool = false

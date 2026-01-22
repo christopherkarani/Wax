@@ -7,7 +7,11 @@ public extension MemoryOrchestrator {
         at url: URL,
         config: OrchestratorConfig = .default
     ) async throws -> MemoryOrchestrator {
-        try await MemoryOrchestrator(at: url, config: config, embedder: MiniLMEmbedder())
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: MiniLMEmbedder())
+        Task.detached(priority: .utility) {
+            await WaxPrewarm.miniLM()
+        }
+        return orchestrator
     }
 }
 #endif

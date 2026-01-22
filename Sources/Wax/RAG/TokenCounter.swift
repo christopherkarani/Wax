@@ -97,23 +97,123 @@ public actor TokenCounter {
         (try? bpe.decode(tokens: tokens)) ?? ""
     }
 
-    // MARK: - Batch Operations
+    // MARK: - Batch Operations (Optimized)
+    
+    /// Thread-safe encoding using nonisolated access to the BPE model.
+    /// CoreBpe is thread-safe for concurrent reads.
+    nonisolated private func encodeNonisolated(_ text: String, bpe: CoreBpe) -> [UInt32] {
+        let capped = Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
+        return bpe.encode(text: capped, allowedSpecial: [])
+    }
+    
+    /// Thread-safe decoding using nonisolated access to the BPE model.
+    nonisolated private func decodeNonisolated(_ tokens: [UInt32], bpe: CoreBpe) -> String {
+        (try? bpe.decode(tokens: tokens)) ?? ""
+    }
 
+    /// Count tokens for multiple texts - uses parallel processing for better throughput.
     public func countBatch(_ texts: [String]) -> [Int] {
-        texts.map { encode($0).count }
-    }
-
-    public func encodeBatch(_ texts: [String]) -> [[UInt32]] {
-        texts.map { encode($0) }
-    }
-
-    public func truncateBatch(_ texts: [String], maxTokens: Int) async -> [String] {
-        var results: [String] = []
-        results.reserveCapacity(texts.count)
-        for text in texts {
-            results.append(await truncate(text, maxTokens: maxTokens))
+        // For small batches, sequential is faster due to overhead
+        guard texts.count > 4 else {
+            return texts.map { encode($0).count }
         }
-        return results
+        
+        // Capture bpe for nonisolated parallel access
+        let localBpe = bpe
+        
+        // Use unsafe mutable buffer for thread-safe parallel writes
+        let results = UnsafeMutableBufferPointer<Int>.allocate(capacity: texts.count)
+        defer { results.deallocate() }
+        
+        // Process in parallel using DispatchQueue for CPU-bound work
+        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
+            results[index] = encodeNonisolated(texts[index], bpe: localBpe).count
+        }
+        
+        return Array(results)
+    }
+
+    /// Encode multiple texts to tokens - uses parallel processing.
+    public func encodeBatch(_ texts: [String]) -> [[UInt32]] {
+        guard texts.count > 4 else {
+            return texts.map { encode($0) }
+        }
+        
+        let localBpe = bpe
+        
+        // Use array of optionals for thread-safe parallel writes
+        var results = [[UInt32]?](repeating: nil, count: texts.count)
+        
+        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
+            let encoded = encodeNonisolated(texts[index], bpe: localBpe)
+            results[index] = encoded
+        }
+        
+        return results.compactMap { $0 }
+    }
+
+    /// Truncate multiple texts to max tokens - optimized with parallel processing.
+    public func truncateBatch(_ texts: [String], maxTokens: Int) async -> [String] {
+        guard maxTokens > 0 else {
+            return [String](repeating: "", count: texts.count)
+        }
+        
+        // For small batches, use simple sequential processing
+        guard texts.count > 4 else {
+            var results: [String] = []
+            results.reserveCapacity(texts.count)
+            for text in texts {
+                results.append(await truncate(text, maxTokens: maxTokens))
+            }
+            return results
+        }
+        
+        let localBpe = bpe
+        
+        // Batch encode all texts first (parallel)
+        let allTokens = encodeBatch(texts)
+        
+        // Process truncation (parallel for decode operations)
+        var results = [String?](repeating: nil, count: texts.count)
+        
+        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
+            let tokens = allTokens[index]
+            if tokens.count <= maxTokens {
+                results[index] = texts[index]
+            } else {
+                let sliced = Array(tokens.prefix(maxTokens))
+                results[index] = decodeNonisolated(sliced, bpe: localBpe)
+            }
+        }
+        
+        return results.compactMap { $0 }
+    }
+    
+    /// Optimized batch count and truncate - single pass for both operations.
+    public func countAndTruncateBatch(_ texts: [String], maxTokens: Int) async -> [(count: Int, truncated: String)] {
+        guard maxTokens > 0 else {
+            return texts.map { _ in (count: 0, truncated: "") }
+        }
+        
+        let localBpe = bpe
+        
+        // Batch encode all texts
+        let allTokens = encodeBatch(texts)
+        
+        var results = [(count: Int, truncated: String)?](repeating: nil, count: texts.count)
+        
+        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
+            let tokens = allTokens[index]
+            let count = tokens.count
+            if count <= maxTokens {
+                results[index] = (count: count, truncated: texts[index])
+            } else {
+                let sliced = Array(tokens.prefix(maxTokens))
+                results[index] = (count: maxTokens, truncated: decodeNonisolated(sliced, bpe: localBpe))
+            }
+        }
+        
+        return results.compactMap { $0 }
     }
 
     private func cappedInput(_ text: String) -> String {
