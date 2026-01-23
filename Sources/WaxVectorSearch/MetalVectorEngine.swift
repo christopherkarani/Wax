@@ -24,6 +24,12 @@ public actor MetalVectorEngine {
     private var frameIds: [UInt64]
     private let opLock = AsyncMutex()
     private var dirty: Bool
+    
+    /// Tracks whether the GPU vectors buffer needs to be synced from CPU.
+    /// This enables lazy synchronization - vectors are only copied to GPU when
+    /// actually needed for search, not on every add/remove operation.
+    private var gpuBufferNeedsSync: Bool
+    
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let computePipeline: MTLComputePipelineState
@@ -89,6 +95,7 @@ public actor MetalVectorEngine {
         self.vectors = []
         self.frameIds = []
         self.dirty = false
+        self.gpuBufferNeedsSync = true  // Start with sync needed (empty state)
 
         let initialCapacity = Int(Self.initialReserve) * dimensions * MemoryLayout<Float>.stride
         guard let vectorsBuffer = device.makeBuffer(length: initialCapacity, options: .storageModeShared) else {
@@ -173,7 +180,6 @@ public actor MetalVectorEngine {
     public func add(frameId: UInt64, vector: [Float]) async throws {
         try await withOpLock {
             try validate(vector)
-            _ = vectorCount == 0 // Keep check logic if needed, or remove. Actually it was unused.
 
             if let existingIndex = frameIds.firstIndex(of: frameId) {
                 let offset = existingIndex * dimensions
@@ -183,7 +189,6 @@ public actor MetalVectorEngine {
             } else {
                 try await reserveIfNeeded(for: vectorCount + 1)
 
-                // offset not needed for append
                 for dim in 0..<dimensions {
                     vectors.append(vector[dim])
                 }
@@ -192,6 +197,7 @@ public actor MetalVectorEngine {
             }
 
             dirty = true
+            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
@@ -225,7 +231,6 @@ public actor MetalVectorEngine {
                         self.vectors[offset + dim] = vector[dim]
                     }
                 } else {
-                    // offset not needed
                     for dim in 0..<dimensions {
                         self.vectors.append(vector[dim])
                     }
@@ -235,6 +240,7 @@ public actor MetalVectorEngine {
             }
 
             dirty = true
+            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
@@ -269,6 +275,7 @@ public actor MetalVectorEngine {
             frameIds.remove(at: index)
             vectorCount -= 1
             dirty = true
+            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
@@ -278,11 +285,11 @@ public actor MetalVectorEngine {
             try validate(vector)
             let limit = Self.clampTopK(topK)
 
-            vectors.withUnsafeBufferPointer { buffer in
-                vectorsBuffer.contents().copyMemory(
-                    from: buffer.baseAddress!,
-                    byteCount: min(buffer.count * MemoryLayout<Float>.stride, vectorsBuffer.length)
-                )
+            // Only sync vectors to GPU if they've changed since last search
+            // This eliminates redundant memory bandwidth for read-heavy workloads
+            if gpuBufferNeedsSync {
+                syncVectorsToGPU()
+                gpuBufferNeedsSync = false
             }
 
             guard let queryBuffer = device.makeBuffer(
@@ -488,6 +495,7 @@ public actor MetalVectorEngine {
             vectorCount = savedVectorCount
             reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
             dirty = false
+            gpuBufferNeedsSync = true  // GPU buffer needs sync after loading new vectors
         }
     }
 
@@ -533,6 +541,19 @@ public actor MetalVectorEngine {
         if topK > maxResults { return maxResults }
         return topK
     }
+    
+    /// Synchronizes CPU vector data to GPU buffer.
+    /// Called lazily only when search is performed after vectors have changed.
+    /// This optimization eliminates redundant memory copies for read-heavy workloads.
+    private func syncVectorsToGPU() {
+        guard !vectors.isEmpty else { return }
+        vectors.withUnsafeBufferPointer { buffer in
+            vectorsBuffer.contents().copyMemory(
+                from: buffer.baseAddress!,
+                byteCount: min(buffer.count * MemoryLayout<Float>.stride, vectorsBuffer.length)
+            )
+        }
+    }
 
     private func reserveIfNeeded(for requiredCount: UInt64) async throws {
         guard requiredCount <= UInt64(UInt32.max) else {
@@ -547,17 +568,11 @@ public actor MetalVectorEngine {
         }
         reservedCapacity = max(reservedCapacity, next)
 
-        // Resize GPU buffers
+        // Resize GPU buffers - allocate only, don't copy vectors
+        // The lazy sync in search() will populate the buffer when needed
         let newVectorsLength = Int(reservedCapacity) * dimensions * MemoryLayout<Float>.stride
         guard let newVectorsBuffer = device.makeBuffer(length: newVectorsLength, options: .storageModeShared) else {
             throw WaxError.invalidToc(reason: "Failed to resize vectors buffer")
-        }
-
-        vectors.withUnsafeBufferPointer { buffer in
-            newVectorsBuffer.contents().copyMemory(
-                from: buffer.baseAddress!,
-                byteCount: min(buffer.count * MemoryLayout<Float>.stride, newVectorsLength)
-            )
         }
 
         let newDistancesLength = Int(reservedCapacity) * MemoryLayout<Float>.stride
@@ -567,10 +582,9 @@ public actor MetalVectorEngine {
 
         self.vectorsBuffer = newVectorsBuffer
         self.distancesBuffer = newDistancesBuffer
-
-        // Replace buffer (this is safe since we're in actor isolation)
-        // Note: In a production system, we'd need proper buffer management
-        // For now, we rely on the fact that the old buffer will be deallocated when replaced
+        
+        // Buffer was resized, so GPU data is now stale
+        gpuBufferNeedsSync = true
     }
 }
 
