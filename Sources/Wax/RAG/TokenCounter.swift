@@ -112,7 +112,7 @@ public actor TokenCounter {
     }
 
     /// Count tokens for multiple texts - uses parallel processing for better throughput.
-    public func countBatch(_ texts: [String]) -> [Int] {
+    public func countBatch(_ texts: [String]) async -> [Int] {
         // For small batches, sequential is faster due to overhead
         guard texts.count > 4 else {
             return texts.map { encode($0).count }
@@ -121,35 +121,45 @@ public actor TokenCounter {
         // Capture bpe for nonisolated parallel access
         let localBpe = bpe
         
-        // Use unsafe mutable buffer for thread-safe parallel writes
-        let results = UnsafeMutableBufferPointer<Int>.allocate(capacity: texts.count)
-        defer { results.deallocate() }
-        
-        // Process in parallel using DispatchQueue for CPU-bound work
-        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
-            results[index] = encodeNonisolated(texts[index], bpe: localBpe).count
+        var results = [Int](repeating: 0, count: texts.count)
+
+        await withTaskGroup(of: (Int, Int).self) { group in
+            for (index, text) in texts.enumerated() {
+                group.addTask {
+                    (index, self.encodeNonisolated(text, bpe: localBpe).count)
+                }
+            }
+
+            for await (index, count) in group {
+                results[index] = count
+            }
         }
-        
-        return Array(results)
+
+        return results
     }
 
     /// Encode multiple texts to tokens - uses parallel processing.
-    public func encodeBatch(_ texts: [String]) -> [[UInt32]] {
+    public func encodeBatch(_ texts: [String]) async -> [[UInt32]] {
         guard texts.count > 4 else {
             return texts.map { encode($0) }
         }
         
         let localBpe = bpe
-        
-        // Use array of optionals for thread-safe parallel writes
-        var results = [[UInt32]?](repeating: nil, count: texts.count)
-        
-        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
-            let encoded = encodeNonisolated(texts[index], bpe: localBpe)
-            results[index] = encoded
+        var results = Array<[UInt32]>(repeating: [], count: texts.count)
+
+        await withTaskGroup(of: (Int, [UInt32]).self) { group in
+            for (index, text) in texts.enumerated() {
+                group.addTask {
+                    (index, self.encodeNonisolated(text, bpe: localBpe))
+                }
+            }
+
+            for await (index, encoded) in group {
+                results[index] = encoded
+            }
         }
-        
-        return results.compactMap { $0 }
+
+        return results
     }
 
     /// Truncate multiple texts to max tokens - optimized with parallel processing.
@@ -171,22 +181,27 @@ public actor TokenCounter {
         let localBpe = bpe
         
         // Batch encode all texts first (parallel)
-        let allTokens = encodeBatch(texts)
+        let allTokens = await encodeBatch(texts)
         
-        // Process truncation (parallel for decode operations)
-        var results = [String?](repeating: nil, count: texts.count)
-        
-        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
-            let tokens = allTokens[index]
-            if tokens.count <= maxTokens {
-                results[index] = texts[index]
-            } else {
-                let sliced = Array(tokens.prefix(maxTokens))
-                results[index] = decodeNonisolated(sliced, bpe: localBpe)
+        var results = [String](repeating: "", count: texts.count)
+
+        await withTaskGroup(of: (Int, String).self) { group in
+            for (index, tokens) in allTokens.enumerated() {
+                group.addTask {
+                    if tokens.count <= maxTokens {
+                        return (index, texts[index])
+                    }
+                    let sliced = Array(tokens.prefix(maxTokens))
+                    return (index, self.decodeNonisolated(sliced, bpe: localBpe))
+                }
+            }
+
+            for await (index, value) in group {
+                results[index] = value
             }
         }
-        
-        return results.compactMap { $0 }
+
+        return results
     }
     
     /// Optimized batch count and truncate - single pass for both operations.
@@ -198,22 +213,28 @@ public actor TokenCounter {
         let localBpe = bpe
         
         // Batch encode all texts
-        let allTokens = encodeBatch(texts)
+        let allTokens = await encodeBatch(texts)
         
-        var results = [(count: Int, truncated: String)?](repeating: nil, count: texts.count)
-        
-        DispatchQueue.concurrentPerform(iterations: texts.count) { index in
-            let tokens = allTokens[index]
-            let count = tokens.count
-            if count <= maxTokens {
-                results[index] = (count: count, truncated: texts[index])
-            } else {
-                let sliced = Array(tokens.prefix(maxTokens))
-                results[index] = (count: maxTokens, truncated: decodeNonisolated(sliced, bpe: localBpe))
+        var results = [(count: Int, truncated: String)](repeating: (count: 0, truncated: ""), count: texts.count)
+
+        await withTaskGroup(of: (Int, (count: Int, truncated: String)).self) { group in
+            for (index, tokens) in allTokens.enumerated() {
+                group.addTask {
+                    let count = tokens.count
+                    if count <= maxTokens {
+                        return (index, (count: count, truncated: texts[index]))
+                    }
+                    let sliced = Array(tokens.prefix(maxTokens))
+                    return (index, (count: maxTokens, truncated: self.decodeNonisolated(sliced, bpe: localBpe)))
+                }
+            }
+
+            for await (index, entry) in group {
+                results[index] = entry
             }
         }
-        
-        return results.compactMap { $0 }
+
+        return results
     }
 
     private func cappedInput(_ text: String) -> String {

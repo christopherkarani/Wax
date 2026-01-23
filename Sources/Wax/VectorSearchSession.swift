@@ -4,19 +4,25 @@ import WaxVectorSearch
 
 public actor WaxVectorSearchSession {
     public let wax: Wax
-    public let engine: USearchVectorEngine
+    public let engine: any VectorSearchEngine
     public let dimensions: Int
     private var lastPendingEmbeddingSequence: UInt64?
 
-    public init(wax: Wax, metric: VectorMetric = .cosine, dimensions: Int) async throws {
+    public init(
+        wax: Wax,
+        metric: VectorMetric = .cosine,
+        dimensions: Int,
+        preference: VectorEnginePreference = .auto
+    ) async throws {
         self.wax = wax
         self.dimensions = dimensions
-        self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        if preference != .cpuOnly, MetalVectorEngine.isAvailable {
+            self.engine = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        } else {
+            self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        }
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
-        for embedding in snapshot.embeddings {
-            try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
-        }
         self.lastPendingEmbeddingSequence = snapshot.latestSequence
     }
 
@@ -128,8 +134,10 @@ public actor WaxVectorSearchSession {
            latest < last {
             lastPendingEmbeddingSequence = nil
         }
-        for embedding in snapshot.embeddings {
-            try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
+        if !snapshot.embeddings.isEmpty {
+            let frameIds = snapshot.embeddings.map(\.frameId)
+            let vectors = snapshot.embeddings.map(\.vector)
+            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         }
         lastPendingEmbeddingSequence = snapshot.latestSequence
         try await engine.stageForCommit(into: wax)
@@ -137,11 +145,22 @@ public actor WaxVectorSearchSession {
 }
 
 public extension Wax {
-    func enableVectorSearch(metric: VectorMetric = .cosine, dimensions: Int) async throws -> WaxVectorSearchSession {
-        try await WaxVectorSearchSession(wax: self, metric: metric, dimensions: dimensions)
+    func enableVectorSearch(
+        metric: VectorMetric = .cosine,
+        dimensions: Int,
+        preference: VectorEnginePreference = .auto
+    ) async throws -> WaxVectorSearchSession {
+        try await WaxVectorSearchSession(
+            wax: self,
+            metric: metric,
+            dimensions: dimensions,
+            preference: preference
+        )
     }
 
-    func enableVectorSearchFromManifest() async throws -> WaxVectorSearchSession {
+    func enableVectorSearchFromManifest(
+        preference: VectorEnginePreference = .auto
+    ) async throws -> WaxVectorSearchSession {
         guard let manifest = await committedVecIndexManifest() else {
             throw WaxError.io("vec index manifest missing; enableVectorSearch(dimensions:) required")
         }
@@ -151,7 +170,8 @@ public extension Wax {
         return try await WaxVectorSearchSession(
             wax: self,
             metric: metric,
-            dimensions: Int(manifest.dimension)
+            dimensions: Int(manifest.dimension),
+            preference: preference
         )
     }
 }

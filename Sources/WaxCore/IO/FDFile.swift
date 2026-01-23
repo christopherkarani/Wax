@@ -183,10 +183,6 @@ public final class FDFile {
         guard mapLength > 0 else {
             throw WaxError.io("mapWritable mapLength invalid: \(mapLength)")
         }
-        guard mapLength <= Int.max else {
-            throw WaxError.io("mapWritable mapLength exceeds Int.max: \(mapLength)")
-        }
-
         let ptr = mmap(
             nil,
             mapLength,

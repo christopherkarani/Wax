@@ -222,22 +222,67 @@ public actor USearchVectorEngine {
 
     public func deserialize(_ data: Data) async throws {
         try await withOpLock {
-            let decoded = try VectorSerializer.decodeUSearchPayload(from: data)
-            guard decoded.info.dimension == UInt32(dimensions) else {
-                throw WaxError.invalidToc(reason: "vec dimension mismatch: expected \(dimensions), got \(decoded.info.dimension)")
-            }
-            guard decoded.info.similarity == metric.toVecSimilarity() else {
-                throw WaxError.invalidToc(reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(decoded.info.similarity)")
-            }
+            let decoded = try VectorSerializer.decodeVecSegment(from: data)
+            switch decoded {
+            case .uSearch(let info, let payload):
+                guard info.dimension == UInt32(dimensions) else {
+                    throw WaxError.invalidToc(
+                        reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)"
+                    )
+                }
+                guard info.similarity == metric.toVecSimilarity() else {
+                    throw WaxError.invalidToc(
+                        reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(info.similarity)"
+                    )
+                }
 
-            let index = self.index
-            let payload = decoded.payload
-            try await io.run { try VectorSerializer.loadUSearchIndex(index, fromPayload: payload) }
-            vectorCount = decoded.info.vectorCount
-            reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
-            let reserve = reservedCapacity
-            try await io.run { try index.reserve(reserve) }
-            dirty = false
+                let index = self.index
+                try await io.run { try VectorSerializer.loadUSearchIndex(index, fromPayload: payload) }
+                vectorCount = info.vectorCount
+                reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
+                let reserve = reservedCapacity
+                try await io.run { try index.reserve(reserve) }
+                dirty = false
+            case .metal(let info, let vectors, let frameIds):
+                guard info.dimension == UInt32(dimensions) else {
+                    throw WaxError.invalidToc(
+                        reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)"
+                    )
+                }
+                guard info.similarity == metric.toVecSimilarity() else {
+                    throw WaxError.invalidToc(
+                        reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(info.similarity)"
+                    )
+                }
+                guard vectors.count == Int(info.vectorCount) * dimensions else {
+                    throw WaxError.invalidToc(reason: "vec vector count mismatch")
+                }
+                guard frameIds.count == Int(info.vectorCount) else {
+                    throw WaxError.invalidToc(reason: "vec frameId count mismatch")
+                }
+
+                let index = self.index
+                vectorCount = 0
+                reservedCapacity = max(reservedCapacity, UInt32(min(info.vectorCount, UInt64(UInt32.max))))
+                let reserve = reservedCapacity
+                try await io.run { try index.reserve(reserve) }
+
+                let frameIdArray = frameIds
+                let vectorArray = vectors
+                let dims = dimensions
+
+                try await io.run {
+                    for i in 0..<frameIdArray.count {
+                        let start = i * dims
+                        let end = start + dims
+                        let vec = Array(vectorArray[start..<end])
+                        try index.add(key: frameIdArray[i], vector: vec)
+                    }
+                }
+
+                vectorCount = info.vectorCount
+                dirty = false
+            }
         }
     }
 
@@ -288,3 +333,5 @@ public actor USearchVectorEngine {
         try await io.run { try index.reserve(reserve) }
     }
 }
+
+extension USearchVectorEngine: VectorSearchEngine {}

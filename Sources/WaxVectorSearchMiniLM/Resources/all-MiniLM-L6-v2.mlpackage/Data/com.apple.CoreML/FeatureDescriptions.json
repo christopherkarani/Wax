@@ -1,0 +1,18 @@
+{
+  "Outputs" : {
+    "embeddings" : {
+      "MLFeatureShortDescription" : ""
+    }
+  },
+  "Inputs" : {
+    "attention_mask" : {
+      "MLFeatureShortDescription" : ""
+    },
+    "input_ids" : {
+      "MLFeatureShortDescription" : ""
+    }
+  },
+  "TrainingInputs" : {
+
+  }
+}

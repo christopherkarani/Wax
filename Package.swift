@@ -64,6 +64,9 @@ let package = Package(
                 .product(name: "SimilaritySearchKit", package: "similarity-search-kit"),
                 .product(name: "SimilaritySearchKitMiniLMAll", package: "similarity-search-kit"),
             ],
+            resources: [
+                .process("Resources"),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(

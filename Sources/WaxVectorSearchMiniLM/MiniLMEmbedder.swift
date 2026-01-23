@@ -3,8 +3,13 @@ import SimilaritySearchKit
 import SimilaritySearchKitMiniLMAll
 import WaxCore
 import WaxVectorSearch
+import CoreML
+import OSLog
 
 extension MiniLMEmbeddings: @retroactive @unchecked Sendable {}
+
+// MARK: - Logging
+private let logger = Logger(subsystem: "com.wax.vectormodel", category: "MiniLMEmbedder")
 
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
 /// Implements BatchEmbeddingProvider for significant throughput improvements during ingest.
@@ -28,10 +33,37 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     public init() {
         self.model = MiniLMEmbeddings()
+        logComputeUnits()
     }
 
     public init(model: MiniLMEmbeddings) {
         self.model = model
+        logComputeUnits()
+    }
+
+    // MARK: - Diagnostics
+
+    /// Checks if the model is configured to use the Apple Neural Engine (ANE).
+    /// Note: This checks the configuration preference, not whether ANE is actually being used at runtime.
+    public nonisolated func isUsingANE() -> Bool {
+        return model.model.model.configuration.computeUnits == .all
+    }
+
+    /// Returns the current compute units configuration.
+    public nonisolated func currentComputeUnits() -> MLComputeUnits {
+        return model.model.model.configuration.computeUnits
+    }
+
+    private nonisolated func logComputeUnits() {
+        let units = currentComputeUnits()
+        let aneAvailable = isUsingANE()
+        logger.info("MiniLMEmbedder initialized with computeUnits: \(units.rawValue, privacy: .public)")
+        logger.info("ANE configured: \(aneAvailable ? "Yes" : "No", privacy: .public)")
+
+        // TODO: SimilaritySearchKit's MiniLMEmbeddings doesn't expose MLModelConfiguration customization.
+        // Currently, it hardcodes computeUnits = .all but doesn't support allowLowPrecisionAccumulationOnGPU = true.
+        // This could be added for additional 10-20% performance improvement on supported hardware.
+        // Consider submitting a PR or forking SimilaritySearchKit to add configuration support.
     }
 
     public func embed(_ text: String) async throws -> [Float] {

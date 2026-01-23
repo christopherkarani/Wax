@@ -117,6 +117,14 @@ public enum VectorMath {
         vDSP_svesq(vector, 1, &sumOfSquares, vDSP_Length(vector.count))
         return sqrt(sumOfSquares)
     }
+
+    /// Returns true if the vector is approximately unit length.
+    @inlinable
+    public static func isNormalizedL2(_ vector: [Float], tolerance: Float = 1e-3) -> Bool {
+        guard !vector.isEmpty else { return false }
+        let length = magnitude(vector)
+        return abs(length - 1.0) <= tolerance
+    }
     
     // MARK: - Vector Addition/Subtraction
     

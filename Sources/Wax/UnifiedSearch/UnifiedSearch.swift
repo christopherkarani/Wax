@@ -44,10 +44,11 @@ public extension Wax {
             nil
         }
 
-        let vectorEngine: USearchVectorEngine? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
+        let vectorEngine: (any VectorSearchEngine)? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
             try await cache.vectorEngine(
                 for: self,
-                queryEmbeddingDimensions: embedding.count
+                queryEmbeddingDimensions: embedding.count,
+                preference: request.vectorEnginePreference
             )
         } else {
             nil
@@ -64,6 +65,14 @@ public extension Wax {
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
             guard includeVector, let vectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
+            #if DEBUG
+            if vectorEngine is MetalVectorEngine {
+                precondition(
+                    VectorMath.isNormalizedL2(embedding),
+                    "Metal vector search requires normalized query embeddings"
+                )
+            }
+            #endif
             return try await vectorEngine.search(vector: embedding, topK: candidateLimit)
         }()
 
