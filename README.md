@@ -8,7 +8,11 @@
 
 | 🧠 **On-device RAG** | 🔍 **Hybrid Search** | 💾 **Single-file persistence**
 
-Wax is a crash-safe, single-file memory store that brings production-grade RAG (Retrieval-Augmented Generation) to mobile and desktop apps. Zero external dependencies. Maximum performance. Deterministic results.
+Wax is a portable AI memory system that packages your data, embeddings, search structure, and metadata into a single file.
+
+Instead of running complex RAG pipelines or server-based vector databases, Wax enables fast retrieval directly from the file.
+
+The result is a model-agnostic, infrastructure-free memory layer that gives AI agents persistent, long-term memory they can carry anywhere.
 
 ## ✨ What Makes Wax Special
 
