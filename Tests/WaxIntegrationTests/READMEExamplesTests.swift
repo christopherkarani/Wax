@@ -194,8 +194,10 @@ func readmeExampleCustomEmbeddings() async throws {
         )
 
         func embed(_ text: String) async throws -> [Float] {
-            // Return a 384-dim vector.
-            return [Float](repeating: 0.0, count: 384)
+            // Return a normalized 384-dim vector.
+            var vector = [Float](repeating: 0.0, count: 384)
+            vector[0] = 1.0
+            return vector
         }
     }
 

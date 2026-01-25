@@ -41,17 +41,17 @@ func memoryOrchestratorRecallUsesVectorEmbedding() async throws {
 
 private struct TestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
-    let normalize: Bool = false
+    let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(
         provider: "Test",
         model: "Deterministic",
         dimensions: 2,
-        normalized: false
+        normalized: true
     )
 
     func embed(_ text: String) async throws -> [Float] {
         // Simple deterministic embedding
         // For "Hello World", count is 11.
-        return [0.5, 0.5] 
+        return VectorMath.normalizeL2([0.5, 0.5])
     }
 }

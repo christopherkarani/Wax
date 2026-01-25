@@ -35,7 +35,8 @@ import Wax
 
         try await vec.commit()
 
-        let request = SearchRequest(embedding: [0.9, 0.1, 0.0, 0.0], mode: .vectorOnly, topK: 10)
+        let queryEmbedding = VectorMath.normalizeL2([0.9, 0.1, 0.0, 0.0])
+        let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10)
         let response = try await wax.search(request)
 
         #expect(response.results.first?.frameId == id0)

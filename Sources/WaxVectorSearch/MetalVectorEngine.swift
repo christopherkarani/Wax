@@ -422,7 +422,9 @@ public actor MetalVectorEngine {
             }
 
             // Read version
-            let version = UInt16(littleEndian: data.withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) })
+            let version = UInt16(littleEndian: data.withUnsafeBytes {
+                $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self)
+            })
             offset += 2
             guard version == 1 else {
                 throw WaxError.invalidToc(reason: "Unsupported Metal segment version \(version)")
@@ -494,6 +496,7 @@ public actor MetalVectorEngine {
 
             vectorCount = savedVectorCount
             reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
+            try resizeBuffersIfNeeded(for: reservedCapacity)
             dirty = false
             gpuBufferNeedsSync = true  // GPU buffer needs sync after loading new vectors
         }
@@ -568,22 +571,27 @@ public actor MetalVectorEngine {
         }
         reservedCapacity = max(reservedCapacity, next)
 
-        // Resize GPU buffers - allocate only, don't copy vectors
-        // The lazy sync in search() will populate the buffer when needed
-        let newVectorsLength = Int(reservedCapacity) * dimensions * MemoryLayout<Float>.stride
-        guard let newVectorsBuffer = device.makeBuffer(length: newVectorsLength, options: .storageModeShared) else {
+        try resizeBuffersIfNeeded(for: reservedCapacity)
+    }
+
+    private func resizeBuffersIfNeeded(for capacity: UInt32) throws {
+        let requiredVectorsLength = Int(capacity) * dimensions * MemoryLayout<Float>.stride
+        let requiredDistancesLength = Int(capacity) * MemoryLayout<Float>.stride
+        if vectorsBuffer.length >= requiredVectorsLength,
+           distancesBuffer.length >= requiredDistancesLength {
+            return
+        }
+
+        guard let newVectorsBuffer = device.makeBuffer(length: requiredVectorsLength, options: .storageModeShared) else {
             throw WaxError.invalidToc(reason: "Failed to resize vectors buffer")
         }
 
-        let newDistancesLength = Int(reservedCapacity) * MemoryLayout<Float>.stride
-        guard let newDistancesBuffer = device.makeBuffer(length: newDistancesLength, options: .storageModeShared) else {
+        guard let newDistancesBuffer = device.makeBuffer(length: requiredDistancesLength, options: .storageModeShared) else {
             throw WaxError.invalidToc(reason: "Failed to resize distances buffer")
         }
 
-        self.vectorsBuffer = newVectorsBuffer
-        self.distancesBuffer = newDistancesBuffer
-        
-        // Buffer was resized, so GPU data is now stale
+        vectorsBuffer = newVectorsBuffer
+        distancesBuffer = newDistancesBuffer
         gpuBufferNeedsSync = true
     }
 }

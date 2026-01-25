@@ -93,7 +93,20 @@ public struct FastRAGContextBuilder: Sendable {
             }
 
             // Batch load surrogate contents to avoid per-frame actor hops.
-            let surrogateContents = try await wax.frameContents(frameIds: orderedSurrogateIds)
+            // If any surrogate is corrupted, fall back to per-frame loads and skip failures.
+            let surrogateContents: [UInt64: Data]
+            do {
+                surrogateContents = try await wax.frameContents(frameIds: orderedSurrogateIds)
+            } catch {
+                var recovered: [UInt64: Data] = [:]
+                recovered.reserveCapacity(orderedSurrogateIds.count)
+                for surrogateId in orderedSurrogateIds {
+                    if let data = try? await wax.frameContent(frameId: surrogateId) {
+                        recovered[surrogateId] = data
+                    }
+                }
+                surrogateContents = recovered
+            }
 
             var surrogateCandidates: [(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)] = []
             surrogateCandidates.reserveCapacity(orderedSurrogateIds.count)
