@@ -1,4 +1,5 @@
 import Foundation
+import WaxVectorSearch
 
 public struct OrchestratorConfig: Sendable {
     public var enableTextSearch: Bool = true
@@ -9,6 +10,7 @@ public struct OrchestratorConfig: Sendable {
     public var ingestConcurrency: Int = 1
     public var ingestBatchSize: Int = 32
     public var embeddingCacheCapacity: Int = 2_048
+    public var useMetalVectorSearch: Bool = MetalVectorEngine.isAvailable
 
     public init() {}
 

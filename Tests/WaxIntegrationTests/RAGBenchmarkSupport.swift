@@ -190,9 +190,10 @@ struct BenchmarkFixture {
 
             if let vector, let embedder {
                 let embedding = try await embedder.embed(content)
+                let finalEmbedding = embedder.normalize ? VectorMath.normalizeL2(embedding) : embedding
                 let frameId = try await vector.putWithEmbedding(
                     data,
-                    embedding: embedding,
+                    embedding: finalEmbedding,
                     options: options,
                     identity: embedder.identity
                 )
@@ -211,7 +212,8 @@ struct BenchmarkFixture {
 
         let queryEmbedding: [Float]?
         if let embedder {
-            queryEmbedding = try await embedder.embed(queryText)
+            let embedding = try await embedder.embed(queryText)
+            queryEmbedding = embedder.normalize ? VectorMath.normalizeL2(embedding) : embedding
         } else {
             queryEmbedding = nil
         }

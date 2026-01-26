@@ -1,9 +1,11 @@
 import Foundation
+import WaxVectorSearch
 
 /// Unified search request.
 public struct SearchRequest: Sendable, Equatable {
     public var query: String?
     public var embedding: [Float]?
+    public var vectorEnginePreference: VectorEnginePreference
     public var mode: SearchMode
     public var topK: Int
     public var minScore: Float?
@@ -18,6 +20,7 @@ public struct SearchRequest: Sendable, Equatable {
     public init(
         query: String? = nil,
         embedding: [Float]? = nil,
+        vectorEnginePreference: VectorEnginePreference = .auto,
         mode: SearchMode = .textOnly,
         topK: Int = 10,
         minScore: Float? = nil,
@@ -30,6 +33,7 @@ public struct SearchRequest: Sendable, Equatable {
     ) {
         self.query = query
         self.embedding = embedding
+        self.vectorEnginePreference = vectorEnginePreference
         self.mode = mode
         self.topK = topK
         self.minScore = minScore

@@ -15,6 +15,7 @@ public struct FastRAGContextBuilder: Sendable {
     public func build(
         query: String,
         embedding: [Float]? = nil,
+        vectorEnginePreference: VectorEnginePreference = .auto,
         wax: Wax,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
@@ -25,6 +26,7 @@ public struct FastRAGContextBuilder: Sendable {
         let request = SearchRequest(
             query: query,
             embedding: embedding,
+            vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
             topK: clamped.searchTopK,
             rrfK: clamped.rrfK,
@@ -69,30 +71,52 @@ public struct FastRAGContextBuilder: Sendable {
            clamped.maxSurrogates > 0,
            clamped.surrogateMaxTokens > 0 {
             var remainingTokens = clamped.maxContextTokens - usedTokens
-            var surrogateCount = 0
 
-            // Batch process surrogate candidates for better tokenization performance
-            var surrogateCandidates: [(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)] = []
-            surrogateCandidates.reserveCapacity(min(clamped.maxSurrogates, 16))
+            let maxToLoad = min(clamped.maxSurrogates, min(clamped.searchTopK, 32))
 
-            for result in response.results {
-                if let expandedFrameId, result.frameId == expandedFrameId { continue }
-                guard surrogateCount < clamped.maxSurrogates else { break }
-                guard remainingTokens > 0 else { break }
-
-                guard let surrogateFrameId = await wax.surrogateFrameId(sourceFrameId: result.frameId) else { continue }
-                let data: Data
-                do {
-                    data = try await wax.frameContent(frameId: surrogateFrameId)
-                } catch {
-                    continue
+            // Batch resolve surrogate ids in a single actor hop to avoid TaskGroup churn.
+            let sourceFrameIds = response.results
+                .filter { result in
+                    guard let expandedFrameId else { return true }
+                    return result.frameId != expandedFrameId
                 }
-                guard let text = String(data: data, encoding: .utf8),
-                      !text.isEmpty else { continue }
+                .map(\.frameId)
+            let surrogateMap = await wax.surrogateFrameIds(for: sourceFrameIds)
 
-                surrogateCandidates.append((result, surrogateFrameId, text))
-                surrogateCount += 1
-                if surrogateCandidates.count >= 16 { break } // Increased batch size for better throughput
+            // Keep only the top candidates, preserving response order.
+            var orderedSurrogateIds: [UInt64] = []
+            orderedSurrogateIds.reserveCapacity(maxToLoad)
+            for result in response.results {
+                guard let surrogateId = surrogateMap[result.frameId] else { continue }
+                orderedSurrogateIds.append(surrogateId)
+                if orderedSurrogateIds.count >= maxToLoad { break }
+            }
+
+            // Batch load surrogate contents to avoid per-frame actor hops.
+            // If any surrogate is corrupted, fall back to per-frame loads and skip failures.
+            let surrogateContents: [UInt64: Data]
+            do {
+                surrogateContents = try await wax.frameContents(frameIds: orderedSurrogateIds)
+            } catch {
+                var recovered: [UInt64: Data] = [:]
+                recovered.reserveCapacity(orderedSurrogateIds.count)
+                for surrogateId in orderedSurrogateIds {
+                    if let data = try? await wax.frameContent(frameId: surrogateId) {
+                        recovered[surrogateId] = data
+                    }
+                }
+                surrogateContents = recovered
+            }
+
+            var surrogateCandidates: [(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)] = []
+            surrogateCandidates.reserveCapacity(orderedSurrogateIds.count)
+            for result in response.results {
+                guard let surrogateId = surrogateMap[result.frameId],
+                      let data = surrogateContents[surrogateId],
+                      let text = String(data: data, encoding: .utf8),
+                      !text.isEmpty else { continue }
+                surrogateCandidates.append((result, surrogateId, text))
+                if surrogateCandidates.count >= maxToLoad { break }
             }
 
             if !surrogateCandidates.isEmpty {

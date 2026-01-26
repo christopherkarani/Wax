@@ -35,7 +35,8 @@ import Wax
 
         try await vec.commit()
 
-        let request = SearchRequest(embedding: [0.9, 0.1, 0.0, 0.0], mode: .vectorOnly, topK: 10)
+        let queryEmbedding = VectorMath.normalizeL2([0.9, 0.1, 0.0, 0.0])
+        let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10)
         let response = try await wax.search(request)
 
         #expect(response.results.first?.frameId == id0)
@@ -98,8 +99,8 @@ import Wax
         let wax = try await Wax.create(at: url)
         let vec = try await wax.enableVectorSearch(dimensions: 2)
 
-        let id0 = try await vec.putWithEmbedding(Data("A".utf8), embedding: [1.0, 0.0])
-        let id1 = try await vec.putWithEmbedding(Data("B".utf8), embedding: [0.9, 0.1])
+        _ = try await vec.putWithEmbedding(Data("A".utf8), embedding: [1.0, 0.0])
+        _ = try await vec.putWithEmbedding(Data("B".utf8), embedding: [0.9, 0.1])
         let id2 = try await vec.putWithEmbedding(Data("C".utf8), embedding: [0.1, 0.9])
         let id3 = try await vec.putWithEmbedding(Data("D".utf8), embedding: [0.0, 1.0])
         try await vec.commit()

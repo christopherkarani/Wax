@@ -312,18 +312,18 @@ private actor RecordingBatchEmbedder: BatchEmbeddingProvider {
 
 private struct TestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
-    let normalize: Bool = false
+    let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(
         provider: "Test",
         model: "Deterministic",
         dimensions: 2,
-        normalized: false
+        normalized: true
     )
 
     func embed(_ text: String) async throws -> [Float] {
         let a = Float(text.utf8.count % 97) / 97.0
         let b = Float(text.unicodeScalars.count % 89) / 89.0
-        return [a, b]
+        return VectorMath.normalizeL2([a, b])
     }
 }
 

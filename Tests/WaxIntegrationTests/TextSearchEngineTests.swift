@@ -95,6 +95,22 @@ private enum SQLiteBlobInspector {
     #expect(results[0].snippet?.isEmpty == false)
 }
 
+@Test func indexBatchFlushesBeforeSearch() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.indexBatch(
+        frameIds: [0, 1],
+        texts: [
+            "Swift concurrency uses actors and tasks.",
+            "Swift is safe and fast.",
+        ]
+    )
+
+    let results = try await engine.search(query: "Swift", topK: 10)
+    #expect(results.count == 2)
+    #expect(Set(results.map(\.frameId)) == Set([0, 1]))
+    #expect(results.allSatisfy { ($0.snippet ?? "").isEmpty == false })
+}
+
 @Test func searchScoresAreOrderedAndNonConstant() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Swift")

@@ -32,7 +32,6 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
         .package(url: "https://github.com/narner/TiktokenSwift.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
-        .package(url: "https://github.com/christopherkarani/similarity-search-kit.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -54,14 +53,16 @@ let package = Package(
                 "WaxCore",
                 .product(name: "USearch", package: "USearch"),
             ],
+            resources: [.process("Shaders")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
             name: "WaxVectorSearchMiniLM",
             dependencies: [
                 "WaxVectorSearch",
-                .product(name: "SimilaritySearchKit", package: "similarity-search-kit"),
-                .product(name: "SimilaritySearchKitMiniLMAll", package: "similarity-search-kit"),
+            ],
+            resources: [
+                .process("Resources"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),

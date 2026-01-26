@@ -544,6 +544,39 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testUnifiedSearchHybridPerformance10KDocsCPU() async throws {
+        guard run10K else { throw XCTSkip("Set WAX_BENCHMARK_10K=1 to run 10k doc benchmark.") }
+        var scale = BenchmarkScale.standard
+        scale.documentCount = 10_000
+        scale.sentencesPerDocument = max(scale.sentencesPerDocument, 8)
+        scale.vectorDimensions = max(scale.vectorDimensions, 128)
+        scale.searchTopK = max(scale.searchTopK, 24)
+        scale.iterations = max(1, min(3, scale.iterations))
+        scale.timeout = max(scale.timeout, 180)
+
+        try await TempFiles.withTempFile { url in
+            let fixture = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+            let request = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK
+            )
+            _ = try await fixture.wax.search(request)
+
+            measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
+                _ = try await fixture.wax.search(request)
+            }
+
+            await fixture.close()
+        }
+    }
+
     private func withFixture(
         includeVectors: Bool,
         _ body: (BenchmarkFixture) async throws -> Void

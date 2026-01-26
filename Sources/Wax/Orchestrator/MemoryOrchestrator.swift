@@ -49,9 +49,14 @@ public actor MemoryOrchestrator {
 
         if config.enableVectorSearch {
             if let embedder {
-                self.vec = try await wax.enableVectorSearch(dimensions: embedder.dimensions)
+                let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+                self.vec = try await wax.enableVectorSearch(
+                    dimensions: embedder.dimensions,
+                    preference: preference
+                )
             } else if await wax.committedVecIndexManifest() != nil {
-                self.vec = try await wax.enableVectorSearchFromManifest()
+                let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+                self.vec = try await wax.enableVectorSearchFromManifest(preference: preference)
             } else {
                 throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
             }
@@ -345,9 +350,11 @@ public actor MemoryOrchestrator {
             }
             embedding = vector
         }
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         return try await ragBuilder.build(
             query: query,
             embedding: embedding,
+            vectorEnginePreference: preference,
             wax: wax,
             config: config.rag
         )
@@ -355,7 +362,14 @@ public actor MemoryOrchestrator {
 
     public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
         try await stageTextForRecall()
-        return try await ragBuilder.build(query: query, embedding: embedding, wax: wax, config: config.rag)
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        return try await ragBuilder.build(
+            query: query,
+            embedding: embedding,
+            vectorEnginePreference: preference,
+            wax: wax,
+            config: config.rag
+        )
     }
 
     public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
@@ -363,9 +377,22 @@ public actor MemoryOrchestrator {
 
         let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
         if let embedding {
-            return try await ragBuilder.build(query: query, embedding: embedding, wax: wax, config: config.rag)
+            let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+            return try await ragBuilder.build(
+                query: query,
+                embedding: embedding,
+                vectorEnginePreference: preference,
+                wax: wax,
+                config: config.rag
+            )
         }
-        return try await ragBuilder.build(query: query, wax: wax, config: config.rag)
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        return try await ragBuilder.build(
+            query: query,
+            vectorEnginePreference: preference,
+            wax: wax,
+            config: config.rag
+        )
     }
 
     // MARK: - Persistence lifecycle

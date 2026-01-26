@@ -960,7 +960,7 @@ public actor Wax {
         header.tocChecksum = Data(tocChecksum)
         header.walCommittedSeq = appliedWalSeq
         let wal = self.wal
-        let walWritePos = try await io.run { wal.writePos }
+        let walWritePos = await io.run { wal.writePos }
         header.walCheckpointPos = walWritePos
         header.walWritePos = walWritePos
         header.headerPageGeneration &+= 1
@@ -1045,6 +1045,24 @@ public actor Wax {
                 surrogateIndex = buildSurrogateIndexUnlocked()
             }
             return surrogateIndex?[sourceFrameId]
+        }
+    }
+
+    /// Batch lookup of surrogate frame ids to avoid repeated actor hops.
+    public func surrogateFrameIds(for sourceFrameIds: [UInt64]) async -> [UInt64: UInt64] {
+        await withOpLock {
+            if surrogateIndex == nil {
+                surrogateIndex = buildSurrogateIndexUnlocked()
+            }
+            guard let surrogateIndex else { return [:] }
+            var result: [UInt64: UInt64] = [:]
+            result.reserveCapacity(sourceFrameIds.count)
+            for frameId in sourceFrameIds {
+                if let surrogate = surrogateIndex[frameId] {
+                    result[frameId] = surrogate
+                }
+            }
+            return result
         }
     }
 
@@ -1142,6 +1160,27 @@ public actor Wax {
             }
 
             return previews
+        }
+    }
+
+    /// Batch read full frame contents (committed only) in a single actor hop.
+    public func frameContents(frameIds: [UInt64]) async throws -> [UInt64: Data] {
+        try await withOpLock {
+            var contents: [UInt64: Data] = [:]
+            contents.reserveCapacity(frameIds.count)
+            let maxId = UInt64(toc.frames.count)
+
+            for frameId in frameIds where frameId < maxId {
+                let frame = toc.frames[Int(frameId)]
+                guard frame.payloadLength > 0 else {
+                    contents[frameId] = Data()
+                    continue
+                }
+                let data = try await frameContentFromMetaUnlocked(frame)
+                contents[frameId] = data
+            }
+
+            return contents
         }
     }
 

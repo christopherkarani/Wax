@@ -4,10 +4,17 @@ import WaxCore
 
 public actor FTS5SearchEngine {
     private static let maxResults = 10_000
+    /// Upper bound on queued writes before forcing a flush to SQLite.
+    ///
+    /// Too small => many transactions (slow). Too large => unbounded memory.
+    /// Tuned to collapse typical ingestion loops into a handful of transactions.
+    private static let flushThreshold = 2_048
     private let dbQueue: DatabaseQueue
     private let io: BlockingIOExecutor
     private var docCount: UInt64
     private var dirty: Bool
+    private var pendingOps: [Int64: PendingOp] = [:]
+    private var pendingKeys: [Int64] = []
 
     private init(dbQueue: DatabaseQueue, io: BlockingIOExecutor, docCount: UInt64, dirty: Bool) {
         self.dbQueue = dbQueue
@@ -51,7 +58,8 @@ public actor FTS5SearchEngine {
     }
 
     public func count() async throws -> Int {
-        Int(docCount)
+        try await flushPendingOpsIfNeeded()
+        return Int(docCount)
     }
 
     public func index(frameId: UInt64, text: String) async throws {
@@ -61,30 +69,8 @@ public actor FTS5SearchEngine {
             return
         }
         let frameIdValue = try Self.toInt64(frameId)
-        let dbQueue = self.dbQueue
-        let existed = try await io.run { () throws -> Bool in
-            var existed = false
-            try dbQueue.write { db in
-                if let rowid: Int64 = try Int64.fetchOne(
-                    db,
-                    sql: "SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?",
-                    arguments: [frameIdValue]
-                ) {
-                    existed = true
-                    try db.execute(sql: "DELETE FROM frames_fts WHERE rowid = ?", arguments: [rowid])
-                    try db.execute(sql: "DELETE FROM frame_mapping WHERE frame_id = ?", arguments: [frameIdValue])
-                }
-                try db.execute(sql: "INSERT INTO frames_fts(content) VALUES (?)", arguments: [trimmed])
-                let rowid = db.lastInsertedRowID
-                try db.execute(
-                    sql: "INSERT INTO frame_mapping(frame_id, rowid_ref) VALUES (?, ?)",
-                    arguments: [frameIdValue, rowid]
-                )
-            }
-            return existed
-        }
-        if !existed { docCount &+= 1 }
-        dirty = true
+        enqueuePendingOp(frameIdValue: frameIdValue, op: .upsert(trimmed))
+        try await flushPendingOpsIfThresholdExceeded()
     }
 
     /// Batch index multiple frames in a single database transaction.
@@ -95,81 +81,23 @@ public actor FTS5SearchEngine {
             throw WaxError.encodingError(reason: "indexBatch: frameIds.count != texts.count")
         }
 
-        // Pre-process texts and convert frame IDs outside the I/O block
-        var validEntries: [(frameIdValue: Int64, text: String)] = []
-        validEntries.reserveCapacity(frameIds.count)
-
         for (frameId, text) in zip(frameIds, texts) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             let frameIdValue = try Self.toInt64(frameId)
-            validEntries.append((frameIdValue, trimmed))
+            enqueuePendingOp(frameIdValue: frameIdValue, op: .upsert(trimmed))
         }
-
-        guard !validEntries.isEmpty else { return }
-
-        // Capture for Sendable closure
-        let dbQueue = self.dbQueue
-        let entriesArray = validEntries  // Copy to let binding
-
-        let newDocs = try await io.run { () throws -> Int in
-            var addedCount = 0
-            try dbQueue.write { db in
-                for (frameIdValue, text) in entriesArray {
-                    // Check if already exists
-                    if let rowid: Int64 = try Int64.fetchOne(
-                        db,
-                        sql: "SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?",
-                        arguments: [frameIdValue]
-                    ) {
-                        // Update existing
-                        try db.execute(sql: "DELETE FROM frames_fts WHERE rowid = ?", arguments: [rowid])
-                        try db.execute(sql: "DELETE FROM frame_mapping WHERE frame_id = ?", arguments: [frameIdValue])
-                    } else {
-                        addedCount += 1
-                    }
-
-                    // Insert new
-                    try db.execute(sql: "INSERT INTO frames_fts(content) VALUES (?)", arguments: [text])
-                    let rowid = db.lastInsertedRowID
-                    try db.execute(
-                        sql: "INSERT INTO frame_mapping(frame_id, rowid_ref) VALUES (?, ?)",
-                        arguments: [frameIdValue, rowid]
-                    )
-                }
-            }
-            return addedCount
-        }
-
-        docCount &+= UInt64(newDocs)
-        dirty = true
+        try await flushPendingOpsIfThresholdExceeded()
     }
 
     public func remove(frameId: UInt64) async throws {
         let frameIdValue = try Self.toInt64(frameId)
-        let dbQueue = self.dbQueue
-        let removed = try await io.run { () throws -> Bool in
-            var removed = false
-            try dbQueue.write { db in
-                if let rowid: Int64 = try Int64.fetchOne(
-                    db,
-                    sql: "SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?",
-                    arguments: [frameIdValue]
-                ) {
-                    removed = true
-                    try db.execute(sql: "DELETE FROM frames_fts WHERE rowid = ?", arguments: [rowid])
-                    try db.execute(sql: "DELETE FROM frame_mapping WHERE frame_id = ?", arguments: [frameIdValue])
-                }
-            }
-            return removed
-        }
-        if removed {
-            docCount = docCount == 0 ? 0 : (docCount &- 1)
-            dirty = true
-        }
+        enqueuePendingOp(frameIdValue: frameIdValue, op: .delete)
+        try await flushPendingOpsIfThresholdExceeded()
     }
 
     public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
+        try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         let limit = Self.clampTopK(topK)
@@ -202,6 +130,7 @@ public actor FTS5SearchEngine {
     }
 
     public func serialize(compact: Bool = false) async throws -> Data {
+        try await flushPendingOpsIfNeeded()
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.writeWithoutTransaction { db in
@@ -215,10 +144,93 @@ public actor FTS5SearchEngine {
     }
 
     public func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
+        try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         let blob = try await serialize(compact: compact)
         try await wax.stageLexIndexForNextCommit(bytes: blob, docCount: docCount)
         dirty = false
+    }
+
+    private enum PendingOp: Sendable, Equatable {
+        case upsert(String)
+        case delete
+    }
+
+    private func enqueuePendingOp(frameIdValue: Int64, op: PendingOp) {
+        if pendingOps[frameIdValue] == nil {
+            pendingKeys.append(frameIdValue)
+        }
+        pendingOps[frameIdValue] = op
+        dirty = true
+    }
+
+    private func flushPendingOpsIfThresholdExceeded() async throws {
+        guard pendingOps.count >= Self.flushThreshold else { return }
+        try await flushPendingOpsIfNeeded()
+    }
+
+    private func flushPendingOpsIfNeeded() async throws {
+        guard !pendingOps.isEmpty else { return }
+
+        let ops = pendingOps
+        let keys = pendingKeys
+        let dbQueue = self.dbQueue
+
+        let (addedCount, removedCount) = try await io.run { () throws -> (added: Int, removed: Int) in
+            var added = 0
+            var removed = 0
+
+            try dbQueue.write { db in
+                let deleteFramesStmt = try db.makeStatement(sql: """
+                    DELETE FROM frames_fts
+                    WHERE rowid IN (SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?)
+                    """)
+                let deleteMappingStmt = try db.makeStatement(sql: """
+                    DELETE FROM frame_mapping
+                    WHERE frame_id = ?
+                    """)
+                let insertFrameStmt = try db.makeStatement(sql: """
+                    INSERT INTO frames_fts(content) VALUES (?)
+                    """)
+                let insertMappingStmt = try db.makeStatement(sql: """
+                    INSERT INTO frame_mapping(frame_id, rowid_ref) VALUES (?, ?)
+                    """)
+
+                for frameIdValue in keys {
+                    guard let op = ops[frameIdValue] else { continue }
+
+                    switch op {
+                    case .upsert(let text):
+                        try deleteFramesStmt.execute(arguments: [frameIdValue])
+                        try deleteMappingStmt.execute(arguments: [frameIdValue])
+                        let existed = db.changesCount > 0
+                        if !existed { added += 1 }
+
+                        try insertFrameStmt.execute(arguments: [text])
+                        let rowid = db.lastInsertedRowID
+                        try insertMappingStmt.execute(arguments: [frameIdValue, rowid])
+
+                    case .delete:
+                        try deleteFramesStmt.execute(arguments: [frameIdValue])
+                        try deleteMappingStmt.execute(arguments: [frameIdValue])
+                        if db.changesCount > 0 { removed += 1 }
+                    }
+                }
+            }
+
+            return (added, removed)
+        }
+
+        if addedCount > 0 {
+            docCount &+= UInt64(addedCount)
+        }
+        if removedCount > 0 {
+            let removedU = UInt64(removedCount)
+            docCount = docCount > removedU ? (docCount &- removedU) : 0
+        }
+
+        pendingOps.removeAll(keepingCapacity: true)
+        pendingKeys.removeAll(keepingCapacity: true)
     }
 
     private static func makeConfiguration() -> Configuration {
