@@ -16,4 +16,3 @@ public protocol VectorSearchEngine: Sendable {
     func remove(frameId: UInt64) async throws
     func stageForCommit(into wax: Wax) async throws
 }
-
