@@ -22,6 +22,35 @@ public enum VectorSerializer {
         case metal(info: SegmentInfo, vectors: [Float], frameIds: [UInt64])
     }
 
+    public enum VecEncoding: UInt8, Sendable {
+        case uSearch = 1
+        case metal = 2
+    }
+
+    /// Returns the on-disk encoding (USearch or Metal) without fully decoding the payload.
+    /// Throws if the header is malformed.
+    public static func detectEncoding(from data: Data) throws -> VecEncoding {
+        guard data.count >= 8 else {
+            throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
+        }
+        // Bytes 0..3 magic, 4..5 version, 6 encoding
+        let magic = data.prefix(4)
+        guard magic == VecSegmentHeaderV1.magic else {
+            throw WaxError.invalidToc(reason: "vec segment magic mismatch")
+        }
+        let version = UInt16(littleEndian: data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 4, as: UInt16.self)
+        })
+        guard version == 1 else {
+            throw WaxError.invalidToc(reason: "unsupported vec segment version \(version)")
+        }
+        let encodingRaw = data[6]
+        guard let encoding = VecEncoding(rawValue: encodingRaw) else {
+            throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encodingRaw)")
+        }
+        return encoding
+    }
+
     public static func serializeUSearchIndex(
         _ index: USearchIndex,
         metric: VectorMetric,
@@ -70,7 +99,7 @@ public enum VectorSerializer {
         )
 
         switch header.encoding {
-        case 1:
+        case VecEncoding.uSearch.rawValue:
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
@@ -80,7 +109,7 @@ public enum VectorSerializer {
             }
             let payload = data.suffix(Int(header.payloadLength))
             return .uSearch(info: info, payload: payload)
-        case 2:
+        case VecEncoding.metal.rawValue:
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
@@ -221,4 +250,3 @@ public enum VectorSerializer {
         }
     }
 }
-

@@ -57,12 +57,10 @@ public final class MiniLMEmbeddings {
         results.reserveCapacity(outputs.count)
         for output in outputs {
             let embeddings = output.embeddings
-            var vector: [Float] = []
-            vector.reserveCapacity(embeddings.count)
-            for idx in 0..<embeddings.count {
-                vector.append(Float(embeddings[idx].floatValue))
-            }
-            results.append(vector)
+            let count = embeddings.count
+            let ptr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: count)
+            let buffer = UnsafeBufferPointer(start: ptr, count: count)
+            results.append(Array(buffer))
         }
         return results
     }
@@ -75,12 +73,10 @@ public final class MiniLMEmbeddings {
             return nil
         }
 
-        var vector: [Float] = []
-        vector.reserveCapacity(embeddings.count)
-        for idx in 0..<embeddings.count {
-            vector.append(Float(embeddings[idx].floatValue))
-        }
-        return vector
+        let count = embeddings.count
+        let ptr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: count)
+        let buffer = UnsafeBufferPointer(start: ptr, count: count)
+        return Array(buffer)
     }
 }
 

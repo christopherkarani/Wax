@@ -17,7 +17,12 @@ public actor WaxVectorSearchSession {
         self.wax = wax
         self.dimensions = dimensions
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
-            self.engine = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+            // Try Metal first; if load fails, fall back to CPU without aborting the session.
+            if let metal = try? await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions) {
+                self.engine = metal
+            } else {
+                self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+            }
         } else {
             self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
         }

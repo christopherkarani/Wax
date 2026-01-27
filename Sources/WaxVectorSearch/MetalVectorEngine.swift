@@ -35,6 +35,7 @@ public actor MetalVectorEngine {
     private let computePipeline: MTLComputePipelineState
     private var vectorsBuffer: MTLBuffer
     private var distancesBuffer: MTLBuffer
+    private var queryBuffer: MTLBuffer
     private let vectorCountBuffer: MTLBuffer
     private let dimensionsBuffer: MTLBuffer
     
@@ -110,6 +111,14 @@ public actor MetalVectorEngine {
             throw WaxError.invalidToc(reason: "Failed to allocate distances buffer")
         }
         self.distancesBuffer = distancesBuffer
+
+        guard let queryBuffer = device.makeBuffer(
+            length: dimensions * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ) else {
+            throw WaxError.invalidToc(reason: "Failed to allocate query buffer")
+        }
+        self.queryBuffer = queryBuffer
 
         guard let vectorCountBuffer = device.makeBuffer(
             length: MemoryLayout<UInt32>.stride,
@@ -292,11 +301,12 @@ public actor MetalVectorEngine {
                 gpuBufferNeedsSync = false
             }
 
-            guard let queryBuffer = device.makeBuffer(
-                length: dimensions * MemoryLayout<Float>.stride,
-                options: .storageModeShared
-            ) else {
-                throw WaxError.invalidToc(reason: "Failed to allocate query buffer")
+            let requiredQueryLength = dimensions * MemoryLayout<Float>.stride
+            if queryBuffer.length < requiredQueryLength {
+                guard let newQuery = device.makeBuffer(length: requiredQueryLength, options: .storageModeShared) else {
+                    throw WaxError.invalidToc(reason: "Failed to grow query buffer")
+                }
+                queryBuffer = newQuery
             }
             vector.withUnsafeBufferPointer { buffer in
                 queryBuffer.contents().copyMemory(
@@ -350,21 +360,9 @@ public actor MetalVectorEngine {
                 commandBuffer.commit()
             }
 
-            let distances = Array(
-                UnsafeBufferPointer(
-                    start: distancesBuffer.contents().assumingMemoryBound(to: Float.self),
-                    count: Int(vectorCount)
-                )
-            )
+            let distancesPtr = distancesBuffer.contents().assumingMemoryBound(to: Float.self)
+            let topResults = Self.topK(distances: distancesPtr, count: Int(vectorCount), k: limit)
 
-            var indexedResults: [(index: Int, distance: Float)] = []
-            for (index, distance) in distances.enumerated() {
-                indexedResults.append((index, distance))
-            }
-
-            indexedResults.sort { $0.distance < $1.distance }
-
-            let topResults = indexedResults.prefix(limit)
             var results: [(UInt64, Float)] = []
             results.reserveCapacity(topResults.count)
 
@@ -375,6 +373,60 @@ public actor MetalVectorEngine {
 
             return results
         }
+    }
+
+    /// O(n log k) partial selection to avoid full sort of distance buffer.
+    /// Uses a fixed-size max-heap (k<=32) for cache-friendly selection.
+    private static func topK(distances: UnsafePointer<Float>, count: Int, k: Int) -> [(Int, Float)] {
+        guard k > 0, count > 0 else { return [] }
+        var heap: [(Float, Int)] = [] // (distance, index)
+        heap.reserveCapacity(k)
+
+        func siftDown(_ start: Int, _ end: Int) {
+            var root = start
+            while true {
+                let child = root * 2 + 1
+                if child > end { break }
+                var swap = root
+                if heap[swap].0 < heap[child].0 { swap = child }
+                if child + 1 <= end, heap[swap].0 < heap[child + 1].0 { swap = child + 1 }
+                if swap == root { return }
+                heap.swapAt(root, swap)
+                root = swap
+            }
+        }
+
+        func siftUp(_ index: Int) {
+            var child = index
+            while child > 0 {
+                let parent = (child - 1) / 2
+                if heap[parent].0 >= heap[child].0 { break }
+                heap.swapAt(parent, child)
+                child = parent
+            }
+        }
+
+        let initial = min(k, count)
+        for i in 0..<initial {
+            heap.append((distances[i], i))
+        }
+        // Build max-heap
+        for i in stride(from: (heap.count / 2), through: 0, by: -1) {
+            siftDown(i, heap.count - 1)
+        }
+
+        if initial < count {
+            for i in initial..<count {
+                let value = distances[i]
+                if value >= heap[0].0 { continue }
+                heap[0] = (value, i)
+                siftDown(0, heap.count - 1)
+            }
+        }
+
+        // Heap contains k smallest distances unordered; sort ascending
+        heap.sort { $0.0 < $1.0 }
+        return heap.map { ($0.1, $0.0) }
     }
 
     public func serialize() async throws -> Data {
