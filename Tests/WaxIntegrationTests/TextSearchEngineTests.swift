@@ -152,7 +152,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 1)
+    #expect(userVersion == 2)
 }
 
 @Test func deserializeUpgradesLegacyBlobSchemaIdentity() async throws {
@@ -164,7 +164,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 1)
+    #expect(userVersion == 2)
 }
 
 @Test func serializeSupportsOptionalCompaction() async throws {

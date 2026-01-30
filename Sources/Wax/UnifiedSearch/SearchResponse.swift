@@ -18,6 +18,7 @@ public struct SearchResponse: Sendable, Equatable {
         case text
         case vector
         case timeline
+        case structuredMemory
     }
 
     public var results: [Result]
@@ -26,4 +27,3 @@ public struct SearchResponse: Sendable, Equatable {
         self.results = results
     }
 }
-
