@@ -1,0 +1,213 @@
+Another instance of SwiftPM (PID: 39979) is already running using '/Users/chriskarani/CodingProjects/Wax/.build', waiting until that process has finished execution...[0/1] Planning build
+Building for production...
+[0/11] Write sources
+[0/15] Copying CosineDistance.metal
+[5/16] Write sources
+[9/16] Copying PrivacyInfo.xcprivacy
+[10/16] Write sources
+[11/16] Copying TiktokenFFI.framework
+[12/16] Write swift-version-F267FA2F636F94C.txt
+[14/20] Compiling Logging Locks.swift
+[15/20] Compiling TiktokenSwift Cl100kBaseEncoderLoader.swift
+[15/20] Compiling USearchC lib.cpp
+[17/21] Compiling USearch USearchIndex+Sugar.swift
+[18/21] Compiling WaxCore BinaryDecoder.swift
+[19/23] Compiling WaxVectorSearch ContiguousVectorBuffer.swift
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ContiguousVectorBuffer.swift:142:58: warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+140 |         storage.withUnsafeMutableBufferPointer { buffer in
+141 |             vector.withUnsafeBufferPointer { src in
+142 |                 buffer.baseAddress!.advanced(by: offset).assign(from: src.baseAddress!, count: dimensions)
+    |                                                          |- warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+    |                                                          `- note: use 'update(from:count:)' instead
+143 |             }
+144 |         }
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ContiguousVectorBuffer.swift:157:21: warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+155 |             
+156 |             vector.withUnsafeBufferPointer { src in
+157 |                 dst.assign(from: src.baseAddress!, count: dimensions)
+    |                     |- warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+    |                     `- note: use 'update(from:count:)' instead
+158 |             }
+159 |             
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ContiguousVectorBuffer.swift:188:21: warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+186 |                 
+187 |                 // Copy last to removed position
+188 |                 dst.assign(from: src, count: dimensions)
+    |                     |- warning: 'assign(from:count:)' is deprecated: renamed to 'update(from:count:)' [#DeprecatedDeclaration]
+    |                     `- note: use 'update(from:count:)' instead
+189 |             }
+190 |         }
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:63:19: error: cannot find 'WaxError' in scope
+ 61 |     public init(url: URL) throws {
+ 62 |         guard FileManager.default.fileExists(atPath: url.path) else {
+ 63 |             throw WaxError.io("Index file not found: \(url.path)")
+    |                   `- error: cannot find 'WaxError' in scope
+ 64 |         }
+ 65 |         
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:71:19: error: cannot find 'WaxError' in scope
+ 69 |         guard let data = try fileHandle.availableData as Data?,
+ 70 |               data.count >= Header.headerSize else {
+ 71 |             throw WaxError.invalidToc(reason: "Index file too small")
+    |                   `- error: cannot find 'WaxError' in scope
+ 72 |         }
+ 73 |         
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:88:19: error: cannot find 'WaxError' in scope
+ 86 |         
+ 87 |         guard header.magic == Header.magic else {
+ 88 |             throw WaxError.invalidToc(reason: "Invalid index file magic")
+    |                   `- error: cannot find 'WaxError' in scope
+ 89 |         }
+ 90 |         guard header.version == Header.version else {
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:91:19: error: cannot find 'WaxError' in scope
+ 89 |         }
+ 90 |         guard header.version == Header.version else {
+ 91 |             throw WaxError.invalidToc(reason: "Unsupported index version: \(header.version)")
+    |                   `- error: cannot find 'WaxError' in scope
+ 92 |         }
+ 93 |         
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:69:26: warning: no calls to throwing functions occur within 'try' expression
+ 67 |         
+ 68 |         // Memory-map the file
+ 69 |         guard let data = try fileHandle.availableData as Data?,
+    |                          `- warning: no calls to throwing functions occur within 'try' expression
+ 70 |               data.count >= Header.headerSize else {
+ 71 |             throw WaxError.invalidToc(reason: "Index file too small")
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MemoryMappedVectorStore.swift:188:19: error: cannot find 'WaxError' in scope
+186 |         guard !frameIds.isEmpty else { return }
+187 |         guard vectors.count == frameIds.count * dimensions else {
+188 |             throw WaxError.encodingError(reason: "Vector/frameId count mismatch")
+    |                   `- error: cannot find 'WaxError' in scope
+189 |         }
+190 |         
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:88:41: error: cannot convert value of type '[[Float]]' to expected argument type '[Float]'
+ 86 |         let dsub = config.subDimensions
+ 87 |         
+ 88 |         codebook = [[Float]](repeating: [[Float]](repeating: [Float](repeating: 0, count: dsub), count: K), count: M)
+    |                                         |- error: cannot convert value of type '[[Float]]' to expected argument type '[Float]'
+    |                                         `- note: arguments to generic parameter 'Element' ('[Float]' and 'Float') are expected to be equal
+ 89 |         
+ 90 |         // Train each subspace independently
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:88:18: error: cannot assign value of type '[[Float]]' to type '[[[Float]]]'
+ 86 |         let dsub = config.subDimensions
+ 87 |         
+ 88 |         codebook = [[Float]](repeating: [[Float]](repeating: [Float](repeating: 0, count: dsub), count: K), count: M)
+    |                  |- error: cannot assign value of type '[[Float]]' to type '[[[Float]]]'
+    |                  `- note: arguments to generic parameter 'Element' ('Float' and '[Float]') are expected to be equal
+ 89 |         
+ 90 |         // Train each subspace independently
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:318:69: error: 'await' cannot appear to the right of a non-assignment operator
+316 |     
+317 |     public private(set) var vectorCount: UInt64 = 0
+318 |     public var isTrained: Bool { get async { await ivf.isTrained && await pq.isTrained } }
+    |                                                                     `- error: 'await' cannot appear to the right of a non-assignment operator
+319 |     
+320 |     public init(dimensions: Int, numClusters: Int = 100, numSubspaces: Int = 48) {
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:318:78: error: actor-isolated property 'isTrained' can not be referenced from a nonisolated autoclosure
+ 61 |     
+ 62 |     /// Whether training is complete
+ 63 |     public private(set) var isTrained: Bool = false
+    |                             `- note: property declared here
+ 64 |     
+ 65 |     /// Initialize Product Quantizer
+    :
+316 |     
+317 |     public private(set) var vectorCount: UInt64 = 0
+318 |     public var isTrained: Bool { get async { await ivf.isTrained && await pq.isTrained } }
+    |                                                                              `- error: actor-isolated property 'isTrained' can not be referenced from a nonisolated autoclosure
+319 |     
+320 |     public init(dimensions: Int, numClusters: Int = 100, numSubspaces: Int = 48) {
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:318:69: error: 'await' in an autoclosure that does not support concurrency
+316 |     
+317 |     public private(set) var vectorCount: UInt64 = 0
+318 |     public var isTrained: Bool { get async { await ivf.isTrained && await pq.isTrained } }
+    |                                                                     `- error: 'await' in an autoclosure that does not support concurrency
+319 |     
+320 |     public init(dimensions: Int, numClusters: Int = 100, numSubspaces: Int = 48) {
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:331:27: warning: no 'async' operations occur within 'await' expression
+329 |         await pq.train(vectors: vectors, iterations: pqIterations)
+330 |         
+331 |         let numClusters = await ivf.numClusters
+    |                           `- warning: no 'async' operations occur within 'await' expression
+332 |         clusters = [[(frameId: UInt64, codes: [UInt8])]](repeating: [], count: numClusters)
+333 |     }
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/ProductQuantizer.swift:339:19: warning: value 'nearest' was defined but never used; consider replacing with boolean test [#no-usage]
+337 |         // Find cluster
+338 |         let results = await ivf.search(query: vector, topK: 1, nprobe: 1)
+339 |         guard let nearest = results.first else { return }
+    |                   `- warning: value 'nearest' was defined but never used; consider replacing with boolean test [#no-usage]
+340 |         
+341 |         // Compute residual and encode with PQ
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/VectorSearchSnapshot.swift:215:27: error: 'vectors' is inaccessible due to 'private' protection level
+213 |     public func createSnapshot() async -> VectorSearchSnapshot {
+214 |         // Access actor-isolated state
+215 |         let vectorsCopy = vectors
+    |                           `- error: 'vectors' is inaccessible due to 'private' protection level
+216 |         let frameIdsCopy = frameIds
+217 |         let dims = dimensions
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MetalVectorEngine.swift:23:17: note: 'vectors' declared here
+ 21 |     private var vectorCount: UInt64
+ 22 |     private var reservedCapacity: UInt32
+ 23 |     private var vectors: [Float]
+    |                 `- note: 'vectors' declared here
+ 24 |     private var frameIds: [UInt64]
+ 25 |     private var indexByFrameId: [UInt64: Int]
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/VectorSearchSnapshot.swift:216:28: error: 'frameIds' is inaccessible due to 'private' protection level
+214 |         // Access actor-isolated state
+215 |         let vectorsCopy = vectors
+216 |         let frameIdsCopy = frameIds
+    |                            `- error: 'frameIds' is inaccessible due to 'private' protection level
+217 |         let dims = dimensions
+218 |         let normalized = useSIMDOptimization
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MetalVectorEngine.swift:24:17: note: 'frameIds' declared here
+ 22 |     private var reservedCapacity: UInt32
+ 23 |     private var vectors: [Float]
+ 24 |     private var frameIds: [UInt64]
+    |                 `- note: 'frameIds' declared here
+ 25 |     private var indexByFrameId: [UInt64: Int]
+ 26 |     private let opLock = AsyncMutex()
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/VectorSearchSnapshot.swift:219:19: warning: no 'async' operations occur within 'await' expression
+217 |         let dims = dimensions
+218 |         let normalized = useSIMDOptimization
+219 |         let gen = await getGeneration()
+    |                   `- warning: no 'async' operations occur within 'await' expression
+220 |         
+221 |         return VectorSearchSnapshot(
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/VectorSearchSnapshot.swift:232:9: error: 'vectorCount' is inaccessible due to 'private' protection level
+230 |     /// Get current generation for cache invalidation
+231 |     private func getGeneration() -> UInt64 {
+232 |         vectorCount  // Use vector count as simple generation proxy
+    |         `- error: 'vectorCount' is inaccessible due to 'private' protection level
+233 |     }
+234 | }
+
+/Users/chriskarani/CodingProjects/Wax/Sources/WaxVectorSearch/MetalVectorEngine.swift:21:17: note: 'vectorCount' declared here
+ 19 |     public let dimensions: Int
+ 20 | 
+ 21 |     private var vectorCount: UInt64
+    |                 `- note: 'vectorCount' declared here
+ 22 |     private var reservedCapacity: UInt32
+ 23 |     private var vectors: [Float]
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+error: fatalError

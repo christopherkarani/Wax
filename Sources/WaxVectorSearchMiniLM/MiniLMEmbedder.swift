@@ -21,17 +21,28 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         normalized: true
     )
 
-    private let model: MiniLMEmbeddings
+    private nonisolated let model: MiniLMEmbeddings
     
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
+    private let maxConcurrentBatches: Int
+    private let tokenizationParallelism: Int
 
     public struct Config {
         public var batchSize: Int
+        public var maxConcurrentBatches: Int
+        public var tokenizationParallelism: Int
         public var modelConfiguration: MLModelConfiguration?
 
-        public init(batchSize: Int = 16, modelConfiguration: MLModelConfiguration? = nil) {
+        public init(
+            batchSize: Int = 16,
+            maxConcurrentBatches: Int = 2,
+            tokenizationParallelism: Int = ProcessInfo.processInfo.activeProcessorCount,
+            modelConfiguration: MLModelConfiguration? = nil
+        ) {
             self.batchSize = batchSize
+            self.maxConcurrentBatches = maxConcurrentBatches
+            self.tokenizationParallelism = tokenizationParallelism
             self.modelConfiguration = modelConfiguration
         }
     }
@@ -39,18 +50,24 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     public init() {
         self.model = MiniLMEmbeddings()
         self.batchSize = 16
+        self.maxConcurrentBatches = 2
+        self.tokenizationParallelism = ProcessInfo.processInfo.activeProcessorCount
         logComputeUnits()
     }
 
     public init(model: MiniLMEmbeddings) {
         self.model = model
         self.batchSize = 16
+        self.maxConcurrentBatches = 2
+        self.tokenizationParallelism = ProcessInfo.processInfo.activeProcessorCount
         logComputeUnits()
     }
 
     public init(config: Config) {
         self.model = MiniLMEmbeddings(configuration: config.modelConfiguration)
         self.batchSize = max(1, config.batchSize)
+        self.maxConcurrentBatches = max(1, config.maxConcurrentBatches)
+        self.tokenizationParallelism = max(1, config.tokenizationParallelism)
         logComputeUnits()
     }
 
@@ -94,23 +111,69 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// - Returns embeddings in same order as input texts
     public func embed(batch texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
-        if texts.count <= batchSize {
-            return try await embedBatchCoreML(texts: texts)
+        let chunks = texts.chunked(into: batchSize)
+        if chunks.count == 1 {
+            return try await Self.embedBatchCoreML(
+                model: model,
+                texts: chunks[0],
+                tokenizationParallelism: tokenizationParallelism,
+                dimensions: dimensions
+            )
         }
 
-        let chunks = texts.chunked(into: batchSize)
+        let maxConcurrent = min(maxConcurrentBatches, chunks.count)
+        var chunkResults: [[[Float]]] = Array(repeating: [], count: chunks.count)
+
+        try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
+            var iterator = chunks.enumerated().makeIterator()
+
+            func enqueue(_ next: (offset: Int, element: [String])) {
+                let index = next.offset
+                let chunk = next.element
+                let model = self.model
+                let tokenizationParallelism = self.tokenizationParallelism
+                let dimensions = self.dimensions
+                group.addTask {
+                    let vectors = try await Self.embedBatchCoreML(
+                        model: model,
+                        texts: chunk,
+                        tokenizationParallelism: tokenizationParallelism,
+                        dimensions: dimensions
+                    )
+                    return (index, vectors)
+                }
+            }
+
+            for _ in 0..<maxConcurrent {
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
+
+            while let result = try await group.next() {
+                chunkResults[result.0] = result.1
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
+        }
+
         var results: [[Float]] = []
         results.reserveCapacity(texts.count)
-        for chunk in chunks {
-            let embeddings = try await embedBatchCoreML(texts: chunk)
-            results.append(contentsOf: embeddings)
+        for chunk in chunkResults {
+            results.append(contentsOf: chunk)
         }
         return results
     }
     
     /// Core ML batch prediction path (true batching).
-    private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
+    private nonisolated static func embedBatchCoreML(
+        model: MiniLMEmbeddings,
+        texts: [String],
+        tokenizationParallelism: Int,
+        dimensions: Int
+    ) async throws -> [[Float]] {
+        guard let vectors = await model.encode(batch: texts, tokenizationParallelism: tokenizationParallelism) else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
         }
         guard vectors.count == texts.count else {

@@ -1,0 +1,325 @@
+Test Suite 'Selected tests' started at 2026-01-30 18:13:11.558.
+Test Suite 'WaxPackageTests.xctest' started at 2026-01-30 18:13:11.559.
+Test Suite 'BatchEmbeddingBenchmark' started at 2026-01-30 18:13:11.559.
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testBatchEmbeddingScaling]' started.
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testBatchEmbeddingScaling]' passed (4.442 seconds).
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testBatchVsSequentialEmbedding]' started.
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testBatchVsSequentialEmbedding]' passed (5.005 seconds).
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testOrchestratorBatchEmbeddingPerformance]' started.
+Test Case '-[WaxIntegrationTests.BatchEmbeddingBenchmark testOrchestratorBatchEmbeddingPerformance]' passed (12.842 seconds).
+Test Suite 'BatchEmbeddingBenchmark' passed at 2026-01-30 18:13:33.848.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 22.289 (22.290) seconds
+Test Suite 'BufferSerializationBenchmark' started at 2026-01-30 18:13:33.848.
+Test Case '-[WaxIntegrationTests.BufferSerializationBenchmark testBufferSerializationVsFileBased]' started.
+Test Case '-[WaxIntegrationTests.BufferSerializationBenchmark testBufferSerializationVsFileBased]' passed (1.131 seconds).
+Test Suite 'BufferSerializationBenchmark' passed at 2026-01-30 18:13:34.979.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.131 (1.131) seconds
+Test Suite 'MetalVectorEngineBenchmark' started at 2026-01-30 18:13:34.979.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalLazyGPUSyncPerformance]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalLazyGPUSyncPerformance]' passed (0.393 seconds).
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchAfterAddCorrectness]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchAfterAddCorrectness]' passed (0.005 seconds).
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchPerformance]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchPerformance]' passed (0.017 seconds).
+Test Suite 'MetalVectorEngineBenchmark' passed at 2026-01-30 18:13:35.395.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.416 (0.416) seconds
+Test Suite 'OptimizationComparisonBenchmark' started at 2026-01-30 18:13:35.395.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testActorVsTaskHopTokenCounter]' started.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testActorVsTaskHopTokenCounter]' passed (0.043 seconds).
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testBatchVsSequentialMetadataLookup]' started.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testBatchVsSequentialMetadataLookup]' passed (0.103 seconds).
+Test Suite 'OptimizationComparisonBenchmark' passed at 2026-01-30 18:13:35.540.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.145 (0.145) seconds
+Test Suite 'RAGMiniLMBenchmarks' started at 2026-01-30 18:13:35.540.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingColdStartPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingColdStartPerformance]' passed (9.922 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingPerformance]' passed (3.209 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' measured [Clock Monotonic Time, s] average: 1.645, relative standard deviation: 0.088%, values: [1.646918, 1.643410, 1.645696], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' passed (21.046 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 1.340%, values: [0.103497, 0.100643, 0.103616], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' passed (16.275 seconds).
+Test Suite 'RAGMiniLMBenchmarks' passed at 2026-01-30 18:14:25.993.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 50.452 (50.452) seconds
+Test Suite 'RAGPerformanceBenchmarks' started at 2026-01-30 18:14:25.993.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testColdOpenHybridSearchPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testColdOpenHybridSearchPerformance]' passed (0.625 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceDenseCached]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceDenseCached]' measured [Clock Monotonic Time, s] average: 0.104, relative standard deviation: 0.046%, values: [0.103462, 0.103464, 0.103534, 0.103526, 0.103590], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceDenseCached]' passed (1.198 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceFastMode]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceFastMode]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 0.352%, values: [0.103452, 0.103498, 0.103529, 0.102596, 0.103527], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testFastRAGBuildPerformanceFastMode]' passed (1.215 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance10KDocs]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance10KDocs]' measured [Clock Monotonic Time, s] average: 2.373, relative standard deviation: 0.157%, values: [2.376341, 2.368905], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance10KDocs]' passed (7.336 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance]' measured [Clock Monotonic Time, s] average: 0.309, relative standard deviation: 0.441%, values: [0.310165, 0.309334, 0.306653, 0.310137, 0.310209], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridBatchedPerformance]' passed (1.888 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance10KDocs]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance10KDocs]' measured [Clock Monotonic Time, s] average: 33.446, relative standard deviation: 0.264%, values: [33.357174, 33.533943], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance10KDocs]' passed (101.842 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance]' measured [Clock Monotonic Time, s] average: 0.617, relative standard deviation: 0.424%, values: [0.615975, 0.619711, 0.613132, 0.618143, 0.620258], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestHybridPerformance]' passed (3.759 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance10KDocs]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance10KDocs]' measured [Clock Monotonic Time, s] average: 20.944, relative standard deviation: 0.173%, values: [20.980335, 20.907779], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance10KDocs]' passed (63.901 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance]' measured [Clock Monotonic Time, s] average: 0.309, relative standard deviation: 0.534%, values: [0.308566, 0.310140, 0.309737, 0.310116, 0.305769], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testIngestTextOnlyPerformance]' passed (1.980 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorIngestPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorIngestPerformance]' measured [Clock Monotonic Time, s] average: 1.583, relative standard deviation: 3.293%, values: [1.534605, 1.546143, 1.540434, 1.642620, 1.650175], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorIngestPerformance]' passed (9.618 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorRecallPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorRecallPerformance]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 0.400%, values: [0.103423, 0.103458, 0.103455, 0.103475, 0.102422], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMemoryOrchestratorRecallPerformance]' passed (2.257 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroTextSearchTimedSamples]' started.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroTextSearchTimedSamples]' passed (0.354 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroUnifiedHybridSearchTimedSamples]' started.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroUnifiedHybridSearchTimedSamples]' passed (0.669 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroVectorSearchTimedSamples]' started.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testMicroVectorSearchTimedSamples]' passed (0.552 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTextSearchPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTextSearchPerformance]' measured [Clock Monotonic Time, s] average: 0.102, relative standard deviation: 1.871%, values: [0.098717, 0.103543, 0.103626, 0.103710, 0.101871], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTextSearchPerformance]' passed (0.930 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTokenCountingColdStartPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTokenCountingColdStartPerformance]' passed (0.060 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTokenCountingPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTokenCountingPerformance]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 1.388%, values: [0.103441, 0.103421, 0.103456, 0.099882, 0.103469], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testTokenCountingPerformance]' passed (0.643 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocsCPU]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocsCPU]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 0.013%, values: [0.103462, 0.103453, 0.103484], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocsCPU]' passed (53.019 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocs]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocs]' measured [Clock Monotonic Time, s] average: 0.107, relative standard deviation: 0.353%, values: [0.106790, 0.106084, 0.106951], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance10KDocs]' passed (35.772 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance]' measured [Clock Monotonic Time, s] average: 0.108, relative standard deviation: 0.011%, values: [0.108398, 0.108410, 0.108400, 0.108408, 0.108432], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformance]' passed (1.245 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [Memory Physical, kB] average: 0.000, relative standard deviation: 0.000%, values: [0.000000, 0.000000, 0.000000], performanceMetricID:com.apple.dt.XCTMetric_Memory.physical, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [CPU Cycles, kC] average: 13457.456, relative standard deviation: 0.766%, values: [13430.407000, 13346.966000, 13594.995000], performanceMetricID:com.apple.dt.XCTMetric_CPU.cycles, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [Clock Monotonic Time, s] average: 0.108, relative standard deviation: 0.538%, values: [0.107215, 0.108408, 0.108484], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [CPU Time, s] average: 0.009, relative standard deviation: 16.177%, values: [0.007158, 0.009243, 0.010723], performanceMetricID:com.apple.dt.XCTMetric_CPU.time, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [CPU Instructions Retired, kI] average: 50572.214, relative standard deviation: 0.228%, values: [50527.851000, 50458.302000, 50730.490000], performanceMetricID:com.apple.dt.XCTMetric_CPU.instructions_retired, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:270: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' measured [Memory Peak Physical, kB] average: 200887.040, relative standard deviation: 0.000%, values: [200887.040000, 200887.040000, 200887.040000], performanceMetricID:com.apple.dt.XCTMetric_Memory.physical_peak, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testUnifiedSearchHybridPerformanceWithMetrics]' passed (1.022 seconds).
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testVectorSearchPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testVectorSearchPerformance]' measured [Clock Monotonic Time, s] average: 0.107, relative standard deviation: 2.627%, values: [0.101402, 0.108436, 0.108439, 0.108434, 0.108412], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGPerformanceBenchmarks testVectorSearchPerformance]' passed (1.223 seconds).
+Test Suite 'RAGPerformanceBenchmarks' passed at 2026-01-30 18:19:17.101.
+	 Executed 22 tests, with 0 failures (0 unexpected) in 291.107 (291.108) seconds
+Test Suite 'TokenizerBenchmark' started at 2026-01-30 18:19:17.101.
+Test Case '-[WaxIntegrationTests.TokenizerBenchmark testTokenizerThroughput]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/TokenizerBenchmark.swift:24: Test Case '-[WaxIntegrationTests.TokenizerBenchmark testTokenizerThroughput]' measured [Time, seconds] average: 0.040, relative standard deviation: 23.440%, values: [0.068725, 0.040222, 0.036566, 0.037094, 0.037205, 0.036779, 0.037031, 0.036732, 0.037271, 0.036813], performanceMetricID:com.apple.XCTPerformanceMetric_WallClockTime, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.100, maxStandardDeviation: 0.100
+Test Case '-[WaxIntegrationTests.TokenizerBenchmark testTokenizerThroughput]' passed (0.721 seconds).
+Test Suite 'TokenizerBenchmark' passed at 2026-01-30 18:19:17.823.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.721 (0.721) seconds
+Test Suite 'WaxPackageTests.xctest' passed at 2026-01-30 18:19:17.823.
+	 Executed 36 tests, with 0 failures (0 unexpected) in 366.261 (366.264) seconds
+Test Suite 'Selected tests' passed at 2026-01-30 18:19:17.823.
+	 Executed 36 tests, with 0 failures (0 unexpected) in 366.261 (366.265) seconds
+
+🧪 Batch Embedding Scaling Benchmark
+   ─────────────────────────────────────
+   Batch size  8:   71.9 ms total, 8.98 ms/text, 111.3 texts/sec
+   Batch size 16:  140.7 ms total, 8.79 ms/text, 113.7 texts/sec
+   Batch size 32:  291.3 ms total, 9.10 ms/text, 109.8 texts/sec
+   Batch size 64:  587.8 ms total, 9.18 ms/text, 108.9 texts/sec
+   ─────────────────────────────────────
+
+
+🧪 Batch vs Sequential Embedding Benchmark
+   Texts: 32, Iterations: 3
+
+   📊 Results:
+   ─────────────────────────────────────
+   SEQUENTIAL (old):    309.9 ms total (9.69 ms/text)
+   BATCH (new):         302.9 ms total (9.47 ms/text)
+   Speedup:             1.02x faster
+   Improvement:         2.3%
+   ─────────────────────────────────────
+
+
+🧪 Orchestrator Ingest with Batch Embedding
+   Documents: 100, Iterations: 2
+
+📂 Loading cached cl100k_base from: /Users/chriskarani/Library/Caches/tiktoken/cl100k_base.tiktoken
+📊 Loaded cl100k_base:
+   Vocabulary size: 100256
+   Special tokens: 5
+   Iteration 1: 1.78 s
+   Iteration 2: 1.13 s
+
+   📊 Results:
+   ─────────────────────────────────────
+   Average time:        1.45 s
+   Throughput:          68.8 docs/sec
+   ─────────────────────────────────────
+
+
+🧪 Buffer Serialization Benchmark
+   Vectors: 1000, Dimensions: 384
+   Iterations: 5
+
+   Serialized size: 1684464 bytes (1644 KB)
+   📊 Results:
+   ─────────────────────────────────────
+   SAVE (buffer): 0.4692 ms avg
+   SAVE (file):   2.7644 ms avg
+   SAVE speedup:  5.9x faster
+
+   LOAD (buffer): 0.3032 ms avg
+   LOAD (file):   0.9708 ms avg
+   LOAD speedup:  3.2x faster
+
+   ✅ TOTAL speedup: 4.8x faster
+   ─────────────────────────────────────
+
+
+🧪 Metal Lazy GPU Sync Benchmark (Optimization Test)
+   Vectors: 10000, Dimensions: 384, TopK: 24
+   Warm iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   COLD search (with GPU sync): 0.00380 s
+   WARM search avg (no sync):   0.00093 s
+   WARM search min:             0.00087 s
+   WARM search max:             0.00131 s
+
+   ✅ Warm search speedup:      4.1x faster
+   ✅ Memory bandwidth saved:   14.6 MB per warm query
+   ─────────────────────────────────────
+
+
+🧪 Metal Search-After-Add Correctness Test
+
+   ✅ Search correctly reflects newly added vectors
+   ✅ Lazy GPU sync maintains correctness
+
+
+🧪 Metal Vector Search Benchmark
+   Vectors: 1000, Dimensions: 128, TopK: 24
+   Iterations: 5
+
+   Iteration 1: 0.00082 s
+   Iteration 2: 0.00039 s
+   Iteration 3: 0.00039 s
+   Iteration 4: 0.00035 s
+   Iteration 5: 0.00038 s
+
+   📊 Results:
+   ─────────────────────────────────────
+   Metal search avg: 0.00046 s
+   Latency per vector: 0.0005 ms
+   ─────────────────────────────────────
+
+
+🧪 TokenCounter Actor vs Task Hop Benchmark
+   Texts: 100
+   Iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   DIRECT ACTOR:           1.834 ms avg
+   TASK HOP PER CALL:      2.189 ms avg
+   Speedup:                1.2x faster
+   Improvement:            16.2%
+   ─────────────────────────────────────
+
+
+🧪 Metadata Lookup Comparison Benchmark
+   Total Documents: 500
+   Lookup Count (simulating topK results): 50
+   Iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   BATCH (new):      0.312 ms avg
+   SEQUENTIAL (old): 0.085 ms avg
+   Speedup:          0.3x faster
+   Improvement:      -268.1%
+   ─────────────────────────────────────
+
+   Note: Batch benefits increase with larger datasets and more lookups
+
+🧪 minilm_cold_start: mean 3.3073 s, p50 3.3083 s, p95 3.3697 s, p99 3.3752 s, min 3.2372 s, max 3.3765 s, stdev 0.0569 s
+🧪 minilm_embed: mean 0.0101 s, p50 0.0102 s, p95 0.0103 s, p99 0.0103 s, min 0.0099 s, max 0.0103 s, stdev 0.0002 s
+🧪 cold_open_hybrid: mean 0.0172 s, p50 0.0171 s, p95 0.0182 s, p99 0.0182 s, min 0.0163 s, max 0.0183 s, stdev 0.0008 s
+🧪 micro_text_search: mean 0.0015 s, p50 0.0015 s, p95 0.0015 s, p99 0.0016 s, min 0.0015 s, max 0.0016 s, stdev 0.0000 s
+🧪 micro_unified_hybrid: mean 0.0039 s, p50 0.0037 s, p95 0.0057 s, p99 0.0063 s, min 0.0035 s, max 0.0064 s, stdev 0.0007 s
+🧪 micro_vector_search: mean 0.0003 s, p50 0.0003 s, p95 0.0003 s, p99 0.0003 s, min 0.0003 s, max 0.0003 s, stdev 0.0000 s
+🧪 tokenizer_cold_start: mean 0.0198 s, p50 0.0185 s, p95 0.0251 s, p99 0.0256 s, min 0.0150 s, max 0.0258 s, stdev 0.0045 s
+
+🧪 Tokenizer Benchmark
+   Iterations: 1000
+   Text length: 95
+objc[50450]: Class DTXDecompressionException is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def830) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb630). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXService is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def858) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb658). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXBlockCompressorFactory is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8f8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb6f8). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXBlockCompressorLibCompression is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8a8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb6a8). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXRemoteInvocationReceipt is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def948) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb748). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXProxyChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def998) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb798). One of the two will be used. Which one is undefined.
+objc[50450]: Class _DTXProxy is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def9c0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb7c0). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXMachTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa38) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb838). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa88) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb888). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXResourceTracker is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defad8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb8d8). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXProxyRequestHandler is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb28) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb928). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXConnection is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb78) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb978). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defba0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fb9a0). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXSocketTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc18) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fba18). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXSharedMemoryTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc68) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fba68). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXMessageParser is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defcb8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fbab8). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXMessageTransmitter is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd30) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fbb30). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXMessage is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd58) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fbb58). One of the two will be used. Which one is undefined.
+objc[50450]: Class DTXFileDescriptorTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defda8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1024fbba8). One of the two will be used. Which one is undefined.
+􀟈  Test run started.
+􀄵  Testing Library Version: 6.2.3
+􀄵  Target Platform: arm64-apple-macosx
+􀟈  Test vectorSearchScalingBenchmark() started.
+􀟈  Test microTextSearchLatency() started.
+􀟈  Test microUnifiedSearchHybridLatency() started.
+􀟈  Test microFastRAGBuildFastMode() started.
+􀟈  Test microVectorSearchLatency() started.
+􀟈  Test usearchQuantizationBenchmark() started.
+􀟈  Test microFastRAGBuildDenseCached() started.
+􀟈  Test metalIngestScalingBenchmark() started.
+🧪 micro_text_search: mean 0.0006 s, p50 0.0005 s, p95 0.0007 s, p99 0.0007 s, min 0.0005 s, max 0.0008 s, stdev 0.0001 s
+􁁛  Test microTextSearchLatency() passed after 0.079 seconds.
+📂 Loading cached cl100k_base from: /Users/chriskarani/Library/Caches/tiktoken/cl100k_base.tiktoken
+📂 Loading cached cl100k_base from: /Users/chriskarani/Library/Caches/tiktoken/cl100k_base.tiktoken
+🧪 metal_addBatch_10000: 0.1619 s
+🧪 micro_vector_search_cpu: mean 0.0002 s, p50 0.0001 s, p95 0.0005 s, p99 0.0005 s, min 0.0001 s, max 0.0005 s, stdev 0.0001 s
+🧪 micro_vector_search_metal: mean 0.0003 s, p50 0.0003 s, p95 0.0005 s, p99 0.0007 s, min 0.0002 s, max 0.0007 s, stdev 0.0001 s
+􁁛  Test microVectorSearchLatency() passed after 0.505 seconds.
+🧪 micro_unified_hybrid: mean 0.0028 s, p50 0.0028 s, p95 0.0035 s, p99 0.0036 s, min 0.0014 s, max 0.0036 s, stdev 0.0006 s
+􁁛  Test microUnifiedSearchHybridLatency() passed after 0.509 seconds.
+📊 Loaded cl100k_base:
+   Vocabulary size: 100256
+   Special tokens: 5
+📊 Loaded cl100k_base:
+   Vocabulary size: 100256
+   Special tokens: 5
+🧪 metal_addBatch_50000: 0.7529 s
+🧪 micro_rag_dense_cached: mean 0.0036 s, p50 0.0027 s, p95 0.0053 s, p99 0.0144 s, min 0.0020 s, max 0.0167 s, stdev 0.0031 s
+􁁛  Test microFastRAGBuildDenseCached() passed after 1.384 seconds.
+🧪 micro_rag_fast: mean 0.0027 s, p50 0.0025 s, p95 0.0041 s, p99 0.0045 s, min 0.0017 s, max 0.0045 s, stdev 0.0006 s
+􁁛  Test microFastRAGBuildFastMode() passed after 1.388 seconds.
+🧪 metal_addBatch_100000: 1.2777 s
+􁁛  Test metalIngestScalingBenchmark() passed after 2.606 seconds.
+🧪 vector_search_usearch_10000: 0.0003 s
+🧪 vector_search_metal_10000: 0.0005 s
+🧪 usearch_f32_search: mean 0.00025 s
+🧪 usearch_f16_search: mean 0.00027 s
+🧪 usearch_i8_search: mean 0.00023 s
+􁁛  Test usearchQuantizationBenchmark() passed after 89.302 seconds.
+🧪 vector_search_usearch_50000: 0.0001 s
+🧪 vector_search_metal_50000: 0.0018 s
+🧪 vector_search_usearch_100000: 0.0002 s
+🧪 vector_search_metal_100000: 0.0034 s
+􁁛  Test vectorSearchScalingBenchmark() passed after 491.140 seconds.
+􁁛  Test run with 8 tests in 0 suites passed after 491.141 seconds.

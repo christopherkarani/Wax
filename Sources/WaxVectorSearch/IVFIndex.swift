@@ -181,6 +181,31 @@ public actor IVFIndex {
         candidates.sort { $0.1 > $1.1 }
         return Array(candidates.prefix(topK))
     }
+
+    func nearestClusterIndex(for vector: [Float]) -> Int {
+        precondition(isTrained, "Index must be trained before searching")
+        precondition(vector.count == dimensions, "Query dimension mismatch")
+
+        var q = vector
+        if isNormalized {
+            normalizeVector(&q)
+        }
+        let centroids = clusters.map { $0.centroid }
+        return findNearestCentroid(vector: q, centroids: centroids)
+    }
+
+    func nearestClusterIndices(for vector: [Float], count: Int) -> [Int] {
+        precondition(isTrained, "Index must be trained before searching")
+        precondition(vector.count == dimensions, "Query dimension mismatch")
+
+        var q = vector
+        if isNormalized {
+            normalizeVector(&q)
+        }
+        let centroids = clusters.map { $0.centroid }
+        let k = min(max(1, count), numClusters)
+        return findNearestCentroids(vector: q, centroids: centroids, k: k)
+    }
     
     // MARK: - Private Helpers
     

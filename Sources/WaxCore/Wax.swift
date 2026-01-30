@@ -865,6 +865,8 @@ public actor Wax {
         let appliedWalSeq = try applyPendingMutationsIntoTOC()
 
         let file = self.file
+        var lexWrite: (offset: UInt64, bytes: Data)?
+        var vecWrite: (offset: UInt64, bytes: Data)?
         if let staged = stagedLexIndex {
             let byteCount = staged.bytes.count
             guard byteCount <= Constants.maxBlobBytes else {
@@ -874,9 +876,7 @@ public actor Wax {
                 )
             }
             let lexOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: lexOffset)
-            }
+            lexWrite = (offset: lexOffset, bytes: staged.bytes)
             let lexLength = UInt64(byteCount)
             dataEnd += lexLength
 
@@ -910,9 +910,7 @@ public actor Wax {
             }
 
             let vecOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: vecOffset)
-            }
+            vecWrite = (offset: vecOffset, bytes: staged.bytes)
             let vecLength = UInt64(byteCount)
             dataEnd += vecLength
 
@@ -949,9 +947,16 @@ public actor Wax {
             generation: generation &+ 1,
             walCommittedSeq: appliedWalSeq
         )
+        let footerBytes = try footer.encode()
         try await io.run {
+            if let lexWrite {
+                try file.writeAll(lexWrite.bytes, at: lexWrite.offset)
+            }
+            if let vecWrite {
+                try file.writeAll(vecWrite.bytes, at: vecWrite.offset)
+            }
             try file.writeAll(tocBytes, at: tocOffset)
-            try file.writeAll(try footer.encode(), at: footerOffset)
+            try file.writeAll(footerBytes, at: footerOffset)
             try file.fsync()
         }
 

@@ -80,6 +80,13 @@ public actor FTS5SearchEngine {
         )
     }
 
+    /// Deserialize a lex index from in-memory data as read-only.
+    /// The underlying data must stay alive for the lifetime of the engine.
+    public static func deserializeReadOnly(from data: Data) throws -> FTS5SearchEngine {
+        let region = try InMemoryReadOnlyRegion(data: data)
+        return try deserializeReadOnly(from: region)
+    }
+
     /// Deserialize a committed lex index from a read-only mapped region.
     /// The region must stay alive for the lifetime of the engine.
     public static func deserializeReadOnly(from region: MappedReadOnlyRegion) throws -> FTS5SearchEngine {

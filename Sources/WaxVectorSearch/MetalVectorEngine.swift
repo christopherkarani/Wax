@@ -207,6 +207,23 @@ public actor MetalVectorEngine {
         return engine
     }
 
+    /// Create an immutable snapshot for lock-free concurrent queries.
+    ///
+    /// The snapshot captures the current state of the index and can be used
+    /// for multiple queries without actor serialization overhead. Useful for
+    /// batch queries or when the same index state needs to be queried repeatedly.
+    ///
+    /// - Returns: A snapshot of the current vector index state
+    public func createSnapshot() -> VectorSearchSnapshot {
+        VectorSearchSnapshot(
+            vectors: vectors,
+            frameIds: frameIds,
+            dimensions: dimensions,
+            isNormalized: useSIMDOptimization,
+            generation: vectorCount
+        )
+    }
+
     public func add(frameId: UInt64, vector: [Float]) async throws {
         try await withOpLock {
             try validate(vector)

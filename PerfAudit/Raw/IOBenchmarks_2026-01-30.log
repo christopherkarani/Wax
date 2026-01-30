@@ -1,0 +1,7 @@
+FTS Deserialize Benchmark (standard scale, debug)
+🧪 fts_deserialize_copy: mean 0.00079 s
+🧪 fts_deserialize_mmap: mean 0.00026 s
+
+WAL Commit Benchmark (standard scale, debug)
+🧪 wal_put_1000: mean 0.2306 s
+🧪 wal_commit_1000: mean 0.0189 s

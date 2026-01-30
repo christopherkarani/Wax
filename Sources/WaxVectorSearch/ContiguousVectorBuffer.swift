@@ -239,16 +239,18 @@ public struct ContiguousVectorBuffer: Sendable {
     /// Access raw storage for GPU transfer
     /// - Parameter body: Closure receiving pointer to contiguous float data
     public func withUnsafeBufferPointer<R>(_ body: (UnsafeBufferPointer<Float>) throws -> R) rethrows -> R {
-        try storage.withUnsafeBufferPointer { buffer in
-            let slice = UnsafeBufferPointer(start: buffer.baseAddress, count: floatCount)
+        let totalFloats = floatCount
+        return try storage.withUnsafeBufferPointer { buffer in
+            let slice = UnsafeBufferPointer(start: buffer.baseAddress, count: totalFloats)
             return try body(slice)
         }
     }
     
     /// Access raw storage for mutation
     public mutating func withUnsafeMutableBufferPointer<R>(_ body: (UnsafeMutableBufferPointer<Float>) throws -> R) rethrows -> R {
-        try storage.withUnsafeMutableBufferPointer { buffer in
-            let slice = UnsafeMutableBufferPointer(start: buffer.baseAddress, count: floatCount)
+        let totalFloats = floatCount
+        return try storage.withUnsafeMutableBufferPointer { buffer in
+            let slice = UnsafeMutableBufferPointer(start: buffer.baseAddress, count: totalFloats)
             return try body(slice)
         }
     }

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import WaxCore
 
 /// A memory-mapped file-backed vector store for fast loading and reduced memory pressure.
 ///

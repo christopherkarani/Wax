@@ -246,6 +246,10 @@ class WordpieceTokenizer {
     }
 }
 
+extension BertTokenizer: @unchecked Sendable {}
+extension BasicTokenizer: @unchecked Sendable {}
+extension WordpieceTokenizer: @unchecked Sendable {}
+
 struct Utils {
     /// Time a block in ms
     static func time<T>(label: String, _ block: () -> T) -> T {

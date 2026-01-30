@@ -37,19 +37,48 @@ public final class MiniLMEmbeddings {
         return generateEmbeddings(inputIds: inputIds, attentionMask: attentionMask)
     }
 
-    public func encode(batch sentences: [String]) async -> [[Float]]? {
+    public func encode(
+        batch sentences: [String],
+        tokenizationParallelism: Int = ProcessInfo.processInfo.activeProcessorCount
+    ) async -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
+        let parallelism = max(1, min(tokenizationParallelism, sentences.count))
+        let tokenizer = self.tokenizer
+        var inputs = [all_MiniLM_L6_v2Input?](repeating: nil, count: sentences.count)
 
-        var inputs: [all_MiniLM_L6_v2Input] = []
-        inputs.reserveCapacity(sentences.count)
+        await withTaskGroup(of: (Int, all_MiniLM_L6_v2Input).self) { group in
+            var iterator = sentences.enumerated().makeIterator()
 
-        for sentence in sentences {
-            let inputTokens = tokenizer.buildModelTokens(sentence: sentence)
-            let (inputIds, attentionMask) = tokenizer.buildModelInputs(from: inputTokens)
-            inputs.append(all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask))
+            func enqueue(_ next: (offset: Int, element: String)) {
+                let index = next.offset
+                let sentence = next.element
+                group.addTask {
+                    let inputTokens = tokenizer.buildModelTokens(sentence: sentence)
+                    let (inputIds, attentionMask) = tokenizer.buildModelInputs(from: inputTokens)
+                    return (index, all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask))
+                }
+            }
+
+            for _ in 0..<parallelism {
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
+
+            while let result = await group.next() {
+                inputs[result.0] = result.1
+                if let next = iterator.next() {
+                    enqueue(next)
+                }
+            }
         }
 
-        guard let outputs = try? model.predictions(inputs: inputs) else {
+        guard inputs.allSatisfy({ $0 != nil }) else {
+            return nil
+        }
+        let orderedInputs = inputs.compactMap { $0 }
+
+        guard let outputs = try? model.predictions(inputs: orderedInputs) else {
             return nil
         }
 

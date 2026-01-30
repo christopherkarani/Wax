@@ -52,6 +52,11 @@ enum FTS5Serializer {
         }
     }
 
+    static func deserializeReadOnly(_ data: Data, into connection: OpaquePointer) throws {
+        let region = try InMemoryReadOnlyRegion(data: data)
+        try deserializeReadOnly(region, into: connection)
+    }
+
     static func deserializeReadOnly(_ region: MappedReadOnlyRegion, into connection: OpaquePointer) throws {
         guard region.buffer.count > 0 else {
             throw WaxError.io("sqlite3_deserialize requires non-empty data")

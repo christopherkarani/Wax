@@ -199,36 +199,3 @@ public struct VectorSearchSnapshot: Sendable {
         return heap.map { (frameIds[$0.1], $0.0) }
     }
 }
-
-// MARK: - MetalVectorEngine Extension
-
-extension MetalVectorEngine {
-    /// Create an immutable snapshot for lock-free concurrent queries.
-    /// 
-    /// The snapshot captures the current state of the index and can be used
-    /// for multiple queries without actor serialization overhead. Useful for
-    /// batch queries or when the same index state needs to be queried repeatedly.
-    ///
-    /// - Returns: A snapshot of the current vector index state
-    public func createSnapshot() async -> VectorSearchSnapshot {
-        // Access actor-isolated state
-        let vectorsCopy = vectors
-        let frameIdsCopy = frameIds
-        let dims = dimensions
-        let normalized = useSIMDOptimization
-        let gen = await getGeneration()
-        
-        return VectorSearchSnapshot(
-            vectors: vectorsCopy,
-            frameIds: frameIdsCopy,
-            dimensions: dims,
-            isNormalized: normalized,
-            generation: gen
-        )
-    }
-    
-    /// Get current generation for cache invalidation
-    private func getGeneration() -> UInt64 {
-        vectorCount  // Use vector count as simple generation proxy
-    }
-}

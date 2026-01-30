@@ -101,13 +101,7 @@ actor UnifiedSearchEngineCache {
                 textByWax[waxId] = CachedText(key: .empty, engine: engine)
                 return engine
             }
-            if let region = try? InMemoryReadOnlyRegion(data: bytes) {
-                let engine = try FTS5SearchEngine.deserializeReadOnly(from: region)
-                stats.textDeserializations += 1
-                textByWax[waxId] = CachedText(key: key, engine: engine)
-                return engine
-            }
-            let engine = try FTS5SearchEngine.deserialize(from: bytes)
+            let engine = try FTS5SearchEngine.deserializeReadOnly(from: bytes)
             stats.textDeserializations += 1
             textByWax[waxId] = CachedText(key: key, engine: engine)
             return engine
@@ -125,7 +119,7 @@ actor UnifiedSearchEngineCache {
                 return engine
             }
             if let bytes = try await wax.readCommittedLexIndexBytes() {
-                let engine = try FTS5SearchEngine.deserialize(from: bytes)
+                let engine = try FTS5SearchEngine.deserializeReadOnly(from: bytes)
                 stats.textDeserializations += 1
                 textByWax[waxId] = CachedText(key: key, engine: engine)
                 return engine

@@ -242,7 +242,7 @@ public actor USearchVectorEngine {
                     metric: metric,
                     dimensions: dimensions,
                     vectorCount: vectorCount,
-                    quantization: quantization
+                    quantization: self.quantization
                 )
             }
         }

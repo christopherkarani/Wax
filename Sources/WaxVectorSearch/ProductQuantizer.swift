@@ -85,7 +85,7 @@ public actor ProductQuantizer {
         let K = config.numCentroids
         let dsub = config.subDimensions
         
-        codebook = [[Float]](repeating: [[Float]](repeating: [Float](repeating: 0, count: dsub), count: K), count: M)
+        codebook = [[[Float]]](repeating: [[Float]](repeating: [Float](repeating: 0, count: dsub), count: K), count: M)
         
         // Train each subspace independently
         for m in 0..<M {
@@ -313,14 +313,22 @@ public actor IVFPQIndex {
     
     /// Encoded database: cluster -> [(frameId, codes)]
     private var clusters: [[(frameId: UInt64, codes: [UInt8])]]
+    private var clusterByFrameId: [UInt64: Int]
     
     public private(set) var vectorCount: UInt64 = 0
-    public var isTrained: Bool { get async { await ivf.isTrained && await pq.isTrained } }
+    public var isTrained: Bool {
+        get async {
+            let ivfTrained = await ivf.isTrained
+            let pqTrained = await pq.isTrained
+            return ivfTrained && pqTrained
+        }
+    }
     
     public init(dimensions: Int, numClusters: Int = 100, numSubspaces: Int = 48) {
         self.ivf = IVFIndex(dimensions: dimensions, numClusters: numClusters)
         self.pq = ProductQuantizer(dimensions: dimensions, numSubspaces: numSubspaces)
         self.clusters = []
+        self.clusterByFrameId = [:]
     }
     
     /// Train both IVF and PQ codebooks
@@ -330,21 +338,22 @@ public actor IVFPQIndex {
         
         let numClusters = await ivf.numClusters
         clusters = [[(frameId: UInt64, codes: [UInt8])]](repeating: [], count: numClusters)
+        clusterByFrameId = [:]
+        vectorCount = 0
     }
     
     /// Add vector to index
     public func add(frameId: UInt64, vector: [Float]) async {
-        // Find cluster
-        let results = await ivf.search(query: vector, topK: 1, nprobe: 1)
-        guard let nearest = results.first else { return }
-        
+        // Find cluster via IVF centroids
+        let clusterIdx = await ivf.nearestClusterIndex(for: vector)
+
         // Compute residual and encode with PQ
         // For simplicity, we encode the full vector (could optimize with residual encoding)
         let codes = await pq.encode(vector)
         
-        // Add to cluster - use cluster index based on centroid similarity
-        let clusterIdx = await getClusterIndex(for: vector)
+        // Add to cluster
         clusters[clusterIdx].append((frameId, codes))
+        clusterByFrameId[frameId] = clusterIdx
         vectorCount += 1
     }
     
@@ -358,17 +367,14 @@ public actor IVFPQIndex {
     /// Search using IVF for coarse quantization and PQ for fine ranking
     public func search(query: [Float], topK: Int, nprobe: Int = 10) async -> [(frameId: UInt64, score: Float)] {
         // Get nearest clusters
-        let clusterResults = await ivf.search(query: query, topK: nprobe, nprobe: nprobe)
+        let clusterIndices = await ivf.nearestClusterIndices(for: query, count: nprobe)
         
         // Search within clusters using PQ
         let distanceTable = await pq.computeDistanceTable(query: query)
         
         var candidates: [(UInt64, Float)] = []
         
-        for result in clusterResults {
-            let clusterIdx = await getClusterIndexForFrameId(result.frameId) ?? 0
-            guard clusterIdx < clusters.count else { continue }
-            
+        for clusterIdx in clusterIndices where clusterIdx < clusters.count {
             for (frameId, codes) in clusters[clusterIdx] {
                 let dist = await pq.asymmetricDistance(distanceTable: distanceTable, codes: codes)
                 // Convert distance to similarity (inversely related)
@@ -380,19 +386,13 @@ public actor IVFPQIndex {
         candidates.sort { $0.1 > $1.1 }
         return Array(candidates.prefix(topK))
     }
-    
-    private func getClusterIndex(for vector: [Float]) async -> Int {
-        let results = await ivf.search(query: vector, topK: 1, nprobe: 1)
-        // This is a simplification - in production you'd track cluster assignments properly
-        return Int(results.first?.frameId ?? 0) % clusters.count
+
+    func clusterIndex(for frameId: UInt64) -> Int? {
+        clusterByFrameId[frameId]
     }
-    
-    private func getClusterIndexForFrameId(_ frameId: UInt64) async -> Int? {
-        for (idx, cluster) in clusters.enumerated() {
-            if cluster.contains(where: { $0.frameId == frameId }) {
-                return idx
-            }
-        }
-        return nil
+
+    func nearestClusterIndex(for vector: [Float]) async -> Int? {
+        guard await ivf.isTrained else { return nil }
+        return await ivf.nearestClusterIndex(for: vector)
     }
 }

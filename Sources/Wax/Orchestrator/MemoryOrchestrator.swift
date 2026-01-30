@@ -125,9 +125,31 @@ public actor MemoryOrchestrator {
                 return (idx, start..<end)
             }
 
-        var batchResults: [IngestBatchResult?] = Array(repeating: nil, count: batchRanges.count)
-
         let parallelism = max(1, config.ingestConcurrency)
+        var pendingResults: [Int: IngestBatchResult] = [:]
+        pendingResults.reserveCapacity(parallelism)
+        var nextToApply = 0
+
+        func applyBatchResult(_ result: IngestBatchResult) async throws {
+            if let embeddings = result.embeddings, let localVec {
+                let frameIds = try await localVec.putWithEmbeddingBatch(
+                    contents: result.contents,
+                    embeddings: embeddings,
+                    options: result.options,
+                    identity: localEmbedder?.identity
+                )
+
+                if let localText {
+                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
+                }
+            } else {
+                let frameIds = try await localWax.putBatch(result.contents, options: result.options)
+
+                if let localText {
+                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
+                }
+            }
+        }
 
         try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
             func enqueue(_ entry: (index: Int, range: Range<Int>)) {
@@ -189,36 +211,20 @@ public actor MemoryOrchestrator {
             }
 
             while let result = try await group.next() {
-                batchResults[result.index] = result
+                pendingResults[result.index] = result
+                while let ready = pendingResults[nextToApply] {
+                    try await applyBatchResult(ready)
+                    pendingResults.removeValue(forKey: nextToApply)
+                    nextToApply += 1
+                }
                 if let next = iterator.next() {
                     enqueue(next)
                 }
             }
         }
 
-        for index in 0..<batchResults.count {
-            guard let result = batchResults[index] else {
-                throw WaxError.io("missing ingest batch result at index \(index)")
-            }
-
-            if let embeddings = result.embeddings, let localVec {
-                let frameIds = try await localVec.putWithEmbeddingBatch(
-                    contents: result.contents,
-                    embeddings: embeddings,
-                    options: result.options,
-                    identity: localEmbedder?.identity
-                )
-
-                if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
-                }
-            } else {
-                let frameIds = try await localWax.putBatch(result.contents, options: result.options)
-
-                if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
-                }
-            }
+        if nextToApply != batchRanges.count {
+            throw WaxError.io("missing ingest batch result at index \(nextToApply)")
         }
     }
 
