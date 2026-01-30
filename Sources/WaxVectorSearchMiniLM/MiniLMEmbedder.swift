@@ -2,7 +2,7 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 @preconcurrency import CoreML
-import OSLog
+@preconcurrency import OSLog
 
 extension MiniLMEmbeddings: @unchecked Sendable {}
 

@@ -48,7 +48,8 @@ public extension Wax {
             try await cache.vectorEngine(
                 for: self,
                 queryEmbeddingDimensions: embedding.count,
-                preference: request.vectorEnginePreference
+                preference: request.vectorEnginePreference,
+                topK: requestedTopK
             )
         } else {
             nil

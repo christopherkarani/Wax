@@ -1,0 +1,81 @@
+[0/1] Planning build
+Building for production...
+[0/2] Write swift-version-4163EF5DB07E58A0.txt
+Build complete! (1.18s)
+Test Suite 'Selected tests' started at 2026-01-30 07:33:12.641.
+Test Suite 'WaxPackageTests.xctest' started at 2026-01-30 07:33:12.642.
+Test Suite 'MetalVectorEngineBenchmark' started at 2026-01-30 07:33:12.642.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalLazyGPUSyncPerformance]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalLazyGPUSyncPerformance]' passed (0.090 seconds).
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchAfterAddCorrectness]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchAfterAddCorrectness]' passed (0.003 seconds).
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchPerformance]' started.
+Test Case '-[WaxIntegrationTests.MetalVectorEngineBenchmark testMetalSearchPerformance]' passed (0.004 seconds).
+Test Suite 'MetalVectorEngineBenchmark' passed at 2026-01-30 07:33:12.739.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.097 (0.097) seconds
+Test Suite 'WaxPackageTests.xctest' passed at 2026-01-30 07:33:12.739.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.097 (0.097) seconds
+Test Suite 'Selected tests' passed at 2026-01-30 07:33:12.739.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.097 (0.098) seconds
+
+🧪 Metal Lazy GPU Sync Benchmark (Optimization Test)
+   Vectors: 10000, Dimensions: 384, TopK: 24
+   Warm iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   COLD search (with GPU sync): 0.00427 s
+   WARM search avg (no sync):   0.00058 s
+   WARM search min:             0.00057 s
+   WARM search max:             0.00060 s
+
+   ✅ Warm search speedup:      7.3x faster
+   ✅ Memory bandwidth saved:   14.6 MB per warm query
+   ─────────────────────────────────────
+
+
+🧪 Metal Search-After-Add Correctness Test
+
+   ✅ Search correctly reflects newly added vectors
+   ✅ Lazy GPU sync maintains correctness
+
+
+🧪 Metal Vector Search Benchmark
+   Vectors: 1000, Dimensions: 128, TopK: 24
+   Iterations: 5
+
+   Iteration 1: 0.00053 s
+   Iteration 2: 0.00020 s
+   Iteration 3: 0.00022 s
+   Iteration 4: 0.00021 s
+   Iteration 5: 0.00021 s
+
+   📊 Results:
+   ─────────────────────────────────────
+   Metal search avg: 0.00027 s
+   Latency per vector: 0.0003 ms
+   ─────────────────────────────────────
+
+objc[97265]: Class DTXDecompressionException is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def830) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f630). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXService is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def858) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f658). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXBlockCompressorFactory is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8f8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f6f8). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXBlockCompressorLibCompression is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8a8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f6a8). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXRemoteInvocationReceipt is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def948) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f748). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXProxyChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def998) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f798). One of the two will be used. Which one is undefined.
+objc[97265]: Class _DTXProxy is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def9c0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f7c0). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXMachTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa38) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f838). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa88) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f888). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXResourceTracker is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defad8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f8d8). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXProxyRequestHandler is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb28) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f928). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXConnection is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb78) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f978). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defba0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510f9a0). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXSocketTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc18) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fa18). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXSharedMemoryTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc68) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fa68). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXMessageParser is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defcb8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fab8). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXMessageTransmitter is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd30) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fb30). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXMessage is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd58) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fb58). One of the two will be used. Which one is undefined.
+objc[97265]: Class DTXFileDescriptorTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defda8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10510fba8). One of the two will be used. Which one is undefined.
+􀟈  Test run started.
+􀄵  Testing Library Version: 6.2.2 (3a645830884aa4e)
+􀄵  Target Platform: arm64-apple-macosx
+􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.

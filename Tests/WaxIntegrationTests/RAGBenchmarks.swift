@@ -10,6 +10,9 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     private var run10K: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_10K"] == "1"
     }
+    private var runMicro: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_MICRO"] == "1"
+    }
 
     func testIngestTextOnlyPerformance() async throws {
         let scale = self.scale
@@ -509,6 +512,71 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         _ = try await timedSamples(label: "tokenizer_cold_start", iterations: iterations, warmup: 0) {
             let counter = try await TokenCounter()
             _ = await counter.count(longText)
+        }
+    }
+
+    func testMicroTextSearchTimedSamples() async throws {
+        guard runMicro else { throw XCTSkip("Set WAX_BENCHMARK_MICRO=1 to run microbenchmarks.") }
+        let scale = self.scale
+        let iterations = max(10, scale.iterations * 5)
+
+        try await TempFiles.withTempFile { url in
+            let fixture = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: false)
+            _ = try await fixture.text.search(query: fixture.queryText, topK: scale.searchTopK)
+
+            _ = try await timedSamples(label: "micro_text_search", iterations: iterations, warmup: 2) {
+                _ = try await fixture.text.search(query: fixture.queryText, topK: scale.searchTopK)
+            }
+
+            await fixture.close()
+        }
+    }
+
+    func testMicroVectorSearchTimedSamples() async throws {
+        guard runMicro else { throw XCTSkip("Set WAX_BENCHMARK_MICRO=1 to run microbenchmarks.") }
+        let scale = self.scale
+        let iterations = max(10, scale.iterations * 5)
+
+        try await TempFiles.withTempFile { url in
+            let fixture = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
+            guard let vector = fixture.vector, let embedding = fixture.queryEmbedding else {
+                XCTFail("Vector microbench fixture missing embeddings")
+                return
+            }
+
+            _ = try await vector.search(vector: embedding, topK: scale.searchTopK)
+            _ = try await timedSamples(label: "micro_vector_search", iterations: iterations, warmup: 2) {
+                _ = try await vector.search(vector: embedding, topK: scale.searchTopK)
+            }
+
+            await fixture.close()
+        }
+    }
+
+    func testMicroUnifiedHybridSearchTimedSamples() async throws {
+        guard runMicro else { throw XCTSkip("Set WAX_BENCHMARK_MICRO=1 to run microbenchmarks.") }
+        let scale = self.scale
+        let iterations = max(10, scale.iterations * 5)
+
+        try await TempFiles.withTempFile { url in
+            let fixture = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid microbench fixture missing embeddings")
+                return
+            }
+            let request = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK
+            )
+
+            _ = try await fixture.wax.search(request)
+            _ = try await timedSamples(label: "micro_unified_hybrid", iterations: iterations, warmup: 2) {
+                _ = try await fixture.wax.search(request)
+            }
+
+            await fixture.close()
         }
     }
 

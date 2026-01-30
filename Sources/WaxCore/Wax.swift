@@ -1307,6 +1307,50 @@ public actor Wax {
         }
     }
 
+    /// Returns a read-only memory-mapped view of the committed lex index.
+    /// The caller must keep the returned region alive for the lifetime of any SQLite deserialize usage.
+    public func readCommittedLexIndexMapped() async throws -> MappedReadOnlyRegion? {
+        try await withOpLock {
+            guard let manifest = toc.indexes.lex else { return nil }
+            guard manifest.version == 1 else {
+                throw WaxError.invalidToc(reason: "unsupported lex index version \(manifest.version)")
+            }
+            guard manifest.bytesLength > 0 else { return nil }
+            let maxBlob = UInt64(Constants.maxBlobBytes)
+            guard manifest.bytesLength <= maxBlob else {
+                throw WaxError.capacityExceeded(limit: maxBlob, requested: manifest.bytesLength)
+            }
+            guard manifest.bytesLength <= UInt64(Int.max) else {
+                throw WaxError.io("lex index size exceeds Int.max: \(manifest.bytesLength)")
+            }
+
+            let dataStart = header.walOffset + header.walSize
+            guard manifest.bytesOffset >= dataStart else {
+                throw WaxError.invalidToc(reason: "lex index below data region")
+            }
+            guard manifest.bytesOffset <= UInt64.max - manifest.bytesLength else {
+                throw WaxError.invalidToc(reason: "lex index range overflows")
+            }
+            let end = manifest.bytesOffset + manifest.bytesLength
+            guard end <= header.footerOffset else {
+                throw WaxError.invalidToc(reason: "lex index exceeds footer offset")
+            }
+
+            let file = self.file
+            let region = try await io.run {
+                try file.mapReadOnly(length: Int(manifest.bytesLength), at: manifest.bytesOffset)
+            }
+            var hasher = SHA256Checksum()
+            hasher.update(region.buffer)
+            let computed = hasher.finalize()
+            guard computed == manifest.checksum else {
+                region.close()
+                throw WaxError.checksumMismatch("lex index checksum mismatch")
+            }
+            return region
+        }
+    }
+
     private func buildSurrogateIndexUnlocked() -> [UInt64: UInt64] {
         var index: [UInt64: UInt64] = [:]
         for frame in toc.frames {

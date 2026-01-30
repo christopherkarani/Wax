@@ -207,6 +207,51 @@ public final class FDFile {
         )
     }
 
+    /// Map a read-only region of the file at the given offset and length.
+    /// The returned region must be closed to unmap the memory.
+    public func mapReadOnly(length: Int, at offset: UInt64) throws -> MappedReadOnlyRegion {
+        try ensureOpen()
+        guard length > 0 else {
+            throw WaxError.io("mapReadOnly length must be > 0")
+        }
+        let endOffset = offset + UInt64(length)
+        let currentSize = try size()
+        guard endOffset <= currentSize else {
+            throw WaxError.io("mapReadOnly beyond EOF: \(endOffset) > \(currentSize)")
+        }
+
+        let pageSize = UInt64(getpagesize())
+        let alignedOffset = (offset / pageSize) * pageSize
+        let offsetDelta = Int(offset - alignedOffset)
+        let mapLength = length + offsetDelta
+
+        guard mapLength > 0 else {
+            throw WaxError.io("mapReadOnly mapLength invalid: \(mapLength)")
+        }
+        let ptr = mmap(
+            nil,
+            mapLength,
+            PROT_READ,
+            MAP_PRIVATE,
+            fd,
+            off_t(alignedOffset)
+        )
+        if ptr == MAP_FAILED {
+            throw WaxError.io("mmap failed: \(stringError())")
+        }
+
+        guard let base = ptr else {
+            munmap(ptr, mapLength)
+            throw WaxError.io("mmap returned nil pointer")
+        }
+        let advanced = base.advanced(by: offsetDelta)
+        return MappedReadOnlyRegion(
+            basePointer: base,
+            mappedLength: mapLength,
+            bufferPointer: UnsafeRawBufferPointer(start: advanced, count: length)
+        )
+    }
+
     public func close() throws {
         if isClosed { return }
         let result = Darwin.close(fd)
@@ -300,6 +345,32 @@ public final class MappedWritableRegion: @unchecked Sendable {
     public func copyBytes(from data: Data) {
         precondition(data.count <= buffer.count, "data length exceeds mapped buffer")
         buffer.copyBytes(from: data)
+    }
+
+    deinit {
+        if !isClosed {
+            _ = munmap(basePointer, mappedLength)
+        }
+    }
+}
+
+/// RAII wrapper around a read-only mmap region.
+public final class MappedReadOnlyRegion: @unchecked Sendable {
+    private let basePointer: UnsafeMutableRawPointer
+    private let mappedLength: Int
+    public let buffer: UnsafeRawBufferPointer
+    private var isClosed = false
+
+    init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeRawBufferPointer) {
+        self.basePointer = basePointer
+        self.mappedLength = mappedLength
+        self.buffer = bufferPointer
+    }
+
+    public func close() {
+        if isClosed { return }
+        _ = munmap(basePointer, mappedLength)
+        isClosed = true
     }
 
     deinit {

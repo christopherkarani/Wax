@@ -11,6 +11,8 @@ public struct OrchestratorConfig: Sendable {
     public var ingestBatchSize: Int = 32
     public var embeddingCacheCapacity: Int = 2_048
     public var useMetalVectorSearch: Bool = MetalVectorEngine.isAvailable
+    /// Quantization used for USearch vector storage (Metal ignores).
+    public var vectorQuantization: VecQuantization = .f16
 
     public init() {}
 

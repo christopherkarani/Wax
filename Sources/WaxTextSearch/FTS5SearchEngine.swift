@@ -15,12 +15,26 @@ public actor FTS5SearchEngine {
     private var dirty: Bool
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
+    private let isReadOnly: Bool
+    private let readOnlyRegion: MappedReadOnlyRegion?
+    private let inMemoryReadOnlyRegion: InMemoryReadOnlyRegion?
 
-    private init(dbQueue: DatabaseQueue, io: BlockingIOExecutor, docCount: UInt64, dirty: Bool) {
+    private init(
+        dbQueue: DatabaseQueue,
+        io: BlockingIOExecutor,
+        docCount: UInt64,
+        dirty: Bool,
+        isReadOnly: Bool,
+        readOnlyRegion: MappedReadOnlyRegion?,
+        inMemoryReadOnlyRegion: InMemoryReadOnlyRegion?
+    ) {
         self.dbQueue = dbQueue
         self.io = io
         self.docCount = docCount
         self.dirty = dirty
+        self.isReadOnly = isReadOnly
+        self.readOnlyRegion = readOnlyRegion
+        self.inMemoryReadOnlyRegion = inMemoryReadOnlyRegion
     }
 
     public static func inMemory() throws -> FTS5SearchEngine {
@@ -30,7 +44,15 @@ public actor FTS5SearchEngine {
         try queue.write { db in
             try FTS5Schema.create(in: db)
         }
-        return FTS5SearchEngine(dbQueue: queue, io: io, docCount: 0, dirty: false)
+        return FTS5SearchEngine(
+            dbQueue: queue,
+            io: io,
+            docCount: 0,
+            dirty: false,
+            isReadOnly: false,
+            readOnlyRegion: nil,
+            inMemoryReadOnlyRegion: nil
+        )
     }
 
     public static func deserialize(from data: Data) throws -> FTS5SearchEngine {
@@ -47,7 +69,69 @@ public actor FTS5SearchEngine {
             try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
         }
         let docCount = UInt64(max(0, count))
-        return FTS5SearchEngine(dbQueue: queue, io: io, docCount: docCount, dirty: false)
+        return FTS5SearchEngine(
+            dbQueue: queue,
+            io: io,
+            docCount: docCount,
+            dirty: false,
+            isReadOnly: false,
+            readOnlyRegion: nil,
+            inMemoryReadOnlyRegion: nil
+        )
+    }
+
+    /// Deserialize a committed lex index from a read-only mapped region.
+    /// The region must stay alive for the lifetime of the engine.
+    public static func deserializeReadOnly(from region: MappedReadOnlyRegion) throws -> FTS5SearchEngine {
+        let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
+        let config = makeConfiguration()
+        let queue = try DatabaseQueue(configuration: config)
+        try queue.writeWithoutTransaction { db in
+            let connection = try requireConnection(db)
+            try FTS5Serializer.deserializeReadOnly(region, into: connection)
+            try applyPragmas(db)
+            try FTS5Schema.validateOrUpgrade(in: db)
+        }
+        let count = try queue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+        }
+        let docCount = UInt64(max(0, count))
+        return FTS5SearchEngine(
+            dbQueue: queue,
+            io: io,
+            docCount: docCount,
+            dirty: false,
+            isReadOnly: true,
+            readOnlyRegion: region,
+            inMemoryReadOnlyRegion: nil
+        )
+    }
+
+    /// Deserialize a lex index from an in-memory read-only region.
+    /// The region must stay alive for the lifetime of the engine.
+    public static func deserializeReadOnly(from region: InMemoryReadOnlyRegion) throws -> FTS5SearchEngine {
+        let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
+        let config = makeConfiguration()
+        let queue = try DatabaseQueue(configuration: config)
+        try queue.writeWithoutTransaction { db in
+            let connection = try requireConnection(db)
+            try FTS5Serializer.deserializeReadOnly(region, into: connection)
+            try applyPragmas(db)
+            try FTS5Schema.validateOrUpgrade(in: db)
+        }
+        let count = try queue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+        }
+        let docCount = UInt64(max(0, count))
+        return FTS5SearchEngine(
+            dbQueue: queue,
+            io: io,
+            docCount: docCount,
+            dirty: false,
+            isReadOnly: true,
+            readOnlyRegion: nil,
+            inMemoryReadOnlyRegion: region
+        )
     }
 
     public static func load(from wax: Wax) async throws -> FTS5SearchEngine {
@@ -63,6 +147,9 @@ public actor FTS5SearchEngine {
     }
 
     public func index(frameId: UInt64, text: String) async throws {
+        if isReadOnly {
+            throw WaxError.io("text index is read-only")
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             try await remove(frameId: frameId)
@@ -76,6 +163,9 @@ public actor FTS5SearchEngine {
     /// Batch index multiple frames in a single database transaction.
     /// This amortizes transaction overhead and actor hops across all documents.
     public func indexBatch(frameIds: [UInt64], texts: [String]) async throws {
+        if isReadOnly {
+            throw WaxError.io("text index is read-only")
+        }
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == texts.count else {
             throw WaxError.encodingError(reason: "indexBatch: frameIds.count != texts.count")
@@ -91,6 +181,9 @@ public actor FTS5SearchEngine {
     }
 
     public func remove(frameId: UInt64) async throws {
+        if isReadOnly {
+            throw WaxError.io("text index is read-only")
+        }
         let frameIdValue = try Self.toInt64(frameId)
         enqueuePendingOp(frameIdValue: frameIdValue, op: .delete)
         try await flushPendingOpsIfThresholdExceeded()
@@ -130,6 +223,9 @@ public actor FTS5SearchEngine {
     }
 
     public func serialize(compact: Bool = false) async throws -> Data {
+        if isReadOnly {
+            throw WaxError.io("text index is read-only")
+        }
         try await flushPendingOpsIfNeeded()
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -144,6 +240,9 @@ public actor FTS5SearchEngine {
     }
 
     public func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
+        if isReadOnly {
+            throw WaxError.io("text index is read-only")
+        }
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         let blob = try await serialize(compact: compact)

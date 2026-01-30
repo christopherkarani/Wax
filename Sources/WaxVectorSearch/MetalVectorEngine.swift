@@ -22,6 +22,7 @@ public actor MetalVectorEngine {
     private var reservedCapacity: UInt32
     private var vectors: [Float]
     private var frameIds: [UInt64]
+    private var indexByFrameId: [UInt64: Int]
     private let opLock = AsyncMutex()
     private var dirty: Bool
     
@@ -29,10 +30,18 @@ public actor MetalVectorEngine {
     /// This enables lazy synchronization - vectors are only copied to GPU when
     /// actually needed for search, not on every add/remove operation.
     private var gpuBufferNeedsSync: Bool
+    private var dirtyRangeStart: Int?
+    private var dirtyRangeEnd: Int?
     
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let computePipeline: MTLComputePipelineState
+    private let simdPipeline: MTLComputePipelineState?  // SIMD float4 optimized kernel
+    
+    /// When true, uses SIMD float4 kernel with pre-normalized vectors for ~3-5x speedup.
+    /// Requires dimensions divisible by 4 (MiniLM-L6 = 384 dims = OK)
+    public let useSIMDOptimization: Bool
+    
     private var vectorsBuffer: MTLBuffer
     private var distancesBuffer: MTLBuffer
     private var queryBuffer: MTLBuffer
@@ -88,6 +97,15 @@ public actor MetalVectorEngine {
         } catch {
             throw WaxError.invalidToc(reason: "Failed to create Metal compute pipeline: \(error)")
         }
+        
+        // Try to load SIMD-optimized kernel (requires dims % 4 == 0)
+        if dimensions % 4 == 0, let simdFunction = library.makeFunction(name: "cosineDistanceKernelSIMD") {
+            self.simdPipeline = try? device.makeComputePipelineState(function: simdFunction)
+            self.useSIMDOptimization = self.simdPipeline != nil
+        } else {
+            self.simdPipeline = nil
+            self.useSIMDOptimization = false
+        }
 
         self.metric = metric
         self.dimensions = dimensions
@@ -95,8 +113,11 @@ public actor MetalVectorEngine {
         self.reservedCapacity = Self.initialReserve
         self.vectors = []
         self.frameIds = []
+        self.indexByFrameId = [:]
         self.dirty = false
         self.gpuBufferNeedsSync = true  // Start with sync needed (empty state)
+        self.dirtyRangeStart = nil
+        self.dirtyRangeEnd = nil
 
         let initialCapacity = Int(Self.initialReserve) * dimensions * MemoryLayout<Float>.stride
         guard let vectorsBuffer = device.makeBuffer(length: initialCapacity, options: .storageModeShared) else {
@@ -189,20 +210,30 @@ public actor MetalVectorEngine {
     public func add(frameId: UInt64, vector: [Float]) async throws {
         try await withOpLock {
             try validate(vector)
+            
+            // Pre-normalize vector for SIMD-optimized search
+            var normalizedVector = vector
+            if useSIMDOptimization {
+                Self.normalizeVector(&normalizedVector)
+            }
 
-            if let existingIndex = frameIds.firstIndex(of: frameId) {
+            if let existingIndex = indexByFrameId[frameId] {
                 let offset = existingIndex * dimensions
                 for dim in 0..<dimensions {
-                    vectors[offset + dim] = vector[dim]
+                    vectors[offset + dim] = normalizedVector[dim]
                 }
+                markDirtyRange(startIndex: existingIndex, endIndex: existingIndex)
             } else {
                 try await reserveIfNeeded(for: vectorCount + 1)
 
                 for dim in 0..<dimensions {
-                    vectors.append(vector[dim])
+                    vectors.append(normalizedVector[dim])
                 }
                 frameIds.append(frameId)
+                indexByFrameId[frameId] = frameIds.count - 1
                 vectorCount += 1
+                let appendedIndex = frameIds.count - 1
+                markDirtyRange(startIndex: appendedIndex, endIndex: appendedIndex)
             }
 
             dirty = true
@@ -230,22 +261,44 @@ public actor MetalVectorEngine {
                 }
             }
 
-            let maxNewCount = vectorCount + UInt64(frameIds.count)
+            var newCount: UInt64 = 0
+            for frameId in frameIds where indexByFrameId[frameId] == nil {
+                newCount += 1
+            }
+            let maxNewCount = vectorCount + newCount
             try await reserveIfNeeded(for: maxNewCount)
 
+            var minTouchedIndex = Int.max
+            var maxTouchedIndex = -1
             for (frameId, vector) in zip(frameIds, vectors) {
-                if let existingIndex = self.frameIds.firstIndex(of: frameId) {
+                // Pre-normalize vector for SIMD-optimized search
+                var normalizedVector = vector
+                if useSIMDOptimization {
+                    Self.normalizeVector(&normalizedVector)
+                }
+                
+                if let existingIndex = indexByFrameId[frameId] {
                     let offset = existingIndex * dimensions
                     for dim in 0..<dimensions {
-                        self.vectors[offset + dim] = vector[dim]
+                        self.vectors[offset + dim] = normalizedVector[dim]
                     }
+                    minTouchedIndex = min(minTouchedIndex, existingIndex)
+                    maxTouchedIndex = max(maxTouchedIndex, existingIndex)
                 } else {
                     for dim in 0..<dimensions {
-                        self.vectors.append(vector[dim])
+                        self.vectors.append(normalizedVector[dim])
                     }
                     self.frameIds.append(frameId)
+                    self.indexByFrameId[frameId] = self.frameIds.count - 1
                     vectorCount += 1
+                    let appendedIndex = self.frameIds.count - 1
+                    minTouchedIndex = min(minTouchedIndex, appendedIndex)
+                    maxTouchedIndex = max(maxTouchedIndex, appendedIndex)
                 }
+            }
+
+            if maxTouchedIndex >= 0 {
+                markDirtyRange(startIndex: minTouchedIndex, endIndex: maxTouchedIndex)
             }
 
             dirty = true
@@ -275,13 +328,25 @@ public actor MetalVectorEngine {
     public func remove(frameId: UInt64) async throws {
         await withOpLock {
             guard vectorCount > 0 else { return }
-            guard let index = frameIds.firstIndex(of: frameId) else { return }
+            guard let index = indexByFrameId[frameId] else { return }
 
-            let offset = index * dimensions
-            for _ in 0..<dimensions {
-                vectors.remove(at: offset)
+            let lastIndex = Int(vectorCount) - 1
+            if index != lastIndex {
+                let sourceOffset = lastIndex * dimensions
+                let targetOffset = index * dimensions
+                for dim in 0..<dimensions {
+                    vectors[targetOffset + dim] = vectors[sourceOffset + dim]
+                }
+                let swappedFrameId = frameIds[lastIndex]
+                frameIds[index] = swappedFrameId
+                indexByFrameId[swappedFrameId] = index
+                markDirtyRange(startIndex: min(index, lastIndex), endIndex: max(index, lastIndex))
+            } else {
+                markDirtyRange(startIndex: index, endIndex: index)
             }
-            frameIds.remove(at: index)
+            vectors.removeLast(dimensions)
+            frameIds.removeLast()
+            indexByFrameId[frameId] = nil
             vectorCount -= 1
             dirty = true
             gpuBufferNeedsSync = true  // Mark GPU buffer as stale
@@ -300,6 +365,12 @@ public actor MetalVectorEngine {
                 syncVectorsToGPU()
                 gpuBufferNeedsSync = false
             }
+            
+            // Pre-normalize query vector for SIMD kernel
+            var queryVector = vector
+            if useSIMDOptimization {
+                Self.normalizeVector(&queryVector)
+            }
 
             let requiredQueryLength = dimensions * MemoryLayout<Float>.stride
             if queryBuffer.length < requiredQueryLength {
@@ -308,7 +379,7 @@ public actor MetalVectorEngine {
                 }
                 queryBuffer = newQuery
             }
-            vector.withUnsafeBufferPointer { buffer in
+            queryVector.withUnsafeBufferPointer { buffer in
                 queryBuffer.contents().copyMemory(
                     from: buffer.baseAddress!,
                     byteCount: buffer.count * MemoryLayout<Float>.stride
@@ -335,13 +406,23 @@ public actor MetalVectorEngine {
             computeEncoder.setBuffer(distancesBuffer, offset: 0, index: 2)
             computeEncoder.setBuffer(vectorCountBuffer, offset: 0, index: 3)
             computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
-
-            let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
+            
+            // Select SIMD-optimized kernel when available (requires pre-normalized vectors)
+            let pipeline: MTLComputePipelineState
+            let threadgroupMemorySize: Int
+            if useSIMDOptimization, let simd = simdPipeline {
+                pipeline = simd
+                // SIMD kernel uses float4 shared memory: dims/4 float4s
+                threadgroupMemorySize = (dimensions / 4) * MemoryLayout<SIMD4<Float>>.stride
+            } else {
+                pipeline = computePipeline
+                threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
+            }
+            
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
+            computeEncoder.setComputePipelineState(pipeline)
 
-            computeEncoder.setComputePipelineState(computePipeline)
-
-            let maxThreads = computePipeline.maxTotalThreadsPerThreadgroup
+            let maxThreads = pipeline.maxTotalThreadsPerThreadgroup
             let threadsPerThreadgroup = min(maxThreads, Self.maxThreadsPerThreadgroup)
             let threadgroups = MTLSize(
                 width: (Int(vectorCount) + threadsPerThreadgroup - 1) / threadsPerThreadgroup,
@@ -549,6 +630,11 @@ public actor MetalVectorEngine {
             vectorCount = savedVectorCount
             reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
             try resizeBuffersIfNeeded(for: reservedCapacity)
+            indexByFrameId.removeAll(keepingCapacity: true)
+            indexByFrameId.reserveCapacity(frameIds.count)
+            for (index, frameId) in frameIds.enumerated() {
+                indexByFrameId[frameId] = index
+            }
             dirty = false
             gpuBufferNeedsSync = true  // GPU buffer needs sync after loading new vectors
         }
@@ -590,6 +676,21 @@ public actor MetalVectorEngine {
             )
         }
     }
+    
+    /// Normalize a vector in-place for SIMD-optimized search.
+    /// Pre-normalization eliminates per-search magnitude computation.
+    @inline(__always)
+    private static func normalizeVector(_ vector: inout [Float]) {
+        var sumSquared: Float = 0
+        for v in vector {
+            sumSquared += v * v
+        }
+        guard sumSquared > 1e-12 else { return }
+        let invMagnitude = 1.0 / sqrtf(sumSquared)
+        for i in vector.indices {
+            vector[i] *= invMagnitude
+        }
+    }
 
     private static func clampTopK(_ topK: Int) -> Int {
         if topK < 1 { return 1 }
@@ -601,13 +702,37 @@ public actor MetalVectorEngine {
     /// Called lazily only when search is performed after vectors have changed.
     /// This optimization eliminates redundant memory copies for read-heavy workloads.
     private func syncVectorsToGPU() {
-        guard !vectors.isEmpty else { return }
-        vectors.withUnsafeBufferPointer { buffer in
-            vectorsBuffer.contents().copyMemory(
-                from: buffer.baseAddress!,
-                byteCount: min(buffer.count * MemoryLayout<Float>.stride, vectorsBuffer.length)
-            )
+        let currentCount = Int(vectorCount)
+        guard currentCount > 0, !vectors.isEmpty else {
+            dirtyRangeStart = nil
+            dirtyRangeEnd = nil
+            return
         }
+
+        let stride = MemoryLayout<Float>.stride
+        vectors.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            if let startIndex = dirtyRangeStart, let endIndex = dirtyRangeEnd {
+                let clampedStart = max(0, min(startIndex, currentCount - 1))
+                let clampedEnd = max(clampedStart, min(endIndex, currentCount - 1))
+                let elementStart = clampedStart * dimensions
+                let elementCount = (clampedEnd - clampedStart + 1) * dimensions
+                let byteStart = elementStart * stride
+                guard byteStart < vectorsBuffer.length else { return }
+                let byteCount = min(elementCount * stride, vectorsBuffer.length - byteStart)
+                vectorsBuffer.contents()
+                    .advanced(by: byteStart)
+                    .copyMemory(from: base.advanced(by: elementStart), byteCount: byteCount)
+            } else {
+                let elementCount = currentCount * dimensions
+                vectorsBuffer.contents().copyMemory(
+                    from: base,
+                    byteCount: min(elementCount * stride, vectorsBuffer.length)
+                )
+            }
+        }
+        dirtyRangeStart = nil
+        dirtyRangeEnd = nil
     }
 
     private func reserveIfNeeded(for requiredCount: UInt64) async throws {
@@ -642,9 +767,31 @@ public actor MetalVectorEngine {
             throw WaxError.invalidToc(reason: "Failed to resize distances buffer")
         }
 
+        if !vectors.isEmpty {
+            vectors.withUnsafeBufferPointer { buffer in
+                if let base = buffer.baseAddress {
+                    let byteCount = min(buffer.count * MemoryLayout<Float>.stride, newVectorsBuffer.length)
+                    newVectorsBuffer.contents().copyMemory(from: base, byteCount: byteCount)
+                }
+            }
+        }
+
         vectorsBuffer = newVectorsBuffer
         distancesBuffer = newDistancesBuffer
-        gpuBufferNeedsSync = true
+        gpuBufferNeedsSync = false
+        dirtyRangeStart = nil
+        dirtyRangeEnd = nil
+    }
+
+    private func markDirtyRange(startIndex: Int, endIndex: Int) {
+        guard startIndex <= endIndex else { return }
+        if let currentStart = dirtyRangeStart, let currentEnd = dirtyRangeEnd {
+            dirtyRangeStart = min(currentStart, startIndex)
+            dirtyRangeEnd = max(currentEnd, endIndex)
+        } else {
+            dirtyRangeStart = startIndex
+            dirtyRangeEnd = endIndex
+        }
     }
 }
 

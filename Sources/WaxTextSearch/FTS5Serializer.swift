@@ -52,6 +52,58 @@ enum FTS5Serializer {
         }
     }
 
+    static func deserializeReadOnly(_ region: MappedReadOnlyRegion, into connection: OpaquePointer) throws {
+        guard region.buffer.count > 0 else {
+            throw WaxError.io("sqlite3_deserialize requires non-empty data")
+        }
+        let size = region.buffer.count
+        guard size <= Constants.maxBlobBytes else {
+            throw WaxError.capacityExceeded(limit: UInt64(Constants.maxBlobBytes), requested: UInt64(size))
+        }
+        guard let base = region.buffer.baseAddress else {
+            throw WaxError.io("mapped region base address missing")
+        }
+        let mutable = UnsafeMutablePointer<UInt8>(mutating: base.assumingMemoryBound(to: UInt8.self))
+        let flags = UInt32(SQLITE_DESERIALIZE_READONLY)
+        let rc = sqlite3_deserialize(
+            connection,
+            "main",
+            mutable,
+            Int64(size),
+            Int64(size),
+            flags
+        )
+        guard rc == SQLITE_OK else {
+            throw WaxError.io("sqlite3_deserialize failed: \(sqliteMessage(connection))")
+        }
+    }
+
+    static func deserializeReadOnly(_ region: InMemoryReadOnlyRegion, into connection: OpaquePointer) throws {
+        guard region.buffer.count > 0 else {
+            throw WaxError.io("sqlite3_deserialize requires non-empty data")
+        }
+        let size = region.buffer.count
+        guard size <= Constants.maxBlobBytes else {
+            throw WaxError.capacityExceeded(limit: UInt64(Constants.maxBlobBytes), requested: UInt64(size))
+        }
+        guard let base = region.buffer.baseAddress else {
+            throw WaxError.io("read-only region base address missing")
+        }
+        let mutable = UnsafeMutablePointer<UInt8>(mutating: base.assumingMemoryBound(to: UInt8.self))
+        let flags = UInt32(SQLITE_DESERIALIZE_READONLY)
+        let rc = sqlite3_deserialize(
+            connection,
+            "main",
+            mutable,
+            Int64(size),
+            Int64(size),
+            flags
+        )
+        guard rc == SQLITE_OK else {
+            throw WaxError.io("sqlite3_deserialize failed: \(sqliteMessage(connection))")
+        }
+    }
+
     private static func sqliteMessage(_ connection: OpaquePointer?) -> String {
         guard let connection else { return "no connection" }
         guard let message = sqlite3_errmsg(connection) else { return "unknown sqlite error" }

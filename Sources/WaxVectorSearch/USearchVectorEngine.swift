@@ -9,6 +9,7 @@ public actor USearchVectorEngine {
 
     private let metric: VectorMetric
     public let dimensions: Int
+    public let quantization: VecQuantization
 
     private var vectorCount: UInt64
     private var reservedCapacity: UInt32
@@ -29,7 +30,11 @@ public actor USearchVectorEngine {
         }
     }
 
-    public init(metric: VectorMetric, dimensions: Int) throws {
+    public init(
+        metric: VectorMetric,
+        dimensions: Int,
+        quantization: VecQuantization = .f32
+    ) throws {
         guard dimensions > 0 else {
             throw WaxError.invalidToc(reason: "dimensions must be > 0")
         }
@@ -42,6 +47,7 @@ public actor USearchVectorEngine {
 
         self.metric = metric
         self.dimensions = dimensions
+        self.quantization = quantization
         self.vectorCount = 0
         self.reservedCapacity = Self.initialReserve
         self.dirty = false
@@ -49,17 +55,38 @@ public actor USearchVectorEngine {
             metric: metric.toUSearchMetric(),
             dimensions: UInt32(dimensions),
             connectivity: Self.connectivity,
-            quantization: .f32
+            quantization: quantization.toUSearchScalar()
         )
         self.io = BlockingIOExecutor(label: "com.wax.usearch", qos: .userInitiated)
         try index.reserve(reservedCapacity)
     }
 
-    public static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> USearchVectorEngine {
-        let engine = try USearchVectorEngine(metric: metric, dimensions: dimensions)
+    public static func load(
+        from wax: Wax,
+        metric: VectorMetric,
+        dimensions: Int,
+        quantization: VecQuantization = .f32
+    ) async throws -> USearchVectorEngine {
         if let bytes = try await wax.readCommittedVecIndexBytes() {
+            let info = try VectorSerializer.decodeHeader(from: bytes)
+            let engine = try USearchVectorEngine(
+                metric: metric,
+                dimensions: dimensions,
+                quantization: info.quantization
+            )
             try await engine.deserialize(bytes)
+            let pending = await wax.pendingEmbeddingMutations()
+            for embedding in pending {
+                try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
+            }
+            return engine
         }
+
+        let engine = try USearchVectorEngine(
+            metric: metric,
+            dimensions: dimensions,
+            quantization: quantization
+        )
         let pending = await wax.pendingEmbeddingMutations()
         for embedding in pending {
             try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
@@ -214,7 +241,8 @@ public actor USearchVectorEngine {
                     index,
                     metric: metric,
                     dimensions: dimensions,
-                    vectorCount: vectorCount
+                    vectorCount: vectorCount,
+                    quantization: quantization
                 )
             }
         }
@@ -233,6 +261,11 @@ public actor USearchVectorEngine {
                 guard info.similarity == metric.toVecSimilarity() else {
                     throw WaxError.invalidToc(
                         reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(info.similarity)"
+                    )
+                }
+                guard info.quantization == quantization else {
+                    throw WaxError.invalidToc(
+                        reason: "vec quantization mismatch: expected \(quantization), got \(info.quantization)"
                     )
                 }
 

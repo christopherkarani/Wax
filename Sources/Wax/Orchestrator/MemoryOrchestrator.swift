@@ -52,11 +52,15 @@ public actor MemoryOrchestrator {
                 let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
                 self.vec = try await wax.enableVectorSearch(
                     dimensions: embedder.dimensions,
-                    preference: preference
+                    preference: preference,
+                    quantization: config.vectorQuantization
                 )
             } else if await wax.committedVecIndexManifest() != nil {
                 let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-                self.vec = try await wax.enableVectorSearchFromManifest(preference: preference)
+                self.vec = try await wax.enableVectorSearchFromManifest(
+                    preference: preference,
+                    quantization: config.vectorQuantization
+                )
             } else {
                 throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
             }

@@ -12,7 +12,8 @@ public actor WaxVectorSearchSession {
         wax: Wax,
         metric: VectorMetric = .cosine,
         dimensions: Int,
-        preference: VectorEnginePreference = .auto
+        preference: VectorEnginePreference = .auto,
+        quantization: VecQuantization = .f32
     ) async throws {
         self.wax = wax
         self.dimensions = dimensions
@@ -21,10 +22,20 @@ public actor WaxVectorSearchSession {
             if let metal = try? await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions) {
                 self.engine = metal
             } else {
-                self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+                self.engine = try await USearchVectorEngine.load(
+                    from: wax,
+                    metric: metric,
+                    dimensions: dimensions,
+                    quantization: quantization
+                )
             }
         } else {
-            self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+            self.engine = try await USearchVectorEngine.load(
+                from: wax,
+                metric: metric,
+                dimensions: dimensions,
+                quantization: quantization
+            )
         }
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
@@ -153,18 +164,21 @@ public extension Wax {
     func enableVectorSearch(
         metric: VectorMetric = .cosine,
         dimensions: Int,
-        preference: VectorEnginePreference = .auto
+        preference: VectorEnginePreference = .auto,
+        quantization: VecQuantization = .f32
     ) async throws -> WaxVectorSearchSession {
         try await WaxVectorSearchSession(
             wax: self,
             metric: metric,
             dimensions: dimensions,
-            preference: preference
+            preference: preference,
+            quantization: quantization
         )
     }
 
     func enableVectorSearchFromManifest(
-        preference: VectorEnginePreference = .auto
+        preference: VectorEnginePreference = .auto,
+        quantization: VecQuantization = .f32
     ) async throws -> WaxVectorSearchSession {
         guard let manifest = await committedVecIndexManifest() else {
             throw WaxError.io("vec index manifest missing; enableVectorSearch(dimensions:) required")
@@ -176,7 +190,8 @@ public extension Wax {
             wax: self,
             metric: metric,
             dimensions: Int(manifest.dimension),
-            preference: preference
+            preference: preference,
+            quantization: quantization
         )
     }
 }

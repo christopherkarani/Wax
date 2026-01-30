@@ -8,12 +8,20 @@ public enum VectorSerializer {
         public var dimension: UInt32
         public var vectorCount: UInt64
         public var payloadLength: UInt64
+        public var quantization: VecQuantization
 
-        public init(similarity: VecSimilarity, dimension: UInt32, vectorCount: UInt64, payloadLength: UInt64) {
+        public init(
+            similarity: VecSimilarity,
+            dimension: UInt32,
+            vectorCount: UInt64,
+            payloadLength: UInt64,
+            quantization: VecQuantization
+        ) {
             self.similarity = similarity
             self.dimension = dimension
             self.vectorCount = vectorCount
             self.payloadLength = payloadLength
+            self.quantization = quantization
         }
     }
 
@@ -55,14 +63,16 @@ public enum VectorSerializer {
         _ index: USearchIndex,
         metric: VectorMetric,
         dimensions: Int,
-        vectorCount: UInt64
+        vectorCount: UInt64,
+        quantization: VecQuantization
     ) throws -> Data {
         let payload = try saveUSearchPayload(index)
         let header = VecSegmentHeaderV1(
             similarity: metric.toVecSimilarity(),
             dimension: UInt32(dimensions),
             vectorCount: vectorCount,
-            payloadLength: UInt64(payload.count)
+            payloadLength: UInt64(payload.count),
+            quantization: quantization
         )
         var encoder = BinaryEncoder()
         header.encode(to: &encoder)
@@ -95,7 +105,8 @@ public enum VectorSerializer {
             similarity: header.similarity,
             dimension: header.dimension,
             vectorCount: header.vectorCount,
-            payloadLength: header.payloadLength
+            payloadLength: header.payloadLength,
+            quantization: header.quantization
         )
 
         switch header.encoding {
@@ -156,6 +167,24 @@ public enum VectorSerializer {
         }
     }
 
+    /// Decodes only the vec segment header to read metadata without loading the payload.
+    public static func decodeHeader(from data: Data) throws -> SegmentInfo {
+        guard data.count >= VecSegmentHeaderV1.encodedSize else {
+            throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
+        }
+        let headerBytes = data.prefix(VecSegmentHeaderV1.encodedSize)
+        var headerDecoder = try BinaryDecoder(data: Data(headerBytes))
+        let header = try VecSegmentHeaderV1.decodeAnyEncoding(from: &headerDecoder)
+        try headerDecoder.finalize()
+        return SegmentInfo(
+            similarity: header.similarity,
+            dimension: header.dimension,
+            vectorCount: header.vectorCount,
+            payloadLength: header.payloadLength,
+            quantization: header.quantization
+        )
+    }
+
     /// Loads the index directly from an in-memory buffer.
     /// This is ~10-100x faster than the file-based approach.
     public static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
@@ -182,12 +211,20 @@ public enum VectorSerializer {
         var dimension: UInt32
         var vectorCount: UInt64
         var payloadLength: UInt64
+        var quantization: VecQuantization
 
-        init(similarity: VecSimilarity, dimension: UInt32, vectorCount: UInt64, payloadLength: UInt64) {
+        init(
+            similarity: VecSimilarity,
+            dimension: UInt32,
+            vectorCount: UInt64,
+            payloadLength: UInt64,
+            quantization: VecQuantization
+        ) {
             self.similarity = similarity
             self.dimension = dimension
             self.vectorCount = vectorCount
             self.payloadLength = payloadLength
+            self.quantization = quantization
         }
 
         func encode(to encoder: inout BinaryEncoder) {
@@ -198,7 +235,11 @@ public enum VectorSerializer {
             encoder.encode(dimension)
             encoder.encode(vectorCount)
             encoder.encode(payloadLength)
-            encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+            var reserved = [UInt8](repeating: 0, count: 8)
+            if quantization != .f32 {
+                reserved[0] = quantization.rawValue
+            }
+            encoder.encodeFixedBytes(Data(reserved))
         }
 
         static func decode(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {
@@ -234,15 +275,24 @@ public enum VectorSerializer {
             let vectorCount = try decoder.decode(UInt64.self)
             let payloadLength = try decoder.decode(UInt64.self)
             let reserved = try decoder.decodeFixedBytes(count: 8)
-            guard reserved == Data(repeating: 0, count: 8) else {
-                throw WaxError.invalidToc(reason: "vec segment reserved bytes must be zero")
+            let quantization: VecQuantization
+            if reserved == Data(repeating: 0, count: 8) {
+                quantization = .f32
+            } else {
+                let bytes = [UInt8](reserved)
+                guard bytes.dropFirst().allSatisfy({ $0 == 0 }),
+                      let value = VecQuantization(rawValue: bytes[0]) else {
+                    throw WaxError.invalidToc(reason: "vec segment reserved bytes invalid")
+                }
+                quantization = value
             }
 
             var header = VecSegmentHeaderV1(
                 similarity: similarity,
                 dimension: dimension,
                 vectorCount: vectorCount,
-                payloadLength: payloadLength
+                payloadLength: payloadLength,
+                quantization: quantization
             )
             header.version = version
             header.encoding = encoding

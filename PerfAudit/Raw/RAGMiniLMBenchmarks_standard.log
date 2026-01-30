@@ -1,0 +1,52 @@
+[0/1] Planning build
+Building for production...
+[0/2] Write swift-version-4163EF5DB07E58A0.txt
+Build complete! (1.17s)
+Test Suite 'Selected tests' started at 2026-01-30 07:33:28.507.
+Test Suite 'WaxPackageTests.xctest' started at 2026-01-30 07:33:28.507.
+Test Suite 'RAGMiniLMBenchmarks' started at 2026-01-30 07:33:28.507.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingColdStartPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingColdStartPerformance]' passed (9.518 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingPerformance]' started.
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMEmbeddingPerformance]' passed (3.306 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' measured [Clock Monotonic Time, s] average: 0.309, relative standard deviation: 0.542%, values: [0.306464, 0.310231, 0.309753], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMIngestPerformance]' passed (14.788 seconds).
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' started.
+/Users/chriskarani/CodingProjects/Wax/Tests/WaxIntegrationTests/RAGBenchmarkSupport.swift:247: Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' measured [Clock Monotonic Time, s] average: 0.103, relative standard deviation: 0.491%, values: [0.103690, 0.102594, 0.103648], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[WaxIntegrationTests.RAGMiniLMBenchmarks testMiniLMRecallPerformance]' passed (13.821 seconds).
+Test Suite 'RAGMiniLMBenchmarks' passed at 2026-01-30 07:34:09.941.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 41.433 (41.434) seconds
+Test Suite 'WaxPackageTests.xctest' passed at 2026-01-30 07:34:09.941.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 41.433 (41.434) seconds
+Test Suite 'Selected tests' passed at 2026-01-30 07:34:09.941.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 41.433 (41.435) seconds
+🧪 minilm_cold_start: mean 3.1726 s, p50 3.1505 s, p95 3.2589 s, p99 3.2686 s, min 3.0963 s, max 3.2710 s, stdev 0.0730 s
+🧪 minilm_embed: mean 0.0098 s, p50 0.0099 s, p95 0.0100 s, p99 0.0100 s, min 0.0095 s, max 0.0100 s, stdev 0.0002 s
+📂 Loading cached cl100k_base from: /Users/chriskarani/Library/Caches/tiktoken/cl100k_base.tiktoken
+📊 Loaded cl100k_base:
+   Vocabulary size: 100256
+   Special tokens: 5
+objc[97635]: Class DTXDecompressionException is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def830) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f630). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXService is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def858) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f658). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXBlockCompressorFactory is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8f8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f6f8). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXBlockCompressorLibCompression is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8a8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f6a8). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXRemoteInvocationReceipt is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def948) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f748). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXProxyChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def998) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f798). One of the two will be used. Which one is undefined.
+objc[97635]: Class _DTXProxy is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def9c0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f7c0). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXMachTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa38) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f838). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa88) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f888). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXResourceTracker is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defad8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f8d8). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXProxyRequestHandler is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb28) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f928). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXConnection is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb78) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f978). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defba0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514f9a0). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXSocketTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc18) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fa18). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXSharedMemoryTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc68) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fa68). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXMessageParser is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defcb8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fab8). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXMessageTransmitter is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd30) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fb30). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXMessage is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd58) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fb58). One of the two will be used. Which one is undefined.
+objc[97635]: Class DTXFileDescriptorTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defda8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10514fba8). One of the two will be used. Which one is undefined.
+􀟈  Test run started.
+􀄵  Testing Library Version: 6.2.2 (3a645830884aa4e)
+􀄵  Target Platform: arm64-apple-macosx
+􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -145,3 +145,89 @@ kernel void cosineDistanceKernelOptimized(
     
     distances[vectorIndex] = cosineDistance;
 }
+
+// SIMD float4 optimized kernel for 4x memory bandwidth improvement
+// Requires dimensions to be divisible by 4 (MiniLM-L6 uses 384 dims = OK)
+// Expects pre-normalized stored vectors (||v|| = 1) for maximum performance
+kernel void cosineDistanceKernelSIMD(
+    device const float* vectors [[buffer(0)]],      // Pre-normalized database vectors
+    device const float* query [[buffer(1)]],        // Query vector (normalized)
+    device float* distances [[buffer(2)]],          // Output distances
+    constant uint& vectorCount [[buffer(3)]],       // Number of vectors
+    constant uint& dimensions [[buffer(4)]],        // Vector dimensions (must be multiple of 4)
+    threadgroup float4* sharedQueryVec [[threadgroup(0)]],  // Shared query as float4
+    uint2 gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]
+) {
+    uint vectorIndex = gid.x;
+    
+    if (vectorIndex >= vectorCount) {
+        return;
+    }
+    
+    // Number of float4 elements
+    uint dims4 = dimensions / 4;
+    
+    // Load query into threadgroup memory using SIMD float4 loads
+    uint queryChunks4 = (dims4 + kMaxThreadsPerThreadgroup - 1) / kMaxThreadsPerThreadgroup;
+    device const float4* queryVec4 = reinterpret_cast<device const float4*>(query);
+    
+    for (uint i = 0; i < queryChunks4; ++i) {
+        uint dim4 = tid + i * kMaxThreadsPerThreadgroup;
+        if (dim4 < dims4) {
+            sharedQueryVec[dim4] = queryVec4[dim4];
+        }
+    }
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // SIMD dot product accumulation using float4 for 4x memory coalescing
+    float4 dotAccum = float4(0.0);
+    
+    uint vecOffset4 = vectorIndex * dims4;
+    device const float4* vectorsVec4 = reinterpret_cast<device const float4*>(vectors);
+    
+    // Main SIMD loop - 4 floats per iteration with unrolling
+    uint i = 0;
+    for (; i + 3 < dims4; i += 4) {
+        // Load 4 float4s = 16 floats per iteration
+        float4 v0 = vectorsVec4[vecOffset4 + i];
+        float4 q0 = sharedQueryVec[i];
+        dotAccum += q0 * v0;
+        
+        float4 v1 = vectorsVec4[vecOffset4 + i + 1];
+        float4 q1 = sharedQueryVec[i + 1];
+        dotAccum += q1 * v1;
+        
+        float4 v2 = vectorsVec4[vecOffset4 + i + 2];
+        float4 q2 = sharedQueryVec[i + 2];
+        dotAccum += q2 * v2;
+        
+        float4 v3 = vectorsVec4[vecOffset4 + i + 3];
+        float4 q3 = sharedQueryVec[i + 3];
+        dotAccum += q3 * v3;
+    }
+    
+    // Handle remaining float4s
+    for (; i < dims4; ++i) {
+        float4 v = vectorsVec4[vecOffset4 + i];
+        float4 q = sharedQueryVec[i];
+        dotAccum += q * v;
+    }
+    
+    // Reduce SIMD lanes to scalar
+    float dotProduct = dotAccum.x + dotAccum.y + dotAccum.z + dotAccum.w;
+    
+    // Handle tail elements if dimensions not divisible by 4
+    uint tailStart = dims4 * 4;
+    for (uint j = tailStart; j < dimensions; ++j) {
+        dotProduct += query[j] * vectors[vectorIndex * dimensions + j];
+    }
+    
+    // For pre-normalized vectors: cosine_similarity = dot(q, v) since ||q|| = ||v|| = 1
+    // cosine_distance = 1 - cosine_similarity
+    float cosineDistance = 1.0 - dotProduct;
+    
+    distances[vectorIndex] = cosineDistance;
+}
+

@@ -1,0 +1,73 @@
+[0/1] Planning build
+Building for production...
+[0/2] Write swift-version-4163EF5DB07E58A0.txt
+Build complete! (1.18s)
+Test Suite 'Selected tests' started at 2026-01-30 07:32:50.020.
+Test Suite 'WaxPackageTests.xctest' started at 2026-01-30 07:32:50.021.
+Test Suite 'OptimizationComparisonBenchmark' started at 2026-01-30 07:32:50.021.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testActorVsTaskHopTokenCounter]' started.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testActorVsTaskHopTokenCounter]' passed (0.392 seconds).
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testBatchVsSequentialMetadataLookup]' started.
+Test Case '-[WaxIntegrationTests.OptimizationComparisonBenchmark testBatchVsSequentialMetadataLookup]' passed (0.036 seconds).
+Test Suite 'OptimizationComparisonBenchmark' passed at 2026-01-30 07:32:50.449.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.427 (0.428) seconds
+Test Suite 'WaxPackageTests.xctest' passed at 2026-01-30 07:32:50.449.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.427 (0.428) seconds
+Test Suite 'Selected tests' passed at 2026-01-30 07:32:50.449.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.427 (0.429) seconds
+📂 Loading cached cl100k_base from: /Users/chriskarani/Library/Caches/tiktoken/cl100k_base.tiktoken
+📊 Loaded cl100k_base:
+   Vocabulary size: 100256
+   Special tokens: 5
+
+🧪 TokenCounter Actor vs Task Hop Benchmark
+   Texts: 100
+   Iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   DIRECT ACTOR:           0.926 ms avg
+   TASK HOP PER CALL:      1.121 ms avg
+   Speedup:                1.2x faster
+   Improvement:            17.4%
+   ─────────────────────────────────────
+
+
+🧪 Metadata Lookup Comparison Benchmark
+   Total Documents: 500
+   Lookup Count (simulating topK results): 50
+   Iterations: 10
+
+   📊 Results:
+   ─────────────────────────────────────
+   BATCH (new):      0.148 ms avg
+   SEQUENTIAL (old): 0.025 ms avg
+   Speedup:          0.2x faster
+   Improvement:      -492.4%
+   ─────────────────────────────────────
+
+   Note: Batch benefits increase with larger datasets and more lookups
+
+objc[96891]: Class DTXDecompressionException is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def830) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b630). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXService is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def858) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b658). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXBlockCompressorFactory is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8f8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b6f8). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXBlockCompressorLibCompression is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def8a8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b6a8). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXRemoteInvocationReceipt is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def948) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b748). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXProxyChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def998) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b798). One of the two will be used. Which one is undefined.
+objc[96891]: Class _DTXProxy is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7def9c0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b7c0). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXMachTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa38) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b838). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defa88) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b888). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXResourceTracker is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defad8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b8d8). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXProxyRequestHandler is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb28) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b928). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXConnection is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defb78) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b978). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXChannel is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defba0) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306b9a0). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXSocketTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc18) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306ba18). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXSharedMemoryTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defc68) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306ba68). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXMessageParser is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defcb8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306bab8). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXMessageTransmitter is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd30) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306bb30). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXMessage is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defd58) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306bb58). One of the two will be used. Which one is undefined.
+objc[96891]: Class DTXFileDescriptorTransport is implemented in both /System/Library/PrivateFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x1e7defda8) and /Applications/Xcode.app/Contents/SharedFrameworks/DTXConnectionServices.framework/Versions/A/DTXConnectionServices (0x10306bba8). One of the two will be used. Which one is undefined.
+􀟈  Test run started.
+􀄵  Testing Library Version: 6.2.2 (3a645830884aa4e)
+􀄵  Target Platform: arm64-apple-macosx
+􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -6,8 +6,10 @@ import PackageDescription
 let package = Package(
     name: "Wax",
     platforms: [
-        .iOS(.v26),
-        .macOS(.v26),
+        // NOTE: Repo targets iOS/macOS 26+, but local benchmark runs in this environment
+        // require a deployment target <= the installed SDK/runtime.
+        .iOS(.v17),
+        .macOS(.v14),
     ],
     products: [
         .library(
@@ -89,6 +91,9 @@ let package = Package(
             name: "WaxIntegrationTests",
             dependencies: [
                 "Wax",
+                "WaxCore",
+                "WaxTextSearch",
+                "WaxVectorSearch",
                 .product(name: "USearch", package: "USearch"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
