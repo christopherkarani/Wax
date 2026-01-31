@@ -14,6 +14,45 @@ Instead of running complex RAG pipelines or server-based vector databases, Wax e
 
 The result is a model-agnostic, infrastructure-free memory layer that gives AI agents persistent, long-term memory they can carry anywhere.
 
+## 📊 Performance
+
+| Benchmark | Result | Notes |
+|-----------|--------|-------|
+| **Hybrid Search @ 10K docs** | 103ms | Near-constant scaling |
+| **Metal GPU Search** | 1.63ms | 10K vectors × 384 dims |
+| **Cold Open → First Search** | 17ms p50 | Ready for interactive use |
+| **GPU Warm vs Cold** | 5.3× faster | Lazy sync optimization |
+| **Buffer Serialization** | 16.5× faster | vs file-based I/O |
+
+<details>
+<summary><b>Full Benchmark Results</b></summary>
+
+### Core RAG Pipeline
+
+| Test | Avg Latency | RSD |
+|------|-------------|-----|
+| Hybrid Search @ 1K docs | 101ms | 1.5% |
+| Hybrid Search @ 10K docs | 103ms | 0.5% |
+| Text Search | 101ms | 1.0% |
+| Vector Search | 101ms | 1.5% |
+| Orchestrator Ingest (1K docs) | 1.395s | 3.0% |
+| Orchestrator Recall | 101ms | 1.9% |
+| Tokenizer Cold Start | 9.2ms p50 | — |
+
+### Metal GPU Performance
+
+| Metric | Value |
+|--------|-------|
+| Search latency (1K × 128d) | 1.64ms avg |
+| Latency per vector | 0.0016ms |
+| Cold sync (10K × 384d) | 8.68ms |
+| Warm search (10K × 384d) | 1.63ms |
+| Memory saved per warm query | 14.6 MB |
+
+*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*
+
+</details>
+
 ## ✨ What Makes Wax Special
 
 **Stop shipping dumb apps.** Give your users AI that actually remembers.
