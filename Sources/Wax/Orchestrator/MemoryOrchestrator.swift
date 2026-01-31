@@ -24,6 +24,13 @@ public actor MemoryOrchestrator {
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil
     ) async throws {
+        // Prewarm tokenizer in parallel with Wax file operations
+        // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
+        async let tokenizerPrewarm: Bool = { 
+            _ = try? await TokenCounter.preload()
+            return true
+        }()
+        
         if FileManager.default.fileExists(atPath: url.path) {
             self.wax = try await Wax.open(at: url)
         } else {
@@ -53,7 +60,11 @@ public actor MemoryOrchestrator {
             vectorDimensions: embedder?.dimensions
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        
+        // Wait for tokenizer prewarm to complete (should already be done by now)
+        _ = await tokenizerPrewarm
     }
+
 
     // MARK: - Session tagging (v1)
 
