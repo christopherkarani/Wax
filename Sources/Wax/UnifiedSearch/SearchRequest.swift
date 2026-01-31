@@ -11,6 +11,8 @@ public struct SearchRequest: Sendable, Equatable {
     public var minScore: Float?
     public var timeRange: TimeRange?
     public var frameFilter: FrameFilter?
+    public var asOfMs: Int64
+    public var structuredMemory: StructuredMemorySearchOptions
 
     public var rrfK: Int
     public var previewMaxBytes: Int
@@ -26,6 +28,8 @@ public struct SearchRequest: Sendable, Equatable {
         minScore: Float? = nil,
         timeRange: TimeRange? = nil,
         frameFilter: FrameFilter? = nil,
+        asOfMs: Int64 = Int64.max,
+        structuredMemory: StructuredMemorySearchOptions = .init(),
         rrfK: Int = 60,
         previewMaxBytes: Int = 512,
         allowTimelineFallback: Bool = false,
@@ -39,10 +43,35 @@ public struct SearchRequest: Sendable, Equatable {
         self.minScore = minScore
         self.timeRange = timeRange
         self.frameFilter = frameFilter
+        self.asOfMs = asOfMs
+        self.structuredMemory = structuredMemory
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
         self.allowTimelineFallback = allowTimelineFallback
         self.timelineFallbackLimit = timelineFallbackLimit
+    }
+}
+
+/// Structured memory lane options for unified search.
+public struct StructuredMemorySearchOptions: Sendable, Equatable {
+    public var weight: Float
+    public var maxEntityCandidates: Int
+    public var maxFacts: Int
+    public var maxEvidenceFrames: Int
+    public var requireEvidenceSpan: Bool
+
+    public init(
+        weight: Float = 0.2,
+        maxEntityCandidates: Int = 16,
+        maxFacts: Int = 64,
+        maxEvidenceFrames: Int = 32,
+        requireEvidenceSpan: Bool = false
+    ) {
+        self.weight = weight
+        self.maxEntityCandidates = maxEntityCandidates
+        self.maxFacts = maxFacts
+        self.maxEvidenceFrames = maxEvidenceFrames
+        self.requireEvidenceSpan = requireEvidenceSpan
     }
 }
 

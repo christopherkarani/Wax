@@ -1,6 +1,5 @@
 import Foundation
 import WaxCore
-import WaxTextSearch
 import WaxVectorSearch
 
 public actor MemoryOrchestrator {
@@ -14,8 +13,7 @@ public actor MemoryOrchestrator {
     private let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
 
-    let text: WaxTextSearchSession?
-    let vec: WaxVectorSearchSession?
+    let session: WaxSession
     private let embedder: (any EmbeddingProvider)?
     private let embeddingCache: EmbeddingMemoizer?
 
@@ -41,28 +39,20 @@ public actor MemoryOrchestrator {
             self.embeddingCache = nil
         }
 
-        if config.enableTextSearch {
-            self.text = try await wax.enableTextSearch()
-        } else {
-            self.text = nil
+        if config.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
+            throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
         }
 
-        if config.enableVectorSearch {
-            if let embedder {
-                let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-                self.vec = try await wax.enableVectorSearch(
-                    dimensions: embedder.dimensions,
-                    preference: preference
-                )
-            } else if await wax.committedVecIndexManifest() != nil {
-                let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-                self.vec = try await wax.enableVectorSearchFromManifest(preference: preference)
-            } else {
-                throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
-            }
-        } else {
-            self.vec = nil
-        }
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: config.enableTextSearch,
+            enableVectorSearch: config.enableVectorSearch,
+            enableStructuredMemory: false,
+            vectorEnginePreference: preference,
+            vectorMetric: .cosine,
+            vectorDimensions: embedder?.dimensions
+        )
+        self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
     }
 
     // MARK: - Session tagging (v1)
@@ -87,7 +77,7 @@ public actor MemoryOrchestrator {
             docMeta.entries["session_id"] = session.uuidString
         }
 
-        let docId = try await wax.put(
+        let docId = try await session.put(
             Data(content.utf8),
             options: FrameMetaSubset(
                 role: .document,
@@ -98,13 +88,12 @@ public actor MemoryOrchestrator {
         guard !chunks.isEmpty else { return }
 
         let chunkCount = chunks.count
-        let localWax = wax
-        let localText = text
-        let localVec = vec
+        let localSession = session
         let localEmbedder = embedder
         let cache = embeddingCache
         let sessionId = currentSessionId
         let batchSize = max(1, config.ingestBatchSize)
+        let useVectorSearch = config.enableVectorSearch
 
         struct IngestBatchResult {
             let index: Int
@@ -151,7 +140,7 @@ public actor MemoryOrchestrator {
 
                     let batchContents = batchChunks.map { Data($0.utf8) }
 
-                    if let localEmbedder = localEmbedder, localVec != nil {
+                    if let localEmbedder = localEmbedder, useVectorSearch {
                         let embeddings = try await Self.prepareEmbeddingsBatchOptimized(
                             chunks: batchChunks,
                             embedder: localEmbedder,
@@ -197,22 +186,22 @@ public actor MemoryOrchestrator {
                 throw WaxError.io("missing ingest batch result at index \(index)")
             }
 
-            if let embeddings = result.embeddings, let localVec {
-                let frameIds = try await localVec.putWithEmbeddingBatch(
+            if let embeddings = result.embeddings, config.enableVectorSearch {
+                let frameIds = try await localSession.putBatch(
                     contents: result.contents,
                     embeddings: embeddings,
-                    options: result.options,
-                    identity: localEmbedder?.identity
+                    identity: localEmbedder?.identity,
+                    options: result.options
                 )
 
-                if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
                 }
             } else {
-                let frameIds = try await localWax.putBatch(result.contents, options: result.options)
+                let frameIds = try await localSession.putBatch(contents: result.contents, options: result.options)
 
-                if let localText {
-                    try await localText.indexBatch(frameIds: frameIds, texts: result.texts)
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
                 }
             }
         }
@@ -343,7 +332,7 @@ public actor MemoryOrchestrator {
         try await stageTextForRecall()
 
         var embedding: [Float]?
-        if self.vec != nil, let embedder {
+        if config.enableVectorSearch, let embedder {
             var vector = try await embedder.embed(query)
             if embedder.normalize {
                 vector = Self.normalizedL2(vector)
@@ -398,23 +387,12 @@ public actor MemoryOrchestrator {
     // MARK: - Persistence lifecycle
 
     public func flush() async throws {
-        if let text {
-            try await text.stageForCommit()
-        }
-
-        if let vec {
-            let hasPendingEmbeddings = !(await wax.pendingEmbeddingMutations()).isEmpty
-            let hasCommittedIndex = (await wax.committedVecIndexManifest()) != nil
-            if hasPendingEmbeddings || hasCommittedIndex {
-                try await vec.stageForCommit()
-            }
-        }
-
-        try await wax.commit()
+        try await session.commit()
     }
 
     public func close() async throws {
         try await flush()
+        await session.close()
         try await wax.close()
     }
 
@@ -427,8 +405,8 @@ public actor MemoryOrchestrator {
     }
 
     private func stageTextForRecall() async throws {
-        if let text {
-            try await text.stageForCommit()
+        if config.enableTextSearch {
+            try await session.stage()
         }
     }
 

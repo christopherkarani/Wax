@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ExtractiveSurrogateGenerator: SurrogateGenerator, Sendable, Equatable {
+public struct ExtractiveSurrogateGenerator: HierarchicalSurrogateGenerator, Sendable, Equatable {
     public var algorithmID: String { "extractive_v1" }
 
     public init() {}
@@ -19,6 +19,72 @@ public struct ExtractiveSurrogateGenerator: SurrogateGenerator, Sendable, Equata
         let selected = selectMMR(candidates: scored, maxItems: 8)
         let joined = selected.map(\.text).joined(separator: "\n")
         return try await truncateToTokens(joined, maxTokens: maxTokens)
+    }
+    
+    // MARK: - Hierarchical Generation (Optimized)
+    
+    /// Optimized hierarchical generation: score once, select different amounts per tier.
+    public func generateTiers(
+        sourceText: String,
+        config: SurrogateTierConfig
+    ) async throws -> SurrogateTiers {
+        let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return SurrogateTiers(full: "", gist: "", micro: "")
+        }
+        
+        let normalized = normalizeWhitespace(trimmed)
+        let segments = segment(text: normalized)
+        
+        // Handle case with no segments (single block of text)
+        if segments.isEmpty {
+            let full = try await truncateToTokens(normalized, maxTokens: config.fullMaxTokens)
+            let gist = try await truncateToTokens(normalized, maxTokens: config.gistMaxTokens)
+            let micro = try await truncateToTokens(normalized, maxTokens: config.microMaxTokens)
+            return SurrogateTiers(full: full, gist: gist, micro: micro)
+        }
+        
+        // Score all candidates once
+        let scored = segments.map { 
+            Candidate(text: $0, tokens: tokenSet(for: $0), score: score(sentence: $0)) 
+        }
+        
+        // Select different amounts for each tier using MMR
+        // Full: more items for higher fidelity
+        // Gist: moderate items
+        // Micro: minimal items (1-2 most important)
+        let fullSelected = selectMMR(candidates: scored, maxItems: 8)
+        let gistSelected = selectMMR(candidates: scored, maxItems: 3)
+        let microSelected = selectMMR(candidates: scored, maxItems: 1)
+        
+        // Reorder by original position for coherence
+        let fullOrdered = reorderByOriginalPosition(fullSelected, original: segments)
+        let gistOrdered = reorderByOriginalPosition(gistSelected, original: segments)
+        let microOrdered = reorderByOriginalPosition(microSelected, original: segments)
+        
+        // Join and truncate to token budgets
+        let full = try await truncateToTokens(
+            fullOrdered.joined(separator: "\n"),
+            maxTokens: config.fullMaxTokens
+        )
+        let gist = try await truncateToTokens(
+            gistOrdered.joined(separator: " "),
+            maxTokens: config.gistMaxTokens
+        )
+        let micro = try await truncateToTokens(
+            microOrdered.joined(separator: " "),
+            maxTokens: config.microMaxTokens
+        )
+        
+        return SurrogateTiers(full: full, gist: gist, micro: micro)
+    }
+    
+    /// Reorder selected candidates to match their original order in the source text.
+    private func reorderByOriginalPosition(_ selected: [Candidate], original: [String]) -> [String] {
+        let positionMap = Dictionary(uniqueKeysWithValues: original.enumerated().map { ($0.element, $0.offset) })
+        return selected
+            .sorted { (positionMap[$0.text] ?? Int.max) < (positionMap[$1.text] ?? Int.max) }
+            .map(\.text)
     }
 
     // MARK: - Scoring

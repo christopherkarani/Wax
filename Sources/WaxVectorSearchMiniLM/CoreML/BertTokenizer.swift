@@ -7,46 +7,51 @@
 
 import Foundation
 import CoreML
+import WaxCore
 
-public class BertTokenizer {
-    private let basicTokenizer = BasicTokenizer()
+public struct BatchInputs {
+    public let inputIds: MLMultiArray
+    public let attentionMask: MLMultiArray
+    public let sequenceLength: Int
+    public let lengths: [Int]
+}
+
+public final class BertTokenizer: @unchecked Sendable {
+    private static let sharedBasicTokenizer = BasicTokenizer()
+
+    private let basicTokenizer: BasicTokenizer
     private let wordpieceTokenizer: WordpieceTokenizer
     private let maxLen = 512
 
     private let vocab: [String: Int]
     private let ids_to_tokens: [Int: String]
 
-    public init() {
-        let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt")!
-        let vocabTxt = try! String(contentsOf: url, encoding: .utf8)
-        let tokens = vocabTxt.split(separator: "\n").map { String($0) }
-        var vocab: [String: Int] = [:]
-        var ids_to_tokens: [Int: String] = [:]
-        for (i, token) in tokens.enumerated() {
-            vocab[token] = i
-            ids_to_tokens[i] = token
-        }
-        self.vocab = vocab
-        self.ids_to_tokens = ids_to_tokens
-        self.wordpieceTokenizer = WordpieceTokenizer(vocab: self.vocab)
+    public init() throws {
+        let sharedVocab = try BertTokenizer.loadVocab()
+        self.vocab = sharedVocab.vocab
+        self.ids_to_tokens = sharedVocab.idsToTokens
+        self.basicTokenizer = Self.sharedBasicTokenizer
+        self.wordpieceTokenizer = WordpieceTokenizer(vocab: sharedVocab.vocab)
     }
 
-    public func buildModelTokens(sentence: String) -> [Int] {
-        var tokens = tokenizeToIds(text: sentence)
+    public func buildModelTokens(sentence: String) throws -> [Int] {
+        var tokens = try tokenizeToIds(text: sentence)
 
         let clsSepTokenCount = 2 // Account for [CLS] and [SEP] tokens
 
         if tokens.count + clsSepTokenCount > maxLen {
-            print("Input sentence is too long \(tokens.count + clsSepTokenCount) > \(maxLen), truncating.")
             tokens = Array(tokens[..<(maxLen - clsSepTokenCount)])
         }
 
         let paddingCount = maxLen - tokens.count - clsSepTokenCount
 
+        let clsToken = try tokenToIdOrThrow(token: "[CLS]")
+        let sepToken = try tokenToIdOrThrow(token: "[SEP]")
+        
         let inputTokens: [Int] = [
-            tokenToId(token: "[CLS]"),
+            clsToken,
         ] + tokens + [
-            tokenToId(token: "[SEP]"),
+            sepToken,
         ] + Array(repeating: 0, count: paddingCount)
 
         return inputTokens
@@ -58,17 +63,102 @@ public class BertTokenizer {
         return decodedString
     }
 
-    public func buildModelInputs(from inputTokens: [Int]) -> (MLMultiArray, MLMultiArray) {
-        let inputIds = MLMultiArray.from(inputTokens, dims: 2)
+    public func buildModelInputs(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray) {
+        let inputIds = try MLMultiArray.from(inputTokens, dims: 2)
         let maskValue = 1
 
         let attentionMaskValues: [Int] = inputTokens.map { token in
             token == 0 ? 0 : maskValue
         }
 
-        let attentionMask = MLMultiArray.from(attentionMaskValues, dims: 2)
+        let attentionMask = try MLMultiArray.from(attentionMaskValues, dims: 2)
 
         return (inputIds, attentionMask)
+    }
+
+    public func buildBatchInputs(
+        sentences: [String],
+        maxSequenceLength: Int? = nil,
+        sequenceLengthBuckets: [Int]? = nil
+    ) throws -> BatchInputs {
+        guard !sentences.isEmpty else {
+            let emptyIds = try MLMultiArray(shape: [0, 0], dataType: .int32)
+            let emptyMask = try MLMultiArray(shape: [0, 0], dataType: .int32)
+            return BatchInputs(inputIds: emptyIds, attentionMask: emptyMask, sequenceLength: 0, lengths: [])
+        }
+
+        let maxAllowed = max(2, min(maxSequenceLength ?? maxLen, maxLen))
+        let clsToken = try tokenToIdOrThrow(token: "[CLS]")
+        let sepToken = try tokenToIdOrThrow(token: "[SEP]")
+
+        var tokenSequences: [[Int]] = []
+        tokenSequences.reserveCapacity(sentences.count)
+        var lengths: [Int] = []
+        lengths.reserveCapacity(sentences.count)
+        var batchMax = 0
+
+        for sentence in sentences {
+            var tokens = try tokenizeToIds(text: sentence)
+            let maxTokens = maxAllowed - 2
+            if tokens.count > maxTokens {
+                tokens = Array(tokens.prefix(maxTokens))
+            }
+
+            let length = tokens.count + 2
+            lengths.append(length)
+            batchMax = max(batchMax, length)
+            tokenSequences.append(tokens)
+        }
+
+        let sequenceLength = Self.selectSequenceLength(
+            requiredLength: batchMax,
+            maxAllowed: maxAllowed,
+            buckets: sequenceLengthBuckets
+        )
+        let batchSize = sentences.count
+        let inputIds = try MLMultiArray(
+            shape: [NSNumber(value: batchSize), NSNumber(value: sequenceLength)],
+            dataType: .int32
+        )
+        let attentionMask = try MLMultiArray(
+            shape: [NSNumber(value: batchSize), NSNumber(value: sequenceLength)],
+            dataType: .int32
+        )
+
+        let idsPtr = UnsafeMutablePointer<Int32>(OpaquePointer(inputIds.dataPointer))
+        let maskPtr = UnsafeMutablePointer<Int32>(OpaquePointer(attentionMask.dataPointer))
+        idsPtr.initialize(repeating: 0, count: inputIds.count)
+        maskPtr.initialize(repeating: 0, count: attentionMask.count)
+
+        var adjustedLengths = lengths
+        for row in 0..<batchSize {
+            let tokens = tokenSequences[row]
+            let maxTokenCount = max(0, min(tokens.count, sequenceLength - 2))
+            let base = row * sequenceLength
+
+            idsPtr[base] = Int32(clsToken)
+            maskPtr[base] = 1
+
+            if maxTokenCount > 0 {
+                for index in 0..<maxTokenCount {
+                    idsPtr[base + 1 + index] = Int32(tokens[index])
+                    maskPtr[base + 1 + index] = 1
+                }
+            }
+
+            let sepIndex = min(sequenceLength - 1, 1 + maxTokenCount)
+            idsPtr[base + sepIndex] = Int32(sepToken)
+            maskPtr[base + sepIndex] = 1
+
+            adjustedLengths[row] = min(sequenceLength, maxTokenCount + 2)
+        }
+
+        return BatchInputs(
+            inputIds: inputIds,
+            attentionMask: attentionMask,
+            sequenceLength: sequenceLength,
+            lengths: adjustedLengths
+        )
     }
     
     /**
@@ -82,18 +172,20 @@ public class BertTokenizer {
        - The second `MLMultiArray` is the attention mask.
        - The third `MLMultiArray` contains token type IDs.
     */
-    public func buildModelInputsWithTypeIds(from inputTokens: [Int]) -> (MLMultiArray, MLMultiArray, MLMultiArray) {
-        let (inputIds, attentionMask) = buildModelInputs(from: inputTokens)
+    public func buildModelInputsWithTypeIds(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
+        let (inputIds, attentionMask) = try buildModelInputs(from: inputTokens)
         
         var encounteredSep = false
-        let sepToken = tokenToId(token: "[SEP]")
+        guard let sepToken = tokenToId(token: "[SEP]") else {
+            throw WaxError.io("Missing required [SEP] token in vocabulary")
+        }
         let tokenTypeIdValues: [Int] = inputTokens.map { token in
             if token == sepToken {
                 encounteredSep = true
             }
             return encounteredSep ? 1 : 0
         }
-        let tokenTypeIds = MLMultiArray.from(tokenTypeIdValues, dims: 2)
+        let tokenTypeIds = try MLMultiArray.from(tokenTypeIdValues, dims: 2)
         return (inputIds, attentionMask, tokenTypeIds)
     }
 
@@ -108,21 +200,38 @@ public class BertTokenizer {
     }
 
     public func convertTokensToIds(tokens: [String]) throws -> [Int] {
-        return tokens.map { vocab[$0]! }
+        return try tokens.map { token in
+            guard let id = vocab[token] else {
+                throw WaxError.io("Unknown token in vocabulary: \(token)")
+            }
+            return id
+        }
     }
 
     /// Main entry point
-    func tokenizeToIds(text: String) -> [Int] {
-        return try! convertTokensToIds(tokens: tokenize(text: text))
+    func tokenizeToIds(text: String) throws -> [Int] {
+        return try convertTokensToIds(tokens: tokenize(text: text))
     }
 
-    func tokenToId(token: String) -> Int {
-        return vocab[token]!
+    func tokenToId(token: String) -> Int? {
+        return vocab[token]
+    }
+
+    func tokenToIdOrThrow(token: String) throws -> Int {
+        guard let id = vocab[token] else {
+            throw WaxError.io("Unknown token in vocabulary: \(token)")
+        }
+        return id
     }
 
     /// Un-tokenization: get tokens from tokenIds
-    func idsToTokens(tokenIds: [Int]) -> [String] {
-        return tokenIds.map { ids_to_tokens[$0]! }
+    func idsToTokens(tokenIds: [Int]) throws -> [String] {
+        return try tokenIds.map { id in
+            guard let token = ids_to_tokens[id] else {
+                throw WaxError.io("Unknown token ID in vocabulary: \(id)")
+            }
+            return token
+        }
     }
 
     func convertWordpieceToBasicTokenList(_ wordpieceTokenList: [String]) -> String {
@@ -147,7 +256,46 @@ public class BertTokenizer {
     }
 }
 
-class BasicTokenizer {
+private extension BertTokenizer {
+    struct VocabData {
+        let vocab: [String: Int]
+        let idsToTokens: [Int: String]
+    }
+
+    static func loadVocab() throws -> VocabData {
+        guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
+            throw WaxError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
+        }
+        let vocabTxt = try String(contentsOf: url, encoding: .utf8)
+        let tokens = vocabTxt.split(separator: "\n").map { String($0) }
+        var vocab: [String: Int] = [:]
+        var idsToTokens: [Int: String] = [:]
+        vocab.reserveCapacity(tokens.count)
+        idsToTokens.reserveCapacity(tokens.count)
+        for (i, token) in tokens.enumerated() {
+            vocab[token] = i
+            idsToTokens[i] = token
+        }
+        return VocabData(vocab: vocab, idsToTokens: idsToTokens)
+    }
+
+    static func selectSequenceLength(
+        requiredLength: Int,
+        maxAllowed: Int,
+        buckets: [Int]?
+    ) -> Int {
+        guard let buckets, !buckets.isEmpty else {
+            return min(requiredLength, maxAllowed)
+        }
+        let sorted = buckets.sorted()
+        if let match = sorted.first(where: { $0 >= requiredLength && $0 <= maxAllowed }) {
+            return match
+        }
+        return min(requiredLength, maxAllowed)
+    }
+}
+
+final class BasicTokenizer: @unchecked Sendable {
     let neverSplit = [
         "[UNK]", "[SEP]", "[PAD]", "[CLS]", "[MASK]",
     ]
@@ -187,7 +335,7 @@ class BasicTokenizer {
     }
 }
 
-class WordpieceTokenizer {
+final class WordpieceTokenizer: @unchecked Sendable {
     private let unkToken = "[UNK]"
     private let maxInputCharsPerWord = 100
     private let vocab: [String: Int]
@@ -214,7 +362,10 @@ class WordpieceTokenizer {
             var currentSubstring: String?
 
             while start < end {
-                var substring = Utils.substr(word, start..<end)!
+                guard var substring = Utils.substr(word, start..<end) else {
+                    end -= 1
+                    continue
+                }
                 if start > 0 {
                     substring = "##\(substring)"
                 }
@@ -227,12 +378,12 @@ class WordpieceTokenizer {
                 end -= 1
             }
 
-            if currentSubstring == nil {
+            guard let substring = currentSubstring else {
                 isBad = true
                 break
             }
 
-            subTokens.append(currentSubstring!)
+            subTokens.append(substring)
             start = end
         }
 
@@ -304,14 +455,14 @@ struct Utils {
 
 extension MLMultiArray {
     /// All values will be stored in the last dimension of the MLMultiArray (default is dims=1)
-    static func from(_ arr: [Int], dims: Int = 1) -> MLMultiArray {
+    static func from(_ arr: [Int], dims: Int = 1) throws -> MLMultiArray {
         var shape = Array(repeating: 1, count: dims)
         shape[shape.count - 1] = arr.count
         /// Examples:
         /// dims=1 : [arr.count]
         /// dims=2 : [1, arr.count]
         ///
-        let o = try! MLMultiArray(shape: shape as [NSNumber], dataType: .int32)
+        let o = try MLMultiArray(shape: shape as [NSNumber], dataType: .int32)
         let ptr = UnsafeMutablePointer<Int32>(OpaquePointer(o.dataPointer))
         for (i, item) in arr.enumerated() {
             ptr[i] = Int32(item)
@@ -359,12 +510,39 @@ extension MLMultiArray {
     ///   [ 16, 17, 18, 19 ],
     ///   [ 20, 21, 22, 23 ]]]
     /// ```
-    static func testTensor(shape: [Int]) -> MLMultiArray {
-        let arr = try! MLMultiArray(shape: shape as [NSNumber], dataType: .double)
+    static func testTensor(shape: [Int]) throws -> MLMultiArray {
+        let arr = try MLMultiArray(shape: shape as [NSNumber], dataType: .double)
         let ptr = UnsafeMutablePointer<Double>(OpaquePointer(arr.dataPointer))
         for i in 0..<arr.count {
             ptr.advanced(by: i).pointee = Double(i)
         }
         return arr
+    }
+
+    static func from(batch: [[Int]], sequenceLength: Int? = nil) throws -> MLMultiArray {
+        let batchSize = batch.count
+        guard batchSize > 0 else {
+            return try MLMultiArray(shape: [0, 0], dataType: .int32)
+        }
+
+        let maxCount = batch.map { $0.count }.max() ?? 0
+        let seqLength = max(0, sequenceLength ?? maxCount)
+        let array = try MLMultiArray(
+            shape: [NSNumber(value: batchSize), NSNumber(value: seqLength)],
+            dataType: .int32
+        )
+
+        let ptr = UnsafeMutablePointer<Int32>(OpaquePointer(array.dataPointer))
+        ptr.initialize(repeating: 0, count: array.count)
+
+        for row in 0..<batchSize {
+            let tokens = batch[row]
+            let count = min(tokens.count, seqLength)
+            let base = row * seqLength
+            for idx in 0..<count {
+                ptr[base + idx] = Int32(tokens[idx])
+            }
+        }
+        return array
     }
 }

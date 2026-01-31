@@ -11,6 +11,7 @@ private let logger = Logger(subsystem: "com.wax.vectormodel", category: "MiniLME
 
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
 /// Implements BatchEmbeddingProvider for significant throughput improvements during ingest.
+@available(macOS 15.0, iOS 18.0, *)
 public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     public nonisolated let dimensions: Int = 384
     public nonisolated let normalize: Bool = true
@@ -25,12 +26,13 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
+    private static let batchSizeBuckets = [64, 32, 16, 8, 1]
 
     public struct Config {
         public var batchSize: Int
         public var modelConfiguration: MLModelConfiguration?
 
-        public init(batchSize: Int = 16, modelConfiguration: MLModelConfiguration? = nil) {
+        public init(batchSize: Int = 32, modelConfiguration: MLModelConfiguration? = nil) {
             self.batchSize = batchSize
             self.modelConfiguration = modelConfiguration
         }
@@ -38,13 +40,13 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     public init() {
         self.model = MiniLMEmbeddings()
-        self.batchSize = 16
+        self.batchSize = 32
         logComputeUnits()
     }
 
     public init(model: MiniLMEmbeddings) {
         self.model = model
-        self.batchSize = 16
+        self.batchSize = 32
         logComputeUnits()
     }
 
@@ -94,16 +96,25 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// - Returns embeddings in same order as input texts
     public func embed(batch texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
-        if texts.count <= batchSize {
-            return try await embedBatchCoreML(texts: texts)
-        }
-
-        let chunks = texts.chunked(into: batchSize)
         var results: [[Float]] = []
         results.reserveCapacity(texts.count)
-        for chunk in chunks {
-            let embeddings = try await embedBatchCoreML(texts: chunk)
-            results.append(contentsOf: embeddings)
+
+        var index = 0
+        while index < texts.count {
+            let remaining = texts.count - index
+            let targetBatch = Self.selectBatchSize(for: remaining, maxBatchSize: batchSize)
+            let upperBound = Swift.min(texts.count, index + targetBatch)
+            let chunk = Array(texts[index..<upperBound])
+            if chunk.count == targetBatch {
+                let embeddings = try await embedBatchCoreML(texts: chunk)
+                results.append(contentsOf: embeddings)
+                index = upperBound
+            } else {
+                let padded = chunk + Array(repeating: " ", count: targetBatch - chunk.count)
+                let embeddings = try await embedBatchCoreML(texts: padded)
+                results.append(contentsOf: embeddings.prefix(chunk.count))
+                index = texts.count
+            }
         }
         return results
     }
@@ -126,6 +137,10 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     public func prewarm() async throws {
         _ = try await embed(" ")
+        if batchSize > 1 {
+            let batch = Array(repeating: " ", count: batchSize)
+            _ = try await embed(batch: batch)
+        }
     }
 }
 
@@ -138,5 +153,22 @@ private extension Array {
         return stride(from: 0, to: count, by: size).map {
             Array(self[$0..<Swift.min($0 + size, count)])
         }
+    }
+}
+
+private extension MiniLMEmbedder {
+    static func selectBatchSize(for remaining: Int, maxBatchSize: Int) -> Int {
+        let candidates = batchSizeBuckets.filter { $0 <= maxBatchSize }
+        guard let largest = candidates.first else { return 1 }
+        if remaining >= largest {
+            return largest
+        }
+        for size in candidates where size <= remaining {
+            return size
+        }
+        if remaining >= 8 {
+            return 8
+        }
+        return 1
     }
 }

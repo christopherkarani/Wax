@@ -18,11 +18,13 @@ private enum SurrogateMetadataKeys {
     static let version = "surrogate_version"
     static let sourceContentHash = "source_content_hash"
     static let maxTokens = "surrogate_max_tokens"
+    static let format = "surrogate_format"
 }
 
 private enum SurrogateDefaults {
     static let kind = "surrogate"
     static let version: UInt32 = 1
+    static let hierarchicalFormat = "hierarchical_v1"
 }
 
 public extension MemoryOrchestrator {
@@ -44,16 +46,7 @@ public extension MemoryOrchestrator {
         // Avoid staging/committing when there are no pending puts to prevent unnecessary index rewrites.
         let pendingFrames = (await wax.stats()).pendingFrames
         if pendingFrames > 0 {
-            if let text {
-                try await text.stageForCommit()
-            }
-            if let vec {
-                let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-                if !pendingEmbeddings.isEmpty {
-                    try await vec.stageForCommit()
-                }
-            }
-            try await wax.commit()
+            try await session.commit()
         }
 
         let clampedMaxFrames: Int? = options.maxFrames.map { max(0, $0) }
@@ -107,9 +100,26 @@ public extension MemoryOrchestrator {
                 continue
             }
 
-            let surrogateText = try await generator.generateSurrogate(sourceText: sourceText, maxTokens: surrogateMaxTokens)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !surrogateText.isEmpty else { continue }
+            let surrogatePayload: Data
+            var isHierarchical = false
+            
+            // Use hierarchical generation if enabled and generator supports it
+            if options.enableHierarchicalSurrogates,
+               let hierarchicalGen = generator as? HierarchicalSurrogateGenerator {
+                let tiers = try await hierarchicalGen.generateTiers(
+                    sourceText: sourceText,
+                    config: options.tierConfig
+                )
+                guard !tiers.full.isEmpty else { continue }
+                surrogatePayload = try JSONEncoder().encode(tiers)
+                isHierarchical = true
+            } else {
+                // Fallback: single-tier legacy format
+                let surrogateText = try await generator.generateSurrogate(sourceText: sourceText, maxTokens: surrogateMaxTokens)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !surrogateText.isEmpty else { continue }
+                surrogatePayload = Data(surrogateText.utf8)
+            }
 
             var meta = Metadata()
             meta.entries[SurrogateMetadataKeys.sourceFrameId] = String(frame.id)
@@ -117,13 +127,16 @@ public extension MemoryOrchestrator {
             meta.entries[SurrogateMetadataKeys.version] = String(SurrogateDefaults.version)
             meta.entries[SurrogateMetadataKeys.sourceContentHash] = sourceHash
             meta.entries[SurrogateMetadataKeys.maxTokens] = String(surrogateMaxTokens)
+            if isHierarchical {
+                meta.entries[SurrogateMetadataKeys.format] = SurrogateDefaults.hierarchicalFormat
+            }
 
             var subset = FrameMetaSubset()
             subset.kind = SurrogateDefaults.kind
             subset.role = .system
             subset.metadata = meta
 
-            let surrogateFrameId = try await wax.put(Data(surrogateText.utf8), options: subset)
+            let surrogateFrameId = try await wax.put(surrogatePayload, options: subset)
             report.generatedSurrogates += 1
 
             if let existingId {
@@ -148,19 +161,7 @@ public extension MemoryOrchestrator {
         var report = MaintenanceReport()
         report.scannedFrames = Int((await wax.stats()).frameCount)
 
-        if let text {
-            try await text.stageForCommit(compact: true)
-        }
-
-        if let vec {
-            let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-            let hasCommittedIndex = (await wax.committedVecIndexManifest()) != nil
-            if !pendingEmbeddings.isEmpty || hasCommittedIndex {
-                try await vec.stageForCommit()
-            }
-        }
-
-        try await wax.commit()
+        try await session.commit(compact: true)
 
         let _ = start.duration(to: ContinuousClock.now)
         return report
@@ -187,10 +188,6 @@ public extension MemoryOrchestrator {
     }
 
     private func commitSurrogateBatchIfNeeded() async throws {
-        let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-        if !pendingEmbeddings.isEmpty, let vec {
-            try await vec.stageForCommit()
-        }
-        try await wax.commit()
+        try await session.commit()
     }
 }

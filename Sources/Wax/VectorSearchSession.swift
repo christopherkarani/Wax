@@ -150,6 +150,7 @@ public actor WaxVectorSearchSession {
 }
 
 public extension Wax {
+    @available(*, deprecated, message: "Use Wax.openSession(...)")
     func enableVectorSearch(
         metric: VectorMetric = .cosine,
         dimensions: Int,
@@ -163,6 +164,7 @@ public extension Wax {
         )
     }
 
+    @available(*, deprecated, message: "Use Wax.openSession(...)")
     func enableVectorSearchFromManifest(
         preference: VectorEnginePreference = .auto
     ) async throws -> WaxVectorSearchSession {

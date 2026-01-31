@@ -3,8 +3,23 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
+struct UnifiedSearchEngineOverrides {
+    var textEngine: FTS5SearchEngine?
+    var vectorEngine: (any VectorSearchEngine)?
+    var structuredEngine: FTS5SearchEngine?
+}
+
 public extension Wax {
     func search(_ request: SearchRequest) async throws -> SearchResponse {
+        try await search(request, engineOverrides: nil)
+    }
+}
+
+extension Wax {
+    func search(
+        _ request: SearchRequest,
+        engineOverrides: UnifiedSearchEngineOverrides?
+    ) async throws -> SearchResponse {
         let requestedTopK = max(0, request.topK)
         if requestedTopK == 0 {
             return SearchResponse(results: [])
@@ -39,20 +54,42 @@ public extension Wax {
         let candidateLimit = Self.candidateLimit(for: requestedTopK)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
-            try await cache.textEngine(for: self)
+            if let override = engineOverrides?.textEngine {
+                override
+            } else {
+                try await cache.textEngine(for: self)
+            }
         } else {
             nil
         }
 
         let vectorEngine: (any VectorSearchEngine)? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
-            try await cache.vectorEngine(
-                for: self,
-                queryEmbeddingDimensions: embedding.count,
-                preference: request.vectorEnginePreference
-            )
+            if let override = engineOverrides?.vectorEngine {
+                override
+            } else {
+                try await cache.vectorEngine(
+                    for: self,
+                    queryEmbeddingDimensions: embedding.count,
+                    preference: request.vectorEnginePreference
+                )
+            }
         } else {
             nil
         }
+
+        let structuredEngine: FTS5SearchEngine?
+        if let trimmedQuery, !trimmedQuery.isEmpty {
+            if let override = engineOverrides?.structuredEngine {
+                structuredEngine = override
+            } else if let textEngine {
+                structuredEngine = textEngine
+            } else {
+                structuredEngine = try await cache.textEngine(for: self)
+            }
+        } else {
+            structuredEngine = nil
+        }
+
 
         async let textResultsAsync: [TextSearchResult] = {
             guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
@@ -76,8 +113,37 @@ public extension Wax {
             return try await vectorEngine.search(vector: embedding, topK: candidateLimit)
         }()
 
+        async let structuredFrameIdsAsync: [UInt64] = {
+            guard let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
+            let options = request.structuredMemory
+            guard options.weight > 0,
+                  options.maxEntityCandidates > 0,
+                  options.maxFacts > 0,
+                  options.maxEvidenceFrames > 0,
+                  let structuredEngine
+            else { return [] }
+
+            let candidates = try await Self.structuredEntityCandidates(
+                query: trimmedQuery,
+                engine: structuredEngine,
+                maxCandidates: options.maxEntityCandidates
+            )
+            guard !candidates.isEmpty else { return [] }
+
+            let asOfMs = request.timeRange?.before ?? request.asOfMs
+            let asOf = StructuredMemoryAsOf(asOfMs: asOfMs)
+            return try await structuredEngine.evidenceFrameIds(
+                subjectKeys: candidates,
+                asOf: asOf,
+                maxFacts: options.maxFacts,
+                maxFrames: options.maxEvidenceFrames,
+                requireEvidenceSpan: options.requireEvidenceSpan
+            )
+        }()
+
         let textResults = try await textResultsAsync
         let vectorResults = try await vectorResultsAsync
+        let structuredFrameIds = try await structuredFrameIdsAsync
 
         var timelineFrameIds: [UInt64] = []
         if queryType == .temporal, weights.temporal > 0 {
@@ -99,12 +165,57 @@ public extension Wax {
             acc[result.frameId] = snippet
         }
 
+        let structuredIds = structuredFrameIds
+        let structuredWeight = max(0, request.structuredMemory.weight)
+
         let baseResults: [(frameId: UInt64, score: Float, sources: [SearchResponse.Source])]
         switch request.mode {
         case .textOnly:
-            baseResults = textResults.map { (frameId: $0.frameId, score: Float($0.score), sources: [.text]) }
+            if structuredIds.isEmpty || structuredWeight <= 0 {
+                baseResults = textResults.map { (frameId: $0.frameId, score: Float($0.score), sources: [.text]) }
+            } else {
+                let textIds = textResults.map(\.frameId)
+                let fused = HybridSearch.rrfFusion(
+                    lists: [
+                        (weight: weights.bm25, frameIds: textIds),
+                        (weight: structuredWeight, frameIds: structuredIds),
+                    ],
+                    k: request.rrfK
+                )
+
+                let textSet = Set(textIds)
+                let structuredSet = Set(structuredIds)
+
+                baseResults = fused.map { (frameId, score) in
+                    var sources: [SearchResponse.Source] = []
+                    if textSet.contains(frameId) { sources.append(.text) }
+                    if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
+                    return (frameId: frameId, score: score, sources: sources)
+                }
+            }
         case .vectorOnly:
-            baseResults = vectorResults.map { (frameId: $0.frameId, score: $0.score, sources: [.vector]) }
+            if structuredIds.isEmpty || structuredWeight <= 0 {
+                baseResults = vectorResults.map { (frameId: $0.frameId, score: $0.score, sources: [.vector]) }
+            } else {
+                let vectorIds = vectorResults.map(\.frameId)
+                let fused = HybridSearch.rrfFusion(
+                    lists: [
+                        (weight: weights.vector, frameIds: vectorIds),
+                        (weight: structuredWeight, frameIds: structuredIds),
+                    ],
+                    k: request.rrfK
+                )
+
+                let vectorSet = Set(vectorIds)
+                let structuredSet = Set(structuredIds)
+
+                baseResults = fused.map { (frameId, score) in
+                    var sources: [SearchResponse.Source] = []
+                    if vectorSet.contains(frameId) { sources.append(.vector) }
+                    if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
+                    return (frameId: frameId, score: score, sources: sources)
+                }
+            }
         case .hybrid(let alpha):
             let clampedAlpha = min(1, max(0, alpha))
             let textWeight = weights.bm25 * clampedAlpha
@@ -114,27 +225,29 @@ public extension Wax {
             let vectorIds = vectorResults.map(\.frameId)
             let timelineIds = timelineFrameIds
 
-            let fused = HybridSearch.rrfFusion(
-                lists: [
-                    (weight: textWeight, frameIds: textIds),
-                    (weight: vectorWeight, frameIds: vectorIds),
-                    (weight: weights.temporal, frameIds: timelineIds),
-                ],
-                k: request.rrfK
-            )
+            var lists: [(weight: Float, frameIds: [UInt64])] = []
+            if textWeight > 0, !textIds.isEmpty { lists.append((weight: textWeight, frameIds: textIds)) }
+            if vectorWeight > 0, !vectorIds.isEmpty { lists.append((weight: vectorWeight, frameIds: vectorIds)) }
+            if weights.temporal > 0, !timelineIds.isEmpty { lists.append((weight: weights.temporal, frameIds: timelineIds)) }
+            if structuredWeight > 0, !structuredIds.isEmpty { lists.append((weight: structuredWeight, frameIds: structuredIds)) }
+
+            let fused = HybridSearch.rrfFusion(lists: lists, k: request.rrfK)
 
             let textSet = Set(textIds)
             let vectorSet = Set(vectorIds)
             let timelineSet = Set(timelineIds)
+            let structuredSet = Set(structuredIds)
 
             baseResults = fused.map { (frameId, score) in
                 var sources: [SearchResponse.Source] = []
                 if textSet.contains(frameId) { sources.append(.text) }
                 if vectorSet.contains(frameId) { sources.append(.vector) }
                 if timelineSet.contains(frameId) { sources.append(.timeline) }
+                if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
                 return (frameId: frameId, score: score, sources: sources)
             }
         }
+
 
         struct PendingResult {
             let frameId: UInt64
@@ -265,6 +378,92 @@ public extension Wax {
             return "\"\(escaped)\""
         }
         return quoted.joined(separator: " OR ")
+    }
+
+    private static let asciiPunctuationScalars: Set<UnicodeScalar> = {
+        let scalars = "!\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~".unicodeScalars
+        return Set(scalars)
+    }()
+
+    private static func structuredEntityCandidates(
+        query: String,
+        engine: FTS5SearchEngine,
+        maxCandidates: Int
+    ) async throws -> [EntityKey] {
+        let capped = max(0, min(maxCandidates, 10_000))
+        guard capped > 0 else { return [] }
+
+        var candidates: [String: (rank: Int, aliasLength: Int)] = [:]
+
+        let fullAlias = StructuredMemoryCanonicalizer.normalizedAlias(query)
+        if !fullAlias.isEmpty {
+            let matches = try await engine.resolveEntities(matchingAlias: fullAlias, limit: capped)
+            for match in matches {
+                let key = match.key.rawValue
+                let aliasLength = fullAlias.count
+                if let existing = candidates[key] {
+                    if 0 < existing.rank || (existing.rank == 0 && aliasLength > existing.aliasLength) {
+                        candidates[key] = (rank: 0, aliasLength: aliasLength)
+                    }
+                } else {
+                    candidates[key] = (rank: 0, aliasLength: aliasLength)
+                }
+            }
+        }
+
+        let tokens = structuredAliasTokens(from: query)
+        var seenTokens: Set<String> = []
+        for token in tokens {
+            let normalized = StructuredMemoryCanonicalizer.normalizedAlias(token)
+            if normalized.count < 2 { continue }
+            if !seenTokens.insert(normalized).inserted { continue }
+
+            let matches = try await engine.resolveEntities(matchingAlias: normalized, limit: capped)
+            for match in matches {
+                let key = match.key.rawValue
+                let aliasLength = normalized.count
+                if let existing = candidates[key] {
+                    if 1 < existing.rank || (existing.rank == 1 && aliasLength > existing.aliasLength) {
+                        candidates[key] = (rank: 1, aliasLength: aliasLength)
+                    }
+                } else {
+                    candidates[key] = (rank: 1, aliasLength: aliasLength)
+                }
+            }
+        }
+
+        let sorted = candidates.map { (key, value) in
+            (key: key, rank: value.rank, aliasLength: value.aliasLength)
+        }.sorted { lhs, rhs in
+            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
+            if lhs.aliasLength != rhs.aliasLength { return lhs.aliasLength > rhs.aliasLength }
+            return lhs.key < rhs.key
+        }
+
+        return sorted.prefix(capped).map { EntityKey($0.key) }
+    }
+
+    private static func structuredAliasTokens(from query: String) -> [String] {
+        var tokens: [String] = []
+        var buffer = String.UnicodeScalarView()
+
+        func flush() {
+            if !buffer.isEmpty {
+                tokens.append(String(buffer))
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        for scalar in query.unicodeScalars {
+            if scalar.properties.isWhitespace || (scalar.isASCII && asciiPunctuationScalars.contains(scalar)) {
+                flush()
+            } else {
+                buffer.append(scalar)
+            }
+        }
+        flush()
+
+        return tokens
     }
 
     private static func candidateLimit(for topK: Int) -> Int {

@@ -48,6 +48,7 @@ public actor WaxTextSearchSession {
 }
 
 public extension Wax {
+    @available(*, deprecated, message: "Use Wax.openSession(...)")
     func enableTextSearch() async throws -> WaxTextSearchSession {
         try await WaxTextSearchSession(wax: self)
     }
