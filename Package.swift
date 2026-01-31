@@ -96,6 +96,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "TiktokenSwift", package: "TiktokenSwift"),
             ],
+            resources: [.process("Fixtures")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
     ]
