@@ -70,8 +70,8 @@ public class all_MiniLM_L6_v2Output : MLFeatureProvider {
         provider.featureValue(for: featureName)
     }
 
-    public init(var_554: MLMultiArray) {
-        self.provider = try! MLDictionaryFeatureProvider(dictionary: ["var_554" : MLFeatureValue(multiArray: var_554)])
+    public init(var_554: MLMultiArray) throws {
+        self.provider = try MLDictionaryFeatureProvider(dictionary: ["var_554" : MLFeatureValue(multiArray: var_554)])
     }
 
     public init(features: MLFeatureProvider) {
