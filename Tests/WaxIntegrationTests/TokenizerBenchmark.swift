@@ -10,10 +10,10 @@ final class TokenizerBenchmark: XCTestCase {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_MINILM"] == "1"
     }
     
-    func testTokenizerThroughput() {
+    func testTokenizerThroughput() throws {
         guard isEnabled else { return }
         
-        let tokenizer = BertTokenizer()
+        let tokenizer = try BertTokenizer()
         let text = "Swift concurrency vector search performance optimization is critical for on-device RAG systems."
         let iterations = 1_000
         
@@ -23,7 +23,12 @@ final class TokenizerBenchmark: XCTestCase {
         
         measure {
             for _ in 0..<iterations {
-                _ = tokenizer.buildModelTokens(sentence: text)
+                do {
+                    _ = try tokenizer.buildModelTokens(sentence: text)
+                } catch {
+                    XCTFail("Tokenizer failed to build tokens: \(error)")
+                    break
+                }
             }
         }
     }
