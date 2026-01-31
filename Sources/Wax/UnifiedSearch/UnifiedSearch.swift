@@ -260,29 +260,62 @@ extension Wax {
         pendingResults.reserveCapacity(min(requestedTopK, baseResults.count))
 
         if !baseResults.isEmpty {
-            let metaById = await frameMetasIncludingPending(frameIds: baseResults.map(\.frameId))
+            // Optimization: Use lazy metadata loading for small result sets
+            // Dictionary-building overhead dominates for small scales (<50 items)
+            // Prefetch is only beneficial for larger result sets
+            let lazyMetadataThreshold = 50
+            
+            if baseResults.count >= lazyMetadataThreshold {
+                // Batch prefetch for large result sets
+                let metaById = await frameMetasIncludingPending(frameIds: baseResults.map(\.frameId))
+                
+                for item in baseResults {
+                    if let minScore = request.minScore, item.score < minScore { continue }
+                    guard let meta = metaById[item.frameId] else { continue }
 
-            for item in baseResults {
-                if let minScore = request.minScore, item.score < minScore { continue }
-                guard let meta = metaById[item.frameId] else { continue }
+                    if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { continue }
+                    if let allowlist = filter.frameIds, !allowlist.contains(item.frameId) { continue }
+                    if !filter.includeDeleted, meta.status == .deleted { continue }
+                    if !filter.includeSuperseded, meta.supersededBy != nil { continue }
+                    if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
 
-                if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { continue }
-                if let allowlist = filter.frameIds, !allowlist.contains(item.frameId) { continue }
-                if !filter.includeDeleted, meta.status == .deleted { continue }
-                if !filter.includeSuperseded, meta.supersededBy != nil { continue }
-                if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
-
-                pendingResults.append(
-                    PendingResult(
-                        frameId: item.frameId,
-                        score: item.score,
-                        sources: item.sources,
-                        snippet: snippetByFrameId[item.frameId]
+                    pendingResults.append(
+                        PendingResult(
+                            frameId: item.frameId,
+                            score: item.score,
+                            sources: item.sources,
+                            snippet: snippetByFrameId[item.frameId]
+                        )
                     )
-                )
 
-                if pendingResults.count >= requestedTopK {
-                    break
+                    if pendingResults.count >= requestedTopK {
+                        break
+                    }
+                }
+            } else {
+                // Lazy loading for small result sets - avoids dictionary overhead
+                for item in baseResults {
+                    if let minScore = request.minScore, item.score < minScore { continue }
+                    guard let meta = try? await frameMetaIncludingPending(frameId: item.frameId) else { continue }
+
+                    if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { continue }
+                    if let allowlist = filter.frameIds, !allowlist.contains(item.frameId) { continue }
+                    if !filter.includeDeleted, meta.status == .deleted { continue }
+                    if !filter.includeSuperseded, meta.supersededBy != nil { continue }
+                    if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
+
+                    pendingResults.append(
+                        PendingResult(
+                            frameId: item.frameId,
+                            score: item.score,
+                            sources: item.sources,
+                            snippet: snippetByFrameId[item.frameId]
+                        )
+                    )
+
+                    if pendingResults.count >= requestedTopK {
+                        break
+                    }
                 }
             }
         }

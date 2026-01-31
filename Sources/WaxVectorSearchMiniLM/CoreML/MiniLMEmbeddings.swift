@@ -27,7 +27,11 @@ public final class MiniLMEmbeddings {
             fatalError("Failed to load the Core ML model. Error: \(error.localizedDescription)")
         }
 
-        self.tokenizer = BertTokenizer()
+        do {
+            self.tokenizer = try BertTokenizer()
+        } catch {
+            fatalError("Failed to initialize tokenizer. Error: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Dense Embeddings
@@ -40,11 +44,10 @@ public final class MiniLMEmbeddings {
     public func encode(batch sentences: [String]) async -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
-        let batchInputs = tokenizer.buildBatchInputs(
+        guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: sentences,
             sequenceLengthBuckets: Self.sequenceLengthBuckets
-        )
-        guard batchInputs.sequenceLength > 0 else { return [] }
+        ), batchInputs.sequenceLength > 0 else { return [] }
 
         guard let output = try? model.prediction(
             input_ids: batchInputs.inputIds,
