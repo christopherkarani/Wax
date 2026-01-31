@@ -79,6 +79,7 @@ let package = Package(
                     condition: .when(traits: ["MiniLMEmbeddings"])
                 ),
             ],
+            resources: [.process("RAG/Resources")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(

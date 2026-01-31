@@ -5,6 +5,10 @@
 //  Metal-accelerated vector search engine using GPU compute shaders.
 //  Provides drop-in replacement for USearchVectorEngine with cosine similarity.
 //
+//  Zero-Copy Optimization:
+//  - Stores vectors directly in MTLBuffer (Unified Memory) to avoid CPU-RAM duplication.
+//  - Eliminates O(N) copy latency during search synchronization.
+//
 
 import Foundation
 import Metal
@@ -14,32 +18,68 @@ public actor MetalVectorEngine {
     private static let maxResults = 10_000
     private static let initialReserve: UInt32 = 64
     private static let maxThreadsPerThreadgroup = 256
+    private static let gpuTopKThreshold = 1_000
     
     /// Threshold for switching to SIMD8 kernel (optimal for MiniLM 384-dim vectors)
     private static let simd8DimensionThreshold = 384
+
+    private struct TopKEntry {
+        var distance: Float
+        var index: UInt32
+    }
+
+    private struct TopKResult {
+        var frameId: UInt64
+        var score: Float
+    }
 
     private let metric: VectorMetric
     public let dimensions: Int
 
     private var vectorCount: UInt64
     private var reservedCapacity: UInt32
-    private var vectors: [Float]
-    private var frameIds: [UInt64]
-    private let opLock = AsyncMutex()
-    private var dirty: Bool
+    // Zero-Copy: 'vectors' array removed. Primary storage is `vectorsBuffer`.
     
-    /// Tracks whether the GPU vectors buffer needs to be synced from CPU.
-    /// This enables lazy synchronization - vectors are only copied to GPU when
-    /// actually needed for search, not on every add/remove operation.
-    private var gpuBufferNeedsSync: Bool
+    private var frameIds: [UInt64]
+    private let opLock = AsyncReadWriteLock()
+    private var dirty: Bool
+
+    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.writeLock()
+        do {
+            let value = try await body()
+            await opLock.writeUnlock()
+            return value
+        } catch {
+            await opLock.writeUnlock()
+            throw error
+        }
+    }
+
+    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.readLock()
+        do {
+            let value = try await body()
+            await opLock.readUnlock()
+            return value
+        } catch {
+            await opLock.readUnlock()
+            throw error
+        }
+    }
+    private var gpuBufferNeedsSync: Bool = false // Deprecated/Unused but kept if logic needs refactor
     
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let computePipeline: MTLComputePipelineState
     /// Secondary pipeline for SIMD8 kernel (used for high-dimensional vectors 384+)
     private let computePipelineSIMD8: MTLComputePipelineState?
+    private let topKReduceDistancesPipeline: MTLComputePipelineState
+    private let topKReduceEntriesPipeline: MTLComputePipelineState
     /// Whether to use SIMD8 kernel based on dimensions
     private let useSIMD8: Bool
+    
+    // Metal Buffers
     private var vectorsBuffer: MTLBuffer
     private var distancesBuffer: MTLBuffer
     private var queryBuffer: MTLBuffer
@@ -87,12 +127,9 @@ public actor MetalVectorEngine {
         }
 
         // Select optimal kernel based on dimensions:
-        // - SIMD8 for 384+ dims (MiniLM, etc.) - better instruction-level parallelism
-        // - SIMD4 for smaller dimensions - still vectorized but lower overhead
         let useSIMD8 = dimensions >= Self.simd8DimensionThreshold
         self.useSIMD8 = useSIMD8
         
-        // Always load SIMD4 as primary/fallback
         guard let simd4Function = library.makeFunction(name: "cosineDistanceKernelSIMD4") else {
             throw WaxError.invalidToc(reason: "Failed to find cosineDistanceKernelSIMD4 function")
         }
@@ -110,14 +147,25 @@ public actor MetalVectorEngine {
             self.computePipelineSIMD8 = nil
         }
 
+        guard let topKDistancesFunction = library.makeFunction(name: "topKReduceDistances") else {
+            throw WaxError.invalidToc(reason: "Failed to find topKReduceDistances function")
+        }
+        guard let topKEntriesFunction = library.makeFunction(name: "topKReduceEntries") else {
+            throw WaxError.invalidToc(reason: "Failed to find topKReduceEntries function")
+        }
+        do {
+            self.topKReduceDistancesPipeline = try device.makeComputePipelineState(function: topKDistancesFunction)
+            self.topKReduceEntriesPipeline = try device.makeComputePipelineState(function: topKEntriesFunction)
+        } catch {
+            throw WaxError.invalidToc(reason: "Failed to create top-k reduction pipeline: \(error)")
+        }
+
         self.metric = metric
         self.dimensions = dimensions
         self.vectorCount = 0
         self.reservedCapacity = Self.initialReserve
-        self.vectors = []
         self.frameIds = []
         self.dirty = false
-        self.gpuBufferNeedsSync = true  // Start with sync needed (empty state)
 
         let initialCapacity = Int(Self.initialReserve) * dimensions * MemoryLayout<Float>.stride
         guard let vectorsBuffer = device.makeBuffer(length: initialCapacity, options: .storageModeShared) else {
@@ -125,6 +173,7 @@ public actor MetalVectorEngine {
         }
         self.vectorsBuffer = vectorsBuffer
 
+        // Allocated but unused in transient search, kept for structure
         guard let distancesBuffer = device.makeBuffer(
             length: Int(Self.initialReserve) * MemoryLayout<Float>.stride,
             options: .storageModeShared
@@ -172,21 +221,27 @@ public actor MetalVectorEngine {
             return library
         }
 
-        let defaultShaderURL = bundle.bundleURL.appendingPathComponent("CosineDistance.metal")
-        let shaderURL: URL
-        if FileManager.default.fileExists(atPath: defaultShaderURL.path) {
-            shaderURL = defaultShaderURL
-        } else if let fallback = bundle.urls(forResourcesWithExtension: "metal", subdirectory: nil)?
-            .first(where: { $0.deletingPathExtension().lastPathComponent == "CosineDistance" }) {
-            shaderURL = fallback
-        } else if let fallback = bundle.urls(forResourcesWithExtension: "metal", subdirectory: "Shaders")?
-            .first(where: { $0.deletingPathExtension().lastPathComponent == "CosineDistance" }) {
-            shaderURL = fallback
-        } else {
-            throw WaxError.invalidToc(reason: "Metal shader resource not found")
+        func resolveShaderURL(named name: String) throws -> URL {
+            let defaultURL = bundle.bundleURL.appendingPathComponent("\(name).metal")
+            if FileManager.default.fileExists(atPath: defaultURL.path) {
+                return defaultURL
+            }
+            if let fallback = bundle.urls(forResourcesWithExtension: "metal", subdirectory: nil)?
+                .first(where: { $0.deletingPathExtension().lastPathComponent == name }) {
+                return fallback
+            }
+            if let fallback = bundle.urls(forResourcesWithExtension: "metal", subdirectory: "Shaders")?
+                .first(where: { $0.deletingPathExtension().lastPathComponent == name }) {
+                return fallback
+            }
+            throw WaxError.invalidToc(reason: "Metal shader resource not found: \(name)")
         }
 
-        let source = try String(contentsOf: shaderURL, encoding: .utf8)
+        let cosineURL = try resolveShaderURL(named: "CosineDistance")
+        let topKURL = try resolveShaderURL(named: "TopKReduction")
+        let cosineSource = try String(contentsOf: cosineURL, encoding: .utf8)
+        let topKSource = try String(contentsOf: topKURL, encoding: .utf8)
+        let source = cosineSource + "\n" + topKSource
         let options = MTLCompileOptions()
         #if os(macOS)
         options.languageVersion = .version3_0
@@ -209,26 +264,31 @@ public actor MetalVectorEngine {
     }
 
     public func add(frameId: UInt64, vector: [Float]) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             try validate(vector)
 
             if let existingIndex = frameIds.firstIndex(of: frameId) {
+                // Determine offset in shared buffer
                 let offset = existingIndex * dimensions
+                let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
                 for dim in 0..<dimensions {
-                    vectors[offset + dim] = vector[dim]
+                    basePtr[offset + dim] = vector[dim]
                 }
             } else {
                 try await reserveIfNeeded(for: vectorCount + 1)
-
+                
+                // Append using pointer arithmetic on shared buffer
+                let offset = Int(vectorCount) * dimensions
+                let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
                 for dim in 0..<dimensions {
-                    vectors.append(vector[dim])
+                    basePtr[offset + dim] = vector[dim]
                 }
+                
                 frameIds.append(frameId)
                 vectorCount += 1
             }
 
             dirty = true
-            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
@@ -238,7 +298,7 @@ public actor MetalVectorEngine {
             throw WaxError.encodingError(reason: "addBatch: frameIds.count != vectors.count")
         }
 
-        try await withOpLock {
+        try await withWriteLock {
             let expectedDims = dimensions
             for vector in vectors {
                 guard vector.count == expectedDims else {
@@ -254,16 +314,19 @@ public actor MetalVectorEngine {
 
             let maxNewCount = vectorCount + UInt64(frameIds.count)
             try await reserveIfNeeded(for: maxNewCount)
+            
+            let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
 
             for (frameId, vector) in zip(frameIds, vectors) {
                 if let existingIndex = self.frameIds.firstIndex(of: frameId) {
                     let offset = existingIndex * dimensions
                     for dim in 0..<dimensions {
-                        self.vectors[offset + dim] = vector[dim]
+                        basePtr[offset + dim] = vector[dim]
                     }
                 } else {
+                    let offset = Int(vectorCount) * dimensions
                     for dim in 0..<dimensions {
-                        self.vectors.append(vector[dim])
+                        basePtr[offset + dim] = vector[dim]
                     }
                     self.frameIds.append(frameId)
                     vectorCount += 1
@@ -271,7 +334,6 @@ public actor MetalVectorEngine {
             }
 
             dirty = true
-            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
@@ -295,73 +357,89 @@ public actor MetalVectorEngine {
     }
 
     public func remove(frameId: UInt64) async throws {
-        await withOpLock {
+        await withWriteLock {
             guard vectorCount > 0 else { return }
             guard let index = frameIds.firstIndex(of: frameId) else { return }
 
-            let offset = index * dimensions
-            for _ in 0..<dimensions {
-                vectors.remove(at: offset)
+            // To efficiently remove, we need to shift all subsequent vectors.
+            // memmove is efficient for this.
+            
+            let countAfter = Int(vectorCount) - 1 - index
+            if countAfter > 0 {
+                let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
+                let dst = basePtr.advanced(by: index * dimensions)
+                let src = basePtr.advanced(by: (index + 1) * dimensions)
+                // Overlap exists, move is required
+                dst.moveUpdate(from: src, count: countAfter * dimensions)
             }
+            
             frameIds.remove(at: index)
             vectorCount -= 1
             dirty = true
-            gpuBufferNeedsSync = true  // Mark GPU buffer as stale
         }
     }
 
     public func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        try await withOpLock {
+        try await withReadLock {
             guard vectorCount > 0 else { return [] }
             try validate(vector)
             let limit = Self.clampTopK(topK)
+            let topKCount = min(limit, Int(vectorCount))
+            let reductionThreadsPerThreadgroup = Self.reductionThreadgroupSize(
+                maxThreads: topKReduceDistancesPipeline.maxTotalThreadsPerThreadgroup
+            )
+            let useGpuTopK = Int(vectorCount) >= Self.gpuTopKThreshold && topKCount <= reductionThreadsPerThreadgroup
+            
+            // Zero-Copy: No sync needed. vectorsBuffer is always up to date.
 
-            // Only sync vectors to GPU if they've changed since last search
-            // This eliminates redundant memory bandwidth for read-heavy workloads
-            if gpuBufferNeedsSync {
-                syncVectorsToGPU()
-                gpuBufferNeedsSync = false
+            // Allocate transient buffers for concurrency safety
+            
+            guard let transientQueryBuffer = device.makeBuffer(
+                bytes: vector,
+                length: vector.count * MemoryLayout<Float>.stride,
+                options: .storageModeShared
+            ) else {
+                throw WaxError.invalidToc(reason: "Failed to allocate transient query buffer")
             }
-
-            let requiredQueryLength = dimensions * MemoryLayout<Float>.stride
-            if queryBuffer.length < requiredQueryLength {
-                guard let newQuery = device.makeBuffer(length: requiredQueryLength, options: .storageModeShared) else {
-                    throw WaxError.invalidToc(reason: "Failed to grow query buffer")
-                }
-                queryBuffer = newQuery
-            }
-            vector.withUnsafeBufferPointer { buffer in
-                queryBuffer.contents().copyMemory(
-                    from: buffer.baseAddress!,
-                    byteCount: buffer.count * MemoryLayout<Float>.stride
-                )
-            }
-
-            vectorCountBuffer.contents().assumingMemoryBound(to: UInt32.self).pointee = UInt32(vectorCount)
-
+            
             let requiredDistancesSize = Int(vectorCount) * MemoryLayout<Float>.stride
-            if distancesBuffer.length < requiredDistancesSize {
-                throw WaxError.invalidToc(reason: "Distances buffer too small")
+            guard let transientDistancesBuffer = device.makeBuffer(
+                length: requiredDistancesSize,
+                options: .storageModeShared
+            ) else {
+                throw WaxError.invalidToc(reason: "Failed to allocate transient distances buffer")
             }
 
+            var currentVectorCount = UInt32(vectorCount)
+            guard let transientCountBuffer = device.makeBuffer(
+                bytes: &currentVectorCount,
+                length: MemoryLayout<UInt32>.stride,
+                options: .storageModeShared
+            ) else {
+                 throw WaxError.invalidToc(reason: "Failed to allocate transient count buffer")
+            }
+            
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
                 throw WaxError.invalidToc(reason: "Failed to create command buffer")
             }
+
+            var reductionBuffers: [MTLBuffer] = []
+            var finalTopKBuffer: MTLBuffer?
+            defer { _ = reductionBuffers.count }
 
             guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
                 throw WaxError.invalidToc(reason: "Failed to create compute encoder")
             }
 
             computeEncoder.setBuffer(vectorsBuffer, offset: 0, index: 0)
-            computeEncoder.setBuffer(queryBuffer, offset: 0, index: 1)
-            computeEncoder.setBuffer(distancesBuffer, offset: 0, index: 2)
-            computeEncoder.setBuffer(vectorCountBuffer, offset: 0, index: 3)
+            computeEncoder.setBuffer(transientQueryBuffer, offset: 0, index: 1)
+            computeEncoder.setBuffer(transientDistancesBuffer, offset: 0, index: 2)
+            computeEncoder.setBuffer(transientCountBuffer, offset: 0, index: 3)
             computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
 
             let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
 
-            // Use SIMD8 pipeline for high-dimensional vectors if available (15-25% faster)
             let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline
             computeEncoder.setComputePipelineState(activePipeline)
 
@@ -377,6 +455,72 @@ public actor MetalVectorEngine {
             computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
             computeEncoder.endEncoding()
 
+            if useGpuTopK {
+                // GPU top-k reduction: per-threadgroup bitonic sort on chunks,
+                // then iteratively merge until a single sorted top-k remains.
+                let threadgroupSize = reductionThreadsPerThreadgroup
+                let groupCount = (Int(vectorCount) + threadgroupSize - 1) / threadgroupSize
+                let stage1Count = groupCount * topKCount
+                let stage1Length = stage1Count * MemoryLayout<TopKEntry>.stride
+                guard let stage1Buffer = device.makeBuffer(length: stage1Length, options: .storageModeShared) else {
+                    throw WaxError.invalidToc(reason: "Failed to allocate top-k stage1 buffer")
+                }
+                reductionBuffers.append(stage1Buffer)
+
+                guard let reduceEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                    throw WaxError.invalidToc(reason: "Failed to create top-k reduction encoder")
+                }
+                reduceEncoder.setComputePipelineState(topKReduceDistancesPipeline)
+                reduceEncoder.setBuffer(transientDistancesBuffer, offset: 0, index: 0)
+                var vectorCount32 = UInt32(vectorCount)
+                var topK32 = UInt32(topKCount)
+                reduceEncoder.setBytes(&vectorCount32, length: MemoryLayout<UInt32>.stride, index: 1)
+                reduceEncoder.setBytes(&topK32, length: MemoryLayout<UInt32>.stride, index: 2)
+                reduceEncoder.setBuffer(stage1Buffer, offset: 0, index: 3)
+                reduceEncoder.setThreadgroupMemoryLength(
+                    threadgroupSize * MemoryLayout<TopKEntry>.stride,
+                    index: 0
+                )
+                let reduceGroups = MTLSize(width: groupCount, height: 1, depth: 1)
+                let reduceGroupSize = MTLSize(width: threadgroupSize, height: 1, depth: 1)
+                reduceEncoder.dispatchThreadgroups(reduceGroups, threadsPerThreadgroup: reduceGroupSize)
+                reduceEncoder.endEncoding()
+
+                var currentBuffer = stage1Buffer
+                var currentCount = stage1Count
+                while currentCount > topKCount {
+                    let nextGroupCount = (currentCount + threadgroupSize - 1) / threadgroupSize
+                    let nextCount = nextGroupCount * topKCount
+                    let nextLength = nextCount * MemoryLayout<TopKEntry>.stride
+                    guard let nextBuffer = device.makeBuffer(length: nextLength, options: .storageModeShared) else {
+                        throw WaxError.invalidToc(reason: "Failed to allocate top-k merge buffer")
+                    }
+                    reductionBuffers.append(nextBuffer)
+
+                    guard let mergeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                        throw WaxError.invalidToc(reason: "Failed to create top-k merge encoder")
+                    }
+                    mergeEncoder.setComputePipelineState(topKReduceEntriesPipeline)
+                    mergeEncoder.setBuffer(currentBuffer, offset: 0, index: 0)
+                    var entryCount32 = UInt32(currentCount)
+                    mergeEncoder.setBytes(&entryCount32, length: MemoryLayout<UInt32>.stride, index: 1)
+                    mergeEncoder.setBytes(&topK32, length: MemoryLayout<UInt32>.stride, index: 2)
+                    mergeEncoder.setBuffer(nextBuffer, offset: 0, index: 3)
+                    mergeEncoder.setThreadgroupMemoryLength(
+                        threadgroupSize * MemoryLayout<TopKEntry>.stride,
+                        index: 0
+                    )
+                    let mergeGroups = MTLSize(width: nextGroupCount, height: 1, depth: 1)
+                    mergeEncoder.dispatchThreadgroups(mergeGroups, threadsPerThreadgroup: reduceGroupSize)
+                    mergeEncoder.endEncoding()
+
+                    currentBuffer = nextBuffer
+                    currentCount = nextCount
+                }
+
+                finalTopKBuffer = currentBuffer
+            }
+
             await withCheckedContinuation { continuation in
                 commandBuffer.addCompletedHandler { _ in
                     continuation.resume()
@@ -384,7 +528,37 @@ public actor MetalVectorEngine {
                 commandBuffer.commit()
             }
 
-            let distancesPtr = distancesBuffer.contents().assumingMemoryBound(to: Float.self)
+            if useGpuTopK, let finalTopKBuffer {
+                guard let resultsBuffer = device.makeBuffer(
+                    length: topKCount * MemoryLayout<TopKResult>.stride,
+                    options: .storageModeShared
+                ) else {
+                    throw WaxError.invalidToc(reason: "Failed to allocate top-k results buffer")
+                }
+
+                let entriesPtr = finalTopKBuffer.contents().assumingMemoryBound(to: TopKEntry.self)
+                let resultsPtr = resultsBuffer.contents().assumingMemoryBound(to: TopKResult.self)
+                var resultCount = 0
+                for i in 0..<topKCount {
+                    let entry = entriesPtr[i]
+                    if entry.index == UInt32.max || !entry.distance.isFinite { continue }
+                    let index = Int(entry.index)
+                    if index >= frameIds.count { continue }
+                    let score = metric.score(fromDistance: entry.distance)
+                    resultsPtr[resultCount] = TopKResult(frameId: frameIds[index], score: score)
+                    resultCount += 1
+                }
+
+                var results: [(UInt64, Float)] = []
+                results.reserveCapacity(resultCount)
+                for i in 0..<resultCount {
+                    let entry = resultsPtr[i]
+                    results.append((entry.frameId, entry.score))
+                }
+                return results
+            }
+
+            let distancesPtr = transientDistancesBuffer.contents().assumingMemoryBound(to: Float.self)
             let topResults = Self.topK(distances: distancesPtr, count: Int(vectorCount), k: limit)
 
             var results: [(UInt64, Float)] = []
@@ -400,7 +574,6 @@ public actor MetalVectorEngine {
     }
 
     /// O(n log k) partial selection to avoid full sort of distance buffer.
-    /// Uses a fixed-size max-heap (k<=32) for cache-friendly selection.
     private static func topK(distances: UnsafePointer<Float>, count: Int, k: Int) -> [(Int, Float)] {
         guard k > 0, count > 0 else { return [] }
         var heap: [(Float, Int)] = [] // (distance, index)
@@ -454,7 +627,7 @@ public actor MetalVectorEngine {
     }
 
     public func serialize() async throws -> Data {
-        await withOpLock {
+        await withReadLock {
             var data = Data()
 
             data.append(contentsOf: [0x4D, 0x56, 0x32, 0x56])
@@ -467,11 +640,16 @@ public actor MetalVectorEngine {
             var vecCount = vectorCount.littleEndian
             withUnsafeBytes(of: &vecCount) { data.append(contentsOf: $0) }
 
-            let vectorDataCount = vectors.count * MemoryLayout<Float>.stride
-            var vecDataCount = UInt64(vectorDataCount).littleEndian
-            withUnsafeBytes(of: &vecDataCount) { data.append(contentsOf: $0) }
+            // Read from Shared Vector Buffer
+            let vectorDataCount = Int(vectorCount) * dimensions * MemoryLayout<Float>.stride
+            var vecDataCountLE = UInt64(vectorDataCount).littleEndian
+            withUnsafeBytes(of: &vecDataCountLE) { data.append(contentsOf: $0) }
             data.append(contentsOf: Data(repeating: 0, count: 8))
-            data.append(contentsOf: vectors.withUnsafeBufferPointer { Data(buffer: $0) })
+            
+            // Should be efficient memcpy
+            let basePtr = vectorsBuffer.contents()
+            let vectorsData = Data(bytes: basePtr, count: vectorDataCount)
+            data.append(vectorsData)
 
             let frameIdDataCount = frameIds.count * MemoryLayout<UInt64>.stride
             var frameIdDataCountLE = UInt64(frameIdDataCount).littleEndian
@@ -483,7 +661,7 @@ public actor MetalVectorEngine {
     }
 
     public func deserialize(_ data: Data) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             guard data.count >= 36 else {
                 throw WaxError.invalidToc(reason: "Metal segment too small: \(data.count) bytes")
             }
@@ -554,9 +732,18 @@ public actor MetalVectorEngine {
             guard data.count >= offset + Int(vectorLength) + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId length")
             }
-            vectors = Array(data[offset..<offset+Int(vectorLength)].withUnsafeBytes {
-                Array($0.bindMemory(to: Float.self))
-            })
+            
+            // Resize buffer and copy vectors directly
+            vectorCount = savedVectorCount
+            reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
+            try resizeBuffersIfNeeded(for: reservedCapacity)
+            
+            let destPtr = vectorsBuffer.contents()
+            data.withUnsafeBytes { srcBuffer in
+                 if let srcBase = srcBuffer.baseAddress {
+                     destPtr.copyMemory(from: srcBase.advanced(by: offset), byteCount: Int(vectorLength))
+                 }
+            }
             offset += Int(vectorLength)
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
@@ -570,11 +757,7 @@ public actor MetalVectorEngine {
                 Array($0.bindMemory(to: UInt64.self))
             })
 
-            vectorCount = savedVectorCount
-            reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
-            try resizeBuffersIfNeeded(for: reservedCapacity)
             dirty = false
-            gpuBufferNeedsSync = true  // GPU buffer needs sync after loading new vectors
         }
     }
 
@@ -589,18 +772,6 @@ public actor MetalVectorEngine {
             similarity: metric.toVecSimilarity()
         )
         dirty = false
-    }
-
-    private func withOpLock<T>(_ body: () async throws -> T) async rethrows -> T {
-        await opLock.lock()
-        do {
-            let value = try await body()
-            await opLock.unlock()
-            return value
-        } catch {
-            await opLock.unlock()
-            throw error
-        }
     }
 
     private func validate(_ vector: [Float]) throws {
@@ -620,20 +791,16 @@ public actor MetalVectorEngine {
         if topK > maxResults { return maxResults }
         return topK
     }
-    
-    /// Synchronizes CPU vector data to GPU buffer.
-    /// Called lazily only when search is performed after vectors have changed.
-    /// This optimization eliminates redundant memory copies for read-heavy workloads.
-    private func syncVectorsToGPU() {
-        guard !vectors.isEmpty else { return }
-        vectors.withUnsafeBufferPointer { buffer in
-            vectorsBuffer.contents().copyMemory(
-                from: buffer.baseAddress!,
-                byteCount: min(buffer.count * MemoryLayout<Float>.stride, vectorsBuffer.length)
-            )
-        }
-    }
 
+    private static func reductionThreadgroupSize(maxThreads: Int) -> Int {
+        let capped = min(maxThreads, maxThreadsPerThreadgroup)
+        var size = 1
+        while size * 2 <= capped {
+            size *= 2
+        }
+        return size
+    }
+    
     private func reserveIfNeeded(for requiredCount: UInt64) async throws {
         guard requiredCount <= UInt64(UInt32.max) else {
             throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: requiredCount)
@@ -652,23 +819,21 @@ public actor MetalVectorEngine {
 
     private func resizeBuffersIfNeeded(for capacity: UInt32) throws {
         let requiredVectorsLength = Int(capacity) * dimensions * MemoryLayout<Float>.stride
-        let requiredDistancesLength = Int(capacity) * MemoryLayout<Float>.stride
-        if vectorsBuffer.length >= requiredVectorsLength,
-           distancesBuffer.length >= requiredDistancesLength {
-            return
+        
+        // Check if resize needed for vectors
+        if vectorsBuffer.length < requiredVectorsLength {
+             guard let newVectorsBuffer = device.makeBuffer(length: requiredVectorsLength, options: .storageModeShared) else {
+                throw WaxError.invalidToc(reason: "Failed to resize vectors buffer")
+            }
+            // Copy existing data
+            if vectorCount > 0 {
+                newVectorsBuffer.contents().copyMemory(
+                    from: vectorsBuffer.contents(),
+                    byteCount: Int(vectorCount) * dimensions * MemoryLayout<Float>.stride
+                )
+            }
+            vectorsBuffer = newVectorsBuffer
         }
-
-        guard let newVectorsBuffer = device.makeBuffer(length: requiredVectorsLength, options: .storageModeShared) else {
-            throw WaxError.invalidToc(reason: "Failed to resize vectors buffer")
-        }
-
-        guard let newDistancesBuffer = device.makeBuffer(length: requiredDistancesLength, options: .storageModeShared) else {
-            throw WaxError.invalidToc(reason: "Failed to resize distances buffer")
-        }
-
-        vectorsBuffer = newVectorsBuffer
-        distancesBuffer = newDistancesBuffer
-        gpuBufferNeedsSync = true
     }
 }
 
