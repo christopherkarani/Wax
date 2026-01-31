@@ -5,8 +5,8 @@ import Testing
 
 @Test("BertTokenizer builds batched inputs with dynamic sequence length")
 func testBatchInputsShapeAndMask() throws {
-    let tokenizer = BertTokenizer()
-    let inputs = tokenizer.buildBatchInputs(sentences: [
+    let tokenizer = try BertTokenizer()
+    let inputs = try tokenizer.buildBatchInputs(sentences: [
         "hello world",
         "this is a longer sentence to ensure different lengths",
     ])
@@ -33,9 +33,9 @@ func testBatchInputsShapeAndMask() throws {
 
 @Test("BertTokenizer respects maxSequenceLength in batch inputs")
 func testBatchInputsRespectsMaxSequenceLength() throws {
-    let tokenizer = BertTokenizer()
+    let tokenizer = try BertTokenizer()
     let longSentence = Array(repeating: "token", count: 64).joined(separator: " ")
-    let inputs = tokenizer.buildBatchInputs(sentences: [longSentence], maxSequenceLength: 8)
+    let inputs = try tokenizer.buildBatchInputs(sentences: [longSentence], maxSequenceLength: 8)
 
     #expect(inputs.sequenceLength == 8)
     #expect(inputs.lengths.allSatisfy { $0 <= 8 })

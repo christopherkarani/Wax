@@ -20,28 +20,31 @@
     ],
     "author" : "Wax Optimization Team",
     "specificationVersion" : 9,
-    "storagePrecision" : "Mixed (Float16, Int32)",
+    "storagePrecision" : "Mixed (Float16, Int32, Int8)",
     "license" : "Apache 2.0",
     "mlProgramOperationTypeHistogram" : {
-      "Ios18.linear" : 37,
-      "Ios18.sub" : 2,
       "Ios18.expandDims" : 2,
-      "Ios18.matmul" : 12,
-      "Ios18.gelu" : 6,
-      "Ios18.gather" : 52,
-      "Ios18.concat" : 25,
-      "Ios18.add" : 20,
-      "Shape" : 25,
-      "Ios18.tanh" : 1,
       "Ios18.softmax" : 6,
-      "Ios18.sliceByIndex" : 2,
+      "Ios18.mul" : 7,
+      "Ios18.matmul" : 12,
+      "Ios18.quantize" : 118,
+      "Ios18.gather" : 52,
+      "Ios18.add" : 20,
       "Ios18.layerNorm" : 13,
+      "Ios18.reshape" : 24,
+      "Shape" : 25,
+      "Ios18.linear" : 37,
+      "Ios18.gelu" : 6,
+      "Ios18.concat" : 25,
+      "Ios18.sub" : 2,
+      "Ios18.tanh" : 1,
+      "Ios18.dequantize" : 119,
       "Ios18.cast" : 78,
       "Ios18.transpose" : 24,
-      "Ios18.reshape" : 24,
-      "Ios18.mul" : 7
+      "Ios18.sliceByIndex" : 2,
+      "Ios18.constexprBlockwiseShiftScale" : 39
     },
-    "computePrecision" : "Mixed (Float16, Int16, Int32, UInt16)",
+    "computePrecision" : "Mixed (Float16, Int16, Int32, Int8, UInt16)",
     "stateSchema" : [
 
     ],
@@ -89,7 +92,7 @@
       "com.github.apple.coremltools.version" : "9.0",
       "com.github.apple.coremltools.source_dialect" : "TorchScript"
     },
-    "generatedClassName" : "all_MiniLM_L6_v2",
+    "generatedClassName" : "minilm_w8a8",
     "method" : "predict"
   }
 ]

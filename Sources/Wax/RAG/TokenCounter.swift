@@ -34,7 +34,12 @@ public actor TokenCounter {
         func resetStats() {
             stats = BpeCacheStats()
         }
+        
+        func isLoaded(encoding: Encoding) -> Bool {
+            cache[encoding] != nil
+        }
     }
+
 
     private static let sharedCache = TokenCounterCache()
     private static let bpeCache = CoreBpeCache()
@@ -52,6 +57,26 @@ public actor TokenCounter {
     public static func shared(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws -> TokenCounter {
         try await sharedCache.counter(for: encoding, cacheCapacity: cacheCapacity)
     }
+    
+    /// Preload tokenizer in the background to eliminate cold start latency.
+    /// Call this at app launch to warm up the tokenizer before it's needed.
+    ///
+    /// Usage:
+    /// ```swift
+    /// Task.detached(priority: .utility) {
+    ///     try? await TokenCounter.preload()
+    /// }
+    /// ```
+    @discardableResult
+    public static func preload(encoding: Encoding = .cl100kBase) async throws -> Bool {
+        _ = try await bpeCache.bpe(for: encoding)
+        return true
+    }
+    
+    /// Check if the tokenizer is already loaded (no cold start penalty).
+    public static func isPreloaded(encoding: Encoding = .cl100kBase) async -> Bool {
+        await bpeCache.isLoaded(encoding: encoding)
+    }
 
     static func _bpeCacheStats() async -> BpeCacheStats {
         await bpeCache.snapshotStats()
@@ -60,6 +85,7 @@ public actor TokenCounter {
     static func _resetBpeCacheStats() async {
         await bpeCache.resetStats()
     }
+
 
     public func count(_ text: String) -> Int {
         encode(text).count
