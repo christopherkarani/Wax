@@ -277,18 +277,32 @@ public actor WaxSession {
 
     public func stage(compact: Bool = false) async throws {
         try ensureWritable()
-        if let textEngine {
-            try await textEngine.stageForCommit(into: wax, compact: compact)
-        }
-        if let vectorEngine {
-            try await stageVectorForCommit(using: vectorEngine)
-        } else if config.enableVectorSearch {
-            let hasPendingEmbeddings = !(await wax.pendingEmbeddingMutations()).isEmpty
-            let hasCommittedIndex = (await wax.committedVecIndexManifest()) != nil
-            if hasPendingEmbeddings || hasCommittedIndex {
-                throw WaxError.io("vector search enabled but no vector engine configured; set vectorDimensions")
+
+        let localTextEngine = textEngine
+        let localVectorEngine = vectorEngine
+        let localWax = wax
+        let localConfig = config
+
+        async let textStaging: Void = {
+            if let engine = localTextEngine {
+                try await engine.stageForCommit(into: localWax, compact: compact)
             }
-        }
+        }()
+
+        async let vectorStaging: Void = {
+            if let engine = localVectorEngine {
+                try await self.stageVectorForCommit(using: engine)
+            } else if localConfig.enableVectorSearch {
+                let hasPendingEmbeddings = !(await localWax.pendingEmbeddingMutations()).isEmpty
+                let hasCommittedIndex = (await localWax.committedVecIndexManifest()) != nil
+                if hasPendingEmbeddings || hasCommittedIndex {
+                    throw WaxError.io("vector search enabled but no vector engine configured; set vectorDimensions")
+                }
+            }
+        }()
+
+        try await textStaging
+        try await vectorStaging
     }
 
     public func commit(compact: Bool = false) async throws {
