@@ -431,49 +431,111 @@ public actor TokenCounter {
 }
 
 /// LRU cache for tokenization results to avoid redundant encoding operations.
+/// Uses a doubly-linked list for O(1) access and eviction.
 private actor TokenizationCache {
+    private struct Entry {
+        var key: String
+        var value: [UInt32]
+        var prev: String?
+        var next: String?
+    }
+
     private let capacity: Int
-    private var cache: [String: [UInt32]] = [:]
-    private var accessOrder: [String] = []
+    private var entries: [String: Entry]
+    private var head: String?
+    private var tail: String?
 
     init(capacity: Int) {
         self.capacity = max(1, capacity)
+        self.entries = Dictionary(minimumCapacity: capacity)
     }
 
+    /// Get cached tokens. O(1) time complexity.
     func get(_ text: String) -> [UInt32]? {
-        guard let tokens = cache[text] else { return nil }
-
-        // Move to end of access order (most recently used)
-        if let index = accessOrder.firstIndex(of: text) {
-            accessOrder.remove(at: index)
-        }
-        accessOrder.append(text)
-
-        return tokens
+        guard var entry = entries[text] else { return nil }
+        moveToFront(&entry)
+        return entry.value
     }
 
+    /// Cache tokens. Evicts LRU entry if at capacity. O(1) time complexity.
     func put(_ text: String, _ tokens: [UInt32]) {
-        // Remove existing entry if present
-        if let index = accessOrder.firstIndex(of: text) {
-            accessOrder.remove(at: index)
+        if var existing = entries[text] {
+            existing.value = tokens
+            moveToFront(&existing)
+            return
         }
 
-        // Evict least recently used if at capacity
-        if cache.count >= capacity && !cache.keys.contains(text) {
-            if let lru = accessOrder.first {
-                cache.removeValue(forKey: lru)
-                accessOrder.removeFirst()
-            }
+        let entry = Entry(key: text, value: tokens, prev: nil, next: head)
+        if let headKey = head, var currentHead = entries[headKey] {
+            currentHead.prev = text
+            entries[headKey] = currentHead
+        } else {
+            tail = text
         }
+        head = text
+        entries[text] = entry
 
-        // Add new entry
-        cache[text] = tokens
-        accessOrder.append(text)
+        if entries.count > capacity, let tailKey = tail {
+            remove(tailKey)
+        }
     }
 
     func clear() {
-        cache.removeAll()
-        accessOrder.removeAll()
+        entries.removeAll()
+        head = nil
+        tail = nil
+    }
+
+    private func moveToFront(_ entry: inout Entry) {
+        let key = entry.key
+        if head == key {
+            entries[key] = entry
+            return
+        }
+
+        let prevKey = entry.prev
+        let nextKey = entry.next
+
+        if let prevKey, var prev = entries[prevKey] {
+            prev.next = nextKey
+            entries[prevKey] = prev
+        }
+        if let nextKey, var next = entries[nextKey] {
+            next.prev = prevKey
+            entries[nextKey] = next
+        }
+        if tail == key {
+            tail = prevKey
+        }
+
+        entry.prev = nil
+        entry.next = head
+        if let headKey = head, var currentHead = entries[headKey] {
+            currentHead.prev = key
+            entries[headKey] = currentHead
+        }
+        head = key
+        entries[key] = entry
+    }
+
+    private func remove(_ key: String) {
+        guard let entry = entries[key] else { return }
+        let prevKey = entry.prev
+        let nextKey = entry.next
+
+        if let prevKey, var prev = entries[prevKey] {
+            prev.next = nextKey
+            entries[prevKey] = prev
+        } else {
+            head = nextKey
+        }
+        if let nextKey, var next = entries[nextKey] {
+            next.prev = prevKey
+            entries[nextKey] = next
+        } else {
+            tail = prevKey
+        }
+        entries.removeValue(forKey: key)
     }
 }
 
