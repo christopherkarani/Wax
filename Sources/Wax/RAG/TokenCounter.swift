@@ -12,8 +12,26 @@ public actor TokenCounter {
         var loadCount: Int = 0
     }
 
+    struct ComparisonSnapshot: Sendable {
+        var tiktokenMillis: Double = 0
+        var nativeMillis: Double = 0
+        var mismatches: Int = 0
+    }
+
     private struct BPEBox: @unchecked Sendable {
         let value: CoreBpe
+    }
+
+    private enum BackendPreference: String {
+        case tiktoken
+        case native
+        case compare
+    }
+
+    private enum Backend: @unchecked Sendable {
+        case tiktoken(CoreBpe)
+        case native(NativeBpeTokenizer)
+        case compare(tiktoken: CoreBpe, native: NativeBpeTokenizer)
     }
 
     private actor CoreBpeCache {
@@ -40,17 +58,58 @@ public actor TokenCounter {
         }
     }
 
+    private actor NativeBpeCache {
+        private var cache: [Encoding: NativeBpeTokenizer] = [:]
+
+        func tokenizer(for encoding: Encoding) throws -> NativeBpeTokenizer {
+            if let cached = cache[encoding] { return cached }
+            let nativeEncoding: NativeBpeTokenizer.Encoding = .cl100kBase
+            let loaded = try NativeBpeTokenizer(encoding: nativeEncoding)
+            cache[encoding] = loaded
+            return loaded
+        }
+
+        func isLoaded(encoding: Encoding) -> Bool {
+            cache[encoding] != nil
+        }
+    }
+
+    private actor ComparisonStats {
+        private var snapshot = ComparisonSnapshot()
+
+        func record(tiktokenMillis: Double, nativeMillis: Double, mismatch: Bool) {
+            snapshot.tiktokenMillis += tiktokenMillis
+            snapshot.nativeMillis += nativeMillis
+            if mismatch { snapshot.mismatches += 1 }
+        }
+
+        func snapshotStats() -> ComparisonSnapshot { snapshot }
+    }
+
 
     private static let sharedCache = TokenCounterCache()
     private static let bpeCache = CoreBpeCache()
+    private static let nativeBpeCache = NativeBpeCache()
+    private static let comparisonStats = ComparisonStats()
     public static let maxTokenizationBytes = 8 * 1024 * 1024
 
-    private let bpe: CoreBpe
+    private let backend: Backend
     private let encodingCache: TokenizationCache
 
     public init(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws {
-        let bpeBox = try await Self.bpeCache.bpe(for: encoding)
-        self.bpe = bpeBox.value
+        let preference = Self.backendPreference()
+        switch preference {
+        case .native:
+            let tokenizer = try await Self.nativeBpeCache.tokenizer(for: encoding)
+            self.backend = .native(tokenizer)
+        case .compare:
+            let tokenizer = try await Self.nativeBpeCache.tokenizer(for: encoding)
+            let bpeBox = try await Self.bpeCache.bpe(for: encoding)
+            self.backend = .compare(tiktoken: bpeBox.value, native: tokenizer)
+        case .tiktoken:
+            let bpeBox = try await Self.bpeCache.bpe(for: encoding)
+            self.backend = .tiktoken(bpeBox.value)
+        }
         self.encodingCache = TokenizationCache(capacity: cacheCapacity)
     }
 
@@ -69,13 +128,32 @@ public actor TokenCounter {
     /// ```
     @discardableResult
     public static func preload(encoding: Encoding = .cl100kBase) async throws -> Bool {
-        _ = try await bpeCache.bpe(for: encoding)
+        let preference = backendPreference()
+        switch preference {
+        case .native:
+            _ = try await nativeBpeCache.tokenizer(for: encoding)
+        case .compare:
+            _ = try await nativeBpeCache.tokenizer(for: encoding)
+            _ = try await bpeCache.bpe(for: encoding)
+        case .tiktoken:
+            _ = try await bpeCache.bpe(for: encoding)
+        }
         return true
     }
     
     /// Check if the tokenizer is already loaded (no cold start penalty).
     public static func isPreloaded(encoding: Encoding = .cl100kBase) async -> Bool {
-        await bpeCache.isLoaded(encoding: encoding)
+        let preference = backendPreference()
+        switch preference {
+        case .native:
+            return await nativeBpeCache.isLoaded(encoding: encoding)
+        case .compare:
+            let nativeLoaded = await nativeBpeCache.isLoaded(encoding: encoding)
+            let tiktokenLoaded = await bpeCache.isLoaded(encoding: encoding)
+            return nativeLoaded && tiktokenLoaded
+        case .tiktoken:
+            return await bpeCache.isLoaded(encoding: encoding)
+        }
     }
 
     static func _bpeCacheStats() async -> BpeCacheStats {
@@ -84,6 +162,10 @@ public actor TokenCounter {
 
     static func _resetBpeCacheStats() async {
         await bpeCache.resetStats()
+    }
+
+    static func _comparisonStats() async -> ComparisonSnapshot {
+        await comparisonStats.snapshotStats()
     }
 
 
@@ -116,25 +198,25 @@ public actor TokenCounter {
 
     public func encode(_ text: String) -> [UInt32] {
         let capped = cappedInput(text)
-        return bpe.encode(text: capped, allowedSpecial: [])
+        return Self.encodeWithBackend(capped, backend: backend)
     }
 
     public func decode(_ tokens: [UInt32]) -> String {
-        (try? bpe.decode(tokens: tokens)) ?? ""
+        Self.decodeWithBackend(tokens, backend: backend)
     }
 
     // MARK: - Batch Operations (Optimized)
     
     /// Thread-safe encoding using nonisolated access to the BPE model.
     /// CoreBpe is thread-safe for concurrent reads.
-    nonisolated private func encodeNonisolated(_ text: String, bpe: CoreBpe) -> [UInt32] {
+    nonisolated private func encodeNonisolated(_ text: String, backend: Backend) -> [UInt32] {
         let capped = Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
-        return bpe.encode(text: capped, allowedSpecial: [])
+        return Self.encodeWithBackend(capped, backend: backend)
     }
     
     /// Thread-safe decoding using nonisolated access to the BPE model.
-    nonisolated private func decodeNonisolated(_ tokens: [UInt32], bpe: CoreBpe) -> String {
-        (try? bpe.decode(tokens: tokens)) ?? ""
+    nonisolated private func decodeNonisolated(_ tokens: [UInt32], backend: Backend) -> String {
+        Self.decodeWithBackend(tokens, backend: backend)
     }
 
     /// Count tokens for multiple texts - uses parallel processing for better throughput.
@@ -145,14 +227,14 @@ public actor TokenCounter {
         }
         
         // Capture bpe for nonisolated parallel access
-        let localBpe = bpe
+        let localBackend = backend
         
         var results = [Int](repeating: 0, count: texts.count)
 
         await withTaskGroup(of: (Int, Int).self) { group in
             for (index, text) in texts.enumerated() {
                 group.addTask {
-                    (index, self.encodeNonisolated(text, bpe: localBpe).count)
+                    (index, self.encodeNonisolated(text, backend: localBackend).count)
                 }
             }
 
@@ -170,13 +252,13 @@ public actor TokenCounter {
             return texts.map { encode($0) }
         }
         
-        let localBpe = bpe
+        let localBackend = backend
         var results = Array<[UInt32]>(repeating: [], count: texts.count)
 
         await withTaskGroup(of: (Int, [UInt32]).self) { group in
             for (index, text) in texts.enumerated() {
                 group.addTask {
-                    (index, self.encodeNonisolated(text, bpe: localBpe))
+                    (index, self.encodeNonisolated(text, backend: localBackend))
                 }
             }
 
@@ -204,7 +286,7 @@ public actor TokenCounter {
             return results
         }
         
-        let localBpe = bpe
+        let localBackend = backend
         
         // Batch encode all texts first (parallel)
         let allTokens = await encodeBatch(texts)
@@ -218,7 +300,7 @@ public actor TokenCounter {
                         return (index, texts[index])
                     }
                     let sliced = Array(tokens.prefix(maxTokens))
-                    return (index, self.decodeNonisolated(sliced, bpe: localBpe))
+                    return (index, self.decodeNonisolated(sliced, backend: localBackend))
                 }
             }
 
@@ -236,7 +318,7 @@ public actor TokenCounter {
             return texts.map { _ in (count: 0, truncated: "") }
         }
         
-        let localBpe = bpe
+        let localBackend = backend
         
         // Batch encode all texts
         let allTokens = await encodeBatch(texts)
@@ -251,7 +333,7 @@ public actor TokenCounter {
                         return (index, (count: count, truncated: texts[index]))
                     }
                     let sliced = Array(tokens.prefix(maxTokens))
-                    return (index, (count: maxTokens, truncated: self.decodeNonisolated(sliced, bpe: localBpe)))
+                    return (index, (count: maxTokens, truncated: self.decodeNonisolated(sliced, backend: localBackend)))
                 }
             }
 
@@ -265,6 +347,66 @@ public actor TokenCounter {
 
     private func cappedInput(_ text: String) -> String {
         Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
+    }
+
+    private static func backendPreference() -> BackendPreference {
+        switch ProcessInfo.processInfo.environment["WAX_TOKENIZER_BACKEND"]?.lowercased() {
+        case "native":
+            return .native
+        case "compare":
+            return .compare
+        default:
+            return .tiktoken
+        }
+    }
+
+    nonisolated private static func encodeWithBackend(_ text: String, backend: Backend) -> [UInt32] {
+        switch backend {
+        case .tiktoken(let bpe):
+            return bpe.encode(text: text, allowedSpecial: [])
+        case .native(let tokenizer):
+            return tokenizer.encode(text)
+        case .compare(let tiktoken, let native):
+            let (nativeTokens, nativeMillis) = measureMillis { native.encode(text) }
+            let (tiktokenTokens, tiktokenMillis) = measureMillis { tiktoken.encode(text: text, allowedSpecial: []) }
+            let mismatch = nativeTokens != tiktokenTokens
+            Task {
+                await Self.comparisonStats.record(
+                    tiktokenMillis: tiktokenMillis,
+                    nativeMillis: nativeMillis,
+                    mismatch: mismatch
+                )
+            }
+            return mismatch ? tiktokenTokens : nativeTokens
+        }
+    }
+
+    nonisolated private static func decodeWithBackend(_ tokens: [UInt32], backend: Backend) -> String {
+        switch backend {
+        case .tiktoken(let bpe):
+            return (try? bpe.decode(tokens: tokens)) ?? ""
+        case .native(let tokenizer):
+            return tokenizer.decode(tokens)
+        case .compare(let tiktoken, let native):
+            let (nativeText, nativeMillis) = measureMillis { native.decode(tokens) }
+            let (tiktokenText, tiktokenMillis) = measureMillis { (try? tiktoken.decode(tokens: tokens)) ?? "" }
+            let mismatch = nativeText != tiktokenText
+            Task {
+                await Self.comparisonStats.record(
+                    tiktokenMillis: tiktokenMillis,
+                    nativeMillis: nativeMillis,
+                    mismatch: mismatch
+                )
+            }
+            return mismatch ? tiktokenText : nativeText
+        }
+    }
+
+    nonisolated private static func measureMillis<T>(_ work: () -> T) -> (T, Double) {
+        let start = CFAbsoluteTimeGetCurrent()
+        let value = work()
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        return (value, elapsed)
     }
 
     private static func cappedUTF8Prefix(_ text: String, maxBytes: Int) -> String {

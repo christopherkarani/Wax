@@ -46,6 +46,18 @@ public struct FastRAGContextBuilder: Sendable {
             : nil
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
+        // Prefetch surrogate metadata in parallel with expansion work.
+        // This keeps determinism while overlapping Wax actor hops.
+        let shouldPrefetchSurrogates = clamped.mode == .denseCached
+            && clamped.maxSurrogates > 0
+            && clamped.surrogateMaxTokens > 0
+            && clamped.maxContextTokens > 0
+        let sourceFrameIds = response.results.map(\.frameId)
+        async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
+            ? wax.surrogateFrameIds(for: sourceFrameIds)
+            : [:]
+        async let allFrameMetasTask: [FrameMeta] = shouldPrefetchSurrogates ? wax.frameMetas() : []
+
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
             for result in response.results {
@@ -56,7 +68,8 @@ public struct FastRAGContextBuilder: Sendable {
                     maxTokens: clamped.expansionMaxTokens,
                     maxBytes: clamped.expansionMaxBytes
                 ) {
-                    usedTokens += await counter.count(expanded)
+                    let expandedTokens = await counter.countBatch([expanded])[0]
+                    usedTokens += expandedTokens
                     expandedFrameId = result.frameId
                     items.append(
                         .init(
@@ -82,18 +95,13 @@ public struct FastRAGContextBuilder: Sendable {
             let maxToLoad = min(clamped.maxSurrogates, min(clamped.searchTopK, 32))
 
             // Batch resolve surrogate ids in a single actor hop to avoid TaskGroup churn.
-            let sourceFrameIds = response.results
-                .filter { result in
-                    guard let expandedFrameId else { return true }
-                    return result.frameId != expandedFrameId
-                }
-                .map(\.frameId)
-            let surrogateMap = await wax.surrogateFrameIds(for: sourceFrameIds)
+            let surrogateMap = await surrogateMapTask
 
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
             orderedSurrogateIds.reserveCapacity(maxToLoad)
             for result in response.results {
+                if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 guard let surrogateId = surrogateMap[result.frameId] else { continue }
                 orderedSurrogateIds.append(surrogateId)
                 if orderedSurrogateIds.count >= maxToLoad { break }
@@ -101,64 +109,82 @@ public struct FastRAGContextBuilder: Sendable {
 
             // Batch load surrogate contents to avoid per-frame actor hops.
             // If any surrogate is corrupted, fall back to per-frame loads and skip failures.
-            let surrogateContents: [UInt64: Data]
-            do {
-                surrogateContents = try await wax.frameContents(frameIds: orderedSurrogateIds)
-            } catch {
-                var recovered: [UInt64: Data] = [:]
-                recovered.reserveCapacity(orderedSurrogateIds.count)
-                for surrogateId in orderedSurrogateIds {
-                    if let data = try? await wax.frameContent(frameId: surrogateId) {
-                        recovered[surrogateId] = data
+            async let surrogateContentsTask: [UInt64: Data] = {
+                do {
+                    return try await wax.frameContents(frameIds: orderedSurrogateIds)
+                } catch {
+                    var recovered: [UInt64: Data] = [:]
+                    recovered.reserveCapacity(orderedSurrogateIds.count)
+                    for surrogateId in orderedSurrogateIds {
+                        if let data = try? await wax.frameContent(frameId: surrogateId) {
+                            recovered[surrogateId] = data
+                        }
                     }
+                    return recovered
                 }
-                surrogateContents = recovered
-            }
+            }()
 
-            var surrogateCandidates: [(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)] = []
-            surrogateCandidates.reserveCapacity(orderedSurrogateIds.count)
-            
             // Build tier selector based on config
             let tierSelector = SurrogateTierSelector(
                 policy: clamped.tierSelectionPolicy,
                 scorer: ImportanceScorer()
             )
-            
+
             // Get frame metas for timestamp access (needed for tier selection)
-            let allFrameMetas = await wax.frameMetas()
+            let allFrameMetas = await allFrameMetasTask
             let frameMetaMap = Dictionary(uniqueKeysWithValues: allFrameMetas.map { ($0.id, $0) })
-            
-            for result in response.results {
-                guard let surrogateId = surrogateMap[result.frameId],
-                      let data = surrogateContents[surrogateId] else { continue }
-                
-                // Get source frame timestamp for tier selection
-                let frameTimestamp = frameMetaMap[result.frameId]?.timestamp ?? nowMs
-                
-                // Build tier selection context
-                let context = TierSelectionContext(
-                    frameTimestamp: frameTimestamp,
-                    accessStats: nil, // Access stats would be passed in from orchestrator if tracking enabled
-                    querySignals: querySignals,
-                    nowMs: nowMs
-                )
-                
-                // Select tier and extract text
-                let selectedTier = tierSelector.selectTier(context: context)
-                guard let text = SurrogateTierSelector.extractTier(from: data, tier: selectedTier),
-                      !text.isEmpty else { continue }
-                
-                surrogateCandidates.append((result, surrogateId, text))
-                if surrogateCandidates.count >= maxToLoad { break }
+
+            let surrogateContents = await surrogateContentsTask
+
+            // Parallel tier selection and tier extraction, preserving response order.
+            let surrogateWorkItems = response.results
+                .compactMap { result -> (result: SearchResponse.Result, surrogateFrameId: UInt64)? in
+                    if let expandedFrameId, result.frameId == expandedFrameId { return nil }
+                    guard let surrogateId = surrogateMap[result.frameId] else { return nil }
+                    return (result: result, surrogateFrameId: surrogateId)
+                }
+                .prefix(maxToLoad)
+
+            var surrogateCandidates = Array<(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)?>(
+                repeating: nil,
+                count: surrogateWorkItems.count
+            )
+
+            await withTaskGroup(of: (Int, (SearchResponse.Result, UInt64, String)?).self) { group in
+                for (index, item) in surrogateWorkItems.enumerated() {
+                    group.addTask {
+                        guard let data = surrogateContents[item.surrogateFrameId] else { return (index, nil) }
+
+                        let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
+                        let context = TierSelectionContext(
+                            frameTimestamp: frameTimestamp,
+                            accessStats: nil, // Access stats would be passed in from orchestrator if tracking enabled
+                            querySignals: querySignals,
+                            nowMs: nowMs
+                        )
+
+                        let selectedTier = tierSelector.selectTier(context: context)
+                        guard let text = SurrogateTierSelector.extractTier(from: data, tier: selectedTier),
+                              !text.isEmpty else { return (index, nil) }
+
+                        return (index, (item.result, item.surrogateFrameId, text))
+                    }
+                }
+
+                for await (index, candidate) in group {
+                    surrogateCandidates[index] = candidate
+                }
             }
 
-            if !surrogateCandidates.isEmpty {
+            let finalizedSurrogates = surrogateCandidates.compactMap { $0 }
+
+            if !finalizedSurrogates.isEmpty {
                 // Use optimized combined count and truncate operation
-                let texts = surrogateCandidates.map { $0.text }
+                let texts = finalizedSurrogates.map { $0.text }
                 let maxTokensPerText = min(clamped.surrogateMaxTokens, remainingTokens)
                 let processedResults = await counter.countAndTruncateBatch(texts, maxTokens: maxTokensPerText)
 
-                for (index, (result, surrogateFrameId, _)) in surrogateCandidates.enumerated() {
+                for (index, (result, surrogateFrameId, _)) in finalizedSurrogates.enumerated() {
                     let (tokens, capped) = processedResults[index]
 
                     guard !capped.isEmpty && tokens <= remainingTokens else { continue }
@@ -189,15 +215,50 @@ public struct FastRAGContextBuilder: Sendable {
             // Collect all snippet candidates
             var snippetCandidates: [(result: SearchResponse.Result, preview: String)] = []
             snippetCandidates.reserveCapacity(min(clamped.maxSnippets, 32))
-            
-            for result in response.results {
-                if let expandedFrameId, result.frameId == expandedFrameId { continue }
-                if surrogateSourceFrameIds.contains(result.frameId) { continue }
-                guard snippetCount < clamped.maxSnippets else { break }
-                guard let preview = result.previewText, !preview.isEmpty else { continue }
 
-                snippetCandidates.append((result, preview))
-                snippetCount += 1
+            // Parallel preview extraction while preserving the original order.
+            let resultCount = response.results.count
+            if resultCount > 4 {
+                let expandedFrameIdSnapshot = expandedFrameId
+                let surrogateSourceFrameIdsSnapshot = surrogateSourceFrameIds
+                let previewSnapshots = response.results.map { (frameId: $0.frameId, preview: $0.previewText) }
+                var previewSlots = Array<String?>(repeating: nil, count: resultCount)
+                await withTaskGroup(of: (Int, String?).self) { group in
+                    for (index, snapshot) in previewSnapshots.enumerated() {
+                        group.addTask {
+                            if let expandedFrameIdSnapshot, snapshot.frameId == expandedFrameIdSnapshot {
+                                return (index, nil)
+                            }
+                            if surrogateSourceFrameIdsSnapshot.contains(snapshot.frameId) {
+                                return (index, nil)
+                            }
+                            guard let preview = snapshot.preview, !preview.isEmpty else { return (index, nil) }
+                            return (index, preview)
+                        }
+                    }
+
+                    for await (index, preview) in group {
+                        previewSlots[index] = preview
+                    }
+                }
+
+                for (index, preview) in previewSlots.enumerated() {
+                    guard snippetCount < clamped.maxSnippets else { break }
+                    guard let preview else { continue }
+                    let result = response.results[index]
+                    snippetCandidates.append((result, preview))
+                    snippetCount += 1
+                }
+            } else {
+                for result in response.results {
+                    if let expandedFrameId, result.frameId == expandedFrameId { continue }
+                    if surrogateSourceFrameIds.contains(result.frameId) { continue }
+                    guard snippetCount < clamped.maxSnippets else { break }
+                    guard let preview = result.previewText, !preview.isEmpty else { continue }
+
+                    snippetCandidates.append((result, preview))
+                    snippetCount += 1
+                }
             }
 
             // Always use batch processing for consistency and better performance
@@ -258,7 +319,11 @@ public struct FastRAGContextBuilder: Sendable {
     ) async throws -> String? {
         guard maxTokens > 0, maxBytes > 0 else { return nil }
 
-        let meta = try await wax.frameMetaIncludingPending(frameId: frameId)
+        // Fetch meta and payload in parallel to reduce latency while preserving validation.
+        async let metaTask = wax.frameMetaIncludingPending(frameId: frameId)
+        async let dataTask = wax.frameContentIncludingPending(frameId: frameId)
+
+        let meta = try await metaTask
         let canonicalBytes: UInt64
         if meta.canonicalEncoding == .plain {
             canonicalBytes = meta.payloadLength
@@ -270,7 +335,7 @@ public struct FastRAGContextBuilder: Sendable {
         guard canonicalBytes > 0 else { return nil }
         guard canonicalBytes <= UInt64(maxBytes) else { return nil }
 
-        let data = try await wax.frameContentIncludingPending(frameId: frameId)
+        let data = try await dataTask
         try Self.validateExpansionPayloadSize(
             expectedBytes: canonicalBytes,
             actualBytes: data.count,
