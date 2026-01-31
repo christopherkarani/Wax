@@ -27,14 +27,14 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
     private static let minimumBatchSize = 64
-    private static let maximumBatchSize = 128
+    private static let maximumBatchSize = 256
     private static let maxConcurrentBatches = 4
 
     public struct Config {
         public var batchSize: Int
         public var modelConfiguration: MLModelConfiguration?
 
-        public init(batchSize: Int = 128, modelConfiguration: MLModelConfiguration? = nil) {
+        public init(batchSize: Int = 256, modelConfiguration: MLModelConfiguration? = nil) {
             self.batchSize = batchSize
             self.modelConfiguration = modelConfiguration
         }
