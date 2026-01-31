@@ -62,7 +62,8 @@ let package = Package(
                 "WaxVectorSearch",
             ],
             resources: [
-                .process("Resources"),
+                .copy("Resources/all-MiniLM-L6-v2.mlmodelc"),
+                .process("Resources/bert_tokenizer_vocab.txt"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
@@ -89,6 +90,7 @@ let package = Package(
             name: "WaxIntegrationTests",
             dependencies: [
                 "Wax",
+                "WaxVectorSearchMiniLM",
                 .product(name: "USearch", package: "USearch"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),

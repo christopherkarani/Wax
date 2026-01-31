@@ -4,17 +4,17 @@
 // This file was automatically generated and should not be edited.
 //
 
-@preconcurrency import CoreML
+import CoreML
 
 
 /// Model Prediction Input Type
-@available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, visionOS 1.0, *)
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
 public class all_MiniLM_L6_v2Input : MLFeatureProvider {
 
-    /// input_ids as 1 by 512 matrix of floats
+    /// input_ids as 1 by 32 matrix of 32-bit integers
     public var input_ids: MLMultiArray
 
-    /// attention_mask as 1 by 512 matrix of floats
+    /// attention_mask as 1 by 32 matrix of 32-bit integers
     public var attention_mask: MLMultiArray
 
     public var featureNames: Set<String> { ["input_ids", "attention_mask"] }
@@ -34,7 +34,7 @@ public class all_MiniLM_L6_v2Input : MLFeatureProvider {
         self.attention_mask = attention_mask
     }
 
-    public convenience init(input_ids: MLShapedArray<Float>, attention_mask: MLShapedArray<Float>) {
+    public convenience init(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) {
         self.init(input_ids: MLMultiArray(input_ids), attention_mask: MLMultiArray(attention_mask))
     }
 
@@ -42,20 +42,24 @@ public class all_MiniLM_L6_v2Input : MLFeatureProvider {
 
 
 /// Model Prediction Output Type
-@available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, visionOS 1.0, *)
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
 public class all_MiniLM_L6_v2Output : MLFeatureProvider {
 
     /// Source provided by CoreML
-    private let provider : any MLFeatureProvider
+    private let provider : MLFeatureProvider
 
-    /// embeddings as multidimensional array of floats
-    public var embeddings: MLMultiArray {
-        provider.featureValue(for: "embeddings")!.multiArrayValue!
+    /// var_554 as multidimensional array of 16-bit floats
+    public var var_554: MLMultiArray {
+        provider.featureValue(for: "var_554")!.multiArrayValue!
     }
 
-    /// embeddings as multidimensional array of floats
-    public var embeddingsShapedArray: MLShapedArray<Float> {
-        MLShapedArray<Float>(embeddings)
+    /// var_554 as multidimensional array of 16-bit floats
+    #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
+    @available(macOS, unavailable)
+    @available(macCatalyst, unavailable)
+    #endif
+    public var var_554ShapedArray: MLShapedArray<Float16> {
+        MLShapedArray<Float16>(var_554)
     }
 
     public var featureNames: Set<String> {
@@ -66,25 +70,31 @@ public class all_MiniLM_L6_v2Output : MLFeatureProvider {
         provider.featureValue(for: featureName)
     }
 
-    public init(embeddings: MLMultiArray) {
-        self.provider = try! MLDictionaryFeatureProvider(dictionary: ["embeddings" : MLFeatureValue(multiArray: embeddings)])
+    public init(var_554: MLMultiArray) {
+        self.provider = try! MLDictionaryFeatureProvider(dictionary: ["var_554" : MLFeatureValue(multiArray: var_554)])
     }
 
-    public init(features: any MLFeatureProvider) {
+    public init(features: MLFeatureProvider) {
         self.provider = features
     }
 }
 
 
 /// Class for model loading and prediction
-@available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, visionOS 1.0, *)
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
 public class all_MiniLM_L6_v2 {
     public let model: MLModel
 
     /// URL of model assuming it was installed in the same bundle as this class
     class var urlOfModelInThisBundle : URL {
-        let bundle = Bundle.module
-        return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension:"mlmodelc")!
+        #if SWIFT_PACKAGE
+        let moduleBundle = Bundle.module
+        if let url = moduleBundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
+            return url
+        }
+        #endif
+        let bundle = Bundle(for: self)
+        return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc")!
     }
 
     /**
@@ -145,7 +155,7 @@ public class all_MiniLM_L6_v2 {
           - configuration: the desired model configuration
           - handler: the completion handler to be called when the model loading completes successfully or unsuccessfully
     */
-    public class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, any Error>) -> Void) {
+    public class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
         load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration, completionHandler: handler)
     }
 
@@ -171,7 +181,7 @@ public class all_MiniLM_L6_v2 {
           - configuration: the desired model configuration
           - handler: the completion handler to be called when the model loading completes successfully or unsuccessfully
     */
-    public class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, any Error>) -> Void) {
+    public class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
         MLModel.load(contentsOf: modelURL, configuration: configuration) { result in
             switch result {
             case .failure(let error):
@@ -243,7 +253,6 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
-    @available(macOS 14.0, iOS 17.0, tvOS 17.0, watchOS 10.0, visionOS 1.0, *)
     public func prediction(input: all_MiniLM_L6_v2Input, options: MLPredictionOptions = MLPredictionOptions()) async throws -> all_MiniLM_L6_v2Output {
         let outFeatures = try await model.prediction(from: input, options: options)
         return all_MiniLM_L6_v2Output(features: outFeatures)
@@ -255,8 +264,8 @@ public class all_MiniLM_L6_v2 {
         It uses the default function if the model has multiple functions.
 
         - parameters:
-            - input_ids: 1 by 512 matrix of floats
-            - attention_mask: 1 by 512 matrix of floats
+            - input_ids: 1 by 32 matrix of 32-bit integers
+            - attention_mask: 1 by 32 matrix of 32-bit integers
 
         - throws: an NSError object that describes the problem
 
@@ -273,15 +282,15 @@ public class all_MiniLM_L6_v2 {
         It uses the default function if the model has multiple functions.
 
         - parameters:
-            - input_ids: 1 by 512 matrix of floats
-            - attention_mask: 1 by 512 matrix of floats
+            - input_ids: 1 by 32 matrix of 32-bit integers
+            - attention_mask: 1 by 32 matrix of 32-bit integers
 
         - throws: an NSError object that describes the problem
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
 
-    public func prediction(input_ids: MLShapedArray<Float>, attention_mask: MLShapedArray<Float>) throws -> all_MiniLM_L6_v2Output {
+    public func prediction(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) throws -> all_MiniLM_L6_v2Output {
         let input_ = all_MiniLM_L6_v2Input(input_ids: input_ids, attention_mask: attention_mask)
         return try prediction(input: input_)
     }

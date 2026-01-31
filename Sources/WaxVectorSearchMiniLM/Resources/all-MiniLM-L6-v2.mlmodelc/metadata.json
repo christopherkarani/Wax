@@ -1,0 +1,95 @@
+[
+  {
+    "shortDescription" : "MiniLM-L6-v2 with dynamic batching\/sequence length. Inputs: input_ids, attention_mask.",
+    "metadataOutputVersion" : "3.0",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16)",
+        "shortDescription" : "",
+        "shape" : "[]",
+        "name" : "var_554",
+        "type" : "MultiArray"
+      }
+    ],
+    "version" : "2.0",
+    "modelParameters" : [
+
+    ],
+    "author" : "Wax Optimization Team",
+    "specificationVersion" : 9,
+    "storagePrecision" : "Mixed (Float16, Int32)",
+    "license" : "Apache 2.0",
+    "mlProgramOperationTypeHistogram" : {
+      "Ios18.linear" : 37,
+      "Ios18.sub" : 2,
+      "Ios18.expandDims" : 2,
+      "Ios18.matmul" : 12,
+      "Ios18.gelu" : 6,
+      "Ios18.gather" : 52,
+      "Ios18.concat" : 25,
+      "Ios18.add" : 20,
+      "Shape" : 25,
+      "Ios18.tanh" : 1,
+      "Ios18.softmax" : 6,
+      "Ios18.sliceByIndex" : 2,
+      "Ios18.layerNorm" : 13,
+      "Ios18.cast" : 78,
+      "Ios18.transpose" : 24,
+      "Ios18.reshape" : 24,
+      "Ios18.mul" : 7
+    },
+    "computePrecision" : "Mixed (Float16, Int16, Int32, UInt16)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "shortDescription" : "",
+        "dataType" : "Int32",
+        "hasShapeFlexibility" : "1",
+        "isOptional" : "0",
+        "shapeFlexibility" : "1 × 32 | 1 × 64 | 1 × 128 | 1 × 256 | 1 × 384 | 1 × 512 | 8 × 32 | 8 × 64 | 8 × 128 | 8 × 256 | 8 × 384 | 8 × 512 | 16 × 32 | 16 × 64 | 16 × 128 | 16 × 256 | 16 × 384 | 16 × 512 | 32 × 32 | 32 × 64 | 32 × 128 | 32 × 256 | 32 × 384 | 32 × 512 | 64 × 32 | 64 × 64 | 64 × 128 | 64 × 256 | 64 × 384 | 64 × 512",
+        "formattedType" : "MultiArray (Int32 1 × 32)",
+        "type" : "MultiArray",
+        "shape" : "[1, 32]",
+        "name" : "input_ids",
+        "enumeratedShapes" : "[[1, 32], [1, 64], [1, 128], [1, 256], [1, 384], [1, 512], [8, 32], [8, 64], [8, 128], [8, 256], [8, 384], [8, 512], [16, 32], [16, 64], [16, 128], [16, 256], [16, 384], [16, 512], [32, 32], [32, 64], [32, 128], [32, 256], [32, 384], [32, 512], [64, 32], [64, 64], [64, 128], [64, 256], [64, 384], [64, 512]]"
+      },
+      {
+        "shortDescription" : "",
+        "dataType" : "Int32",
+        "hasShapeFlexibility" : "1",
+        "isOptional" : "0",
+        "shapeFlexibility" : "1 × 32 | 1 × 64 | 1 × 128 | 1 × 256 | 1 × 384 | 1 × 512 | 8 × 32 | 8 × 64 | 8 × 128 | 8 × 256 | 8 × 384 | 8 × 512 | 16 × 32 | 16 × 64 | 16 × 128 | 16 × 256 | 16 × 384 | 16 × 512 | 32 × 32 | 32 × 64 | 32 × 128 | 32 × 256 | 32 × 384 | 32 × 512 | 64 × 32 | 64 × 64 | 64 × 128 | 64 × 256 | 64 × 384 | 64 × 512",
+        "formattedType" : "MultiArray (Int32 1 × 32)",
+        "type" : "MultiArray",
+        "shape" : "[1, 32]",
+        "name" : "attention_mask",
+        "enumeratedShapes" : "[[1, 32], [1, 64], [1, 128], [1, 256], [1, 384], [1, 512], [8, 32], [8, 64], [8, 128], [8, 256], [8, 384], [8, 512], [16, 32], [16, 64], [16, 128], [16, 256], [16, 384], [16, 512], [32, 32], [32, 64], [32, 128], [32, 256], [32, 384], [32, 512], [64, 32], [64, 64], [64, 128], [64, 256], [64, 384], [64, 512]]"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-01-31",
+      "com.github.apple.coremltools.source" : "torch==2.7.1",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "generatedClassName" : "all_MiniLM_L6_v2",
+    "method" : "predict"
+  }
+]

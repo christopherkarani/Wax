@@ -13,6 +13,7 @@ public enum WaxPrewarm {
     public static func miniLM(sampleText: String = "hello") async {
         let embedder = MiniLMEmbedder()
         _ = try? await embedder.embed(sampleText)
+        _ = try? await embedder.prewarm()
     }
     #endif
 }

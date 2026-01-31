@@ -1,12 +1,13 @@
 import CoreML
 import Foundation
 
-@available(macOS 12.0, iOS 15.0, *)
+@available(macOS 15.0, iOS 18.0, *)
 public final class MiniLMEmbeddings {
     public let model: all_MiniLM_L6_v2
     public let tokenizer: BertTokenizer
     public let inputDimension: Int = 512
     public let outputDimension: Int = 384
+    private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
 
     public var computeUnits: MLComputeUnits {
         model.model.configuration.computeUnits
@@ -16,12 +17,12 @@ public final class MiniLMEmbeddings {
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
             defaultConfig.computeUnits = .all
+            defaultConfig.allowLowPrecisionAccumulationOnGPU = true
             return defaultConfig
         }()
 
         do {
-            let coreModel = try Self.loadModel(configuration: config)
-            self.model = all_MiniLM_L6_v2(model: coreModel)
+            self.model = try Self.cachedModel(configuration: config)
         } catch {
             fatalError("Failed to load the Core ML model. Error: \(error.localizedDescription)")
         }
@@ -32,55 +33,46 @@ public final class MiniLMEmbeddings {
     // MARK: - Dense Embeddings
 
     public func encode(sentence: String) async -> [Float]? {
-        let inputTokens = tokenizer.buildModelTokens(sentence: sentence)
-        let (inputIds, attentionMask) = tokenizer.buildModelInputs(from: inputTokens)
-        return generateEmbeddings(inputIds: inputIds, attentionMask: attentionMask)
+        guard let embeddings = await encode(batch: [sentence]) else { return nil }
+        return embeddings.first
     }
 
     public func encode(batch sentences: [String]) async -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
-        var inputs: [all_MiniLM_L6_v2Input] = []
-        inputs.reserveCapacity(sentences.count)
+        let batchInputs = tokenizer.buildBatchInputs(
+            sentences: sentences,
+            sequenceLengthBuckets: Self.sequenceLengthBuckets
+        )
+        guard batchInputs.sequenceLength > 0 else { return [] }
 
-        for sentence in sentences {
-            let inputTokens = tokenizer.buildModelTokens(sentence: sentence)
-            let (inputIds, attentionMask) = tokenizer.buildModelInputs(from: inputTokens)
-            inputs.append(all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask))
-        }
-
-        guard let outputs = try? model.predictions(inputs: inputs) else {
+        guard let output = try? model.prediction(
+            input_ids: batchInputs.inputIds,
+            attention_mask: batchInputs.attentionMask
+        ) else {
             return nil
         }
 
-        var results: [[Float]] = []
-        results.reserveCapacity(outputs.count)
-        for output in outputs {
-            let embeddings = output.embeddings
-            let count = embeddings.count
-            let ptr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: count)
-            let buffer = UnsafeBufferPointer(start: ptr, count: count)
-            results.append(Array(buffer))
-        }
-        return results
+        return Self.decodeEmbeddings(
+            output.var_554,
+            batchSize: sentences.count,
+            outputDimension: outputDimension
+        )
     }
 
     public func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
         let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
         let output = try? model.prediction(input: inputFeatures)
 
-        guard let embeddings = output?.embeddings else {
+        guard let embeddings = output?.var_554 else {
             return nil
         }
 
-        let count = embeddings.count
-        let ptr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: count)
-        let buffer = UnsafeBufferPointer(start: ptr, count: count)
-        return Array(buffer)
+        return Self.decodeEmbeddings(embeddings, batchSize: 1, outputDimension: outputDimension)?.first
     }
 }
 
-@available(macOS 12.0, iOS 15.0, *)
+@available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbeddings {
     enum ModelLoadError: LocalizedError {
         case missingModelResource
@@ -98,38 +90,134 @@ private extension MiniLMEmbeddings {
             return try MLModel(contentsOf: compiledURL, configuration: configuration)
         }
 
-        guard let resourceURL = Bundle.module.resourceURL else {
-            throw ModelLoadError.missingModelResource
+        throw ModelLoadError.missingModelResource
+    }
+
+    struct ModelCacheKey: Hashable {
+        let computeUnits: MLComputeUnits
+        let allowLowPrecisionAccumulationOnGPU: Bool
+    }
+
+    final class ModelCache: @unchecked Sendable {
+        static let shared = ModelCache()
+        private var models: [ModelCacheKey: all_MiniLM_L6_v2] = [:]
+        private let lock = NSLock()
+
+        func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
+            if configuration.preferredMetalDevice != nil || hasParameters {
+                let coreModel = try MiniLMEmbeddings.loadModel(configuration: configuration)
+                return all_MiniLM_L6_v2(model: coreModel)
+            }
+            let key = ModelCacheKey(
+                computeUnits: configuration.computeUnits,
+                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
+            )
+            lock.lock()
+            if let cached = models[key] {
+                lock.unlock()
+                return cached
+            }
+            lock.unlock()
+
+            let coreModel = try MiniLMEmbeddings.loadModel(configuration: configuration)
+            let model = all_MiniLM_L6_v2(model: coreModel)
+            lock.lock()
+            models[key] = model
+            lock.unlock()
+            return model
+        }
+    }
+
+    static func cachedModel(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+        try ModelCache.shared.model(configuration: configuration)
+    }
+
+    static func decodeEmbeddings(
+        _ embeddings: MLMultiArray,
+        batchSize: Int,
+        outputDimension: Int
+    ) -> [[Float]]? {
+        guard batchSize > 0 else { return [] }
+        let elementCount = embeddings.count
+        let shape = embeddings.shape.map { $0.intValue }
+        let strides = embeddings.strides.map { $0.intValue }
+        let dataType = embeddings.dataType
+        let float16Ptr: UnsafeMutablePointer<Float16>? = dataType == .float16
+            ? embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
+            : nil
+        let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
+            ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
+            : nil
+
+        func readValue(at index: Int) -> Float {
+            if let floatPtr {
+                return floatPtr[index]
+            }
+            if let float16Ptr {
+                return Float(float16Ptr[index])
+            }
+            return 0
         }
 
-        let modelURL = resourceURL.appendingPathComponent("model.mlmodel")
-        let weightsAtRootURL = resourceURL.appendingPathComponent("weight.bin")
-        let weightsInFolderURL = resourceURL.appendingPathComponent("weights/weight.bin")
-
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw ModelLoadError.missingModelResource
+        if shape.count == 1 {
+            guard batchSize == 1 else { return nil }
+            let dim = shape[0]
+            return [(0..<dim).map { readValue(at: $0) }]
         }
 
-        let weightsURL: URL
-        if FileManager.default.fileExists(atPath: weightsInFolderURL.path) {
-            weightsURL = weightsInFolderURL
-        } else if FileManager.default.fileExists(atPath: weightsAtRootURL.path) {
-            weightsURL = weightsAtRootURL
-        } else {
-            throw ModelLoadError.missingModelResource
+        if shape.count == 2 {
+            let batch = shape[0]
+            let dim = shape[1]
+            guard batch == batchSize else { return nil }
+            return (0..<batch).map { row in
+                var vector = [Float](repeating: 0, count: dim)
+                for col in 0..<dim {
+                    let index = row * strides[0] + col * strides[1]
+                    vector[col] = readValue(at: index)
+                }
+                return vector
+            }
         }
 
-        let fileManager = FileManager.default
-        let tempRoot = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let tempWeightsDir = tempRoot.appendingPathComponent("weights")
-        let tempModelURL = tempRoot.appendingPathComponent("model.mlmodel")
-        let tempWeightsURL = tempWeightsDir.appendingPathComponent("weight.bin")
+        if shape.count == 3, shape[1] == 1 {
+            let batch = shape[0]
+            let dim = shape[2]
+            guard batch == batchSize else { return nil }
+            return (0..<batch).map { row in
+                var vector = [Float](repeating: 0, count: dim)
+                for col in 0..<dim {
+                    let index = row * strides[0] + col * strides[2]
+                    vector[col] = readValue(at: index)
+                }
+                return vector
+            }
+        }
 
-        try fileManager.createDirectory(at: tempWeightsDir, withIntermediateDirectories: true)
-        try fileManager.copyItem(at: modelURL, to: tempModelURL)
-        try fileManager.copyItem(at: weightsURL, to: tempWeightsURL)
+        if shape.count == 3, shape[2] == 1 {
+            let batch = shape[0]
+            let dim = shape[1]
+            guard batch == batchSize else { return nil }
+            return (0..<batch).map { row in
+                var vector = [Float](repeating: 0, count: dim)
+                for col in 0..<dim {
+                    let index = row * strides[0] + col * strides[1]
+                    vector[col] = readValue(at: index)
+                }
+                return vector
+            }
+        }
 
-        let compiledURL = try MLModel.compileModel(at: tempModelURL)
-        return try MLModel(contentsOf: compiledURL, configuration: configuration)
+        if embeddings.count % batchSize == 0 {
+            let rowStride = embeddings.count / batchSize
+            let dim = min(outputDimension, rowStride)
+            guard dim > 0 else { return nil }
+            return (0..<batchSize).map { row in
+                let start = row * rowStride
+                return (0..<dim).map { readValue(at: start + $0) }
+            }
+        }
+
+        return nil
     }
 }

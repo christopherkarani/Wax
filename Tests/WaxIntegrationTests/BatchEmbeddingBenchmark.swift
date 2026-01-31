@@ -32,6 +32,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         
         // Warm up
         _ = try await embedder.embed(texts[0])
+        _ = try await embedder.embed(batch: texts)
         
         // Benchmark SEQUENTIAL embedding (old approach)
         var sequentialTimes: [Double] = []
@@ -95,6 +96,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         
         // Warm up
         _ = try await embedder.embed(allTexts[0])
+        _ = try await embedder.embed(batch: Array(allTexts.prefix(batchSizes.max() ?? 1)))
         
         for batchSize in batchSizes {
             let texts = Array(allTexts.prefix(batchSize))
