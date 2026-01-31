@@ -2,6 +2,64 @@ import Foundation
 import WaxCore
 import WaxTextSearch
 
+// MARK: - Surrogate Tier Selection
+
+/// Compression tier for surrogate retrieval
+public enum SurrogateTier: String, Sendable, Equatable, CaseIterable {
+    case full
+    case gist
+    case micro
+}
+
+/// Age thresholds for tier selection
+public struct AgeThresholds: Sendable, Equatable {
+    /// Memories newer than this use full tier (days)
+    public var recentDays: Int
+    /// Memories older than this use micro tier (days)
+    public var oldDays: Int
+    
+    public init(recentDays: Int = 7, oldDays: Int = 30) {
+        self.recentDays = recentDays
+        self.oldDays = oldDays
+    }
+    
+    public var recentMs: Int64 { Int64(recentDays) * 24 * 60 * 60 * 1000 }
+    public var oldMs: Int64 { Int64(oldDays) * 24 * 60 * 60 * 1000 }
+}
+
+/// Importance score thresholds for tier selection
+public struct ImportanceThresholds: Sendable, Equatable {
+    /// Score >= this uses full tier
+    public var fullThreshold: Float
+    /// Score >= this uses gist tier (below = micro)
+    public var gistThreshold: Float
+    
+    public init(fullThreshold: Float = 0.6, gistThreshold: Float = 0.3) {
+        self.fullThreshold = fullThreshold
+        self.gistThreshold = gistThreshold
+    }
+}
+
+/// Policy for selecting which surrogate tier to use at retrieval time
+public enum TierSelectionPolicy: Sendable, Equatable {
+    /// Always use full tier (no compression based on age/importance)
+    case disabled
+    
+    /// Select tier based on memory age only
+    case ageOnly(AgeThresholds)
+    
+    /// Select tier based on importance (age + access frequency)
+    case importance(ImportanceThresholds)
+    
+    /// Balanced age-only preset (7 days recent, 30 days old)
+    public static let ageBalanced = TierSelectionPolicy.ageOnly(AgeThresholds())
+    
+    /// Balanced importance-based preset
+    public static let importanceBalanced = TierSelectionPolicy.importance(ImportanceThresholds())
+}
+
+// MARK: - FastRAGConfig
+
 public struct FastRAGConfig: Sendable, Equatable {
     public enum Mode: Sendable, Equatable {
         case fast
@@ -13,7 +71,7 @@ public struct FastRAGConfig: Sendable, Equatable {
     /// Total token budget for the returned context (snippets + expansion).
     public var maxContextTokens: Int = 1_500
 
-    /// Token budget for the single “expanded” item.
+    /// Token budget for the single "expanded" item.
     public var expansionMaxTokens: Int = 600
 
     /// Hard cap on expansion bytes before UTF-8 decode/tokenization.
@@ -36,6 +94,14 @@ public struct FastRAGConfig: Sendable, Equatable {
     public var searchMode: SearchMode = .hybrid(alpha: 1.0)
     public var rrfK: Int = 60
     public var previewMaxBytes: Int = 512
+    
+    // MARK: - Tier Selection
+    
+    /// Policy for selecting surrogate tier at retrieval time
+    public var tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced
+    
+    /// Enable query-aware tier selection (boosts tier for specific queries)
+    public var enableQueryAwareTierSelection: Bool = true
 
     public init(
         mode: Mode = .fast,
@@ -49,7 +115,9 @@ public struct FastRAGConfig: Sendable, Equatable {
         searchTopK: Int = 24,
         searchMode: SearchMode = .hybrid(alpha: 1.0),
         rrfK: Int = 60,
-        previewMaxBytes: Int = 512
+        previewMaxBytes: Int = 512,
+        tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced,
+        enableQueryAwareTierSelection: Bool = true
     ) {
         self.mode = mode
         self.maxContextTokens = maxContextTokens
@@ -63,5 +131,8 @@ public struct FastRAGConfig: Sendable, Equatable {
         self.searchMode = searchMode
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
+        self.tierSelectionPolicy = tierSelectionPolicy
+        self.enableQueryAwareTierSelection = enableQueryAwareTierSelection
     }
 }
+

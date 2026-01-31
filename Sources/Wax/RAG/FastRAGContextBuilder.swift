@@ -38,6 +38,13 @@ public struct FastRAGContextBuilder: Sendable {
         var usedTokens = 0
         var expandedFrameId: UInt64?
         var surrogateSourceFrameIds: Set<UInt64> = []
+        
+        // Pre-compute query signals for tier selection if enabled
+        let queryAnalyzer = QueryAnalyzer()
+        let querySignals: QuerySignals? = clamped.enableQueryAwareTierSelection 
+            ? queryAnalyzer.analyze(query: query) 
+            : nil
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
@@ -110,11 +117,37 @@ public struct FastRAGContextBuilder: Sendable {
 
             var surrogateCandidates: [(result: SearchResponse.Result, surrogateFrameId: UInt64, text: String)] = []
             surrogateCandidates.reserveCapacity(orderedSurrogateIds.count)
+            
+            // Build tier selector based on config
+            let tierSelector = SurrogateTierSelector(
+                policy: clamped.tierSelectionPolicy,
+                scorer: ImportanceScorer()
+            )
+            
+            // Get frame metas for timestamp access (needed for tier selection)
+            let allFrameMetas = await wax.frameMetas()
+            let frameMetaMap = Dictionary(uniqueKeysWithValues: allFrameMetas.map { ($0.id, $0) })
+            
             for result in response.results {
                 guard let surrogateId = surrogateMap[result.frameId],
-                      let data = surrogateContents[surrogateId],
-                      let text = String(data: data, encoding: .utf8),
+                      let data = surrogateContents[surrogateId] else { continue }
+                
+                // Get source frame timestamp for tier selection
+                let frameTimestamp = frameMetaMap[result.frameId]?.timestamp ?? nowMs
+                
+                // Build tier selection context
+                let context = TierSelectionContext(
+                    frameTimestamp: frameTimestamp,
+                    accessStats: nil, // Access stats would be passed in from orchestrator if tracking enabled
+                    querySignals: querySignals,
+                    nowMs: nowMs
+                )
+                
+                // Select tier and extract text
+                let selectedTier = tierSelector.selectTier(context: context)
+                guard let text = SurrogateTierSelector.extractTier(from: data, tier: selectedTier),
                       !text.isEmpty else { continue }
+                
                 surrogateCandidates.append((result, surrogateId, text))
                 if surrogateCandidates.count >= maxToLoad { break }
             }
