@@ -13,6 +13,8 @@ public enum WaxError: Error, LocalizedError, Sendable {
     case capacityExceeded(limit: UInt64, requested: UInt64)
     case frameNotFound(frameId: UInt64)
     case io(String)
+    case writerBusy
+    case writerTimeout
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +40,10 @@ public enum WaxError: Error, LocalizedError, Sendable {
             return "Frame not found: \(frameId)"
         case .io(let details):
             return "I/O error: \(details)"
+        case .writerBusy:
+            return "Writer session already active"
+        case .writerTimeout:
+            return "Timed out waiting for writer session"
         }
     }
 }

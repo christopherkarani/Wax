@@ -3,8 +3,23 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
+struct UnifiedSearchEngineOverrides {
+    var textEngine: FTS5SearchEngine?
+    var vectorEngine: (any VectorSearchEngine)?
+    var structuredEngine: FTS5SearchEngine?
+}
+
 public extension Wax {
     func search(_ request: SearchRequest) async throws -> SearchResponse {
+        try await search(request, engineOverrides: nil)
+    }
+}
+
+extension Wax {
+    func search(
+        _ request: SearchRequest,
+        engineOverrides: UnifiedSearchEngineOverrides?
+    ) async throws -> SearchResponse {
         let requestedTopK = max(0, request.topK)
         if requestedTopK == 0 {
             return SearchResponse(results: [])
@@ -39,24 +54,34 @@ public extension Wax {
         let candidateLimit = Self.candidateLimit(for: requestedTopK)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
-            try await cache.textEngine(for: self)
+            if let override = engineOverrides?.textEngine {
+                override
+            } else {
+                try await cache.textEngine(for: self)
+            }
         } else {
             nil
         }
 
         let vectorEngine: (any VectorSearchEngine)? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
-            try await cache.vectorEngine(
-                for: self,
-                queryEmbeddingDimensions: embedding.count,
-                preference: request.vectorEnginePreference
-            )
+            if let override = engineOverrides?.vectorEngine {
+                override
+            } else {
+                try await cache.vectorEngine(
+                    for: self,
+                    queryEmbeddingDimensions: embedding.count,
+                    preference: request.vectorEnginePreference
+                )
+            }
         } else {
             nil
         }
 
         let structuredEngine: FTS5SearchEngine?
         if let trimmedQuery, !trimmedQuery.isEmpty {
-            if let textEngine {
+            if let override = engineOverrides?.structuredEngine {
+                structuredEngine = override
+            } else if let textEngine {
                 structuredEngine = textEngine
             } else {
                 structuredEngine = try await cache.textEngine(for: self)

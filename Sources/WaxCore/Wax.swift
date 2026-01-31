@@ -30,6 +30,7 @@ public actor Wax {
     private let url: URL
     private let io: BlockingIOExecutor
     private let opLock = AsyncMutex()
+    private var writerLeaseId: UUID?
     private var file: FDFile
     private var lock: FileLock
 
@@ -50,6 +51,13 @@ public actor Wax {
     private var dataEnd: UInt64
     private var generation: UInt64
     private var dirty: Bool
+
+    private struct WriterWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<UUID, Error>
+    }
+
+    private var writerWaiters: [WriterWaiter] = []
 
     private init(
         url: URL,
@@ -119,6 +127,64 @@ public actor Wax {
         try await commitLocked()
         guard wal.canAppend(payloadSize: payloadSize) else {
             throw WaxError.capacityExceeded(limit: wal.walSize, requested: UInt64(payloadSize))
+        }
+    }
+
+    // MARK: - Writer lease
+
+    public func acquireWriterLease(policy: WaxWriterPolicy) async throws -> UUID {
+        if let _ = writerLeaseId {
+            switch policy {
+            case .fail:
+                throw WaxError.writerBusy
+            case .wait:
+                return try await enqueueWriterWaiter(timeout: nil)
+            case .timeout(let duration):
+                return try await enqueueWriterWaiter(timeout: duration)
+            }
+        }
+
+        let leaseId = UUID()
+        writerLeaseId = leaseId
+        return leaseId
+    }
+
+    public func releaseWriterLease(_ leaseId: UUID) {
+        guard writerLeaseId == leaseId else { return }
+
+        if writerWaiters.isEmpty {
+            writerLeaseId = nil
+            return
+        }
+
+        let next = writerWaiters.removeFirst()
+        let nextLeaseId = UUID()
+        writerLeaseId = nextLeaseId
+        next.continuation.resume(returning: nextLeaseId)
+    }
+
+    private func enqueueWriterWaiter(timeout: Duration?) async throws -> UUID {
+        let waiterId = UUID()
+        return try await withCheckedThrowingContinuation { continuation in
+            writerWaiters.append(WriterWaiter(id: waiterId, continuation: continuation))
+            if let timeout {
+                Task { [waiterId] in
+                    await self.timeoutWriterWaiter(id: waiterId, duration: timeout)
+                }
+            }
+        }
+    }
+
+    private func timeoutWriterWaiter(id: UUID, duration: Duration) async {
+        do {
+            try await Task.sleep(for: duration)
+        } catch {
+            return
+        }
+
+        if let index = writerWaiters.firstIndex(where: { $0.id == id }) {
+            let waiter = writerWaiters.remove(at: index)
+            waiter.continuation.resume(throwing: WaxError.writerTimeout)
         }
     }
 

@@ -74,6 +74,7 @@ public actor WaxStructuredMemorySession {
 }
 
 public extension Wax {
+    @available(*, deprecated, message: "Use Wax.openSession(...)")
     func structuredMemory() async throws -> WaxStructuredMemorySession {
         try await WaxStructuredMemorySession(wax: self)
     }

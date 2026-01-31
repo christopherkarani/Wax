@@ -44,16 +44,7 @@ public extension MemoryOrchestrator {
         // Avoid staging/committing when there are no pending puts to prevent unnecessary index rewrites.
         let pendingFrames = (await wax.stats()).pendingFrames
         if pendingFrames > 0 {
-            if let text {
-                try await text.stageForCommit()
-            }
-            if let vec {
-                let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-                if !pendingEmbeddings.isEmpty {
-                    try await vec.stageForCommit()
-                }
-            }
-            try await wax.commit()
+            try await session.commit()
         }
 
         let clampedMaxFrames: Int? = options.maxFrames.map { max(0, $0) }
@@ -148,19 +139,7 @@ public extension MemoryOrchestrator {
         var report = MaintenanceReport()
         report.scannedFrames = Int((await wax.stats()).frameCount)
 
-        if let text {
-            try await text.stageForCommit(compact: true)
-        }
-
-        if let vec {
-            let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-            let hasCommittedIndex = (await wax.committedVecIndexManifest()) != nil
-            if !pendingEmbeddings.isEmpty || hasCommittedIndex {
-                try await vec.stageForCommit()
-            }
-        }
-
-        try await wax.commit()
+        try await session.commit(compact: true)
 
         let _ = start.duration(to: ContinuousClock.now)
         return report
@@ -187,10 +166,6 @@ public extension MemoryOrchestrator {
     }
 
     private func commitSurrogateBatchIfNeeded() async throws {
-        let pendingEmbeddings = await wax.pendingEmbeddingMutations()
-        if !pendingEmbeddings.isEmpty, let vec {
-            try await vec.stageForCommit()
-        }
-        try await wax.commit()
+        try await session.commit()
     }
 }
