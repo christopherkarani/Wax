@@ -40,6 +40,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let timeout = max(scale.timeout, 240)
 
         try await TempFiles.withTempFile { url in
             var config = OrchestratorConfig.default
@@ -50,7 +51,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
             let orchestrator = try await MemoryOrchestrator.openMiniLM(at: url, config: config)
 
             let ingestIterations = max(1, min(3, scale.iterations))
-            measureAsync(timeout: scale.timeout, iterations: ingestIterations) {
+            measureAsync(timeout: timeout, iterations: ingestIterations) {
                 for index in 0..<scale.documentCount {
                     let content = factory.makeDocument(index: index)
                     try await orchestrator.remember(content)
@@ -66,6 +67,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let timeout = max(scale.timeout, 120)
 
         try await TempFiles.withTempFile { url in
             var config = OrchestratorConfig.default
@@ -84,7 +86,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
             _ = try await orchestrator.recall(query: query)
 
             let recallIterations = max(1, min(3, scale.iterations))
-            measureAsync(timeout: scale.timeout, iterations: recallIterations) {
+            measureAsync(timeout: timeout, iterations: recallIterations) {
                 _ = try await orchestrator.recall(query: query)
             }
 

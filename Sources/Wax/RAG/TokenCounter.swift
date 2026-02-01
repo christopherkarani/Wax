@@ -1,5 +1,5 @@
 import Foundation
-import TiktokenSwift
+import SwiftTiktoken
 
 /// Deterministic token counter with a fixed encoding for all Phase 9 flows.
 /// Optimized with LRU caching to avoid redundant tokenization operations.
@@ -19,7 +19,7 @@ public actor TokenCounter {
     }
 
     private struct BPEBox: @unchecked Sendable {
-        let value: CoreBpe
+        let value: CoreBPE
     }
 
     private enum BackendPreference: String {
@@ -29,18 +29,23 @@ public actor TokenCounter {
     }
 
     private enum Backend: @unchecked Sendable {
-        case tiktoken(CoreBpe)
+        case tiktoken(CoreBPE)
         case native(NativeBpeTokenizer)
-        case compare(tiktoken: CoreBpe, native: NativeBpeTokenizer)
+        case compare(tiktoken: CoreBPE, native: NativeBpeTokenizer)
     }
 
-    private actor CoreBpeCache {
+    private actor CoreBPECache {
         private var cache: [Encoding: BPEBox] = [:]
         private var stats = BpeCacheStats()
 
         func bpe(for encoding: Encoding) async throws -> BPEBox {
             if let cached = cache[encoding] { return cached }
-            let loaded = try await CoreBpe.loadEncoding(named: encoding.rawValue)
+            // Force SwiftTiktoken into a fully offline mode by pointing it at Wax's bundled encodings.
+            // This prevents network fetches in CI and on-device, and keeps token counting deterministic.
+            if EncodingLoader.customCacheDirectory == nil, let bundled = NativeBpeTokenizer.bundledEncodingDirectoryURL() {
+                EncodingLoader.customCacheDirectory = bundled
+            }
+            let loaded = try await EncodingLoader.loadEncoder(named: encoding.rawValue)
             let boxed = BPEBox(value: loaded)
             cache[encoding] = boxed
             stats.loadCount += 1
@@ -88,7 +93,7 @@ public actor TokenCounter {
 
 
     private static let sharedCache = TokenCounterCache()
-    private static let bpeCache = CoreBpeCache()
+    private static let bpeCache = CoreBPECache()
     private static let nativeBpeCache = NativeBpeCache()
     private static let comparisonStats = ComparisonStats()
     public static let maxTokenizationBytes = 8 * 1024 * 1024
@@ -208,7 +213,7 @@ public actor TokenCounter {
     // MARK: - Batch Operations (Optimized)
     
     /// Thread-safe encoding using nonisolated access to the BPE model.
-    /// CoreBpe is thread-safe for concurrent reads.
+    /// CoreBPE is thread-safe for concurrent reads.
     nonisolated private func encodeNonisolated(_ text: String, backend: Backend) -> [UInt32] {
         let capped = Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
         return Self.encodeWithBackend(capped, backend: backend)
@@ -368,7 +373,9 @@ public actor TokenCounter {
             return tokenizer.encode(text)
         case .compare(let tiktoken, let native):
             let (nativeTokens, nativeMillis) = measureMillis { native.encode(text) }
-            let (tiktokenTokens, tiktokenMillis) = measureMillis { tiktoken.encode(text: text, allowedSpecial: []) }
+            let (tiktokenTokens, tiktokenMillis) = measureMillis {
+                tiktoken.encode(text: text, allowedSpecial: [])
+            }
             let mismatch = nativeTokens != tiktokenTokens
             Task {
                 await Self.comparisonStats.record(

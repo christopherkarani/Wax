@@ -9,9 +9,14 @@ final class MetalVectorEngineBenchmark: XCTestCase {
     private var isEnabled: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_METAL"] == "1"
     }
+
+    private var isMetalAvailable: Bool {
+        MetalVectorEngine.isAvailable
+    }
     
     func testMetalSearchPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_METAL=1 to run Metal benchmarks.") }
+        guard isMetalAvailable else { throw XCTSkip("Metal device not available on this runner.") }
         
         let dimensions = 128
         let vectorCount = 1000
@@ -58,6 +63,7 @@ final class MetalVectorEngineBenchmark: XCTestCase {
     /// Warm search = subsequent searches (no GPU sync needed)
     func testMetalLazyGPUSyncPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_METAL=1 to run Metal benchmarks.") }
+        guard isMetalAvailable else { throw XCTSkip("Metal device not available on this runner.") }
         
         let dimensions = 384  // MiniLM dimensions
         let vectorCount = 10_000
@@ -123,6 +129,7 @@ final class MetalVectorEngineBenchmark: XCTestCase {
     /// Tests multiple search-after-add cycles to validate lazy sync correctness.
     func testMetalSearchAfterAddCorrectness() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_METAL=1 to run Metal benchmarks.") }
+        guard isMetalAvailable else { throw XCTSkip("Metal device not available on this runner.") }
         
         let dimensions = 128
         let topK = 5

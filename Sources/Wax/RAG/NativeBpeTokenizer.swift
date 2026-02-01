@@ -252,6 +252,15 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
 
         return (encoder, decoder)
     }
+
+    /// Returns the directory that contains Wax’s bundled `.tiktoken` encoding files.
+    ///
+    /// This is used to configure SwiftTiktoken for fully offline operation in tests and on-device.
+    static func bundledEncodingDirectoryURL() -> URL? {
+        Bundle.module
+            .url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")?
+            .deletingLastPathComponent()
+    }
 }
 
 public enum NativeBpeError: Error, Sendable {

@@ -1,11 +1,12 @@
 import XCTest
-import TiktokenSwift
+import SwiftTiktoken
 @testable import Wax
 
 final class NativeBpeTokenizerTests: XCTestCase {
     func testNativeEncodingMatchesTiktokenSamples() async throws {
         let native = try NativeBpeTokenizer(encoding: .cl100kBase)
-        let tiktoken = try await CoreBpe.loadEncoding(named: "cl100k_base")
+        EncodingLoader.customCacheDirectory = NativeBpeTokenizer.bundledEncodingDirectoryURL()
+        let tiktoken = try await EncodingLoader.loadEncoder(named: "cl100k_base")
 
         let samples = [
             "Hello, world!",
@@ -29,7 +30,8 @@ final class NativeBpeTokenizerTests: XCTestCase {
 
     func testNativeDecodingMatchesTiktokenSamples() async throws {
         let native = try NativeBpeTokenizer(encoding: .cl100kBase)
-        let tiktoken = try await CoreBpe.loadEncoding(named: "cl100k_base")
+        EncodingLoader.customCacheDirectory = NativeBpeTokenizer.bundledEncodingDirectoryURL()
+        let tiktoken = try await EncodingLoader.loadEncoder(named: "cl100k_base")
 
         let samples = [
             "Wax provides deterministic token counts.",

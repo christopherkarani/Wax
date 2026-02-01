@@ -46,9 +46,8 @@ final class OptimizationComparisonBenchmark: XCTestCase {
         for _ in 0..<iterations {
             let start = CFAbsoluteTimeGetCurrent()
             
-            // Single fetch, build dictionary (this is what we do in UnifiedSearch now)
-            let metas = await wax.frameMetas()
-            let metaById: [UInt64: FrameMeta] = metas.reduce(into: [:]) { $0[$1.id] = $1 }
+            // Single fetch for just the ids we need (mirrors UnifiedSearch's batched metadata path)
+            let metaById = await wax.frameMetas(frameIds: searchResultIds)
             
             // O(1) lookups for search results
             var lookupResults: [FrameMeta] = []

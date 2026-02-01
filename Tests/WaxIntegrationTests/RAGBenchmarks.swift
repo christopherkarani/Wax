@@ -10,6 +10,9 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     private var run10K: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_10K"] == "1"
     }
+    private var runSampledLatency: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_SAMPLES"] == "1"
+    }
 
     func testIngestTextOnlyPerformance() async throws {
         let scale = self.scale
@@ -509,6 +512,44 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         _ = try await timedSamples(label: "tokenizer_cold_start", iterations: iterations, warmup: 0) {
             let counter = try await TokenCounter()
             _ = await counter.count(longText)
+        }
+    }
+
+    func testUnifiedSearchHybridWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let requestWithPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 512
+            )
+            let requestNoPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            // Warm up caches / any lazy engine state.
+            _ = try await fixture.wax.search(requestWithPreviews)
+            _ = try await fixture.wax.search(requestNoPreviews)
+
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestWithPreviews)
+            }
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_no_previews", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestNoPreviews)
+            }
         }
     }
 
