@@ -16,6 +16,26 @@ public struct BatchInputs {
     public let lengths: [Int]
 }
 
+public struct BatchInputBuffers: @unchecked Sendable {
+    public var inputIds: MLMultiArray
+    public var attentionMask: MLMultiArray
+    public let batchSize: Int
+    public let sequenceLength: Int
+
+    public init(batchSize: Int, sequenceLength: Int) throws {
+        self.batchSize = batchSize
+        self.sequenceLength = sequenceLength
+        self.inputIds = try MLMultiArray(
+            shape: [NSNumber(value: batchSize), NSNumber(value: sequenceLength)],
+            dataType: .int32
+        )
+        self.attentionMask = try MLMultiArray(
+            shape: [NSNumber(value: batchSize), NSNumber(value: sequenceLength)],
+            dataType: .int32
+        )
+    }
+}
+
 public final class BertTokenizer: @unchecked Sendable {
     private static let sharedBasicTokenizer = BasicTokenizer()
 
@@ -156,6 +176,93 @@ public final class BertTokenizer: @unchecked Sendable {
         return BatchInputs(
             inputIds: inputIds,
             attentionMask: attentionMask,
+            sequenceLength: sequenceLength,
+            lengths: adjustedLengths
+        )
+    }
+
+    public func buildBatchInputsWithReuse(
+        sentences: [String],
+        maxSequenceLength: Int? = nil,
+        sequenceLengthBuckets: [Int]? = nil,
+        reuse: inout BatchInputBuffers?
+    ) throws -> BatchInputs {
+        guard !sentences.isEmpty else {
+            let emptyIds = try MLMultiArray(shape: [0, 0], dataType: .int32)
+            let emptyMask = try MLMultiArray(shape: [0, 0], dataType: .int32)
+            return BatchInputs(inputIds: emptyIds, attentionMask: emptyMask, sequenceLength: 0, lengths: [])
+        }
+
+        let maxAllowed = max(2, min(maxSequenceLength ?? maxLen, maxLen))
+        let clsToken = try tokenToIdOrThrow(token: "[CLS]")
+        let sepToken = try tokenToIdOrThrow(token: "[SEP]")
+
+        var tokenSequences: [[Int]] = []
+        tokenSequences.reserveCapacity(sentences.count)
+        var lengths: [Int] = []
+        lengths.reserveCapacity(sentences.count)
+        var batchMax = 0
+
+        for sentence in sentences {
+            var tokens = try tokenizeToIds(text: sentence)
+            let maxTokens = maxAllowed - 2
+            if tokens.count > maxTokens {
+                tokens = Array(tokens.prefix(maxTokens))
+            }
+
+            let length = tokens.count + 2
+            lengths.append(length)
+            batchMax = max(batchMax, length)
+            tokenSequences.append(tokens)
+        }
+
+        let sequenceLength = Self.selectSequenceLength(
+            requiredLength: batchMax,
+            maxAllowed: maxAllowed,
+            buckets: sequenceLengthBuckets
+        )
+        let batchSize = sentences.count
+
+        if reuse == nil || reuse?.batchSize != batchSize || reuse?.sequenceLength != sequenceLength {
+            reuse = try BatchInputBuffers(batchSize: batchSize, sequenceLength: sequenceLength)
+        }
+
+        guard let buffers = reuse else {
+            throw WaxError.io("Failed to allocate batch input buffers")
+        }
+
+        let idsPtr = UnsafeMutablePointer<Int32>(OpaquePointer(buffers.inputIds.dataPointer))
+        let maskPtr = UnsafeMutablePointer<Int32>(OpaquePointer(buffers.attentionMask.dataPointer))
+        idsPtr.initialize(repeating: 0, count: buffers.inputIds.count)
+        maskPtr.initialize(repeating: 0, count: buffers.attentionMask.count)
+
+        var adjustedLengths = lengths
+        for row in 0..<batchSize {
+            let tokens = tokenSequences[row]
+            let maxTokenCount = max(0, min(tokens.count, sequenceLength - 2))
+            let base = row * sequenceLength
+
+            idsPtr[base] = Int32(clsToken)
+            maskPtr[base] = 1
+
+            if maxTokenCount > 0 {
+                for index in 0..<maxTokenCount {
+                    idsPtr[base + 1 + index] = Int32(tokens[index])
+                    maskPtr[base + 1 + index] = 1
+                }
+            }
+
+            let sepIndex = min(sequenceLength - 1, 1 + maxTokenCount)
+            idsPtr[base + sepIndex] = Int32(sepToken)
+            maskPtr[base + sepIndex] = 1
+
+            adjustedLengths[row] = min(sequenceLength, maxTokenCount + 2)
+        }
+
+        reuse = buffers
+        return BatchInputs(
+            inputIds: buffers.inputIds,
+            attentionMask: buffers.attentionMask,
             sequenceLength: sequenceLength,
             lengths: adjustedLengths
         )

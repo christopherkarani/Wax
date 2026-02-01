@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Metal)
+import Metal
+#endif
 import Testing
 import Wax
 
@@ -120,6 +123,50 @@ import Wax
         try await wax.close()
     }
 }
+
+private struct TestEmbedder2D: EmbeddingProvider, Sendable {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "Deterministic",
+        dimensions: 2,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        VectorMath.normalizeL2([1.0, 0.0])
+    }
+}
+
+#if canImport(Metal)
+@Test
+func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.useMetalVectorSearch = true
+        config.rag.searchMode = .vectorOnly
+
+        let orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: TestEmbedder2D()
+        )
+        try await orchestrator.remember("hello world")
+
+        do {
+            _ = try await orchestrator.recall(query: "hello", embedding: [2.0, 0.0])
+            #expect(Bool(false))
+        } catch {
+            #expect(Bool(true))
+        }
+
+        try await orchestrator.close()
+    }
+}
+#endif
 
 @Test func vectorSearchWithoutManifestUsesPendingEmbeddings() async throws {
     try await TempFiles.withTempFile { url in

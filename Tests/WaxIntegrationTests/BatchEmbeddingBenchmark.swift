@@ -17,7 +17,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     func testBatchVsSequentialEmbedding() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding benchmark.") }
         
-        let embedder = MiniLMEmbedder()
+        let embedder = try MiniLMEmbedder()
         let textCount = 32
         let iterations = 3
         
@@ -82,7 +82,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     func testBatchEmbeddingScaling() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding scaling benchmark.") }
         
-        let embedder = MiniLMEmbedder()
+        let embedder = try MiniLMEmbedder()
         let batchSizes = [8, 16, 32, 64]
         
         // Generate test texts

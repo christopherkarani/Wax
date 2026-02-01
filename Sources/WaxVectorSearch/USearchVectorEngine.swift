@@ -272,11 +272,17 @@ public actor USearchVectorEngine {
                 let dims = dimensions
 
                 try await io.run {
-                    for i in 0..<frameIdArray.count {
-                        let start = i * dims
-                        let end = start + dims
-                        let vec = Array(vectorArray[start..<end])
-                        try index.add(key: frameIdArray[i], vector: vec)
+                    var scratch = [Float](repeating: 0, count: dims)
+                    try vectorArray.withUnsafeBufferPointer { src in
+                        guard let srcBase = src.baseAddress else { return }
+                        for i in 0..<frameIdArray.count {
+                            let start = i * dims
+                            scratch.withUnsafeMutableBufferPointer { dst in
+                                guard let dstBase = dst.baseAddress else { return }
+                                dstBase.update(from: srcBase.advanced(by: start), count: dims)
+                            }
+                            try index.add(key: frameIdArray[i], vector: scratch)
+                        }
                     }
                 }
 

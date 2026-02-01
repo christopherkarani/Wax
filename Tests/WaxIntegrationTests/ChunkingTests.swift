@@ -52,6 +52,20 @@ func tokenChunkingDisablesOverlapWhenOverlapWouldStall() async throws {
     #expect(chunks[1] == expected1)
 }
 
+@Test
+func tokenChunkingStreamMatchesEagerChunks() async throws {
+    let text = "Swift concurrency uses actors and tasks.".repeating(times: 12)
+    let strategy = ChunkingStrategy.tokenCount(targetTokens: 14, overlapTokens: 4)
+
+    let eager = await TextChunker.chunk(text: text, strategy: strategy)
+    var streamed: [String] = []
+    for await chunk in TextChunker.stream(text: text, strategy: strategy) {
+        streamed.append(chunk)
+    }
+
+    #expect(streamed == eager)
+}
+
 private extension String {
     func repeating(times: Int) -> String {
         guard times > 1 else { return self }
