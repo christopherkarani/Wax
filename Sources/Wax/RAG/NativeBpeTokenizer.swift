@@ -231,7 +231,11 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     }
 
     private static func loadEncoding(_ encoding: Encoding) throws -> ([Data: UInt32], [UInt32: Data]) {
-        guard let url = Bundle.module.url(forResource: encoding.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources") else {
+        let url =
+            Bundle.module.url(forResource: encoding.rawValue, withExtension: "tiktoken")
+            ?? Bundle.module.url(forResource: encoding.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
+
+        guard let url else {
             throw NativeBpeError.missingResource(encoding: encoding.rawValue)
         }
 
@@ -257,9 +261,10 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     ///
     /// This is used to configure SwiftTiktoken for fully offline operation in tests and on-device.
     static func bundledEncodingDirectoryURL() -> URL? {
-        Bundle.module
-            .url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")?
-            .deletingLastPathComponent()
+        let url =
+            Bundle.module.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken")
+            ?? Bundle.module.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
+        return url?.deletingLastPathComponent()
     }
 }
 

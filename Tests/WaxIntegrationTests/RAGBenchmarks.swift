@@ -553,6 +553,81 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testUnifiedSearchHybridWarmLatencySamplesCPUOnly() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let requestNoPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            // Warm up caches / any lazy engine state.
+            _ = try await fixture.wax.search(requestNoPreviews)
+
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_cpu_only", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestNoPreviews)
+            }
+        }
+    }
+
+    func testFramePreviewsWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let request = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            let response = try await fixture.wax.search(request)
+            let frameIds = response.results.map(\.frameId)
+
+            // Warm the file cache and any payload decode paths.
+            _ = try await fixture.wax.framePreviews(frameIds: frameIds, maxBytes: 512)
+
+            _ = try await timedSamples(label: "frame_previews_topk_512b", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.framePreviews(frameIds: frameIds, maxBytes: 512)
+            }
+        }
+    }
+
+    func testWaxOpenCloseColdLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let iterations = max(3, min(15, scale.iterations * 3))
+
+        try await TempFiles.withTempFile { url in
+            _ = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
+
+            // Measure open/close only: footer scan + WAL scan + engine cache hydration.
+            _ = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
+                let wax = try await Wax.open(at: url)
+                try await wax.close()
+            }
+        }
+    }
+
     func testUnifiedSearchHybridPerformance10KDocs() async throws {
         guard run10K else { throw XCTSkip("Set WAX_BENCHMARK_10K=1 to run 10k doc benchmark.") }
         var scale = BenchmarkScale.standard
