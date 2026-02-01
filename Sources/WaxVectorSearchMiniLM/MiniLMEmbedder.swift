@@ -149,10 +149,11 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         return vectors
     }
 
-    public func prewarm() async throws {
+    public func prewarm(batchSize: Int = 16) async throws {
         _ = try await embed(" ")
-        if batchSize > 1 {
-            let batch = Array(repeating: " ", count: batchSize)
+        let clamped = max(1, min(batchSize, 32))
+        if clamped > 1 {
+            let batch = Array(repeating: " ", count: clamped)
             _ = try await embed(batch: batch)
         }
     }
