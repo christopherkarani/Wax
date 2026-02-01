@@ -33,6 +33,18 @@ public actor MetalVectorEngine {
         var score: Float
     }
 
+    private struct TransientBuffers {
+        let query: MTLBuffer
+        let distances: MTLBuffer
+        let count: MTLBuffer
+        let capacity: Int
+    }
+
+    struct BufferPoolStats: Sendable {
+        var transientAllocations: Int
+        var reuseCount: Int
+    }
+
     private let metric: VectorMetric
     public let dimensions: Int
 
@@ -68,6 +80,45 @@ public actor MetalVectorEngine {
         }
     }
     private var gpuBufferNeedsSync: Bool = false // Deprecated/Unused but kept if logic needs refactor
+
+    private func acquireTransientBuffers(vectorCount: Int) throws -> TransientBuffers {
+        if let index = transientBufferPool.firstIndex(where: { $0.capacity >= vectorCount }) {
+            transientReuseCount += 1
+            return transientBufferPool.remove(at: index)
+        }
+
+        transientAllocations += 1
+        let capacity = max(vectorCount, Int(Self.initialReserve))
+
+        guard let query = device.makeBuffer(
+            length: dimensions * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ) else {
+            throw WaxError.invalidToc(reason: "Failed to allocate transient query buffer")
+        }
+        guard let distances = device.makeBuffer(
+            length: capacity * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ) else {
+            throw WaxError.invalidToc(reason: "Failed to allocate transient distances buffer")
+        }
+        guard let count = device.makeBuffer(
+            length: MemoryLayout<UInt32>.stride,
+            options: .storageModeShared
+        ) else {
+            throw WaxError.invalidToc(reason: "Failed to allocate transient count buffer")
+        }
+
+        return TransientBuffers(query: query, distances: distances, count: count, capacity: capacity)
+    }
+
+    private func releaseTransientBuffers(_ buffers: TransientBuffers) {
+        transientBufferPool.append(buffers)
+    }
+
+    func debugBufferPoolStats() -> BufferPoolStats {
+        BufferPoolStats(transientAllocations: transientAllocations, reuseCount: transientReuseCount)
+    }
     
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -85,6 +136,10 @@ public actor MetalVectorEngine {
     private var queryBuffer: MTLBuffer
     private let vectorCountBuffer: MTLBuffer
     private let dimensionsBuffer: MTLBuffer
+
+    private var transientBufferPool: [TransientBuffers] = []
+    private var transientAllocations: Int = 0
+    private var transientReuseCount: Int = 0
     
     public static var isAvailable: Bool {
         MTLCreateSystemDefaultDevice() != nil
@@ -207,6 +262,15 @@ public actor MetalVectorEngine {
         self.dimensionsBuffer = dimensionsBuffer
 
         dimensionsBuffer.contents().assumingMemoryBound(to: UInt32.self).pointee = UInt32(dimensions)
+
+        transientBufferPool = [
+            TransientBuffers(
+                query: queryBuffer,
+                distances: distancesBuffer,
+                count: vectorCountBuffer,
+                capacity: Int(Self.initialReserve)
+            )
+        ]
     }
 
 
@@ -393,32 +457,21 @@ public actor MetalVectorEngine {
             // Zero-Copy: No sync needed. vectorsBuffer is always up to date.
 
             // Allocate transient buffers for concurrency safety
-            
-            guard let transientQueryBuffer = device.makeBuffer(
-                bytes: vector,
-                length: vector.count * MemoryLayout<Float>.stride,
-                options: .storageModeShared
-            ) else {
-                throw WaxError.invalidToc(reason: "Failed to allocate transient query buffer")
-            }
-            
-            let requiredDistancesSize = Int(vectorCount) * MemoryLayout<Float>.stride
-            guard let transientDistancesBuffer = device.makeBuffer(
-                length: requiredDistancesSize,
-                options: .storageModeShared
-            ) else {
-                throw WaxError.invalidToc(reason: "Failed to allocate transient distances buffer")
-            }
+            let transientBuffers = try acquireTransientBuffers(vectorCount: Int(vectorCount))
+            defer { releaseTransientBuffers(transientBuffers) }
+
+            let transientQueryBuffer = transientBuffers.query
+            let transientDistancesBuffer = transientBuffers.distances
+            let transientCountBuffer = transientBuffers.count
+
+            let queryPtr = transientQueryBuffer.contents().assumingMemoryBound(to: Float.self)
+            queryPtr.update(from: vector, count: vector.count)
 
             var currentVectorCount = UInt32(vectorCount)
-            guard let transientCountBuffer = device.makeBuffer(
-                bytes: &currentVectorCount,
-                length: MemoryLayout<UInt32>.stride,
-                options: .storageModeShared
-            ) else {
-                 throw WaxError.invalidToc(reason: "Failed to allocate transient count buffer")
+            withUnsafeBytes(of: &currentVectorCount) { raw in
+                transientCountBuffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
             }
-            
+
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
                 throw WaxError.invalidToc(reason: "Failed to create command buffer")
             }

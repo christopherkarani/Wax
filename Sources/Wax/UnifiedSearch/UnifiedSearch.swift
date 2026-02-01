@@ -102,14 +102,9 @@ extension Wax {
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
             guard includeVector, let vectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
-            #if DEBUG
-            if vectorEngine is MetalVectorEngine {
-                precondition(
-                    VectorMath.isNormalizedL2(embedding),
-                    "Metal vector search requires normalized query embeddings"
-                )
+            if vectorEngine is MetalVectorEngine, !VectorMath.isNormalizedL2(embedding) {
+                throw WaxError.encodingError(reason: "Metal vector search requires normalized query embeddings")
             }
-            #endif
             return try await vectorEngine.search(vector: embedding, topK: candidateLimit)
         }()
 

@@ -10,7 +10,11 @@ public struct OrchestratorConfig: Sendable {
     public var ingestConcurrency: Int = 1
     public var ingestBatchSize: Int = 32
     public var embeddingCacheCapacity: Int = 2_048
-    public var useMetalVectorSearch: Bool = MetalVectorEngine.isAvailable
+    /// Prefer Metal-backed vector search when available.
+    ///
+    /// The actual engine selection still checks `MetalVectorEngine.isAvailable` at runtime.
+    /// This avoids doing Metal device discovery during static initialization.
+    public var useMetalVectorSearch: Bool = true
 
     public init() {}
 

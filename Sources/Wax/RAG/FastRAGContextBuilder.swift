@@ -17,6 +17,7 @@ public struct FastRAGContextBuilder: Sendable {
         embedding: [Float]? = nil,
         vectorEnginePreference: VectorEnginePreference = .auto,
         wax: Wax,
+        session: WaxSession? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
         let clamped = clamp(config)
@@ -32,7 +33,11 @@ public struct FastRAGContextBuilder: Sendable {
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
         )
-        let response = try await wax.search(request)
+        let response = if let session {
+            try await session.search(request)
+        } else {
+            try await wax.search(request)
+        }
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0

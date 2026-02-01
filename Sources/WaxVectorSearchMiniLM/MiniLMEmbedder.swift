@@ -28,7 +28,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     private let batchSize: Int
     private static let minimumBatchSize = 64
     private static let maximumBatchSize = 256
-    private static let maxConcurrentBatches = 4
+    private var batchInputBuffers: BatchInputBuffers?
 
     public struct Config {
         public var batchSize: Int
@@ -40,8 +40,8 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         }
     }
 
-    public init() {
-        self.model = MiniLMEmbeddings()
+    public init() throws {
+        self.model = try MiniLMEmbeddings()
         self.batchSize = Self.maximumBatchSize
         logComputeUnits()
     }
@@ -52,8 +52,14 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         logComputeUnits()
     }
 
-    public init(config: Config) {
-        self.model = MiniLMEmbeddings(configuration: config.modelConfiguration)
+    public init(config: Config) throws {
+        self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration)
+        self.batchSize = max(1, config.batchSize)
+        logComputeUnits()
+    }
+
+    public init(overrides: MiniLMEmbeddings.Overrides, config: Config = Config()) throws {
+        self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration, overrides: overrides)
         self.batchSize = max(1, config.batchSize)
         logComputeUnits()
     }
@@ -63,7 +69,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// Checks if the model is configured to use the Apple Neural Engine (ANE).
     /// Note: This checks the configuration preference, not whether ANE is actually being used at runtime.
     public nonisolated func isUsingANE() -> Bool {
-        return model.computeUnits == .all
+        return model.computeUnits == .all || model.computeUnits == .cpuAndNeuralEngine
     }
 
     /// Returns the current compute units configuration.
@@ -101,41 +107,23 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         let plannedBatches = Self.planBatchSizes(for: texts.count, maxBatchSize: batchSize)
         var results = Array(repeating: [Float](), count: texts.count)
         var startIndex = 0
-        var batchIndex = 0
-
-        while batchIndex < plannedBatches.count {
-            let windowEnd = Swift.min(batchIndex + Self.maxConcurrentBatches, plannedBatches.count)
-            try await withThrowingTaskGroup(of: (Int, [[Float]]).self) { group in
-                var localStart = startIndex
-                for index in batchIndex..<windowEnd {
-                    let size = plannedBatches[index]
-                    let batchStart = localStart
-                    let batchEnd = batchStart + size
-                    let chunk = Array(texts[batchStart..<batchEnd])
-                    group.addTask {
-                        let embeddings = try await self.embedBatchCoreML(texts: chunk)
-                        return (batchStart, embeddings)
-                    }
-                    localStart = batchEnd
-                }
-
-                for try await (batchStart, embeddings) in group {
-                    for (offset, vector) in embeddings.enumerated() {
-                        results[batchStart + offset] = vector
-                    }
-                }
+        for size in plannedBatches {
+            let batchStart = startIndex
+            let batchEnd = batchStart + size
+            let chunk = Array(texts[batchStart..<batchEnd])
+            let embeddings = try await embedBatchCoreML(texts: chunk)
+            for (offset, vector) in embeddings.enumerated() {
+                results[batchStart + offset] = vector
             }
-
-            startIndex += plannedBatches[batchIndex..<windowEnd].reduce(0, +)
-            batchIndex = windowEnd
+            startIndex = batchEnd
         }
 
         return results
     }
     
     /// Core ML batch prediction path (true batching).
-    private nonisolated func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
+    private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
+        guard let vectors = model.encode(batch: texts, reuseBuffers: &batchInputBuffers) else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
         }
         guard vectors.count == texts.count else {

@@ -14,7 +14,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let text = factory.makeDocument(index: 0)
-        let embedder = MiniLMEmbedder()
+        let embedder = try MiniLMEmbedder()
 
         _ = try await embedder.embed(text)
 
@@ -28,7 +28,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = MiniLMEmbedder()
+        let embedder = try MiniLMEmbedder()
 
         try? await embedder.prewarm()
 
@@ -51,7 +51,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
         let iterations = max(1, min(3, scale.iterations))
         _ = try await timedSamples(label: "minilm_cold_start", iterations: iterations, warmup: 0) {
-            let embedder = MiniLMEmbedder()
+            let embedder = try MiniLMEmbedder()
             _ = try await embedder.embed(text)
         }
     }

@@ -4,6 +4,47 @@ import Accelerate
 
 @available(macOS 15.0, iOS 18.0, *)
 public final class MiniLMEmbeddings {
+    public enum InitError: LocalizedError, Sendable {
+        case missingModelResource
+        case modelLoadFailed(String)
+        case tokenizerLoadFailed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .missingModelResource:
+                return "Could not find a Core ML model resource in the MiniLMAll bundle."
+            case .modelLoadFailed(let details):
+                return "Failed to load the Core ML model: \(details)"
+            case .tokenizerLoadFailed(let details):
+                return "Failed to initialize tokenizer: \(details)"
+            }
+        }
+    }
+
+    public struct Overrides: @unchecked Sendable {
+        var modelURLProvider: (() -> URL?)?
+        var tokenizerFactory: (() throws -> BertTokenizer)?
+        var usesBundleFallback: Bool
+
+        static let `default` = Overrides(
+            modelURLProvider: nil,
+            tokenizerFactory: nil,
+            usesBundleFallback: true
+        )
+
+        static let missingModel = Overrides(
+            modelURLProvider: { nil },
+            tokenizerFactory: nil,
+            usesBundleFallback: false
+        )
+
+        static let missingTokenizer = Overrides(
+            modelURLProvider: nil,
+            tokenizerFactory: { throw InitError.tokenizerLoadFailed("override requested failure") },
+            usesBundleFallback: true
+        )
+    }
+
     public let model: all_MiniLM_L6_v2
     public let tokenizer: BertTokenizer
     public let inputDimension: Int = 512
@@ -14,7 +55,11 @@ public final class MiniLMEmbeddings {
         model.model.configuration.computeUnits
     }
 
-    public init(configuration: MLModelConfiguration? = nil) {
+    public convenience init(configuration: MLModelConfiguration? = nil) throws {
+        try self.init(configuration: configuration, overrides: .default)
+    }
+
+    init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
             // Use ANE + CPU for embedding models - ANE is optimized for transformer attention ops
@@ -25,15 +70,25 @@ public final class MiniLMEmbeddings {
         }()
 
         do {
-            self.model = try Self.cachedModel(configuration: config)
+            self.model = try Self.loadModel(configuration: config, overrides: overrides)
         } catch {
-            fatalError("Failed to load the Core ML model. Error: \(error.localizedDescription)")
+            if let initError = error as? InitError {
+                throw initError
+            }
+            throw InitError.modelLoadFailed(error.localizedDescription)
         }
 
         do {
-            self.tokenizer = try BertTokenizer()
+            if let factory = overrides.tokenizerFactory {
+                self.tokenizer = try factory()
+            } else {
+                self.tokenizer = try BertTokenizer()
+            }
         } catch {
-            fatalError("Failed to initialize tokenizer. Error: \(error.localizedDescription)")
+            if let initError = error as? InitError {
+                throw initError
+            }
+            throw InitError.tokenizerLoadFailed(error.localizedDescription)
         }
     }
 
@@ -45,11 +100,20 @@ public final class MiniLMEmbeddings {
     }
 
     public func encode(batch sentences: [String]) async -> [[Float]]? {
+        var reuse: BatchInputBuffers?
+        return encode(batch: sentences, reuseBuffers: &reuse)
+    }
+
+    public func encode(
+        batch sentences: [String],
+        reuseBuffers: inout BatchInputBuffers?
+    ) -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
-        guard let batchInputs = try? tokenizer.buildBatchInputs(
+        guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
             sentences: sentences,
-            sequenceLengthBuckets: Self.sequenceLengthBuckets
+            sequenceLengthBuckets: Self.sequenceLengthBuckets,
+            reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
 
         guard let output = try? model.prediction(
@@ -80,23 +144,36 @@ public final class MiniLMEmbeddings {
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbeddings {
-    enum ModelLoadError: LocalizedError {
-        case missingModelResource
-
-        var errorDescription: String? {
-            switch self {
-            case .missingModelResource:
-                return "Could not find a Core ML model resource in the MiniLMAll bundle."
-            }
+    static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+        if let compiledURL = Bundle.module.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
+            let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
+            return all_MiniLM_L6_v2(model: core)
         }
+        throw InitError.missingModelResource
     }
 
-    static func loadModel(configuration: MLModelConfiguration) throws -> MLModel {
-        if let compiledURL = Bundle.module.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
-            return try MLModel(contentsOf: compiledURL, configuration: configuration)
+    static func loadModel(configuration: MLModelConfiguration, overrides: Overrides) throws -> all_MiniLM_L6_v2 {
+        if let modelURLProvider = overrides.modelURLProvider {
+            guard let modelURL = modelURLProvider() else {
+                throw InitError.missingModelResource
+            }
+            do {
+                let model = try MLModel(contentsOf: modelURL, configuration: configuration)
+                return all_MiniLM_L6_v2(model: model)
+            } catch {
+                throw InitError.modelLoadFailed(error.localizedDescription)
+            }
         }
 
-        throw ModelLoadError.missingModelResource
+        guard overrides.usesBundleFallback else {
+            throw InitError.missingModelResource
+        }
+
+        do {
+            return try cachedModel(configuration: configuration)
+        } catch {
+            throw InitError.modelLoadFailed(error.localizedDescription)
+        }
     }
 
     struct ModelCacheKey: Hashable {
@@ -112,8 +189,7 @@ private extension MiniLMEmbeddings {
         func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
             let hasParameters = !(configuration.parameters?.isEmpty ?? true)
             if configuration.preferredMetalDevice != nil || hasParameters {
-                let coreModel = try MiniLMEmbeddings.loadModel(configuration: configuration)
-                return all_MiniLM_L6_v2(model: coreModel)
+                return try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
             }
             let key = ModelCacheKey(
                 computeUnits: configuration.computeUnits,
@@ -126,8 +202,7 @@ private extension MiniLMEmbeddings {
             }
             lock.unlock()
 
-            let coreModel = try MiniLMEmbeddings.loadModel(configuration: configuration)
-            let model = all_MiniLM_L6_v2(model: coreModel)
+            let model = try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
             lock.lock()
             models[key] = model
             lock.unlock()

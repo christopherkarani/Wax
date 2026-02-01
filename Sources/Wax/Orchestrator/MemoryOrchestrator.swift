@@ -121,9 +121,30 @@ public actor MemoryOrchestrator {
                 return (idx, start..<end)
             }
 
-        var batchResults: [IngestBatchResult?] = Array(repeating: nil, count: batchRanges.count)
-
         let parallelism = max(1, config.ingestConcurrency)
+        var pendingResults: [Int: IngestBatchResult] = [:]
+        var nextCommitIndex = 0
+
+        func commit(_ result: IngestBatchResult) async throws {
+            if let embeddings = result.embeddings, config.enableVectorSearch {
+                let frameIds = try await localSession.putBatch(
+                    contents: result.contents,
+                    embeddings: embeddings,
+                    identity: localEmbedder?.identity,
+                    options: result.options
+                )
+
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
+                }
+            } else {
+                let frameIds = try await localSession.putBatch(contents: result.contents, options: result.options)
+
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
+                }
+            }
+        }
 
         try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
             func enqueue(_ entry: (index: Int, range: Range<Int>)) {
@@ -178,41 +199,28 @@ public actor MemoryOrchestrator {
 
             var iterator = batchRanges.makeIterator()
             let initial = min(parallelism, batchRanges.count)
+            var inFlight = 0
             for _ in 0..<initial {
                 if let next = iterator.next() {
                     enqueue(next)
+                    inFlight += 1
                 }
             }
 
-            while let result = try await group.next() {
-                batchResults[result.index] = result
+            while inFlight > 0 {
+                guard let result = try await group.next() else { break }
+                inFlight -= 1
+                pendingResults[result.index] = result
+
+                while let ready = pendingResults[nextCommitIndex] {
+                    try await commit(ready)
+                    pendingResults[nextCommitIndex] = nil
+                    nextCommitIndex += 1
+                }
+
                 if let next = iterator.next() {
                     enqueue(next)
-                }
-            }
-        }
-
-        for index in 0..<batchResults.count {
-            guard let result = batchResults[index] else {
-                throw WaxError.io("missing ingest batch result at index \(index)")
-            }
-
-            if let embeddings = result.embeddings, config.enableVectorSearch {
-                let frameIds = try await localSession.putBatch(
-                    contents: result.contents,
-                    embeddings: embeddings,
-                    identity: localEmbedder?.identity,
-                    options: result.options
-                )
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
-                }
-            } else {
-                let frameIds = try await localSession.putBatch(contents: result.contents, options: result.options)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
+                    inFlight += 1
                 }
             }
         }
@@ -303,6 +311,12 @@ public actor MemoryOrchestrator {
                 }
             }
 
+            guard vectors.count == missingIndices.count else {
+                throw WaxError.encodingError(
+                    reason: "batch embedding returned \(vectors.count) vectors for \(missingIndices.count) inputs"
+                )
+            }
+
             // Normalize (if needed) and cache results
             let shouldNormalize = embedder.normalize
             for (localIdx, globalIdx) in missingIndices.enumerated() {
@@ -340,41 +354,31 @@ public actor MemoryOrchestrator {
     // MARK: - Recall (Fast RAG)
 
     public func recall(query: String) async throws -> RAGContext {
-        try await stageTextForRecall()
-
-        var embedding: [Float]?
-        if config.enableVectorSearch, let embedder {
-            var vector = try await embedder.embed(query)
-            if embedder.normalize {
-                vector = Self.normalizedL2(vector)
-            }
-            embedding = vector
-        }
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
         return try await ragBuilder.build(
             query: query,
             embedding: embedding,
             vectorEnginePreference: preference,
             wax: wax,
+            session: session,
             config: config.rag
         )
     }
 
     public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        try await stageTextForRecall()
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         return try await ragBuilder.build(
             query: query,
             embedding: embedding,
             vectorEnginePreference: preference,
             wax: wax,
+            session: session,
             config: config.rag
         )
     }
 
     public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        try await stageTextForRecall()
-
         let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
         if let embedding {
             let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
@@ -383,6 +387,7 @@ public actor MemoryOrchestrator {
                 embedding: embedding,
                 vectorEnginePreference: preference,
                 wax: wax,
+                session: session,
                 config: config.rag
             )
         }
@@ -391,6 +396,7 @@ public actor MemoryOrchestrator {
             query: query,
             vectorEnginePreference: preference,
             wax: wax,
+            session: session,
             config: config.rag
         )
     }
@@ -415,23 +421,13 @@ public actor MemoryOrchestrator {
         VectorMath.normalizeL2(vector)
     }
 
-    private func stageTextForRecall() async throws {
-        if config.enableTextSearch {
-            try await session.stage()
-        }
-    }
-
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
         switch policy {
         case .never:
             return nil
         case .ifAvailable:
             guard config.enableVectorSearch, let embedder else { return nil }
-            var vector = try await embedder.embed(query)
-            if embedder.normalize {
-                vector = Self.normalizedL2(vector)
-            }
-            return vector
+            return try await Self.embedOne(query, embedder: embedder, cache: embeddingCache)
         case .always:
             guard config.enableVectorSearch else {
                 throw WaxError.io("query embedding requested but vector search is disabled")
@@ -439,11 +435,7 @@ public actor MemoryOrchestrator {
             guard let embedder else {
                 throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
             }
-            var vector = try await embedder.embed(query)
-            if embedder.normalize {
-                vector = Self.normalizedL2(vector)
-            }
-            return vector
+            return try await Self.embedOne(query, embedder: embedder, cache: embeddingCache)
         }
     }
 

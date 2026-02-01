@@ -10,10 +10,10 @@ public enum WaxPrewarm {
     }
 
     #if canImport(WaxVectorSearchMiniLM)
-    public static func miniLM(sampleText: String = "hello") async {
-        let embedder = MiniLMEmbedder()
-        _ = try? await embedder.embed(sampleText)
-        _ = try? await embedder.prewarm()
+    public static func miniLM(sampleText: String = "hello") async throws {
+        let embedder = try MiniLMEmbedder()
+        _ = try await embedder.embed(sampleText)
+        try await embedder.prewarm()
     }
     #endif
 }
