@@ -1205,40 +1205,79 @@ public actor Wax {
     }
 
     public func framePreviews(frameIds: [UInt64], maxBytes: Int) async throws -> [UInt64: Data] {
-        try await withReadLock {
-            let clampedMax = max(0, maxBytes)
-            guard clampedMax > 0 else { return [:] }
+        struct PlainPreviewPlan: Sendable {
+            let frameId: UInt64
+            let offset: UInt64
+            let length: Int
+        }
 
-            var previews: [UInt64: Data] = [:]
-            previews.reserveCapacity(frameIds.count)
+        let clampedMax = max(0, maxBytes)
+        guard clampedMax > 0 else { return [:] }
+
+        let file = self.file
+
+        let (emptyIds, plainPlans, compressedFrames): ([UInt64], [PlainPreviewPlan], [FrameMeta]) = try await withReadLock {
+            var emptyIds: [UInt64] = []
+            var plainPlans: [PlainPreviewPlan] = []
+            var compressedFrames: [FrameMeta] = []
+
             let maxId = UInt64(toc.frames.count)
+            emptyIds.reserveCapacity(frameIds.count)
+            plainPlans.reserveCapacity(frameIds.count)
+            compressedFrames.reserveCapacity(frameIds.count)
 
             for frameId in frameIds where frameId < maxId {
                 let frame = toc.frames[Int(frameId)]
                 if frame.payloadLength == 0 {
-                    previews[frameId] = Data()
+                    emptyIds.append(frameId)
                     continue
                 }
 
                 if frame.canonicalEncoding == .plain {
                     let available = min(frame.payloadLength, UInt64(clampedMax))
-                    guard available <= UInt64(Int.max) else {
+                    if available == 0 {
+                        emptyIds.append(frameId)
+                        continue
+                    }
+                    if available > UInt64(Int.max) {
                         throw WaxError.io("payload preview too large: \(available)")
                     }
-                    let file = self.file
-                    let bytes = try await io.run {
-                        try file.readExactly(length: Int(available), at: frame.payloadOffset)
-                    }
-                    previews[frameId] = bytes
+                    plainPlans.append(
+                        PlainPreviewPlan(
+                            frameId: frameId,
+                            offset: frame.payloadOffset,
+                            length: Int(available)
+                        )
+                    )
                     continue
                 }
 
-                let canonical = try await frameContentFromMetaUnlocked(frame)
-                previews[frameId] = Data(canonical.prefix(clampedMax))
+                compressedFrames.append(frame)
             }
 
-            return previews
+            return (emptyIds, plainPlans, compressedFrames)
         }
+
+        var previews: [UInt64: Data] = [:]
+        previews.reserveCapacity(emptyIds.count + plainPlans.count + compressedFrames.count)
+
+        for frameId in emptyIds {
+            previews[frameId] = Data()
+        }
+
+        for plan in plainPlans {
+            let bytes = try await io.run {
+                try file.readExactly(length: plan.length, at: plan.offset)
+            }
+            previews[plan.frameId] = bytes
+        }
+
+        for frame in compressedFrames {
+            let canonical = try await frameContentFromMeta(frame)
+            previews[frame.id] = Data(canonical.prefix(clampedMax))
+        }
+
+        return previews
     }
 
     /// Batch read full frame contents (committed only) in a single actor hop.
@@ -1315,7 +1354,7 @@ public actor Wax {
         )
     }
 
-    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+    private func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
         if frame.payloadLength == 0 { return Data() }
         guard frame.payloadLength <= UInt64(Int.max) else {
             throw WaxError.io("payload too large: \(frame.payloadLength)")
@@ -1337,6 +1376,10 @@ public actor Wax {
             algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
             uncompressedLength: Int(canonicalLength)
         )
+    }
+
+    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+        try await frameContentFromMeta(frame)
     }
 
     private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
