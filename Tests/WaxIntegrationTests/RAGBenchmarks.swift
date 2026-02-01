@@ -628,6 +628,111 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testIncrementalStageAndCommitLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+
+        let clock = ContinuousClock()
+        let batchSize = 64
+        let iterations = max(3, min(15, scale.iterations * 3))
+
+        func seconds(_ duration: Duration) -> Double {
+            let comp = duration.components
+            return Double(comp.seconds) + Double(comp.attoseconds) / 1_000_000_000_000_000_000
+        }
+
+        func measureSeconds(_ block: @escaping @Sendable () async throws -> Void) async throws -> Double {
+            let start = clock.now
+            try await block()
+            let duration = clock.now - start
+            return seconds(duration)
+        }
+
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            let sessionConfig = WaxSession.Config(
+                enableTextSearch: true,
+                enableVectorSearch: true,
+                enableStructuredMemory: false,
+                vectorEnginePreference: .cpuOnly,
+                vectorMetric: .cosine,
+                vectorDimensions: embedder.dimensions
+            )
+            let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+            let texts = (0..<batchSize).map { factory.makeDocument(index: $0) }
+            let contents = texts.map { Data($0.utf8) }
+            var embeddings: [[Float]] = []
+            embeddings.reserveCapacity(batchSize)
+            for text in texts {
+                embeddings.append(try await embedder.embed(text))
+            }
+
+            var options: [FrameMetaSubset] = []
+            options.reserveCapacity(batchSize)
+            for _ in 0..<batchSize {
+                var meta = FrameMetaSubset()
+                meta.role = .chunk
+                options.append(meta)
+            }
+
+            // Warm: compile any lazy paths in staging and commit before sampling.
+            do {
+                let frameIds = try await session.putBatch(
+                    contents: contents,
+                    embeddings: embeddings,
+                    identity: embedder.identity,
+                    options: options
+                )
+                try await session.indexTextBatch(frameIds: frameIds, texts: texts)
+                try await session.stage()
+                try await wax.commit()
+            }
+
+            var stageSamples: [Double] = []
+            stageSamples.reserveCapacity(iterations)
+            var commitSamples: [Double] = []
+            commitSamples.reserveCapacity(iterations)
+
+            for sampleIndex in 0..<iterations {
+                let offset = (sampleIndex + 1) * batchSize
+                let batchTexts = (0..<batchSize).map { factory.makeDocument(index: offset + $0) }
+                let batchContents = batchTexts.map { Data($0.utf8) }
+                var batchEmbeddings: [[Float]] = []
+                batchEmbeddings.reserveCapacity(batchSize)
+                for text in batchTexts {
+                    batchEmbeddings.append(try await embedder.embed(text))
+                }
+
+                let frameIds = try await session.putBatch(
+                    contents: batchContents,
+                    embeddings: batchEmbeddings,
+                    identity: embedder.identity,
+                    options: options
+                )
+                try await session.indexTextBatch(frameIds: frameIds, texts: batchTexts)
+
+                let stageSeconds = try await measureSeconds {
+                    try await session.stage()
+                }
+                stageSamples.append(stageSeconds)
+
+                let commitSeconds = try await measureSeconds {
+                    try await wax.commit()
+                }
+                commitSamples.append(commitSeconds)
+            }
+
+            BenchmarkStats(samples: stageSamples).report(label: "stage_for_commit_incremental_batch64")
+            BenchmarkStats(samples: commitSamples).report(label: "wax_commit_incremental_batch64")
+
+            await session.close()
+            try await wax.close()
+        }
+    }
+
     func testUnifiedSearchHybridPerformance10KDocs() async throws {
         guard run10K else { throw XCTSkip("Set WAX_BENCHMARK_10K=1 to run 10k doc benchmark.") }
         var scale = BenchmarkScale.standard
