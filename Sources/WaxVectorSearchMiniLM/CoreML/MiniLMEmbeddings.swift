@@ -140,6 +140,7 @@ public final class MiniLMEmbeddings {
 
         return Self.decodeEmbeddings(embeddings, batchSize: 1, outputDimension: outputDimension)?.first
     }
+
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -241,14 +242,13 @@ private extension MiniLMEmbeddings {
             }
             
             if isContiguous && dataType == .float16 {
-                let float16Ptr = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
+                let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
                 return (0..<batch).map { row in
                     let start = row * dim
                     var vector = [Float](repeating: 0, count: dim)
                     // Use Accelerate SIMD for 8-16x faster Float16→Float32 conversion
-                    float16Ptr.advanced(by: start).withMemoryRebound(to: UInt16.self, capacity: dim) { srcPtr in
-                        vDSP.convertElements(of: UnsafeBufferPointer(start: srcPtr, count: dim), to: &vector)
-                    }
+                    let srcPtr = float16Ptr.advanced(by: start)
+                    vDSP.convertElements(of: UnsafeBufferPointer(start: srcPtr, count: dim), to: &vector)
                     return vector
                 }
             }
@@ -350,5 +350,17 @@ private extension MiniLMEmbeddings {
         }
 
         return nil
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@_spi(Testing)
+public extension MiniLMEmbeddings {
+    static func _decodeEmbeddingsForTesting(
+        _ embeddings: MLMultiArray,
+        batchSize: Int,
+        outputDimension: Int
+    ) -> [[Float]]? {
+        decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
     }
 }
