@@ -162,7 +162,7 @@ If Wax saved you time, removed infrastructure, or made on-device AI simpler,
 Add Wax as a Swift Package dependency.
 
 ```swift
-.package(url: "<REPO_URL>", from: "0.1.0")
+.package(url: ["<REPO_URL>"](https://github.com/christopherkarani/Wax), from: "0.1.1")
 ```
 
 Then add targets as needed:
