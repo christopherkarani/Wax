@@ -26,7 +26,6 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
-    private static let minimumBatchSize = 64
     private static let maximumBatchSize = 256
     private var batchInputBuffers: BatchInputBuffers?
 
@@ -147,37 +146,29 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, *)
+extension MiniLMEmbedder {
+    /// SPI for deterministic batch planning tests.
+    @_spi(Testing)
+    public static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
+        planBatchSizes(for: totalCount, maxBatchSize: maxBatchSize)
+    }
+}
+
 private extension MiniLMEmbedder {
     static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
         guard totalCount > 0 else { return [] }
-        let clampedMax = Swift.max(minimumBatchSize, Swift.min(maxBatchSize, maximumBatchSize))
+        let clampedMax = Swift.max(1, maxBatchSize)
 
-        if totalCount <= minimumBatchSize {
+        if totalCount <= clampedMax {
             return [totalCount]
         }
 
-        if totalCount <= clampedMax {
-            return [minimumBatchSize, totalCount - minimumBatchSize]
-        }
-
-        var remaining = totalCount
-        var sizes: [Int] = []
-        sizes.reserveCapacity((totalCount / clampedMax) + 2)
-
-        while remaining > 0 {
-            if remaining >= clampedMax {
-                sizes.append(clampedMax)
-                remaining -= clampedMax
-                continue
-            }
-
-            if remaining > minimumBatchSize {
-                sizes.append(minimumBatchSize)
-                remaining -= minimumBatchSize
-            } else {
-                sizes.append(remaining)
-                remaining = 0
-            }
+        let fullBatchCount = totalCount / clampedMax
+        let remainder = totalCount % clampedMax
+        var sizes = Array(repeating: clampedMax, count: fullBatchCount)
+        if remainder > 0 {
+            sizes.append(remainder)
         }
 
         return sizes
