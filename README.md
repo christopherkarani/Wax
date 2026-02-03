@@ -2,30 +2,68 @@
 
 ![unnamed-11](https://github.com/user-attachments/assets/5740a66d-21c2-4980-b6be-06ab1ff1bc68)
 
-# 🍯 Wax
+# 🍯 Wax  
+### The Swift-native, single-file memory engine for AI
 
-**The Swift-native single-file memory engine**
+**Persistent, on-device RAG — without servers, databases, or pipelines.**
 
-| 🧠 **On-device RAG** | 🔍 **Hybrid Search** | 💾 **Single-file persistence**
+| 🧠 On-device memory | 🔍 Hybrid search | 💾 Single-file persistence |
+|---|---|---|
 
-Wax is a portable AI memory system that packages your data, embeddings, search structure, and metadata into a single file.
+Wax is a **portable AI memory system** that packages:
+- your data
+- embeddings
+- search indexes
+- metadata
+- and recovery logs  
 
-Instead of running complex RAG pipelines or server-based vector databases, Wax enables fast retrieval directly from the file.
+into **one deterministic file**.
 
-The result is a model-agnostic, infrastructure-free memory layer that gives AI agents persistent, long-term memory they can carry anywhere.
+Instead of shipping fragile RAG stacks or depending on server-side vector databases,  
+**Wax lets AI retrieve knowledge directly from disk — fast, offline, and reproducibly.**
 
-## 📊 Performance
+Your agent doesn’t *query infrastructure*.  
+It **carries its memory with it.**
+
+⭐ If this repo is useful, please consider starring it — it genuinely helps.
+
+---
+
+## Why Wax exists
+
+Most RAG systems assume:
+- 🌐 cloud inference
+- 🧱 external vector databases
+- 🕸 network latency
+- 🔓 data leaving the device
+- 🧮 non-deterministic context assembly
+
+Wax flips that model:
+
+- **100% on-device**
+- **single-file state**
+- **crash-safe by default**
+- **deterministic retrieval**
+- **Swift-native concurrency**
+
+This makes Wax ideal for **agents, assistants, research tools, and privacy-first apps** that need *real memory*, not prompt hacks.
+
+---
+
+## 📊 Performance (Apple Silicon)
+
+Wax is designed for **interactive latency**, not server throughput.
 
 | Benchmark | Result | Notes |
-|-----------|--------|-------|
-| **Hybrid Search @ 10K docs** | 105ms | Near-constant scaling |
-| **Metal GPU Search** | 1.86ms | 1K vectors × 128 dims |
-| **Cold Open → First Search** | 17ms p50 | Ready for interactive use |
-| **GPU Warm vs Cold** | 10.9× faster | Lazy sync |
-| **Buffer Serialization** | 16.5× faster | vs file-based I/O |
+|---------|--------|-------|
+| **Hybrid search @ 10K docs** | 105ms | Near-constant scaling |
+| **Metal GPU vector search (warm)** | 0.84ms | 10K × 384-dim |
+| **Cold open → first query** | 17ms p50 | Ready for interactive use |
+| **GPU warm vs cold** | 10.9× faster | Lazy sync |
+| **Buffer serialization** | 16.5× faster | vs file I/O |
 
 <details>
-<summary><b>Full Benchmark Results</b></summary>
+<summary><b>Full benchmark breakdown</b></summary>
 
 ### Core RAG Pipeline
 
@@ -52,228 +90,53 @@ The result is a model-agnostic, infrastructure-free memory layer that gives AI a
 
 </details>
 
-## ✨ What Makes Wax Special
+---
 
-**Stop shipping dumb apps.** Give your users AI that actually remembers.
+## ✨ What makes Wax different
 
-- 🎯 **One file to rule them all** - A single `.mv2s` file contains everything: data, indexes, and write-ahead log
-- 🔒 **Bulletproof reliability** - Crash-safe by design. Your data survives app kills, power loss, and update cycles  
-- ⚡ **Lightning fast** - Hybrid search fuses lexical + vector + temporal signals in microseconds
-- 🧮 **Predictable costs** - Deterministic token counting means stable, testable AI prompts
-- 🎭 **Swift-native perfection** - Actor-isolated, fully async, written for Swift 6.2 concurrency
-- 🧩 **Pick your poison** - Use just the core, or go full-stack with embeddings and RAG
+**Stop shipping AI that forgets.**
 
-## 🚀 Perfect For
+Wax gives your users AI that:
+- remembers across launches
+- survives crashes
+- behaves deterministically
+- works offline
+- scales without infra
 
-- **AI Assistants** that remember conversations across app launches
-- **Offline-first apps** with enterprise-grade search
-- **Privacy-focused products** where data never leaves the device
-- **Research tools** that need reproducible retrieval experiments
-- **Agent workflows** that require durable state management
+**The core advantages:**
 
-## 🎯 Live Examples
+- 🧠 **One file, complete memory**  
+  A single `.mv2s` file contains data, indexes, and WAL — nothing else required.
 
-### Build a Memory Palace for Your AI
+- 🔒 **Crash-safe persistence**  
+  Power loss, app kills, and upgrades are first-class concerns, not edge cases.
 
-```swift
-// Your AI assistant that never forgets
-var config = OrchestratorConfig.default
-config.enableVectorSearch = false  // Text-only mode (no embedder needed)
+- ⚡ **Hybrid retrieval engine**  
+  Lexical + vector + temporal fusion, tuned for on-device latency.
 
-let memory = try await MemoryOrchestrator(at: documentsURL, config: config)
+- 🧮 **Deterministic RAG**  
+  Stable token counts and reproducible contexts — ideal for research and testing.
 
-// Every conversation gets remembered
-try await memory.remember("User: I prefer Python over JavaScript")
-try await memory.remember("User: My birthday is March 15th")
+- 🎭 **Swift-native design**  
+  Actor-isolated, async-first, written for Swift 6.2 concurrency.
 
-// Instant, context-aware retrieval
-let context = try await memory.recall(query: "programming preferences")
-// Returns: "User: I prefer Python over JavaScript"
-```
+- 🧩 **Composable by design**  
+  Use Wax as a store, a search engine, or a full RAG pipeline.
 
-### Turn Documents into Searchable Knowledge
+---
 
-```swift
-// Ingest your entire documentation (using the memory instance from above)
-let documents = ["API Reference", "User Guide", "Troubleshooting"]
-for doc in documents {
-    try await memory.remember(doc)  
-}
+## 🚀 Perfect for
 
-// Search across everything
-let results = try await memory.recall(query: "how to authenticate users")
-```
+- **AI assistants** that remember users over time  
+- **Offline-first apps** with serious search requirements  
+- **Privacy-critical products** where data never leaves the device  
+- **Research tooling** that needs reproducible retrieval  
+- **Agent workflows** that require durable state
 
-### Build Deterministic AI Pipelines
+---
 
-```swift
-// Perfect for research - same input = same output
-testSuite.run {
-    let context = try await memory.recall(query: $0.query)
-    assert(context.totalTokens == $0.expectedTokenCount)
-}
-```
-
-## 🏁 Get Started in 30 Seconds
-
-### Installation
-
-```swift
-// Package.swift
-.package(url: "https://github.com/your-username/Wax.git", from: "0.1.0")
-
-// Import and go
-import Wax
-```
-
-### Quick Start Magic
-
-```swift
-// 1️⃣ Create your memory palace
-var config = OrchestratorConfig.default
-config.enableVectorSearch = false  // Text-only mode
-
-let memory = try await MemoryOrchestrator(
-    at: documentsURL.appendingPathComponent("brain.mv2s"),
-    config: config
-)
-
-// 2️⃣ Feed it knowledge
-try await memory.remember("Swift 6.2 introduces improved concurrency")
-try await memory.remember("Async/await makes code more readable")
-
-// 3️⃣ Ask questions, get answers
-let context = try await memory.recall(query: "concurrency improvements")
-for item in context.items {
-    print("📚 \(item.text)")  // "Swift 6.2 introduces improved concurrency"
-}
-
-// 4️⃣ Clean up (memory persists to disk automatically)
-try await memory.close()
-```
-
-## Quickstart (MemoryOrchestrator)
-
-```swift
-import Wax
-
-let url = URL(fileURLWithPath: "/tmp/example.mv2s")
-
-// Text-only mode (no embedder required)
-var config = OrchestratorConfig.default
-config.enableVectorSearch = false
-
-let memory = try await MemoryOrchestrator(at: url, config: config)
-
-try await memory.remember("Swift is safe and fast.")
-try await memory.remember("Rust is fearless.")
-
-let ctx = try await memory.recall(query: "safe")
-for item in ctx.items {
-    print(item.kind, item.text)
-}
-
-try await memory.close()
-```
-
-## Unified Search API (Lower-Level)
-
-```swift
-import Wax
-
-let wax = try await Wax.create(at: url)
-let text = try await wax.enableTextSearch()
-let vec = try await wax.enableVectorSearch(dimensions: 384)
-
-let frameId = try await wax.put(Data("Hello from Wax".utf8),
-                                options: FrameMetaSubset(searchText: "Hello from Wax"))
-try await text.index(frameId: frameId, text: "Hello from Wax")
-try await vec.add(frameId: frameId, vector: [Float](repeating: 0.01, count: 384))
-
-try await text.commit()
-try await vec.commit()
-
-let request = SearchRequest(query: "Hello", mode: .hybrid(alpha: 0.5), topK: 10)
-let response = try await wax.search(request)
-print(response.results)
-
-try await wax.close()
-```
-
-## Fast RAG (Deterministic Context Builder)
-
-```swift
-import Wax
-
-let builder = FastRAGContextBuilder()
-let config = FastRAGConfig(
-    maxContextTokens: 800,
-    searchMode: .hybrid(alpha: 0.5)
-)
-
-let context = try await builder.build(query: "swift concurrency", wax: wax, config: config)
-print(context.totalTokens)
-```
-
-## Custom Embeddings
-
-Wax uses a protocol-based embedding interface so you can plug in your own models:
-
-```swift
-import Wax
-
-public actor MyEmbedder: EmbeddingProvider {
-    public let dimensions = 384
-    public let normalize = true
-    public let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "MyModel",
-        model: "v1",
-        dimensions: 384,
-        normalized: true
-    )
-
-    public func embed(_ text: String) async throws -> [Float] {
-        // Return a 384-dim vector.
-        return [Float](repeating: 0.0, count: 384)
-    }
-}
-
-var config = OrchestratorConfig.default
-config.enableVectorSearch = true
-
-let memory = try await MemoryOrchestrator(at: url, config: config, embedder: MyEmbedder())
-```
-
-## MiniLM (Built-in Embeddings)
-
-If you want a built-in embedding provider, the `WaxVectorSearchMiniLM` target includes a MiniLM embedding model.
-
-```swift
-import Wax
-
-let memory = try await MemoryOrchestrator.openMiniLM(at: url)
-```
-
-## Maintenance
-
-Wax supports background maintenance for stable retrieval quality.
-
-```swift
-let surrogateReport = try await memory.optimizeSurrogates()
-let compactReport = try await memory.compactIndexes()
-```
-
-## Architecture at a Glance
-
-```
-[Text/Docs] -> chunking -> frames (.mv2s)
-                     |-> FTS5 index (lexical)
-                     |-> USearch index (vector)
-                                     |
-                                  unified search
-                                     |
-                               Fast RAG context
-```
+If Wax saved you time, removed infrastructure, or made on-device AI simpler,  
+**consider starring the repo** ⭐ — it helps guide the project’s direction.
 
 ## Architectural Choices
 
@@ -300,7 +163,7 @@ let compactReport = try await memory.compactIndexes()
 Add Wax as a Swift Package dependency.
 
 ```swift
-.package(url: "<REPO_URL>", from: "0.1.0")
+.package(url: ["<REPO_URL>"](https://github.com/christopherkarani/Wax), from: "0.1.1")
 ```
 
 Then add targets as needed:
