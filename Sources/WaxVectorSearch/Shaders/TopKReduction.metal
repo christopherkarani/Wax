@@ -60,23 +60,24 @@ inline void partialHeapTopK(threadgroup TopKEntry* data, uint count, uint k, uin
         heapify(data, effectiveK);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    for (uint i = effectiveK + tid; i < count; i += tgSize) {
-        if (data[i].distance < data[0].distance) {
-            if (tid == 0) {
+
+    // NOTE: This must consider *all* candidates. The previous per-thread striding
+    // only updated the heap from `tid == 0`, which skipped most indices.
+    if (tid == 0) {
+        for (uint i = effectiveK; i < count; i++) {
+            if (data[i].distance < data[0].distance) {
                 data[0] = data[i];
                 siftDown(data, 0, effectiveK - 1);
             }
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    
-    if (tid == 0) {
+
+        // Heap contains top-k unordered; sort ascending in-place.
         for (uint i = effectiveK - 1; i > 0; i--) {
             swapEntries(data, 0, i);
             siftDown(data, 0, i - 1);
         }
     }
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
