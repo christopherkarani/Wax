@@ -57,9 +57,9 @@ Wax is designed for **interactive latency**, not server throughput.
 | Benchmark | Result | Notes |
 |---------|--------|-------|
 | **Hybrid search @ 10K docs** | 105ms | Near-constant scaling |
-| **Metal GPU vector search** | 1.42ms | 10K × 384-dim |
-| **Cold open → first query** | 17ms p50 | Ready instantly |
-| **GPU warm vs cold** | 6.7× faster | Lazy sync + SIMD8 |
+| **Metal GPU vector search (warm)** | 0.84ms | 10K × 384-dim |
+| **Cold open → first query** | 17ms p50 | Ready for interactive use |
+| **GPU warm vs cold** | 10.9× faster | Lazy sync |
 | **Buffer serialization** | 16.5× faster | vs file I/O |
 
 <details>
@@ -79,13 +79,14 @@ Wax is designed for **interactive latency**, not server throughput.
 
 | Metric | Value |
 |--------|-------|
-| Search latency (1K × 128d) | 1.29ms avg |
-| Latency per vector | 0.0013ms |
-| Cold sync (10K × 384d) | 9.5ms |
-| Warm search (10K × 384d) | 1.42ms |
+| Search latency (1K × 128d) | 1.86ms avg |
+| Latency per vector | 0.0019ms |
+| Cold sync (10K × 384d) | 9.19ms |
+| Warm search (10K × 384d) | 0.84ms |
 | Memory saved per warm query | 14.6 MB |
 
-*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*
+*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*  
+*Optional benchmark suites are opt-in via env flags: `WAX_BENCHMARK_MINILM=1`, `WAX_BENCHMARK_METAL=1`, `WAX_BENCHMARK_10K=1`, `WAX_BENCHMARK_METRICS=1`, `WAX_BENCHMARK_SAMPLES=1`, `WAX_BENCHMARK_OPTIMIZATION=1`.*
 
 </details>
 

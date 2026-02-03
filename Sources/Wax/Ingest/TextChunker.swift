@@ -10,6 +10,14 @@ public enum TextChunker {
         }
     }
 
+    /// Stream chunked text without materializing the full chunk list in memory.
+    public static func stream(text: String, strategy: ChunkingStrategy) -> AsyncStream<String> {
+        switch strategy {
+        case let .tokenCount(targetTokens, overlapTokens):
+            return tokenCountChunkStream(text: text, targetTokens: targetTokens, overlapTokens: overlapTokens)
+        }
+    }
+
     private static func tokenCountChunk(text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
@@ -20,24 +28,89 @@ public enum TextChunker {
             return [text]
         }
 
+        let ranges = tokenCountChunkRanges(
+            tokenCount: tokens.count,
+            targetTokens: cappedTarget,
+            overlapTokens: cappedOverlap
+        )
         var chunks: [String] = []
-        var start = 0
-        while start < tokens.count {
-            let end = min(start + cappedTarget, tokens.count)
-            let slice = Array(tokens[start..<end])
+        chunks.reserveCapacity(ranges.count)
+        for range in ranges {
+            let slice = Array(tokens[range])
             let chunk = await counter.decode(slice)
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 chunks.append(chunk)
             }
-            if end == tokens.count { break }
-            let proposed = end - cappedOverlap
-            let nextStart = proposed > start ? proposed : end
-            if nextStart <= start { break } // safety
-            start = nextStart
         }
         if chunks.isEmpty {
             return [text]
         }
         return chunks
+    }
+
+    private static func tokenCountChunkStream(
+        text: String,
+        targetTokens: Int,
+        overlapTokens: Int
+    ) -> AsyncStream<String> {
+        let cappedTarget = max(1, targetTokens)
+        let cappedOverlap = max(0, overlapTokens)
+
+        return AsyncStream { continuation in
+            Task {
+                guard let counter = try? await TokenCounter.shared() else {
+                    continuation.yield(text)
+                    continuation.finish()
+                    return
+                }
+                let tokens = await counter.encode(text)
+                if tokens.count <= cappedTarget {
+                    continuation.yield(text)
+                    continuation.finish()
+                    return
+                }
+
+                let ranges = tokenCountChunkRanges(
+                    tokenCount: tokens.count,
+                    targetTokens: cappedTarget,
+                    overlapTokens: cappedOverlap
+                )
+
+                for range in ranges {
+                    let slice = Array(tokens[range])
+                    let chunk = await counter.decode(slice)
+                    if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        continuation.yield(chunk)
+                    }
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    private static func tokenCountChunkRanges(
+        tokenCount: Int,
+        targetTokens: Int,
+        overlapTokens: Int
+    ) -> [Range<Int>] {
+        guard tokenCount > 0 else { return [] }
+        let cappedTarget = max(1, targetTokens)
+        let cappedOverlap = max(0, overlapTokens)
+        if tokenCount <= cappedTarget {
+            return [0..<tokenCount]
+        }
+
+        var ranges: [Range<Int>] = []
+        var start = 0
+        while start < tokenCount {
+            let end = min(start + cappedTarget, tokenCount)
+            ranges.append(start..<end)
+            if end == tokenCount { break }
+            let proposed = end - cappedOverlap
+            let nextStart = proposed > start ? proposed : end
+            if nextStart <= start { break } // safety
+            start = nextStart
+        }
+        return ranges
     }
 }

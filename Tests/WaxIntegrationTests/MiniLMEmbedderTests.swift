@@ -3,14 +3,16 @@ import Testing
 #if canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderProducesExpectedDimensions() async throws {
-    let embedder = MiniLMEmbedder()
+    let embedder = try MiniLMEmbedder()
     let vector = try await embedder.embed("hello world")
     #expect(vector.count == embedder.dimensions)
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderBatchMatchesSingle() async throws {
-    let embedder = MiniLMEmbedder()
+    let embedder = try MiniLMEmbedder()
     let texts = ["hello world", "wax is fast"]
     let singleA = try await embedder.embed(texts[0])
     let singleB = try await embedder.embed(texts[1])
@@ -23,9 +25,10 @@ import WaxVectorSearchMiniLM
     assertVectorsClose(batch[1], singleB, tolerance: 1e-4)
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderConfigurableBatchSizeWorks() async throws {
     let config = MiniLMEmbedder.Config(batchSize: 4)
-    let embedder = MiniLMEmbedder(config: config)
+    let embedder = try MiniLMEmbedder(config: config)
     let texts = ["a", "b", "c", "d", "e"]
     let batch = try await embedder.embed(batch: texts)
     #expect(batch.count == texts.count)
@@ -34,8 +37,9 @@ import WaxVectorSearchMiniLM
     }
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderPrewarmDoesNotThrow() async throws {
-    let embedder = MiniLMEmbedder()
+    let embedder = try MiniLMEmbedder()
     try await embedder.prewarm()
 }
 

@@ -51,13 +51,14 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     return denom == 0 ? 0 : (dot / denom)
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func minilmEmbeddingsStayCloseToBaseline() async throws {
     let fixture = try BaselineFixtureLoader.load()
     #expect(fixture.dimensions == 384)
     #expect(!fixture.sentences.isEmpty)
     #expect(fixture.sentences.count == fixture.embeddings.count)
 
-    let model = MiniLMEmbeddings()
+    let model = try MiniLMEmbeddings()
     guard let freshEmbeddings = await model.encode(batch: fixture.sentences) else {
         throw TestingError("MiniLM produced no embeddings")
     }
@@ -78,6 +79,7 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     #expect(minimum >= 0.95, "Minimum cosine similarity was \(minimum)")
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 @Test func generateMiniLMBaselineFixture() async throws {
     guard ProcessInfo.processInfo.environment["WAX_GENERATE_MINILM_FIXTURES"] == "1" else {
         return
@@ -94,7 +96,7 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
         "On-device inference keeps user data private."
     ]
 
-    let model = MiniLMEmbeddings()
+    let model = try MiniLMEmbeddings()
     guard let embeddings = await model.encode(batch: sentences) else {
         throw TestingError("MiniLM produced no embeddings")
     }

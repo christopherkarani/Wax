@@ -10,6 +10,9 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     private var run10K: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_10K"] == "1"
     }
+    private var runSampledLatency: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_SAMPLES"] == "1"
+    }
 
     func testIngestTextOnlyPerformance() async throws {
         let scale = self.scale
@@ -445,21 +448,28 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             config.rag.searchMode = .hybrid(alpha: 0.7)
             config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
 
+            print("🧪 Recall benchmark: creating orchestrator")
             let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
 
+            print("🧪 Recall benchmark: ingesting \(scale.documentCount) docs")
             for index in 0..<scale.documentCount {
                 let content = factory.makeDocument(index: index)
                 try await orchestrator.remember(content)
             }
+            print("🧪 Recall benchmark: flushing")
             try await orchestrator.flush()
 
             let query = factory.queryText
+            print("🧪 Recall benchmark: warm recall")
             _ = try await orchestrator.recall(query: query)
 
+            print("🧪 Recall benchmark: measured recall start")
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
                 _ = try await orchestrator.recall(query: query)
             }
+            print("🧪 Recall benchmark: measured recall done")
 
+            print("🧪 Recall benchmark: closing orchestrator")
             try await orchestrator.close()
         }
     }
@@ -509,6 +519,224 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         _ = try await timedSamples(label: "tokenizer_cold_start", iterations: iterations, warmup: 0) {
             let counter = try await TokenCounter()
             _ = await counter.count(longText)
+        }
+    }
+
+    func testUnifiedSearchHybridWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let requestWithPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 512
+            )
+            let requestNoPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            // Warm up caches / any lazy engine state.
+            _ = try await fixture.wax.search(requestWithPreviews)
+            _ = try await fixture.wax.search(requestNoPreviews)
+
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestWithPreviews)
+            }
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_no_previews", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestNoPreviews)
+            }
+        }
+    }
+
+    func testUnifiedSearchHybridWarmLatencySamplesCPUOnly() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let requestNoPreviews = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            // Warm up caches / any lazy engine state.
+            _ = try await fixture.wax.search(requestNoPreviews)
+
+            _ = try await timedSamples(label: "unified_search_hybrid_warm_cpu_only", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.search(requestNoPreviews)
+            }
+        }
+    }
+
+    func testFramePreviewsWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+
+        try await withFixture(includeVectors: true) { fixture in
+            guard let embedding = fixture.queryEmbedding else {
+                XCTFail("Hybrid search fixture missing embeddings")
+                return
+            }
+
+            let request = SearchRequest(
+                query: fixture.queryText,
+                embedding: embedding,
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.7),
+                topK: scale.searchTopK,
+                previewMaxBytes: 0
+            )
+
+            let response = try await fixture.wax.search(request)
+            let frameIds = response.results.map(\.frameId)
+
+            // Warm the file cache and any payload decode paths.
+            _ = try await fixture.wax.framePreviews(frameIds: frameIds, maxBytes: 512)
+
+            _ = try await timedSamples(label: "frame_previews_topk_512b", iterations: 30, warmup: 5) {
+                _ = try await fixture.wax.framePreviews(frameIds: frameIds, maxBytes: 512)
+            }
+        }
+    }
+
+    func testWaxOpenCloseColdLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let iterations = max(3, min(15, scale.iterations * 3))
+
+        try await TempFiles.withTempFile { url in
+            _ = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
+
+            // Measure open/close only: footer scan + WAL scan + engine cache hydration.
+            _ = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
+                let wax = try await Wax.open(at: url)
+                try await wax.close()
+            }
+        }
+    }
+
+    func testIncrementalStageAndCommitLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+
+        let clock = ContinuousClock()
+        let batchSize = 64
+        let iterations = max(3, min(15, scale.iterations * 3))
+
+        func seconds(_ duration: Duration) -> Double {
+            let comp = duration.components
+            return Double(comp.seconds) + Double(comp.attoseconds) / 1_000_000_000_000_000_000
+        }
+
+        func measureSeconds(_ block: @escaping @Sendable () async throws -> Void) async throws -> Double {
+            let start = clock.now
+            try await block()
+            let duration = clock.now - start
+            return seconds(duration)
+        }
+
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            let sessionConfig = WaxSession.Config(
+                enableTextSearch: true,
+                enableVectorSearch: true,
+                enableStructuredMemory: false,
+                vectorEnginePreference: .cpuOnly,
+                vectorMetric: .cosine,
+                vectorDimensions: embedder.dimensions
+            )
+            let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+            let texts = (0..<batchSize).map { factory.makeDocument(index: $0) }
+            let contents = texts.map { Data($0.utf8) }
+            var embeddings: [[Float]] = []
+            embeddings.reserveCapacity(batchSize)
+            for text in texts {
+                embeddings.append(try await embedder.embed(text))
+            }
+
+            var options: [FrameMetaSubset] = []
+            options.reserveCapacity(batchSize)
+            for _ in 0..<batchSize {
+                var meta = FrameMetaSubset()
+                meta.role = .chunk
+                options.append(meta)
+            }
+
+            // Warm: compile any lazy paths in staging and commit before sampling.
+            do {
+                let frameIds = try await session.putBatch(
+                    contents: contents,
+                    embeddings: embeddings,
+                    identity: embedder.identity,
+                    options: options
+                )
+                try await session.indexTextBatch(frameIds: frameIds, texts: texts)
+                try await session.stage()
+                try await wax.commit()
+            }
+
+            var stageSamples: [Double] = []
+            stageSamples.reserveCapacity(iterations)
+            var commitSamples: [Double] = []
+            commitSamples.reserveCapacity(iterations)
+
+            for sampleIndex in 0..<iterations {
+                let offset = (sampleIndex + 1) * batchSize
+                let batchTexts = (0..<batchSize).map { factory.makeDocument(index: offset + $0) }
+                let batchContents = batchTexts.map { Data($0.utf8) }
+                var batchEmbeddings: [[Float]] = []
+                batchEmbeddings.reserveCapacity(batchSize)
+                for text in batchTexts {
+                    batchEmbeddings.append(try await embedder.embed(text))
+                }
+
+                let frameIds = try await session.putBatch(
+                    contents: batchContents,
+                    embeddings: batchEmbeddings,
+                    identity: embedder.identity,
+                    options: options
+                )
+                try await session.indexTextBatch(frameIds: frameIds, texts: batchTexts)
+
+                let stageSeconds = try await measureSeconds {
+                    try await session.stage()
+                }
+                stageSamples.append(stageSeconds)
+
+                let commitSeconds = try await measureSeconds {
+                    try await wax.commit()
+                }
+                commitSamples.append(commitSeconds)
+            }
+
+            BenchmarkStats(samples: stageSamples).report(label: "stage_for_commit_incremental_batch64")
+            BenchmarkStats(samples: commitSamples).report(label: "wax_commit_incremental_batch64")
+
+            await session.close()
+            try await wax.close()
         }
     }
 

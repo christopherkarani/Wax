@@ -29,7 +29,7 @@ public struct PendingEmbeddingSnapshot: Equatable, Sendable {
 public actor Wax {
     private let url: URL
     private let io: BlockingIOExecutor
-    private let opLock = AsyncMutex()
+    private let opLock = AsyncReadWriteLock()
     private var writerLeaseId: UUID?
     private var file: FDFile
     private var lock: FileLock
@@ -99,14 +99,26 @@ public actor Wax {
         self.dirty = dirty
     }
 
-    private func withOpLock<T>(_ body: () async throws -> T) async rethrows -> T {
-        await opLock.lock()
+    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.writeLock()
         do {
             let value = try await body()
-            await opLock.unlock()
+            await opLock.writeUnlock()
             return value
         } catch {
-            await opLock.unlock()
+            await opLock.writeUnlock()
+            throw error
+        }
+    }
+
+    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.readLock()
+        do {
+            let value = try await body()
+            await opLock.readUnlock()
+            return value
+        } catch {
+            await opLock.readUnlock()
             throw error
         }
     }
@@ -445,7 +457,7 @@ public actor Wax {
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
-        try await withOpLock {
+        try await withWriteLock {
             let committedCount = UInt64(toc.frames.count)
             let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
                 if case .putFrame = mutation.entry { return count + 1 }
@@ -516,7 +528,7 @@ public actor Wax {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
         }
 
-        return try await withOpLock {
+        return try await withWriteLock {
             let committedCount = UInt64(toc.frames.count)
             let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
                 if case .putFrame = mutation.entry { return count + 1 }
@@ -641,7 +653,7 @@ public actor Wax {
             throw WaxError.encodingError(reason: "putEmbeddingBatch: frameIds.count != vectors.count")
         }
 
-        try await withOpLock {
+        try await withWriteLock {
             // Validate all vectors first
             var dimension: UInt32?
             for vector in vectors {
@@ -718,7 +730,7 @@ public actor Wax {
     }
 
     public func putEmbedding(frameId: UInt64, vector: [Float]) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             guard !vector.isEmpty else {
                 throw WaxError.encodingError(reason: "embedding vector must be non-empty")
             }
@@ -768,7 +780,7 @@ public actor Wax {
     }
 
     public func pendingEmbeddingMutations(since sequence: UInt64?) async -> PendingEmbeddingSnapshot {
-        await withOpLock {
+        await withReadLock {
             var embeddings: [PutEmbedding] = []
             embeddings.reserveCapacity(pendingMutations.count)
             var latestSequence: UInt64?
@@ -783,7 +795,7 @@ public actor Wax {
     }
 
     public func delete(frameId: UInt64) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             let entry = WALEntry.deleteFrame(DeleteFrame(frameId: frameId))
             let payload = try WALEntryCodec.encode(entry)
             try await ensureWalCapacityLocked(payloadSize: payload.count)
@@ -797,7 +809,7 @@ public actor Wax {
     }
 
     public func supersede(supersededId: UInt64, supersedingId: UInt64) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             let entry = WALEntry.supersedeFrame(
                 SupersedeFrame(supersededId: supersededId, supersedingId: supersedingId)
             )
@@ -813,7 +825,7 @@ public actor Wax {
     }
 
     public func pendingFrameMeta(frameId: UInt64) async -> FrameMeta? {
-        await withOpLock {
+        await withReadLock {
             var last: PutFrame?
             for mutation in pendingMutations {
                 guard case .putFrame(let put) = mutation.entry else { continue }
@@ -826,7 +838,7 @@ public actor Wax {
     }
 
     public func stageLexIndexForNextCommit(bytes: Data, docCount: UInt64, version: UInt32 = 1) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             guard version == 1 else {
                 throw WaxError.invalidToc(reason: "unsupported lex index version \(version)")
             }
@@ -853,7 +865,7 @@ public actor Wax {
         dimension: UInt32,
         similarity: VecSimilarity
     ) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             guard !bytes.isEmpty else {
                 throw WaxError.io("vec index bytes must be non-empty")
             }
@@ -910,7 +922,7 @@ public actor Wax {
     }
 
     public func commit() async throws {
-        try await withOpLock {
+        try await withWriteLock {
             try await commitLocked()
         }
     }
@@ -1051,13 +1063,13 @@ public actor Wax {
     // MARK: - Reads
 
     public func frameMetas() async -> [FrameMeta] {
-        await withOpLock {
+        await withReadLock {
             toc.frames
         }
     }
 
     public func frameMetas(frameIds: [UInt64]) async -> [UInt64: FrameMeta] {
-        await withOpLock {
+        await withReadLock {
             var metas: [UInt64: FrameMeta] = [:]
             metas.reserveCapacity(frameIds.count)
             let maxId = UInt64(toc.frames.count)
@@ -1069,7 +1081,7 @@ public actor Wax {
     }
 
     public func frameMetasIncludingPending(frameIds: [UInt64]) async -> [UInt64: FrameMeta] {
-        await withOpLock {
+        await withReadLock {
             var metas: [UInt64: FrameMeta] = [:]
             metas.reserveCapacity(frameIds.count)
 
@@ -1106,7 +1118,7 @@ public actor Wax {
     }
 
     public func surrogateFrameId(sourceFrameId: UInt64) async -> UInt64? {
-        await withOpLock {
+        await withReadLock {
             if surrogateIndex == nil {
                 surrogateIndex = buildSurrogateIndexUnlocked()
             }
@@ -1116,7 +1128,7 @@ public actor Wax {
 
     /// Batch lookup of surrogate frame ids to avoid repeated actor hops.
     public func surrogateFrameIds(for sourceFrameIds: [UInt64]) async -> [UInt64: UInt64] {
-        await withOpLock {
+        await withReadLock {
             if surrogateIndex == nil {
                 surrogateIndex = buildSurrogateIndexUnlocked()
             }
@@ -1133,7 +1145,7 @@ public actor Wax {
     }
 
     public func frameMeta(frameId: UInt64) async throws -> FrameMeta {
-        try await withOpLock {
+        try await withReadLock {
             try frameMetaUnlocked(frameId: frameId)
         }
     }
@@ -1151,7 +1163,7 @@ public actor Wax {
     }
 
     public func frameContent(frameId: UInt64) async throws -> Data {
-        try await withOpLock {
+        try await withReadLock {
             try await frameContentUnlocked(frameId: frameId)
         }
     }
@@ -1162,14 +1174,14 @@ public actor Wax {
         } catch let error as WaxError {
             if case .frameNotFound = error {
                 guard let meta = await pendingFrameMeta(frameId: frameId) else { throw error }
-                return try await withOpLock { try await frameContentFromMetaUnlocked(meta) }
+                return try await withWriteLock { try await frameContentFromMetaUnlocked(meta) }
             }
             throw error
         }
     }
 
     public func framePreview(frameId: UInt64, maxBytes: Int) async throws -> Data {
-        try await withOpLock {
+        try await withReadLock {
             let clampedMax = max(0, maxBytes)
             if clampedMax == 0 { return Data() }
 
@@ -1193,45 +1205,84 @@ public actor Wax {
     }
 
     public func framePreviews(frameIds: [UInt64], maxBytes: Int) async throws -> [UInt64: Data] {
-        try await withOpLock {
-            let clampedMax = max(0, maxBytes)
-            guard clampedMax > 0 else { return [:] }
+        struct PlainPreviewPlan: Sendable {
+            let frameId: UInt64
+            let offset: UInt64
+            let length: Int
+        }
 
-            var previews: [UInt64: Data] = [:]
-            previews.reserveCapacity(frameIds.count)
+        let clampedMax = max(0, maxBytes)
+        guard clampedMax > 0 else { return [:] }
+
+        let file = self.file
+
+        let (emptyIds, plainPlans, compressedFrames): ([UInt64], [PlainPreviewPlan], [FrameMeta]) = try await withReadLock {
+            var emptyIds: [UInt64] = []
+            var plainPlans: [PlainPreviewPlan] = []
+            var compressedFrames: [FrameMeta] = []
+
             let maxId = UInt64(toc.frames.count)
+            emptyIds.reserveCapacity(frameIds.count)
+            plainPlans.reserveCapacity(frameIds.count)
+            compressedFrames.reserveCapacity(frameIds.count)
 
             for frameId in frameIds where frameId < maxId {
                 let frame = toc.frames[Int(frameId)]
                 if frame.payloadLength == 0 {
-                    previews[frameId] = Data()
+                    emptyIds.append(frameId)
                     continue
                 }
 
                 if frame.canonicalEncoding == .plain {
                     let available = min(frame.payloadLength, UInt64(clampedMax))
-                    guard available <= UInt64(Int.max) else {
+                    if available == 0 {
+                        emptyIds.append(frameId)
+                        continue
+                    }
+                    if available > UInt64(Int.max) {
                         throw WaxError.io("payload preview too large: \(available)")
                     }
-                    let file = self.file
-                    let bytes = try await io.run {
-                        try file.readExactly(length: Int(available), at: frame.payloadOffset)
-                    }
-                    previews[frameId] = bytes
+                    plainPlans.append(
+                        PlainPreviewPlan(
+                            frameId: frameId,
+                            offset: frame.payloadOffset,
+                            length: Int(available)
+                        )
+                    )
                     continue
                 }
 
-                let canonical = try await frameContentFromMetaUnlocked(frame)
-                previews[frameId] = Data(canonical.prefix(clampedMax))
+                compressedFrames.append(frame)
             }
 
-            return previews
+            return (emptyIds, plainPlans, compressedFrames)
         }
+
+        var previews: [UInt64: Data] = [:]
+        previews.reserveCapacity(emptyIds.count + plainPlans.count + compressedFrames.count)
+
+        for frameId in emptyIds {
+            previews[frameId] = Data()
+        }
+
+        for plan in plainPlans {
+            let bytes = try await io.run {
+                try file.readExactly(length: plan.length, at: plan.offset)
+            }
+            previews[plan.frameId] = bytes
+        }
+
+        for frame in compressedFrames {
+            let canonical = try await frameContentFromMeta(frame)
+            previews[frame.id] = Data(canonical.prefix(clampedMax))
+        }
+
+        return previews
     }
 
     /// Batch read full frame contents (committed only) in a single actor hop.
     public func frameContents(frameIds: [UInt64]) async throws -> [UInt64: Data] {
-        try await withOpLock {
+        try await withReadLock {
             var contents: [UInt64: Data] = [:]
             contents.reserveCapacity(frameIds.count)
             let maxId = UInt64(toc.frames.count)
@@ -1251,13 +1302,13 @@ public actor Wax {
     }
 
     public func frameStoredContent(frameId: UInt64) async throws -> Data {
-        try await withOpLock {
+        try await withReadLock {
             try await frameStoredContentUnlocked(frameId: frameId)
         }
     }
 
     public func frameStoredPreview(frameId: UInt64, maxBytes: Int) async throws -> Data {
-        try await withOpLock {
+        try await withReadLock {
             let frame = try frameMetaUnlocked(frameId: frameId)
             if frame.payloadLength == 0 { return Data() }
             let clampedMax = max(0, maxBytes)
@@ -1303,7 +1354,7 @@ public actor Wax {
         )
     }
 
-    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+    private func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
         if frame.payloadLength == 0 { return Data() }
         guard frame.payloadLength <= UInt64(Int.max) else {
             throw WaxError.io("payload too large: \(frame.payloadLength)")
@@ -1327,6 +1378,10 @@ public actor Wax {
         )
     }
 
+    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+        try await frameContentFromMeta(frame)
+    }
+
     private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
         guard frameId < UInt64(toc.frames.count) else {
             throw WaxError.frameNotFound(frameId: frameId)
@@ -1335,7 +1390,7 @@ public actor Wax {
     }
 
     public func readCommittedLexIndexBytes() async throws -> Data? {
-        try await withOpLock {
+        try await withReadLock {
             guard let manifest = toc.indexes.lex else { return nil }
             guard manifest.version == 1 else {
                 throw WaxError.invalidToc(reason: "unsupported lex index version \(manifest.version)")
@@ -1394,25 +1449,25 @@ public actor Wax {
     }
 
     public func committedLexIndexManifest() async -> LexIndexManifest? {
-        await withOpLock {
+        await withReadLock {
             toc.indexes.lex
         }
     }
 
     public func readStagedLexIndexBytes() async -> Data? {
-        await withOpLock {
+        await withReadLock {
             stagedLexIndex?.bytes
         }
     }
 
     public func stagedLexIndexStamp() async -> UInt64? {
-        await withOpLock {
+        await withReadLock {
             stagedLexIndexStamp
         }
     }
 
     public func readCommittedVecIndexBytes() async throws -> Data? {
-        try await withOpLock {
+        try await withReadLock {
             guard let manifest = toc.indexes.vec else { return nil }
             guard manifest.bytesLength > 0 else { return nil }
             let maxBlob = UInt64(Constants.maxBlobBytes)
@@ -1448,20 +1503,20 @@ public actor Wax {
     }
 
     public func readStagedVecIndexBytes() async -> (bytes: Data, dimension: UInt32, similarity: VecSimilarity)? {
-        await withOpLock {
+        await withReadLock {
             guard let staged = stagedVecIndex else { return nil }
             return (bytes: staged.bytes, dimension: staged.dimension, similarity: staged.similarity)
         }
     }
 
     public func stagedVecIndexStamp() async -> UInt64? {
-        await withOpLock {
+        await withReadLock {
             stagedVecIndexStamp
         }
     }
 
     public func committedVecIndexManifest() async -> VecIndexManifest? {
-        await withOpLock {
+        await withReadLock {
             toc.indexes.vec
         }
     }
@@ -1469,7 +1524,7 @@ public actor Wax {
     // MARK: - Introspection
 
     public func stats() async -> WaxStats {
-        await withOpLock {
+        await withReadLock {
             let pending = pendingMutations.reduce(0) { count, mutation in
                 if case .putFrame = mutation.entry { return count + 1 }
                 return count
@@ -1483,7 +1538,7 @@ public actor Wax {
     }
 
     public func timeline(_ query: TimelineQuery) async -> [FrameMeta] {
-        await withOpLock {
+        await withReadLock {
             TimelineQuery.filter(frames: toc.frames, query: query)
         }
     }
@@ -1498,7 +1553,7 @@ public actor Wax {
     }
 
     public func verify(deep: Bool) async throws {
-        try await withOpLock {
+        try await withReadLock {
             let file = self.file
             let pageA = try await io.run {
                 try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
@@ -1607,7 +1662,7 @@ public actor Wax {
     }
 
     public func close() async throws {
-        try await withOpLock {
+        try await withWriteLock {
             let file = self.file
             let lock = self.lock
             try await io.run {

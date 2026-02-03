@@ -30,7 +30,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.23.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
-        .package(url: "https://github.com/narner/TiktokenSwift.git", from: "1.0.0"),
+        .package(url: "https://github.com/DePasqualeOrg/swift-tiktoken.git", from: "0.0.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
     ],
     targets: [
@@ -73,12 +73,13 @@ let package = Package(
                 "WaxCore",
                 "WaxTextSearch",
                 "WaxVectorSearch",
-                .product(name: "TiktokenSwift", package: "TiktokenSwift"),
+                .product(name: "SwiftTiktoken", package: "swift-tiktoken"),
                 .target(
                     name: "WaxVectorSearchMiniLM",
                     condition: .when(traits: ["MiniLMEmbeddings"])
                 ),
             ],
+            resources: [.process("RAG/Resources")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
@@ -94,7 +95,7 @@ let package = Package(
                 .product(name: "USearch", package: "USearch"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "TiktokenSwift", package: "TiktokenSwift"),
+                .product(name: "SwiftTiktoken", package: "swift-tiktoken"),
             ],
             resources: [.process("Fixtures")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]

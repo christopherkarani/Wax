@@ -22,36 +22,43 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         normalized: true
     )
 
-    private let model: MiniLMEmbeddings
+    private nonisolated let model: MiniLMEmbeddings
     
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
-    private static let batchSizeBuckets = [64, 32, 16, 8, 1]
+    private static let maximumBatchSize = 256
+    private var batchInputBuffers: BatchInputBuffers?
 
     public struct Config {
         public var batchSize: Int
         public var modelConfiguration: MLModelConfiguration?
 
-        public init(batchSize: Int = 32, modelConfiguration: MLModelConfiguration? = nil) {
+        public init(batchSize: Int = 256, modelConfiguration: MLModelConfiguration? = nil) {
             self.batchSize = batchSize
             self.modelConfiguration = modelConfiguration
         }
     }
 
-    public init() {
-        self.model = MiniLMEmbeddings()
-        self.batchSize = 32
+    public init() throws {
+        self.model = try MiniLMEmbeddings()
+        self.batchSize = Self.maximumBatchSize
         logComputeUnits()
     }
 
     public init(model: MiniLMEmbeddings) {
         self.model = model
-        self.batchSize = 32
+        self.batchSize = Self.maximumBatchSize
         logComputeUnits()
     }
 
-    public init(config: Config) {
-        self.model = MiniLMEmbeddings(configuration: config.modelConfiguration)
+    public init(config: Config) throws {
+        self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration)
+        self.batchSize = max(1, config.batchSize)
+        logComputeUnits()
+    }
+
+    public init(overrides: MiniLMEmbeddings.Overrides, config: Config = Config()) throws {
+        self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration, overrides: overrides)
         self.batchSize = max(1, config.batchSize)
         logComputeUnits()
     }
@@ -61,7 +68,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// Checks if the model is configured to use the Apple Neural Engine (ANE).
     /// Note: This checks the configuration preference, not whether ANE is actually being used at runtime.
     public nonisolated func isUsingANE() -> Bool {
-        return model.computeUnits == .all
+        return model.computeUnits == .all || model.computeUnits == .cpuAndNeuralEngine
     }
 
     /// Returns the current compute units configuration.
@@ -91,37 +98,31 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// Batch embed multiple texts using Core ML batch prediction for optimal ANE/GPU utilization.
     ///
     /// Performance characteristics:
-    /// - Sub-batches of 16 texts processed concurrently (optimal for CoreML)
-    /// - Up to 8 concurrent sub-batches to saturate compute resources
+    /// - Uses exact batch sizes (no padding waste)
+    /// - Streams batches with limited concurrency to avoid memory spikes
     /// - Returns embeddings in same order as input texts
     public func embed(batch texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
-        var results: [[Float]] = []
-        results.reserveCapacity(texts.count)
-
-        var index = 0
-        while index < texts.count {
-            let remaining = texts.count - index
-            let targetBatch = Self.selectBatchSize(for: remaining, maxBatchSize: batchSize)
-            let upperBound = Swift.min(texts.count, index + targetBatch)
-            let chunk = Array(texts[index..<upperBound])
-            if chunk.count == targetBatch {
-                let embeddings = try await embedBatchCoreML(texts: chunk)
-                results.append(contentsOf: embeddings)
-                index = upperBound
-            } else {
-                let padded = chunk + Array(repeating: " ", count: targetBatch - chunk.count)
-                let embeddings = try await embedBatchCoreML(texts: padded)
-                results.append(contentsOf: embeddings.prefix(chunk.count))
-                index = texts.count
+        let plannedBatches = Self.planBatchSizes(for: texts.count, maxBatchSize: batchSize)
+        var results = Array(repeating: [Float](), count: texts.count)
+        var startIndex = 0
+        for size in plannedBatches {
+            let batchStart = startIndex
+            let batchEnd = batchStart + size
+            let chunk = Array(texts[batchStart..<batchEnd])
+            let embeddings = try await embedBatchCoreML(texts: chunk)
+            for (offset, vector) in embeddings.enumerated() {
+                results[batchStart + offset] = vector
             }
+            startIndex = batchEnd
         }
+
         return results
     }
     
     /// Core ML batch prediction path (true batching).
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
+        guard let vectors = model.encode(batch: texts, reuseBuffers: &batchInputBuffers) else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
         }
         guard vectors.count == texts.count else {
@@ -135,40 +136,41 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         return vectors
     }
 
-    public func prewarm() async throws {
+    public func prewarm(batchSize: Int = 16) async throws {
         _ = try await embed(" ")
-        if batchSize > 1 {
-            let batch = Array(repeating: " ", count: batchSize)
+        let clamped = max(1, min(batchSize, 32))
+        if clamped > 1 {
+            let batch = Array(repeating: " ", count: clamped)
             _ = try await embed(batch: batch)
         }
     }
 }
 
-// MARK: - Array Chunking Extension
-
-private extension Array {
-    /// Splits the array into chunks of the specified size.
-    func chunked(into size: Int) -> [[Element]] {
-        guard size > 0 else { return [self] }
-        return stride(from: 0, to: count, by: size).map {
-            Array(self[$0..<Swift.min($0 + size, count)])
-        }
+@available(macOS 15.0, iOS 18.0, *)
+extension MiniLMEmbedder {
+    /// SPI for deterministic batch planning tests.
+    @_spi(Testing)
+    public static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
+        planBatchSizes(for: totalCount, maxBatchSize: maxBatchSize)
     }
 }
 
 private extension MiniLMEmbedder {
-    static func selectBatchSize(for remaining: Int, maxBatchSize: Int) -> Int {
-        let candidates = batchSizeBuckets.filter { $0 <= maxBatchSize }
-        guard let largest = candidates.first else { return 1 }
-        if remaining >= largest {
-            return largest
+    static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
+        guard totalCount > 0 else { return [] }
+        let clampedMax = Swift.max(1, maxBatchSize)
+
+        if totalCount <= clampedMax {
+            return [totalCount]
         }
-        for size in candidates where size <= remaining {
-            return size
+
+        let fullBatchCount = totalCount / clampedMax
+        let remainder = totalCount % clampedMax
+        var sizes = Array(repeating: clampedMax, count: fullBatchCount)
+        if remainder > 0 {
+            sizes.append(remainder)
         }
-        if remaining >= 8 {
-            return 8
-        }
-        return 1
+
+        return sizes
     }
 }

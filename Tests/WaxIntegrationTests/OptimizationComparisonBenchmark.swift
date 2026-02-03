@@ -12,9 +12,13 @@ final class OptimizationComparisonBenchmark: XCTestCase {
     private let documentCount = 500
     private let lookupCount = 50  // Typical search topK
     private let iterations = 10
+    private var isEnabled: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_OPTIMIZATION"] == "1"
+    }
     
     /// Compares batched frameMeta lookup vs sequential lookups
     func testBatchVsSequentialMetadataLookup() async throws {
+        guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_OPTIMIZATION=1 to run optimization benchmarks.") }
         // Setup: Create a Wax instance with documents
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-benchmark-\(UUID().uuidString).mv2s")
@@ -46,9 +50,8 @@ final class OptimizationComparisonBenchmark: XCTestCase {
         for _ in 0..<iterations {
             let start = CFAbsoluteTimeGetCurrent()
             
-            // Single fetch, build dictionary (this is what we do in UnifiedSearch now)
-            let metas = await wax.frameMetas()
-            let metaById: [UInt64: FrameMeta] = metas.reduce(into: [:]) { $0[$1.id] = $1 }
+            // Single fetch for just the ids we need (mirrors UnifiedSearch's batched metadata path)
+            let metaById = await wax.frameMetas(frameIds: searchResultIds)
             
             // O(1) lookups for search results
             var lookupResults: [FrameMeta] = []
@@ -106,6 +109,7 @@ final class OptimizationComparisonBenchmark: XCTestCase {
     
     /// Compares direct actor calls vs extra Task hop overhead
     func testActorVsTaskHopTokenCounter() async throws {
+        guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_OPTIMIZATION=1 to run optimization benchmarks.") }
         let counter = try await TokenCounter.shared()
         let testTexts = (0..<100).map { "This is test document number \($0) with some sample content for tokenization." }
         

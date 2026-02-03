@@ -12,17 +12,30 @@ public actor FTS5SearchEngine {
     private static let structuredFlushThreshold = 512
     private let dbQueue: DatabaseQueue
     private let io: BlockingIOExecutor
+    private let backingStoreDirectory: URL?
     private var docCount: UInt64
     private var dirty: Bool
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
     private var pendingStructuredOps: [StructuredOp] = []
 
-    private init(dbQueue: DatabaseQueue, io: BlockingIOExecutor, docCount: UInt64, dirty: Bool) {
+    private init(
+        dbQueue: DatabaseQueue,
+        io: BlockingIOExecutor,
+        backingStoreDirectory: URL?,
+        docCount: UInt64,
+        dirty: Bool
+    ) {
         self.dbQueue = dbQueue
         self.io = io
+        self.backingStoreDirectory = backingStoreDirectory
         self.docCount = docCount
         self.dirty = dirty
+    }
+
+    deinit {
+        guard let url = backingStoreDirectory else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     public static func inMemory() throws -> FTS5SearchEngine {
@@ -32,24 +45,36 @@ public actor FTS5SearchEngine {
         try queue.write { db in
             try FTS5Schema.create(in: db)
         }
-        return FTS5SearchEngine(dbQueue: queue, io: io, docCount: 0, dirty: false)
+        return FTS5SearchEngine(dbQueue: queue, io: io, backingStoreDirectory: nil, docCount: 0, dirty: false)
     }
 
     public static func deserialize(from data: Data) throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
-        let queue = try DatabaseQueue(configuration: config)
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-fts5-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
+        FileManager.default.createFile(atPath: dbURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: dbURL)
+        try handle.write(contentsOf: data)
+        try handle.close()
+
+        let queue = try DatabaseQueue(path: dbURL.path, configuration: config)
         try queue.writeWithoutTransaction { db in
-            let connection = try requireConnection(db)
-            try FTS5Serializer.deserialize(data, into: connection)
-            try applyPragmas(db)
             try FTS5Schema.validateOrUpgrade(in: db)
         }
         let count = try queue.read { db in
             try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
         }
         let docCount = UInt64(max(0, count))
-        return FTS5SearchEngine(dbQueue: queue, io: io, docCount: docCount, dirty: false)
+        return FTS5SearchEngine(
+            dbQueue: queue,
+            io: io,
+            backingStoreDirectory: storeDirectory,
+            docCount: docCount,
+            dirty: false
+        )
     }
 
     public static func load(from wax: Wax) async throws -> FTS5SearchEngine {

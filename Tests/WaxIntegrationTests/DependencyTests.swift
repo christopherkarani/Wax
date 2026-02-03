@@ -2,7 +2,7 @@ import Testing
 import USearch
 import GRDB
 import Logging
-import TiktokenSwift
+import SwiftTiktoken
 
 @Test func usearchInitializes() throws {
     let index = try USearchIndex.make(
@@ -27,5 +27,5 @@ import TiktokenSwift
 }
 
 @Test func tiktokenSwiftLoadsTypeInfo() {
-    #expect(String(describing: CoreBpe.self).contains("CoreBpe"))
+    #expect(String(describing: CoreBPE.self).contains("CoreBPE"))
 }
