@@ -19,9 +19,9 @@ The result is a model-agnostic, infrastructure-free memory layer that gives AI a
 | Benchmark | Result | Notes |
 |-----------|--------|-------|
 | **Hybrid Search @ 10K docs** | 105ms | Near-constant scaling |
-| **Metal GPU Search** | 1.42ms | 10K vectors × 384 dims |
+| **Metal GPU Search** | 1.86ms | 1K vectors × 128 dims |
 | **Cold Open → First Search** | 17ms p50 | Ready for interactive use |
-| **GPU Warm vs Cold** | 6.7× faster | Lazy sync + SIMD8 optimization |
+| **GPU Warm vs Cold** | 10.9× faster | Lazy sync |
 | **Buffer Serialization** | 16.5× faster | vs file-based I/O |
 
 <details>
@@ -41,13 +41,14 @@ The result is a model-agnostic, infrastructure-free memory layer that gives AI a
 
 | Metric | Value |
 |--------|-------|
-| Search latency (1K × 128d) | 1.29ms avg |
-| Latency per vector | 0.0013ms |
-| Cold sync (10K × 384d) | 9.5ms |
-| Warm search (10K × 384d) | 1.42ms |
+| Search latency (1K × 128d) | 1.86ms avg |
+| Latency per vector | 0.0019ms |
+| Cold sync (10K × 384d) | 9.19ms |
+| Warm search (10K × 384d) | 0.84ms |
 | Memory saved per warm query | 14.6 MB |
 
-*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*
+*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*  
+*Optional benchmark suites are opt-in via env flags: `WAX_BENCHMARK_MINILM=1`, `WAX_BENCHMARK_METAL=1`, `WAX_BENCHMARK_10K=1`, `WAX_BENCHMARK_METRICS=1`, `WAX_BENCHMARK_SAMPLES=1`, `WAX_BENCHMARK_OPTIMIZATION=1`.*
 
 </details>
 

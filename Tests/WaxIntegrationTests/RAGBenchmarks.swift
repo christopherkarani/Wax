@@ -448,21 +448,28 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             config.rag.searchMode = .hybrid(alpha: 0.7)
             config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
 
+            print("🧪 Recall benchmark: creating orchestrator")
             let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
 
+            print("🧪 Recall benchmark: ingesting \(scale.documentCount) docs")
             for index in 0..<scale.documentCount {
                 let content = factory.makeDocument(index: index)
                 try await orchestrator.remember(content)
             }
+            print("🧪 Recall benchmark: flushing")
             try await orchestrator.flush()
 
             let query = factory.queryText
+            print("🧪 Recall benchmark: warm recall")
             _ = try await orchestrator.recall(query: query)
 
+            print("🧪 Recall benchmark: measured recall start")
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
                 _ = try await orchestrator.recall(query: query)
             }
+            print("🧪 Recall benchmark: measured recall done")
 
+            print("🧪 Recall benchmark: closing orchestrator")
             try await orchestrator.close()
         }
     }
