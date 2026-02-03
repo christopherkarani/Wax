@@ -111,11 +111,17 @@ Wax gives your users AI that:
 - 🔒 **Crash-safe persistence**  
   Power loss, app kills, and upgrades are first-class concerns, not edge cases.
 
-- ⚡ **Hybrid retrieval engine**  
-  Lexical + vector + temporal fusion, tuned for on-device latency.
+- ⚡ **Query-adaptive hybrid retrieval**  
+  Unified search fuses lexical (BM25), vector, temporal, and structured-evidence lanes with query-type–aware weights.
 
 - 🧮 **Deterministic RAG**  
-  Stable token counts and reproducible contexts — ideal for research and testing.
+  Strict token budgets (cl100k_base) + deterministic tie-breaks → reproducible contexts you can test and benchmark.
+
+- 🎭 **Tiered memory compression (surrogates)**  
+  Generate hierarchical surrogates (`full` / `gist` / `micro`) offline, keep them up-to-date, and select the right tier at retrieval time.
+
+- 🚀 **GPU-accelerated vector search (Metal)**  
+  Zero-copy, unified-memory search for interactive latency (with automatic CPU fallback).
 
 - 🎭 **Swift-native design**  
   Actor-isolated, async-first, written for Swift 6.2 concurrency.
@@ -141,17 +147,17 @@ If Wax saved you time, removed infrastructure, or made on-device AI simpler,
 ## Architectural Choices
 
 - **Actor-owned core (`Wax`)**: isolates mutable state and I/O, making correctness the default on mobile.
-- **Append-only frames + WAL**: fast writes, safe recovery, and predictable performance under load.
-- **Two-phase indexing**: stage, then commit; keeps ingestion fast while guaranteeing atomic index updates.
-- **Adaptive hybrid fusion**: query-type–aware weighting (text/vector/temporal) improves relevance without user tuning.
-- **Deterministic RAG builder**: single expansion + ranked snippets + surrogate support gives stable, testable contexts.
-- **Protocol-driven embeddings**: swap local models without touching the core store or search paths.
+- **Append-only frames + ring-buffer WAL**: fast writes, crash-safe recovery, and predictable on-device performance.
+- **Two-phase indexing**: stage → commit for atomic index updates (vector + FTS + structured memory).
+- **Unified search**: one request, multiple lanes (text/vector/temporal/structured evidence) with deterministic fusion.
+- **Deterministic RAG builder**: single expansion + tiered surrogates + ranked snippets under a strict token budget.
+- **Protocol-driven embeddings**: swap providers (and batch embedders) without touching storage or retrieval code paths.
 
 ## Researcher Notes
 
 - Deterministic token counting and truncation (cl100k_base).
 - Unified retrieval with query-type adaptive fusion.
-- Reproducible RAG contexts (single expansion, ranked snippets, surrogate support).
+- Reproducible RAG contexts (single expansion, surrogates, ranked snippets).
 
 ## Requirements
 
@@ -163,7 +169,7 @@ If Wax saved you time, removed infrastructure, or made on-device AI simpler,
 Add Wax as a Swift Package dependency.
 
 ```swift
-.package(url: ["<REPO_URL>"](https://github.com/christopherkarani/Wax), from: "0.1.1")
+.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.1")
 ```
 
 Then add targets as needed:
@@ -181,7 +187,7 @@ cd Wax
 swift test
 ```
 
-If you're exploring the MV2S format or retrieval research, start with `MV2S_SPEC.md` and the phase docs. We are especially interested in:
+If you're exploring the file format or retrieval research, start with the core engine (`Sources/WaxCore/`) and the benchmarks (`Tests/WaxIntegrationTests/`). We are especially interested in:
 - Retrieval quality evaluations and reproducibility studies
 - On-device memory benchmarks
 - New embedding adapters and pruning/compaction strategies
