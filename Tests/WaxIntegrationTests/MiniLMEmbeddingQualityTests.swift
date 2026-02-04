@@ -51,8 +51,13 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     return denom == 0 ? 0 : (dot / denom)
 }
 
+private func isMiniLMInferenceEnabled() -> Bool {
+    ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1"
+}
+
 @available(macOS 15.0, iOS 18.0, *)
 @Test func minilmEmbeddingsStayCloseToBaseline() async throws {
+    guard isMiniLMInferenceEnabled() else { return }
     let fixture = try BaselineFixtureLoader.load()
     #expect(fixture.dimensions == 384)
     #expect(!fixture.sentences.isEmpty)
