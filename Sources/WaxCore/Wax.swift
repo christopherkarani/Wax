@@ -457,6 +457,19 @@ public actor Wax {
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
+        try await put(content, options: options, compression: compression, timestampMs: nil)
+    }
+
+    /// Put a frame with an explicit timestamp (milliseconds since epoch).
+    ///
+    /// This is used by higher-level frameworks (e.g., Photo ingestion) that need retrieval to be
+    /// based on a domain timestamp (capture time) rather than ingestion time.
+    public func put(
+        _ content: Data,
+        options: FrameMetaSubset = .init(),
+        compression: CanonicalEncoding = .plain,
+        timestampMs: Int64?
+    ) async throws -> UInt64 {
         try await withWriteLock {
             let committedCount = UInt64(toc.frames.count)
             let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
@@ -488,7 +501,7 @@ public actor Wax {
             let entry = WALEntry.putFrame(
                 PutFrame(
                     frameId: frameId,
-                    timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
+                    timestampMs: timestampMs ?? Int64(Date().timeIntervalSince1970 * 1000),
                     options: options,
                     payloadOffset: payloadOffset,
                     payloadLength: UInt64(storedBytes.count),
@@ -523,9 +536,25 @@ public actor Wax {
         options: [FrameMetaSubset],
         compression: CanonicalEncoding = .plain
     ) async throws -> [UInt64] {
+        try await putBatch(contents, options: options, compression: compression, timestampsMs: nil)
+    }
+
+    /// Batch put multiple frames with explicit timestamps (milliseconds since epoch).
+    /// - Important: When `timestampsMs` is provided, it must match `contents.count`.
+    public func putBatch(
+        _ contents: [Data],
+        options: [FrameMetaSubset],
+        compression: CanonicalEncoding = .plain,
+        timestampsMs: [Int64]?
+    ) async throws -> [UInt64] {
         guard !contents.isEmpty else { return [] }
         guard contents.count == options.count else {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
+        }
+        if let timestampsMs, timestampsMs.count != contents.count {
+            throw WaxError.encodingError(
+                reason: "putBatch: timestampsMs.count (\(timestampsMs.count)) != contents.count (\(contents.count))"
+            )
         }
 
         return try await withWriteLock {
@@ -535,7 +564,7 @@ public actor Wax {
                 return count
             }
             let baseFrameId = committedCount + UInt64(pendingPutCount)
-            let timestampMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let fallbackTimestampMs = Int64(Date().timeIntervalSince1970 * 1000)
 
             // Pre-compute all frame data outside I/O
             struct PreparedFrame {
@@ -553,6 +582,7 @@ public actor Wax {
 
             for (index, content) in contents.enumerated() {
                 let frameId = baseFrameId + UInt64(index)
+                let timestampMs = timestampsMs?[index] ?? fallbackTimestampMs
                 let canonicalChecksum = SHA256Checksum.digest(content)
 
                 var storedBytes = content

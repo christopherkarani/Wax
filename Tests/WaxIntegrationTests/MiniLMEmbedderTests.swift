@@ -1,10 +1,16 @@
+import Foundation
 import Testing
 
 #if canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 
+private func isMiniLMInferenceEnabled() -> Bool {
+    ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1"
+}
+
 @available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderProducesExpectedDimensions() async throws {
+    guard isMiniLMInferenceEnabled() else { return }
     let embedder = try MiniLMEmbedder()
     let vector = try await embedder.embed("hello world")
     #expect(vector.count == embedder.dimensions)
@@ -12,6 +18,7 @@ import WaxVectorSearchMiniLM
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderBatchMatchesSingle() async throws {
+    guard isMiniLMInferenceEnabled() else { return }
     let embedder = try MiniLMEmbedder()
     let texts = ["hello world", "wax is fast"]
     let singleA = try await embedder.embed(texts[0])
@@ -27,6 +34,7 @@ import WaxVectorSearchMiniLM
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderConfigurableBatchSizeWorks() async throws {
+    guard isMiniLMInferenceEnabled() else { return }
     let config = MiniLMEmbedder.Config(batchSize: 4)
     let embedder = try MiniLMEmbedder(config: config)
     let texts = ["a", "b", "c", "d", "e"]
@@ -39,6 +47,7 @@ import WaxVectorSearchMiniLM
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test func miniLMEmbedderPrewarmDoesNotThrow() async throws {
+    guard isMiniLMInferenceEnabled() else { return }
     let embedder = try MiniLMEmbedder()
     try await embedder.prewarm()
 }
