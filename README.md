@@ -199,6 +199,71 @@ try await orchestrator.flush()
 
 *Note: v1 supports text-based PDFs only (no OCR).*
 
+## Photo Library RAG (On-Device, Photos-only)
+
+Wax now includes a Photos-backed RAG layer that ingests `PHAsset`s **offline-only** (no iCloud downloads), extracts metadata/OCR, computes multimodal embeddings, and returns **RAG-ready context** with text surrogates plus optional pixel payloads (thumbnails/crops).
+
+**Key points**
+- Offline-only bytes: `PHImageRequestOptions.isNetworkAccessAllowed = false` (iCloud-only assets are indexed as **metadata-only** and marked degraded).
+- Capture-time semantics: frames are written with the photo’s **capture timestamp**, not ingest time.
+- Sendable-safe public API: query images use `Data` wrappers (`PhotoQueryImage`), and returned pixels use `PhotoPixel`.
+
+```swift
+import Wax
+import CoreGraphics
+
+// Your on-device CLIP-like (text↔image) embedding provider.
+struct MyEmbedder: MultimodalEmbeddingProvider {
+    let dimensions: Int = 768
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
+    func embed(text: String) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[0] = 1
+        return v
+    }
+    func embed(image: CGImage) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[1] = 1
+        return v
+    }
+}
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-photos")
+    .appendingPathExtension("mv2s")
+
+var config = PhotoRAGConfig.default
+config.vectorEnginePreference = .cpuOnly
+
+let photoRAG = try await PhotoRAGOrchestrator(
+    storeURL: storeURL,
+    config: config,
+    embedder: MyEmbedder()
+)
+
+// Host app must obtain Photos permission before calling.
+try await photoRAG.syncLibrary(scope: .fullLibrary)
+
+let ctx = try await photoRAG.recall(.init(text: "Costco receipt", resultLimit: 8))
+try await photoRAG.flush()
+```
+
+## Capture-Time Timestamps (Advanced)
+
+If you’re building domain-specific pipelines (e.g. photo capture time, event time), Wax supports explicitly setting per-frame timestamps at write time:
+
+```swift
+import Wax
+
+let wax = try await Wax.create(at: storeURL)
+let captureMs: Int64 = 1_700_000_000_000
+_ = try await wax.put(Data(), options: .init(kind: "photo.root"), timestampMs: captureMs)
+try await wax.commit()
+```
+
 ## Contributing
 
 We welcome issues and PRs. For local validation:
@@ -206,6 +271,12 @@ We welcome issues and PRs. For local validation:
 ```bash
 cd Wax
 swift test
+```
+
+MiniLM CoreML inference tests are opt-in:
+
+```bash
+WAX_TEST_MINILM=1 swift test
 ```
 
 If you're exploring the file format or retrieval research, start with the core engine (`Sources/WaxCore/`) and the benchmarks (`Tests/WaxIntegrationTests/`). We are especially interested in:

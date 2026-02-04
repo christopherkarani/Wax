@@ -201,12 +201,13 @@ private extension MiniLMEmbeddings {
                 lock.unlock()
                 return cached
             }
-            lock.unlock()
+            defer { lock.unlock() }
 
+            // NOTE: CoreML / Espresso compilation has been observed to deadlock when multiple threads
+            // load the same model concurrently. Serializing model loads avoids that class of issues
+            // and preserves determinism for callers initializing `MiniLMEmbeddings` in parallel.
             let model = try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            lock.lock()
             models[key] = model
-            lock.unlock()
             return model
         }
     }

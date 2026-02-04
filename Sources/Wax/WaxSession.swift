@@ -224,6 +224,16 @@ public actor WaxSession {
 
     public func put(
         _ content: Data,
+        options: FrameMetaSubset = .init(),
+        compression: CanonicalEncoding = .plain,
+        timestampMs: Int64?
+    ) async throws -> UInt64 {
+        try ensureWritable()
+        return try await wax.put(content, options: options, compression: compression, timestampMs: timestampMs)
+    }
+
+    public func put(
+        _ content: Data,
         embedding: [Float],
         identity: EmbeddingIdentity? = nil,
         options: FrameMetaSubset = .init(),
@@ -232,6 +242,21 @@ public actor WaxSession {
         try ensureWritable()
         let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
         let frameId = try await wax.put(content, options: merged, compression: compression)
+        try await wax.putEmbedding(frameId: frameId, vector: embedding)
+        return frameId
+    }
+
+    public func put(
+        _ content: Data,
+        embedding: [Float],
+        identity: EmbeddingIdentity? = nil,
+        options: FrameMetaSubset = .init(),
+        compression: CanonicalEncoding = .plain,
+        timestampMs: Int64?
+    ) async throws -> UInt64 {
+        try ensureWritable()
+        let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        let frameId = try await wax.put(content, options: merged, compression: compression, timestampMs: timestampMs)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
     }
@@ -247,12 +272,40 @@ public actor WaxSession {
 
     public func putBatch(
         contents: [Data],
+        options: [FrameMetaSubset],
+        compression: CanonicalEncoding = .plain,
+        timestampsMs: [Int64]?
+    ) async throws -> [UInt64] {
+        try ensureWritable()
+        return try await wax.putBatch(contents, options: options, compression: compression, timestampsMs: timestampsMs)
+    }
+
+    public func putBatch(
+        contents: [Data],
         embeddings: [[Float]],
         identity: EmbeddingIdentity? = nil,
         options: [FrameMetaSubset],
         compression: CanonicalEncoding = .plain
     ) async throws -> [UInt64] {
         try ensureWritable()
+        if contents.isEmpty {
+            guard embeddings.isEmpty else {
+                throw WaxError.encodingError(
+                    reason: "putBatch: contents.count (\(contents.count)) != embeddings.count (\(embeddings.count))"
+                )
+            }
+            return []
+        }
+        guard contents.count == options.count else {
+            throw WaxError.encodingError(
+                reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))"
+            )
+        }
+        guard contents.count == embeddings.count else {
+            throw WaxError.encodingError(
+                reason: "putBatch: contents.count (\(contents.count)) != embeddings.count (\(embeddings.count))"
+            )
+        }
         var mergedOptions = options
         if let identity {
             for (index, embedding) in embeddings.enumerated() {
@@ -264,6 +317,68 @@ public actor WaxSession {
             }
         }
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression)
+        guard frameIds.count == embeddings.count else {
+            throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
+        }
+        for (index, frameId) in frameIds.enumerated() {
+            try await wax.putEmbedding(frameId: frameId, vector: embeddings[index])
+        }
+        return frameIds
+    }
+
+    public func putBatch(
+        contents: [Data],
+        embeddings: [[Float]],
+        identity: EmbeddingIdentity? = nil,
+        options: [FrameMetaSubset],
+        compression: CanonicalEncoding = .plain,
+        timestampsMs: [Int64]?
+    ) async throws -> [UInt64] {
+        try ensureWritable()
+        if contents.isEmpty {
+            guard embeddings.isEmpty else {
+                throw WaxError.encodingError(
+                    reason: "putBatch: contents.count (\(contents.count)) != embeddings.count (\(embeddings.count))"
+                )
+            }
+            guard timestampsMs == nil || timestampsMs?.isEmpty == true else {
+                throw WaxError.encodingError(
+                    reason: "putBatch: timestampsMs.count (\(timestampsMs?.count ?? 0)) != contents.count (\(contents.count))"
+                )
+            }
+            return []
+        }
+        guard contents.count == options.count else {
+            throw WaxError.encodingError(
+                reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))"
+            )
+        }
+        guard contents.count == embeddings.count else {
+            throw WaxError.encodingError(
+                reason: "putBatch: contents.count (\(contents.count)) != embeddings.count (\(embeddings.count))"
+            )
+        }
+        if let timestampsMs, timestampsMs.count != contents.count {
+            throw WaxError.encodingError(
+                reason: "putBatch: timestampsMs.count (\(timestampsMs.count)) != contents.count (\(contents.count))"
+            )
+        }
+        var mergedOptions = options
+        if let identity {
+            for (index, embedding) in embeddings.enumerated() {
+                mergedOptions[index] = try mergeOptions(
+                    mergedOptions[index],
+                    identity: identity,
+                    embeddingCount: embedding.count
+                )
+            }
+        }
+        let frameIds = try await wax.putBatch(
+            contents,
+            options: mergedOptions,
+            compression: compression,
+            timestampsMs: timestampsMs
+        )
         guard frameIds.count == embeddings.count else {
             throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
         }
