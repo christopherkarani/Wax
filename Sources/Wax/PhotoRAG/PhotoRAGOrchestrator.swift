@@ -175,11 +175,12 @@ public actor PhotoRAGOrchestrator {
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
     public func ingest(assetIDs: [String]) async throws {
-        guard !assetIDs.isEmpty else { return }
+        let uniqueAssetIDs = Self.dedupeAssetIDs(assetIDs)
+        guard !uniqueAssetIDs.isEmpty else { return }
 
         // Note: Actor isolation serializes ingestion for correctness. `ingestConcurrency` is reserved for a future
         // optimization that parallelizes decode/embedding outside the actor without leaking non-Sendable types.
-        for assetID in assetIDs {
+        for assetID in uniqueAssetIDs {
             try await ingestOne(assetID: assetID)
         }
 
@@ -205,11 +206,11 @@ public actor PhotoRAGOrchestrator {
 
         let timeRange = Self.toWaxTimeRange(query.timeRange)
 
-        let locationAllowlist: Set<UInt64>? = if let location = query.location {
-            buildLocationAllowlist(location: location)
-        } else {
-            nil
-        }
+        let locationAllowlist = query.location.flatMap { buildLocationAllowlist(location: $0) }
+
+        let isConstraintOnlyQuery = (queryText == nil && queryEmbedding == nil)
+            && (query.timeRange != nil || query.location != nil)
+        let fallbackLimit = max(query.resultLimit, config.searchTopK)
 
         let request = SearchRequest(
             query: queryText,
@@ -219,7 +220,9 @@ public actor PhotoRAGOrchestrator {
             topK: max(query.resultLimit, config.searchTopK),
             timeRange: timeRange,
             frameFilter: locationAllowlist.map { FrameFilter(frameIds: $0) },
-            previewMaxBytes: 1024
+            previewMaxBytes: 1024,
+            allowTimelineFallback: isConstraintOnlyQuery,
+            timelineFallbackLimit: fallbackLimit
         )
 
         let response = try await wax.search(request)
@@ -681,11 +684,11 @@ public actor PhotoRAGOrchestrator {
 
     // MARK: - Location allowlist
 
-    private func buildLocationAllowlist(location: PhotoLocationQuery) -> Set<UInt64> {
+    private func buildLocationAllowlist(location: PhotoLocationQuery) -> Set<UInt64>? {
         let center = location.center
         let radius = location.radiusMeters
 
-        guard radius > 0 else { return [] }
+        guard radius > 0 else { return nil }
 
         let lat = center.latitude
         let lon = center.longitude
@@ -713,6 +716,18 @@ public actor PhotoRAGOrchestrator {
             }
         }
         return allowlist
+    }
+
+    static func dedupeAssetIDs(_ assetIDs: [String]) -> [String] {
+        guard assetIDs.count > 1 else { return assetIDs }
+        var seen: Set<String> = []
+        seen.reserveCapacity(assetIDs.count)
+        var unique: [String] = []
+        unique.reserveCapacity(assetIDs.count)
+        for assetID in assetIDs where seen.insert(assetID).inserted {
+            unique.append(assetID)
+        }
+        return unique
     }
 
     private static func locationBin(from meta: [String: String]) -> LocationBin? {
