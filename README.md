@@ -178,6 +178,27 @@ Then add targets as needed:
 .product(name: "Wax", package: "Wax")
 ```
 
+## PDF Ingestion
+
+```swift
+import Wax
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-memory")
+    .appendingPathExtension("mv2s")
+var config = OrchestratorConfig.default
+config.enableVectorSearch = false
+let orchestrator = try await MemoryOrchestrator(at: storeURL, config: config)
+try await orchestrator.remember(
+    pdfAt: URL(fileURLWithPath: "/path/to/report.pdf"),
+    metadata: ["source": "report"]
+)
+let ctx = try await orchestrator.recall(query: "key findings")
+try await orchestrator.flush()
+```
+
+*Note: v1 supports text-based PDFs only (no OCR).*
+
 ## Contributing
 
 We welcome issues and PRs. For local validation:
