@@ -253,6 +253,58 @@ public final class WALRingWriter {
         return pendingBytes + totalNeeded <= walSize
     }
 
+    public func canAppendBatch(payloadSizes: [Int]) -> Bool {
+        guard !payloadSizes.isEmpty else { return false }
+        guard walSize > 0 else { return false }
+
+        let headerSize = UInt64(WALRecord.headerSize)
+        var localWritePos = writePos
+        var localPendingBytes = pendingBytes
+
+        for payloadSize in payloadSizes {
+            guard payloadSize > 0 else { return false }
+            guard payloadSize <= Int(UInt32.max) else { return false }
+
+            let entrySize = headerSize + UInt64(payloadSize)
+            if entrySize > walSize { return false }
+
+            var remaining = walSize - localWritePos
+            if remaining < headerSize {
+                if remaining > 0 {
+                    localPendingBytes &+= remaining
+                    if localPendingBytes > walSize { return false }
+                }
+                localWritePos = 0
+                remaining = walSize
+            }
+
+            if remaining < entrySize {
+                localPendingBytes &+= remaining
+                if localPendingBytes > walSize { return false }
+                localWritePos = 0
+            }
+
+            if localPendingBytes + entrySize > walSize {
+                return false
+            }
+
+            localPendingBytes &+= entrySize
+            localWritePos = (localWritePos + entrySize) % walSize
+        }
+
+        if walSize >= headerSize {
+            let remaining = walSize - localWritePos
+            if remaining < headerSize {
+                if remaining > 0 {
+                    localPendingBytes &+= remaining
+                    if localPendingBytes > walSize { return false }
+                }
+            }
+        }
+
+        return localPendingBytes <= walSize
+    }
+
     public func recordCheckpoint() {
         checkpointPos = writePos
         pendingBytes = 0

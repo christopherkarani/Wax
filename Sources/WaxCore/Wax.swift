@@ -142,6 +142,27 @@ public actor Wax {
         }
     }
 
+    private func ensureWalCapacityLocked(payloadSizes: [Int]) async throws {
+        guard !payloadSizes.isEmpty else { return }
+        if wal.canAppendBatch(payloadSizes: payloadSizes) {
+            return
+        }
+
+        let hasPendingEmbedding = pendingMutations.contains { mutation in
+            if case .putEmbedding = mutation.entry { return true }
+            return false
+        }
+        if hasPendingEmbedding && stagedVecIndex == nil {
+            throw WaxError.io("WAL capacity exceeded before vector index staged; stageForCommit() and commit() earlier or increase wal_size.")
+        }
+
+        try await commitLocked()
+        guard wal.canAppendBatch(payloadSizes: payloadSizes) else {
+            let requested = UInt64(payloadSizes.reduce(0, +))
+            throw WaxError.capacityExceeded(limit: wal.walSize, requested: requested)
+        }
+    }
+
     // MARK: - Writer lease
 
     public func acquireWriterLease(policy: WaxWriterPolicy) async throws -> UUID {
@@ -452,19 +473,121 @@ public actor Wax {
 
     // MARK: - Mutations
 
+    private func currentTimestampMs() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func putLocked(
+        _ content: Data,
+        options: FrameMetaSubset,
+        timestampMs: Int64?,
+        compression: CanonicalEncoding
+    ) async throws -> UInt64 {
+        let committedCount = UInt64(toc.frames.count)
+        let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
+            if case .putFrame = mutation.entry { return count + 1 }
+            return count
+        }
+        let frameId = committedCount + UInt64(pendingPutCount)
+
+        let canonicalChecksum = SHA256Checksum.digest(content)
+
+        var storedBytes = content
+        var canonicalEncoding: CanonicalEncoding = .plain
+        if compression != .plain {
+            do {
+                let compressed = try PayloadCompressor.compress(content, algorithm: CompressionKind(canonicalEncoding: compression))
+                if compressed.count < content.count {
+                    storedBytes = compressed
+                    canonicalEncoding = compression
+                }
+            } catch {
+                storedBytes = content
+                canonicalEncoding = .plain
+            }
+        }
+
+        let storedChecksum = SHA256Checksum.digest(storedBytes)
+
+        let payloadOffset = dataEnd
+        let entry = WALEntry.putFrame(
+            PutFrame(
+                frameId: frameId,
+                timestampMs: timestampMs ?? currentTimestampMs(),
+                options: options,
+                payloadOffset: payloadOffset,
+                payloadLength: UInt64(storedBytes.count),
+                canonicalEncoding: canonicalEncoding,
+                canonicalLength: UInt64(content.count),
+                canonicalChecksum: canonicalChecksum,
+                storedChecksum: storedChecksum
+            )
+        )
+        let payload = try WALEntryCodec.encode(entry)
+        try await ensureWalCapacityLocked(payloadSize: payload.count)
+        let file = self.file
+        let wal = self.wal
+        let bytesToStore = storedBytes
+        let seq = try await io.run {
+            try file.writeAll(bytesToStore, at: payloadOffset)
+            return try wal.append(payload: payload)
+        }
+
+        dataEnd += UInt64(storedBytes.count)
+        pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+        dirty = true
+        return frameId
+    }
+
     public func put(
         _ content: Data,
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
         try await withWriteLock {
-            let committedCount = UInt64(toc.frames.count)
-            let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
-                if case .putFrame = mutation.entry { return count + 1 }
-                return count
-            }
-            let frameId = committedCount + UInt64(pendingPutCount)
+            try await putLocked(content, options: options, timestampMs: nil, compression: compression)
+        }
+    }
 
+    public func put(
+        _ content: Data,
+        options: FrameMetaSubset = .init(),
+        compression: CanonicalEncoding = .plain,
+        timestampMs: Int64
+    ) async throws -> UInt64 {
+        try await withWriteLock {
+            try await putLocked(content, options: options, timestampMs: timestampMs, compression: compression)
+        }
+    }
+
+    private func putBatchLocked(
+        _ contents: [Data],
+        options: [FrameMetaSubset],
+        timestampsMs: [Int64]?,
+        compression: CanonicalEncoding
+    ) async throws -> [UInt64] {
+        let committedCount = UInt64(toc.frames.count)
+        let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
+            if case .putFrame = mutation.entry { return count + 1 }
+            return count
+        }
+        let baseFrameId = committedCount + UInt64(pendingPutCount)
+        let defaultTimestampMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+        // Pre-compute all frame data outside I/O
+        struct PreparedFrame {
+            let storedBytes: Data
+            let putFrame: PutFrame
+        }
+
+        var prepared: [PreparedFrame] = []
+        prepared.reserveCapacity(contents.count)
+        var totalPayloadSize = 0
+        var walPayloadSizes: [Int] = []
+        walPayloadSizes.reserveCapacity(contents.count)
+
+        for (index, content) in contents.enumerated() {
+            let frameId = baseFrameId + UInt64(index)
             let canonicalChecksum = SHA256Checksum.digest(content)
 
             var storedBytes = content
@@ -483,135 +606,89 @@ public actor Wax {
             }
 
             let storedChecksum = SHA256Checksum.digest(storedBytes)
+            let timestampMsForFrame = timestampsMs?[index] ?? defaultTimestampMs
 
-            let payloadOffset = dataEnd
-            let entry = WALEntry.putFrame(
-                PutFrame(
-                    frameId: frameId,
-                    timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
-                    options: options,
-                    payloadOffset: payloadOffset,
-                    payloadLength: UInt64(storedBytes.count),
-                    canonicalEncoding: canonicalEncoding,
-                    canonicalLength: UInt64(content.count),
-                    canonicalChecksum: canonicalChecksum,
-                    storedChecksum: storedChecksum
-                )
+            let putFrame = PutFrame(
+                frameId: frameId,
+                timestampMs: timestampMsForFrame,
+                options: options[index],
+                payloadOffset: 0,
+                payloadLength: UInt64(storedBytes.count),
+                canonicalEncoding: canonicalEncoding,
+                canonicalLength: UInt64(content.count),
+                canonicalChecksum: canonicalChecksum,
+                storedChecksum: storedChecksum
             )
-            let payload = try WALEntryCodec.encode(entry)
-            try await ensureWalCapacityLocked(payloadSize: payload.count)
+            let walPayloadSize = try WALEntryCodec.encode(.putFrame(putFrame)).count
+
+            prepared.append(PreparedFrame(
+                storedBytes: storedBytes,
+                putFrame: putFrame
+            ))
+            walPayloadSizes.append(walPayloadSize)
+            totalPayloadSize += storedBytes.count
+        }
+
+        func appendSequentially() async throws -> [UInt64] {
+            var frameIds: [UInt64] = []
+            frameIds.reserveCapacity(prepared.count)
             let file = self.file
             let wal = self.wal
-            let bytesToStore = storedBytes
-            let seq = try await io.run {
-                try file.writeAll(bytesToStore, at: payloadOffset)
-                return try wal.append(payload: payload)
-            }
 
-            dataEnd += UInt64(storedBytes.count)
-            pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
-            dirty = true
-            return frameId
-        }
-    }
-
-    /// Batch put multiple frames in a single operation.
-    /// This amortizes actor and I/O overhead across all frames.
-    /// Returns frame IDs in the same order as the input contents.
-    public func putBatch(
-        _ contents: [Data],
-        options: [FrameMetaSubset],
-        compression: CanonicalEncoding = .plain
-    ) async throws -> [UInt64] {
-        guard !contents.isEmpty else { return [] }
-        guard contents.count == options.count else {
-            throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
-        }
-
-        return try await withWriteLock {
-            let committedCount = UInt64(toc.frames.count)
-            let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
-                if case .putFrame = mutation.entry { return count + 1 }
-                return count
-            }
-            let baseFrameId = committedCount + UInt64(pendingPutCount)
-            let timestampMs = Int64(Date().timeIntervalSince1970 * 1000)
-
-            // Pre-compute all frame data outside I/O
-            struct PreparedFrame {
-                let frameId: UInt64
-                let storedBytes: Data
-                let entry: WALEntry
-                let walPayload: Data
-            }
-
-            var prepared: [PreparedFrame] = []
-            prepared.reserveCapacity(contents.count)
-            var totalPayloadSize = 0
-            var totalWalSize = 0
-            var currentOffset = dataEnd
-
-            for (index, content) in contents.enumerated() {
-                let frameId = baseFrameId + UInt64(index)
-                let canonicalChecksum = SHA256Checksum.digest(content)
-
-                var storedBytes = content
-                var canonicalEncoding: CanonicalEncoding = .plain
-                if compression != .plain {
-                    do {
-                        let compressed = try PayloadCompressor.compress(content, algorithm: CompressionKind(canonicalEncoding: compression))
-                        if compressed.count < content.count {
-                            storedBytes = compressed
-                            canonicalEncoding = compression
-                        }
-                    } catch {
-                        storedBytes = content
-                        canonicalEncoding = .plain
-                    }
-                }
-
-                let storedChecksum = SHA256Checksum.digest(storedBytes)
-                let payloadOffset = currentOffset
-
-                let entry = WALEntry.putFrame(
-                    PutFrame(
-                        frameId: frameId,
-                        timestampMs: timestampMs,
-                        options: options[index],
-                        payloadOffset: payloadOffset,
-                        payloadLength: UInt64(storedBytes.count),
-                        canonicalEncoding: canonicalEncoding,
-                        canonicalLength: UInt64(content.count),
-                        canonicalChecksum: canonicalChecksum,
-                        storedChecksum: storedChecksum
-                    )
-                )
+            for (index, frame) in prepared.enumerated() {
+                try await ensureWalCapacityLocked(payloadSize: walPayloadSizes[index])
+                var putFrame = frame.putFrame
+                putFrame.payloadOffset = dataEnd
+                let entry = WALEntry.putFrame(putFrame)
                 let walPayload = try WALEntryCodec.encode(entry)
 
-                prepared.append(PreparedFrame(
-                    frameId: frameId,
-                    storedBytes: storedBytes,
-                    entry: entry,
-                    walPayload: walPayload
-                ))
-
-                totalPayloadSize += storedBytes.count
-                totalWalSize += walPayload.count
-                currentOffset += UInt64(storedBytes.count)
+                let payloadOffset = putFrame.payloadOffset
+                let storedBytes = frame.storedBytes
+                let seq = try await io.run {
+                    try file.writeAll(storedBytes, at: payloadOffset)
+                    return try wal.append(payload: walPayload)
+                }
+                dataEnd += UInt64(frame.storedBytes.count)
+                pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+                frameIds.append(putFrame.frameId)
             }
+            dirty = true
+            return frameIds
+        }
 
-            // Check WAL capacity for entire batch
-            try await ensureWalCapacityLocked(payloadSize: totalWalSize)
+        // Check WAL capacity for entire batch. If the batch cannot fit as a unit,
+        // fall back to per-entry appends (allows mid-batch commits).
+        do {
+            try await ensureWalCapacityLocked(payloadSizes: walPayloadSizes)
+        } catch let WaxError.capacityExceeded(_, _) {
+            return try await appendSequentially()
+        }
 
-            // Capture values for Sendable closure
-            let file = self.file
-            let wal = self.wal
-            let startOffset = dataEnd
-            let storedBytesArray = prepared.map { $0.storedBytes }
-            let walPayloadsArray = prepared.map { $0.walPayload }
+        // Capture values for Sendable closure
+        let file = self.file
+        let wal = self.wal
+        let startOffset = dataEnd
+        let storedBytesArray = prepared.map { $0.storedBytes }
 
-            // Single mapped write for payloads
-            let payloadLength = totalPayloadSize
+        var walPayloadsArray: [Data] = []
+        walPayloadsArray.reserveCapacity(prepared.count)
+        var entries: [WALEntry] = []
+        entries.reserveCapacity(prepared.count)
+        var currentOffset = dataEnd
+
+        for frame in prepared {
+            var putFrame = frame.putFrame
+            putFrame.payloadOffset = currentOffset
+            let entry = WALEntry.putFrame(putFrame)
+            let walPayload = try WALEntryCodec.encode(entry)
+            walPayloadsArray.append(walPayload)
+            entries.append(entry)
+            currentOffset += UInt64(frame.storedBytes.count)
+        }
+
+        // Single mapped write for payloads
+        let payloadLength = totalPayloadSize
+        if payloadLength > 0 {
             try await io.run {
                 try file.ensureSize(atLeast: startOffset + UInt64(payloadLength))
                 let region = try file.mapWritable(length: payloadLength, at: startOffset)
@@ -629,20 +706,60 @@ public actor Wax {
                     cursor += storedBytes.count
                 }
             }
+        }
 
-            // Batch append WAL entries
-            let sequences = try await io.run {
-                try wal.appendBatch(payloads: walPayloadsArray)
-            }
+        // Batch append WAL entries
+        let walPayloads = walPayloadsArray
+        let sequences = try await io.run {
+            try wal.appendBatch(payloads: walPayloads)
+        }
 
-            // Update state
-            dataEnd = currentOffset
-            for (index, frame) in prepared.enumerated() {
-                pendingMutations.append(PendingMutation(sequence: sequences[index], entry: frame.entry))
-            }
-            dirty = true
+        // Update state
+        dataEnd = currentOffset
+        for (index, entry) in entries.enumerated() {
+            pendingMutations.append(PendingMutation(sequence: sequences[index], entry: entry))
+        }
+        dirty = true
 
-            return prepared.map { $0.frameId }
+        return prepared.map { $0.putFrame.frameId }
+    }
+
+    /// Batch put multiple frames in a single operation.
+    /// This amortizes actor and I/O overhead across all frames.
+    /// Returns frame IDs in the same order as the input contents.
+    public func putBatch(
+        _ contents: [Data],
+        options: [FrameMetaSubset],
+        compression: CanonicalEncoding = .plain
+    ) async throws -> [UInt64] {
+        guard !contents.isEmpty else { return [] }
+        guard contents.count == options.count else {
+            throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
+        }
+
+        return try await withWriteLock {
+            try await putBatchLocked(contents, options: options, timestampsMs: nil, compression: compression)
+        }
+    }
+
+    /// Batch put multiple frames with caller-provided timestamps.
+    /// The `timestampsMs` array must match `contents` order and length.
+    public func putBatch(
+        _ contents: [Data],
+        options: [FrameMetaSubset],
+        compression: CanonicalEncoding = .plain,
+        timestampsMs: [Int64]
+    ) async throws -> [UInt64] {
+        guard !contents.isEmpty else { return [] }
+        guard contents.count == options.count else {
+            throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
+        }
+        guard contents.count == timestampsMs.count else {
+            throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != timestampsMs.count (\(timestampsMs.count))")
+        }
+
+        return try await withWriteLock {
+            try await putBatchLocked(contents, options: options, timestampsMs: timestampsMs, compression: compression)
         }
     }
 
@@ -699,7 +816,8 @@ public actor Wax {
             walPayloads.reserveCapacity(frameIds.count)
             var entries: [WALEntry] = []
             entries.reserveCapacity(frameIds.count)
-            var totalWalSize = 0
+            var walPayloadSizes: [Int] = []
+            walPayloadSizes.reserveCapacity(frameIds.count)
 
             for (frameId, vector) in zip(frameIds, vectors) {
                 let entry = WALEntry.putEmbedding(
@@ -708,10 +826,10 @@ public actor Wax {
                 let payload = try WALEntryCodec.encode(entry)
                 walPayloads.append(payload)
                 entries.append(entry)
-                totalWalSize += payload.count
+                walPayloadSizes.append(payload.count)
             }
 
-            try await ensureWalCapacityLocked(payloadSize: totalWalSize)
+            try await ensureWalCapacityLocked(payloadSizes: walPayloadSizes)
 
             // Capture for Sendable closure
             let wal = self.wal

@@ -178,6 +178,73 @@ Then add targets as needed:
 .product(name: "Wax", package: "Wax")
 ```
 
+## Video RAG (On-Device)
+
+Wax includes an on-device Video RAG layer that ingests **local file videos** and **Photos videos** (offline-only), segments them into fixed windows, computes **keyframe embeddings** per segment, optionally indexes **host-supplied transcripts**, and returns **RAG-ready context** grouped by video.
+
+**Offline-only (explicit):**
+- Wax never makes network calls. Ingest + recall operate on the local `.mv2s` file.
+- For fully offline Video RAG, your `VideoTranscriptProvider` should also run on-device.
+
+**v1 constraints (explicit):**
+- **No cloud**: Wax is a local file format + engine, not a sync service.
+- **No clip bytes**: Wax stores text + metadata. It does not store video/audio clip payloads.
+- **Host-supplied transcripts**: Wax does not transcribe audio in v1; your app provides timed transcript chunks.
+
+### Ingest local files + recall
+
+```swift
+import Foundation
+import Wax
+import CoreGraphics
+
+struct MyEmbedder: MultimodalEmbeddingProvider {
+    let dimensions: Int = 768
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
+
+    func embed(text: String) async throws -> [Float] { /* on-device */ [] }
+    func embed(image: CGImage) async throws -> [Float] { /* on-device */ [] }
+}
+
+struct MyTranscriptProvider: VideoTranscriptProvider {
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        // Return timed chunks in milliseconds relative to the start of the video.
+        []
+    }
+}
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-video")
+    .appendingPathExtension("mv2s")
+
+let rag = try await VideoRAGOrchestrator(
+    storeURL: storeURL,
+    config: .default,
+    embedder: MyEmbedder(),
+    transcriptProvider: MyTranscriptProvider()
+)
+
+try await rag.ingest(files: [
+    VideoFile(id: "clip-1", url: URL(fileURLWithPath: "/path/to/clip.mp4"))
+])
+
+let ctx = try await rag.recall(.init(text: "hello wax"))
+try await rag.flush()
+```
+
+### Sync Photos videos (offline-only)
+
+Photos ingestion is offline-only: iCloud-only assets are indexed as **metadata-only** and marked degraded.
+
+```swift
+import Wax
+
+#if canImport(Photos)
+try await rag.syncLibrary(scope: .fullLibrary)
+#endif
+```
+
 ## Contributing
 
 We welcome issues and PRs. For local validation:
