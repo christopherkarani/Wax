@@ -141,7 +141,7 @@ private struct TestEmbedder2D: EmbeddingProvider, Sendable {
 
 #if canImport(Metal)
 @Test
-func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
+func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
     guard MTLCreateSystemDefaultDevice() != nil else { return }
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
@@ -156,12 +156,8 @@ func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
         )
         try await orchestrator.remember("hello world")
 
-        do {
-            _ = try await orchestrator.recall(query: "hello", embedding: [2.0, 0.0])
-            #expect(Bool(false))
-        } catch {
-            #expect(Bool(true))
-        }
+        let result = try await orchestrator.recall(query: "hello", embedding: [2.0, 0.0])
+        #expect(!result.items.isEmpty)
 
         try await orchestrator.close()
     }

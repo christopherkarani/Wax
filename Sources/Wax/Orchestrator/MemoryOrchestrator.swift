@@ -234,29 +234,34 @@ public actor MemoryOrchestrator {
         cache: EmbeddingMemoizer?
     ) async throws -> [[Float]] {
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
+        let cacheKeys: [UInt64]? = if cache != nil {
+            chunks.map {
+                EmbeddingKey.make(
+                    text: $0,
+                    identity: embedder.identity,
+                    dimensions: embedder.dimensions,
+                    normalized: embedder.normalize
+                )
+            }
+        } else {
+            nil
+        }
         var missingIndices: [Int] = []
         var missingTexts: [String] = []
         missingIndices.reserveCapacity(chunks.count)
         missingTexts.reserveCapacity(chunks.count)
 
-        // Batch cache lookup - collect all keys first, then check cache
-        if let cache {
-            for (index, chunk) in chunks.enumerated() {
-                let key = EmbeddingKey.make(
-                    text: chunk,
-                    identity: embedder.identity,
-                    dimensions: embedder.dimensions,
-                    normalized: embedder.normalize
-                )
-                if let cached = await cache.get(key) {
+        if let cache, let cacheKeys {
+            let cachedValues = await cache.getBatch(cacheKeys)
+            for (index, key) in cacheKeys.enumerated() {
+                if let cached = cachedValues[key] {
                     results[index] = cached
                 } else {
                     missingIndices.append(index)
-                    missingTexts.append(chunk)
+                    missingTexts.append(chunks[index])
                 }
             }
         } else {
-            // No cache - all texts need embedding
             missingIndices = Array(0..<chunks.count)
             missingTexts = chunks
         }
@@ -319,6 +324,8 @@ public actor MemoryOrchestrator {
 
             // Normalize (if needed) and cache results
             let shouldNormalize = embedder.normalize
+            var cacheItems: [(key: UInt64, value: [Float])] = []
+            cacheItems.reserveCapacity(missingIndices.count)
             for (localIdx, globalIdx) in missingIndices.enumerated() {
                 var vec = vectors[localIdx]
                 if shouldNormalize && !vec.isEmpty {
@@ -326,16 +333,13 @@ public actor MemoryOrchestrator {
                 }
                 results[globalIdx] = vec
 
-                // Cache the result
-                if let cache {
-                    let key = EmbeddingKey.make(
-                        text: chunks[globalIdx],
-                        identity: embedder.identity,
-                        dimensions: embedder.dimensions,
-                        normalized: embedder.normalize
-                    )
-                    await cache.set(key, value: vec)
+                if let cacheKeys {
+                    cacheItems.append((key: cacheKeys[globalIdx], value: vec))
                 }
+            }
+
+            if let cache, !cacheItems.isEmpty {
+                await cache.setBatch(cacheItems)
             }
         }
 

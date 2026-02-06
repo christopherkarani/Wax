@@ -308,9 +308,7 @@ public actor WaxSession {
         guard frameIds.count == embeddings.count else {
             throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
         }
-        for (index, frameId) in frameIds.enumerated() {
-            try await wax.putEmbedding(frameId: frameId, vector: embeddings[index])
-        }
+        try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: embeddings)
         return frameIds
     }
 
@@ -347,9 +345,7 @@ public actor WaxSession {
         guard frameIds.count == embeddings.count else {
             throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
         }
-        for (index, frameId) in frameIds.enumerated() {
-            try await wax.putEmbedding(frameId: frameId, vector: embeddings[index])
-        }
+        try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: embeddings)
         return frameIds
     }
 
