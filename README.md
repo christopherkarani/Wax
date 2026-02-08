@@ -20,7 +20,7 @@ Wax is a **portable AI memory system** that packages:
 into **one deterministic file**.
 
 Instead of shipping fragile RAG stacks or depending on server-side vector databases,  
-**Wax lets AI retrieve knowledge directly from disk — fast, offline, and reproducibly.**
+**Wax lets AI retrieve knowledge directly on device — fast, offline, and reproducibly.**
 
 Your agent doesn’t *query infrastructure*.  
 It **carries its memory with it.**
