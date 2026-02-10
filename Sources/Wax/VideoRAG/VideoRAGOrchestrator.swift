@@ -20,6 +20,8 @@ import AVFoundation
 /// computes segment keyframe embeddings, optionally indexes host-supplied transcripts, and serves
 /// hybrid retrieval to assemble prompt-ready context.
 public actor VideoRAGOrchestrator {
+    private static let photosVideoRequestTimeout: Duration = .seconds(10)
+
     struct VideoSegmentTimeRange: Sendable, Equatable {
         var startMs: Int64
         var endMs: Int64
@@ -858,7 +860,10 @@ public actor VideoRAGOrchestrator {
 
         return try await withCheckedThrowingContinuation { continuation in
             let resumed = OSAllocatedUnfairLock(initialState: false)
-            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
+            let manager = PHImageManager.default()
+            var requestID: PHImageRequestID = PHInvalidImageRequestID
+
+            requestID = manager.requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
                 guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
 
                 let inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
@@ -884,6 +889,22 @@ public actor VideoRAGOrchestrator {
                         durationMs: durationMs,
                         isLocal: (url != nil),
                         localFileURL: url
+                    )
+                )
+            }
+
+            Task { @MainActor in
+                try? await Task.sleep(for: photosVideoRequestTimeout)
+                guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
+                if requestID != PHInvalidImageRequestID {
+                    manager.cancelImageRequest(requestID)
+                }
+                continuation.resume(
+                    returning: PhotosVideoRecord(
+                        captureMs: captureMs,
+                        durationMs: durationMs,
+                        isLocal: false,
+                        localFileURL: nil
                     )
                 )
             }
