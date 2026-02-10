@@ -12,6 +12,15 @@ private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
     func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
 }
 
+private struct NetworkOCRProvider: OCRProvider {
+    var executionMode: ProviderExecutionMode { .mayUseNetwork }
+
+    func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
+        _ = image
+        return []
+    }
+}
+
 @Test
 func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
     try await TempFiles.withTempFile { url in
@@ -103,5 +112,27 @@ func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
         #expect(ctx.items.first?.assetID == "A")
         #expect(ctx.items.first?.summaryText.contains("COSTCO") == true)
         try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGRejectsNetworkOCRProviderByDefault() async throws {
+    try await TempFiles.withTempFile { url in
+        do {
+            _ = try await PhotoRAGOrchestrator(
+                storeURL: url,
+                config: .default,
+                embedder: StubMultimodalEmbedder(),
+                ocr: NetworkOCRProvider(),
+                captioner: nil
+            )
+            Issue.record("Expected WaxError for network OCR provider")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("on-device OCR provider"))
+        }
     }
 }

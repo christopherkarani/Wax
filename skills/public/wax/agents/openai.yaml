@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wax Framework"
+  short_description: "On-device RAG memory in Swift"
+  default_prompt: "Use $wax to design correct on-device RAG flows with MemoryOrchestrator and VideoRAG."

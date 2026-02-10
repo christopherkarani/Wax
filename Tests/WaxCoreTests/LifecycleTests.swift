@@ -98,3 +98,23 @@ import Testing
         try await wax.close()
     }
 }
+
+@Test func closeCommitsPendingMutations() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(at: url)
+        _ = try await wax.put(Data("pending".utf8))
+        try await wax.close()
+    }
+
+    do {
+        let reopened = try await Wax.open(at: url)
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == 1)
+        let payload = try await reopened.frameContent(frameId: 0)
+        #expect(payload == Data("pending".utf8))
+        try await reopened.close()
+    }
+}

@@ -1,27 +1,15 @@
 import CoreGraphics
 import Foundation
-import WaxVectorSearch
 
-public protocol MultimodalEmbeddingProvider: Sendable {
-    /// The dimensionality of embeddings produced by this provider.
-    var dimensions: Int { get }
-    /// Whether the provider produces (or expects) L2-normalized embeddings.
-    ///
-    /// - Important: Wax’s Metal vector search requires L2-normalized embeddings.
-    var normalize: Bool { get }
-    /// Optional identity metadata to stamp into Wax frame metadata at write time.
-    var identity: EmbeddingIdentity? { get }
-
-    /// Compute a text embedding in the same space as image embeddings.
-    func embed(text: String) async throws -> [Float]
-    /// Compute an image embedding in the same space as text embeddings.
-    func embed(image: CGImage) async throws -> [Float]
-}
-
+/// A recognized text block from OCR, with bounding box and confidence.
 public struct RecognizedTextBlock: Sendable, Equatable {
+    /// The recognized text content.
     public var text: String
+    /// Normalized bounding box in `[0, 1]` coordinates with top-left origin.
     public var bbox: PhotoNormalizedRect
+    /// Recognition confidence in `[0, 1]`.
     public var confidence: Float
+    /// Detected language code (e.g., "en"), if available.
     public var language: String?
 
     public init(text: String, bbox: PhotoNormalizedRect, confidence: Float, language: String? = nil) {
@@ -32,12 +20,30 @@ public struct RecognizedTextBlock: Sendable, Equatable {
     }
 }
 
+/// Provider for on-device optical character recognition.
+///
+/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
 public protocol OCRProvider: Sendable {
+    /// Declares whether this provider may call network services.
+    var executionMode: ProviderExecutionMode { get }
     /// Recognize text blocks within an image.
     func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock]
 }
 
+/// Provider for on-device image captioning.
+///
+/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
 public protocol CaptionProvider: Sendable {
+    /// Declares whether this provider may call network services.
+    var executionMode: ProviderExecutionMode { get }
     /// Produce a short, human-readable caption for an image.
     func caption(for image: CGImage) async throws -> String
+}
+
+public extension OCRProvider {
+    var executionMode: ProviderExecutionMode { .onDeviceOnly }
+}
+
+public extension CaptionProvider {
+    var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }

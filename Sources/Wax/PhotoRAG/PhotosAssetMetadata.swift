@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import os
 
 #if canImport(Photos)
 @preconcurrency import Photos
@@ -104,8 +105,11 @@ enum PhotosAssetMetadata {
         options.deliveryMode = .highQualityFormat
         options.version = .current
 
-        return try await withCheckedThrowingContinuation { continuation in
+        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(data: Data?, isLocal: Bool), Error>) in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
             PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, info in
+                guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
+
                 let inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
                 let cancelled = (info?[PHImageCancelledKey] as? NSNumber)?.boolValue ?? false
                 let error = info?[PHImageErrorKey] as? NSError
@@ -127,6 +131,11 @@ enum PhotosAssetMetadata {
                 continuation.resume(returning: (data: data, isLocal: true))
             }
         }
+
+        // Yield MainActor after heavy I/O to give UI work a chance to run
+        await Task.yield()
+
+        return result
     }
     #endif
 
@@ -169,14 +178,16 @@ enum PhotosAssetMetadata {
         return out
     }
 
+    private static let exifDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        return f
+    }()
+
     private static func parseEXIFDateTimeMs(_ value: String) -> Int64? {
-        // Common EXIF format: "YYYY:MM:DD HH:MM:SS"
-        // Use a fixed locale/timezone for determinism.
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        if let date = formatter.date(from: value) {
+        if let date = exifDateFormatter.date(from: value) {
             return Int64(date.timeIntervalSince1970 * 1000)
         }
         return nil
