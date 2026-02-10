@@ -4,21 +4,13 @@ import Foundation
 public extension MemoryOrchestrator {
     /// Extracts text from a PDF and ingests it as document + chunks.
     func remember(pdfAt url: URL, metadata: [String: String] = [:]) async throws {
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
             throw PDFIngestError.fileNotFound(url: url)
         }
 
-        let extracted = try await withThrowingTaskGroup(of: (text: String, pageCount: Int).self) { group in
-            group.addTask(priority: .utility) {
-                try PDFTextExtractor.extractText(url: url)
-            }
-
-            guard let result = try await group.next() else {
-                throw CancellationError()
-            }
-
-            return result
-        }
+        let extracted = try await Task.detached(priority: .utility) {
+            try PDFTextExtractor.extractText(url: url)
+        }.value
 
         var mergedMetadata = metadata
         mergedMetadata[PDFMetadataKeys.sourceKind] = "pdf"

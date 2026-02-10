@@ -44,6 +44,10 @@ extension Wax {
             includeText = true
             includeVector = false
         case .vectorOnly:
+            let hasEmbedding = !(request.embedding?.isEmpty ?? true)
+            guard hasEmbedding else {
+                throw WaxError.io("vectorOnly search requires a non-empty query embedding")
+            }
             includeText = false
             includeVector = true
         case .hybrid:
@@ -102,10 +106,11 @@ extension Wax {
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
             guard includeVector, let vectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
-            if vectorEngine is MetalVectorEngine, !VectorMath.isNormalizedL2(embedding) {
-                throw WaxError.encodingError(reason: "Metal vector search requires normalized query embeddings")
+            var queryEmbedding = embedding
+            if vectorEngine is MetalVectorEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
+                queryEmbedding = VectorMath.normalizeL2(queryEmbedding)
             }
-            return try await vectorEngine.search(vector: embedding, topK: candidateLimit)
+            return try await vectorEngine.search(vector: queryEmbedding, topK: candidateLimit)
         }()
 
         async let structuredFrameIdsAsync: [UInt64] = {
@@ -251,6 +256,20 @@ extension Wax {
             let snippet: String?
         }
 
+        func passesFilters(
+            meta: FrameMeta,
+            frameId: UInt64,
+            score: Float
+        ) -> Bool {
+            if let minScore = request.minScore, score < minScore { return false }
+            if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { return false }
+            if let allowlist = filter.frameIds, !allowlist.contains(frameId) { return false }
+            if !filter.includeDeleted, meta.status == .deleted { return false }
+            if !filter.includeSuperseded, meta.supersededBy != nil { return false }
+            if !filter.includeSurrogates, meta.kind == "surrogate" { return false }
+            return true
+        }
+
         var pendingResults: [PendingResult] = []
         pendingResults.reserveCapacity(min(requestedTopK, baseResults.count))
 
@@ -267,12 +286,7 @@ extension Wax {
                 for item in baseResults {
                     if let minScore = request.minScore, item.score < minScore { continue }
                     guard let meta = metaById[item.frameId] else { continue }
-
-                    if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { continue }
-                    if let allowlist = filter.frameIds, !allowlist.contains(item.frameId) { continue }
-                    if !filter.includeDeleted, meta.status == .deleted { continue }
-                    if !filter.includeSuperseded, meta.supersededBy != nil { continue }
-                    if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
+                    guard passesFilters(meta: meta, frameId: item.frameId, score: item.score) else { continue }
 
                     pendingResults.append(
                         PendingResult(
@@ -292,12 +306,7 @@ extension Wax {
                 for item in baseResults {
                     if let minScore = request.minScore, item.score < minScore { continue }
                     guard let meta = try? await frameMetaIncludingPending(frameId: item.frameId) else { continue }
-
-                    if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { continue }
-                    if let allowlist = filter.frameIds, !allowlist.contains(item.frameId) { continue }
-                    if !filter.includeDeleted, meta.status == .deleted { continue }
-                    if !filter.includeSuperseded, meta.supersededBy != nil { continue }
-                    if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
+                    guard passesFilters(meta: meta, frameId: item.frameId, score: item.score) else { continue }
 
                     pendingResults.append(
                         PendingResult(

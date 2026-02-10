@@ -81,8 +81,11 @@ public actor PhotoRAGOrchestrator {
         var locationBins: [LocationBin: Set<UInt64>] = [:]
     }
 
+    /// The underlying Wax store for frame storage and indexing.
     public let wax: Wax
+    /// The active Wax session for reads and writes.
     public let session: WaxSession
+    /// Configuration controlling pixel sizes, OCR, regions, search parameters, and budgets.
     public let config: PhotoRAGConfig
 
     private let embedder: any MultimodalEmbeddingProvider
@@ -91,6 +94,7 @@ public actor PhotoRAGOrchestrator {
     private let queryEmbeddingCache: EmbeddingMemoizer?
 
     private var index = IndexState()
+    private var inFlightAssetIDs: Set<String> = []
 
     public init(
         storeURL: URL,
@@ -104,7 +108,19 @@ public actor PhotoRAGOrchestrator {
         self.captioner = captioner
         self.ocr = ocr
 
-        if FileManager.default.fileExists(atPath: storeURL.path) {
+        if config.requireOnDeviceProviders {
+            guard embedder.executionMode == .onDeviceOnly else {
+                throw WaxError.io("PhotoRAG requires on-device embedding provider")
+            }
+            if let ocr, ocr.executionMode != .onDeviceOnly {
+                throw WaxError.io("PhotoRAG requires on-device OCR provider")
+            }
+            if let captioner, captioner.executionMode != .onDeviceOnly {
+                throw WaxError.io("PhotoRAG requires on-device caption provider")
+            }
+        }
+
+        if FileManager.default.fileExists(atPath: storeURL.path(percentEncoded: false)) {
             self.wax = try await Wax.open(at: storeURL)
         } else {
             self.wax = try await Wax.create(at: storeURL)
@@ -164,9 +180,8 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// Convenience wrapper: accepts PHAssets but only passes stable IDs into the actor.
-    @MainActor
-    public func ingest(assets: [PHAsset]) async throws {
-        let ids = assets.map(\.localIdentifier)
+    public nonisolated func ingest(assets: [PHAsset]) async throws {
+        let ids = await MainActor.run { assets.map(\.localIdentifier) }
         try await self.ingest(assetIDs: ids)
     }
 
@@ -178,16 +193,34 @@ public actor PhotoRAGOrchestrator {
         let uniqueAssetIDs = Self.dedupeAssetIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
-        // Note: Actor isolation serializes ingestion for correctness. `ingestConcurrency` is reserved for a future
-        // optimization that parallelizes decode/embedding outside the actor without leaking non-Sendable types.
-        for assetID in uniqueAssetIDs {
-            try await ingestOne(assetID: assetID)
+        // Throttled concurrency: the actor's executor serializes state mutations, while
+        // suspension points (metadata load, embedding, OCR) interleave across assets.
+        let concurrency = config.ingestConcurrency
+        var iterator = uniqueAssetIDs.makeIterator()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<concurrency {
+                guard let assetID = iterator.next() else { break }
+                group.addTask {
+                    try Task.checkCancellation()
+                    try await self.ingestOne(assetID: assetID)
+                }
+            }
+            for try await _ in group {
+                if let assetID = iterator.next() {
+                    group.addTask {
+                        try Task.checkCancellation()
+                        try await self.ingestOne(assetID: assetID)
+                    }
+                }
+            }
         }
 
         try await session.commit()
         try await rebuildIndex()
     }
 
+    /// Recall RAG context for a photo query, returning ranked items with text surrogates and optional pixel payloads.
     public func recall(_ query: PhotoQuery) async throws -> PhotoRAGContext {
         let cleanedText = query.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let queryText = (cleanedText?.isEmpty == false) ? cleanedText : nil
@@ -225,7 +258,7 @@ public actor PhotoRAGOrchestrator {
             timelineFallbackLimit: fallbackLimit
         )
 
-        let response = try await wax.search(request)
+        let response = try await session.search(request)
         guard !response.results.isEmpty else {
             return PhotoRAGContext(query: query, items: [], diagnostics: .init())
         }
@@ -380,19 +413,18 @@ public actor PhotoRAGOrchestrator {
         return PhotoRAGContext(query: query, items: itemsWithPixels, diagnostics: diagnostics)
     }
 
-    /// Delete all frames associated with a given `PHAsset.localIdentifier` (including older, superseded versions).
+    /// Delete all frames associated with a given `PHAsset.localIdentifier`.
     public func delete(assetID: String) async throws {
-        // Robust: scan once; deletion is a rare operation and should be correct.
-        let metas = await wax.frameMetas()
-        var toDelete: [UInt64] = []
-        toDelete.reserveCapacity(32)
-        for meta in metas {
-            guard meta.status != .deleted else { continue }
-            guard let entries = meta.metadata?.entries,
-                  entries[MetaKey.assetID] == assetID
-            else { continue }
-            toDelete.append(meta.id)
+        guard let rootId = index.rootByAssetID[assetID] else { return }
+
+        var toDelete: [UInt64] = [rootId]
+        if let refs = index.derivedByRoot[rootId] {
+            if let id = refs.ocrSummary { toDelete.append(id) }
+            if let id = refs.caption { toDelete.append(id) }
+            if let id = refs.tags { toDelete.append(id) }
+            toDelete.append(contentsOf: refs.regions)
         }
+
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
         }
@@ -408,6 +440,9 @@ public actor PhotoRAGOrchestrator {
     // MARK: - Ingest internals
 
     private func ingestOne(assetID: String) async throws {
+        guard inFlightAssetIDs.insert(assetID).inserted else { return }
+        defer { inFlightAssetIDs.remove(assetID) }
+
         #if canImport(Photos)
         let metadata = try await PhotosAssetMetadata.load(assetID: assetID)
 
@@ -513,7 +548,7 @@ public actor PhotoRAGOrchestrator {
             let idx = derivedContents.count
             derivedContents.append(Data(text.utf8))
             var subset = FrameMetaSubset(kind: kind, parentId: rootId, metadata: baseMeta)
-            subset.role = .blob
+            subset.role = FrameRole.blob
             derivedOptions.append(subset)
             if searchable {
                 derivedTextsForIndex.append((frameIndex: idx, text: text))
@@ -541,12 +576,10 @@ public actor PhotoRAGOrchestrator {
                     meta.entries["photo.ocr.language"] = lang
                 }
                 let text = block.text
-                let idx = derivedContents.count
                 derivedContents.append(Data(text.utf8))
                 var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
-                subset.role = .blob
+                subset.role = FrameRole.blob
                 derivedOptions.append(subset)
-                _ = idx
             }
         }
 
@@ -574,28 +607,80 @@ public actor PhotoRAGOrchestrator {
         if config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 {
             let regions = Self.proposeRegions(from: ocrBlocks, maxRegions: config.maxRegionsPerPhoto)
             if !regions.isEmpty {
+                // Collect all crops first
+                var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
+                crops.reserveCapacity(regions.count)
+                for (i, region) in regions.enumerated() {
+                    guard let crop = Self.crop(embedImage, rect: region.bbox) else { continue }
+                    crops.append((i, crop, region))
+                }
+
+                guard !crops.isEmpty else { return }
+
+                // Embed in parallel with bounded concurrency (4 concurrent tasks)
                 var regionEmbeddings: [[Float]] = []
                 var regionContents: [Data] = []
                 var regionOptions: [FrameMetaSubset] = []
-                regionEmbeddings.reserveCapacity(regions.count)
-                regionContents.reserveCapacity(regions.count)
-                regionOptions.reserveCapacity(regions.count)
+                regionEmbeddings.reserveCapacity(crops.count)
+                regionContents.reserveCapacity(crops.count)
+                regionOptions.reserveCapacity(crops.count)
 
-                for region in regions {
-                    guard let crop = Self.crop(embedImage, rect: region.bbox) else { continue }
-                    var vec = try await embedder.embed(image: crop)
-                    if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-                    guard vec.count == embedder.dimensions else {
-                        throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(embedder.dimensions)")
+                try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
+                    var activeCount = 0
+                    let maxConcurrency = 4
+                    var cropIterator = crops.makeIterator()
+
+                    // Start initial batch
+                    while activeCount < maxConcurrency, let item = cropIterator.next() {
+                        let (index, crop, _) = item
+                        group.addTask {
+                            var vec = try await self.embedder.embed(image: crop)
+                            if self.embedder.normalize, !vec.isEmpty {
+                                vec = VectorMath.normalizeL2(vec)
+                            }
+                            guard vec.count == self.embedder.dimensions else {
+                                throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                            }
+                            return (index, vec)
+                        }
+                        activeCount += 1
                     }
-                    regionEmbeddings.append(vec)
-                    regionContents.append(Data())
 
-                    var meta = baseMeta
-                    Self.writeBBox(into: &meta, rect: region.bbox)
-                    meta.entries[MetaKey.regionType] = region.type
-                    let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
-                    regionOptions.append(subset)
+                    // Collect results and spawn new tasks
+                    var results: [(Int, [Float])] = []
+                    results.reserveCapacity(crops.count)
+                    for try await result in group {
+                        results.append(result)
+                        if let item = cropIterator.next() {
+                            let (index, crop, _) = item
+                            group.addTask {
+                                var vec = try await self.embedder.embed(image: crop)
+                                if self.embedder.normalize, !vec.isEmpty {
+                                    vec = VectorMath.normalizeL2(vec)
+                                }
+                                guard vec.count == self.embedder.dimensions else {
+                                    throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                                }
+                                return (index, vec)
+                            }
+                        }
+                    }
+
+                    // Sort results by index to maintain deterministic ordering
+                    results.sort { $0.0 < $1.0 }
+
+                    // Build final arrays in correct order
+                    for (index, vec) in results {
+                        let (_, _, region) = crops[index]
+                        regionEmbeddings.append(vec)
+                        regionContents.append(Data())
+
+                        var meta = baseMeta
+                        Self.writeBBox(into: &meta, rect: region.bbox)
+                        meta.entries[MetaKey.regionType] = region.type
+                        let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
+                        regionOptions.append(subset)
+                    }
                 }
 
                 _ = try await session.putBatch(
@@ -603,8 +688,8 @@ public actor PhotoRAGOrchestrator {
                     embeddings: regionEmbeddings,
                     identity: embedder.identity,
                     options: regionOptions,
-                    compression: .plain,
-                    timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count)
+                    timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
+                    compression: .plain
                 )
             }
         }
@@ -694,24 +779,54 @@ public actor PhotoRAGOrchestrator {
         let lon = center.longitude
 
         let latDelta = radius / 111_000.0
-        let lonDelta = radius / max(1e-6, 111_000.0 * cos(lat * .pi / 180))
+        // Cap lonDelta to 180 degrees to prevent unbounded expansion near poles.
+        let lonDelta = min(180.0, radius / max(1e-6, 111_000.0 * cos(lat * .pi / 180)))
 
         let minLat = lat - latDelta
         let maxLat = lat + latDelta
         let minLon = lon - lonDelta
         let maxLon = lon + lonDelta
 
-        let minLatBin = Int(floor(minLat * 100.0))
-        let maxLatBin = Int(floor(maxLat * 100.0))
+        // Clamp latitude bins to valid range (-90..90 -> bins -9000..9000).
+        let minLatBin = max(-9000, Int(floor(minLat * 100.0)))
+        let maxLatBin = min(9000, Int(floor(maxLat * 100.0)))
+
         let minLonBin = Int(floor(minLon * 100.0))
         let maxLonBin = Int(floor(maxLon * 100.0))
 
+        // Compute total bin count. If the search area is degenerate (too many bins),
+        // return nil to gracefully degrade to "no location filter".
+        let latBinCount = maxLatBin - minLatBin + 1
+        let lonBinCount: Int
+        if minLonBin <= maxLonBin {
+            lonBinCount = maxLonBin - minLonBin + 1
+        } else {
+            // Antimeridian wraparound: bins split across -180/180 boundary.
+            // e.g., minLonBin=17900, maxLonBin=-17900 -> wraps around.
+            lonBinCount = (18000 - minLonBin) + (maxLonBin - (-18000)) + 1
+        }
+
+        guard latBinCount > 0, lonBinCount > 0 else { return nil }
+        guard latBinCount * lonBinCount < 100_000 else { return nil }
+
         var allowlist: Set<UInt64> = []
+
+        // Build longitude bin ranges. If minLonBin <= maxLonBin, it is a single
+        // contiguous range. Otherwise, split across the antimeridian into two ranges.
+        let lonRanges: [ClosedRange<Int>]
+        if minLonBin <= maxLonBin {
+            lonRanges = [minLonBin...maxLonBin]
+        } else {
+            lonRanges = [minLonBin...18000, -18000...maxLonBin]
+        }
+
         for latBin in minLatBin...maxLatBin {
-            for lonBin in minLonBin...maxLonBin {
-                let bin = LocationBin(latBin: latBin, lonBin: lonBin)
-                if let ids = index.locationBins[bin] {
-                    allowlist.formUnion(ids)
+            for lonRange in lonRanges {
+                for lonBin in lonRange {
+                    let bin = LocationBin(latBin: latBin, lonBin: lonBin)
+                    if let ids = index.locationBins[bin] {
+                        allowlist.formUnion(ids)
+                    }
                 }
             }
         }
@@ -966,8 +1081,7 @@ public actor PhotoRAGOrchestrator {
         if let root, let entries = root.metadata?.entries {
             if let ms = Int64(entries[MetaKey.captureMs] ?? "") {
                 let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
-                let iso = ISO8601DateFormatter().string(from: date)
-                parts.append("Captured: \(iso)")
+                parts.append("Captured: \(date.formatted(.iso8601))")
             }
             if let lat = entries[MetaKey.lat], let lon = entries[MetaKey.lon] {
                 parts.append("Location: \(lat),\(lon)")
@@ -1015,7 +1129,7 @@ public actor PhotoRAGOrchestrator {
 
         if let ms = metadata.captureMs {
             let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
-            parts.append("Captured \(ISO8601DateFormatter().string(from: date))")
+            parts.append("Captured \(date.formatted(.iso8601))")
         }
         if let loc = metadata.location {
             parts.append(String(format: "Near %.5f, %.5f", loc.latitude, loc.longitude))

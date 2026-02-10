@@ -23,28 +23,31 @@ public struct ContextBudget: Sendable, Equatable {
     public static let `default` = ContextBudget()
 }
 
+/// Optional filters applied during photo recall.
 public struct PhotoFilters: Sendable, Equatable {
-    public var isFavorite: Bool?
-
-    public init(isFavorite: Bool? = nil) {
-        self.isFavorite = isFavorite
-    }
+    public init() {}
 
     public static let none = PhotoFilters()
 }
 
+/// A GPS coordinate used for location-based photo queries.
 public struct PhotoCoordinate: Sendable, Equatable {
+    /// Latitude in degrees (-90 to 90).
     public var latitude: Double
+    /// Longitude in degrees (-180 to 180).
     public var longitude: Double
 
     public init(latitude: Double, longitude: Double) {
-        self.latitude = latitude
-        self.longitude = longitude
+        self.latitude = min(90, max(-90, latitude))
+        self.longitude = min(180, max(-180, longitude))
     }
 }
 
+/// A location-radius query for finding photos near a GPS coordinate.
 public struct PhotoLocationQuery: Sendable, Equatable {
+    /// Center point of the search area.
     public var center: PhotoCoordinate
+    /// Search radius in meters from the center point.
     public var radiusMeters: Double
 
     public init(center: PhotoCoordinate, radiusMeters: Double) {
@@ -53,8 +56,11 @@ public struct PhotoLocationQuery: Sendable, Equatable {
     }
 }
 
+/// Scope of a Photos library sync operation.
 public enum PhotoScope: Sendable, Equatable {
+    /// Sync all photos in the library.
     case fullLibrary
+    /// Sync only the specified asset identifiers.
     case assetIDs([String])
 }
 

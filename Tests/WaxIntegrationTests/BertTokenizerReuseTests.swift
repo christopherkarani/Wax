@@ -24,4 +24,13 @@ func bertTokenizerBuildBatchInputsReusesBuffers() throws {
     #expect(firstIdsPtr == secondIdsPtr)
     #expect(firstMaskPtr == secondMaskPtr)
 }
+
+@Test
+func bertTokenizerVocabLoadsOnceAcrossInstances() throws {
+    BertTokenizer._resetVocabCacheForTests()
+    _ = try BertTokenizer()
+    _ = try BertTokenizer()
+
+    #expect(BertTokenizer._vocabLoadCountForTests() == 1)
+}
 #endif

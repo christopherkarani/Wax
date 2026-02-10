@@ -38,6 +38,9 @@ public struct BatchInputBuffers: @unchecked Sendable {
 
 public final class BertTokenizer: @unchecked Sendable {
     private static let sharedBasicTokenizer = BasicTokenizer()
+    private static let vocabCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedVocabData: VocabData?
+    nonisolated(unsafe) private static var vocabLoadCount: Int = 0
 
     private let basicTokenizer: BasicTokenizer
     private let wordpieceTokenizer: WordpieceTokenizer
@@ -370,6 +373,13 @@ private extension BertTokenizer {
     }
 
     static func loadVocab() throws -> VocabData {
+        vocabCacheLock.lock()
+        if let cached = cachedVocabData {
+            vocabCacheLock.unlock()
+            return cached
+        }
+        vocabCacheLock.unlock()
+
         guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw WaxError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
         }
@@ -383,7 +393,16 @@ private extension BertTokenizer {
             vocab[token] = i
             idsToTokens[i] = token
         }
-        return VocabData(vocab: vocab, idsToTokens: idsToTokens)
+        let loaded = VocabData(vocab: vocab, idsToTokens: idsToTokens)
+        vocabCacheLock.lock()
+        if let cached = cachedVocabData {
+            vocabCacheLock.unlock()
+            return cached
+        }
+        cachedVocabData = loaded
+        vocabLoadCount += 1
+        vocabCacheLock.unlock()
+        return loaded
     }
 
     static func selectSequenceLength(
@@ -401,6 +420,24 @@ private extension BertTokenizer {
         return min(requiredLength, maxAllowed)
     }
 }
+
+#if DEBUG
+extension BertTokenizer {
+    static func _resetVocabCacheForTests() {
+        vocabCacheLock.lock()
+        cachedVocabData = nil
+        vocabLoadCount = 0
+        vocabCacheLock.unlock()
+    }
+
+    static func _vocabLoadCountForTests() -> Int {
+        vocabCacheLock.lock()
+        let count = vocabLoadCount
+        vocabCacheLock.unlock()
+        return count
+    }
+}
+#endif
 
 final class BasicTokenizer: @unchecked Sendable {
     let neverSplit = [

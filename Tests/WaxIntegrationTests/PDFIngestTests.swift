@@ -4,16 +4,6 @@ import PDFKit
 import Testing
 import Wax
 
-private struct PDFIngestTestingError: Error, CustomStringConvertible {
-    let message: String
-
-    init(_ message: String) {
-        self.message = message
-    }
-
-    var description: String { message }
-}
-
 private enum PDFFixtures {
     static let pageOnePhrase = "crimson"
     static let pageTwoPhrase = "cobalt"
@@ -121,15 +111,14 @@ func pdfIngestBlankPDFThrowsNoExtractableText() async throws {
         let orchestrator = try await MemoryOrchestrator(at: url, config: makeTextOnlyConfig())
         do {
             try await orchestrator.remember(pdfAt: PDFFixtures.blankPDF)
-            throw PDFIngestTestingError("Expected noExtractableText for blank PDF.")
+            Issue.record("Expected noExtractableText for blank PDF")
         } catch let error as PDFIngestError {
-            switch error {
-            case let .noExtractableText(url, pageCount):
-                #expect(url == PDFFixtures.blankPDF)
-                #expect(pageCount >= 1)
-            default:
-                throw PDFIngestTestingError("Unexpected PDFIngestError: \(error)")
+            guard case let .noExtractableText(url, pageCount) = error else {
+                Issue.record("Expected .noExtractableText, got \(error)")
+                return
             }
+            #expect(url == PDFFixtures.blankPDF)
+            #expect(pageCount >= 1)
         }
         try await orchestrator.close()
     }
@@ -146,14 +135,13 @@ func pdfIngestMissingFileThrowsFileNotFound() async throws {
         let orchestrator = try await MemoryOrchestrator(at: url, config: makeTextOnlyConfig())
         do {
             try await orchestrator.remember(pdfAt: missingURL)
-            throw PDFIngestTestingError("Expected fileNotFound for missing PDF.")
+            Issue.record("Expected fileNotFound for missing PDF")
         } catch let error as PDFIngestError {
-            switch error {
-            case let .fileNotFound(url):
-                #expect(url == missingURL)
-            default:
-                throw PDFIngestTestingError("Unexpected PDFIngestError: \(error)")
+            guard case let .fileNotFound(url) = error else {
+                Issue.record("Expected .fileNotFound, got \(error)")
+                return
             }
+            #expect(url == missingURL)
         }
         try await orchestrator.close()
     }

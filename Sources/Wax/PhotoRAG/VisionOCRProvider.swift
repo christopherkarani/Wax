@@ -4,7 +4,9 @@
 import CoreGraphics
 import Foundation
 
+/// Default on-device OCR provider using Apple Vision framework for text recognition.
 public struct VisionOCRProvider: OCRProvider, Sendable {
+    /// Accuracy level for OCR recognition.
     public enum Accuracy: Sendable {
         case fast
         case accurate
@@ -19,44 +21,49 @@ public struct VisionOCRProvider: OCRProvider, Sendable {
     }
 
     public func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = (accuracy == .accurate) ? .accurate : .fast
-        request.usesLanguageCorrection = usesLanguageCorrection
+        let accuracyLevel = accuracy
+        let languageCorrection = usesLanguageCorrection
 
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        try handler.perform([request])
+        return try await Task.detached(priority: .userInitiated) {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = (accuracyLevel == .accurate) ? .accurate : .fast
+            request.usesLanguageCorrection = languageCorrection
 
-        guard let observations = request.results else { return [] }
+            let handler = VNImageRequestHandler(cgImage: image, options: [:])
+            try handler.perform([request])
 
-        var out: [RecognizedTextBlock] = []
-        out.reserveCapacity(observations.count)
+            guard let observations = request.results else { return [] }
 
-        for obs in observations {
-            guard let top = obs.topCandidates(1).first else { continue }
-            let text = top.string
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            var out: [RecognizedTextBlock] = []
+            out.reserveCapacity(observations.count)
 
-            // Vision bounding boxes are normalized with origin at bottom-left.
-            let b = obs.boundingBox
-            let topLeftY = 1.0 - Double(b.origin.y) - Double(b.size.height)
-            let rect = PhotoNormalizedRect(
-                x: Double(b.origin.x),
-                y: topLeftY,
-                width: Double(b.size.width),
-                height: Double(b.size.height)
-            )
+            for obs in observations {
+                guard let top = obs.topCandidates(1).first else { continue }
+                let text = top.string
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
 
-            out.append(
-                RecognizedTextBlock(
-                    text: text,
-                    bbox: rect,
-                    confidence: Float(top.confidence),
-                    language: nil
+                // Vision bounding boxes are normalized with origin at bottom-left.
+                let b = obs.boundingBox
+                let topLeftY = 1.0 - Double(b.origin.y) - Double(b.size.height)
+                let rect = PhotoNormalizedRect(
+                    x: Double(b.origin.x),
+                    y: topLeftY,
+                    width: Double(b.size.width),
+                    height: Double(b.size.height)
                 )
-            )
-        }
 
-        return out
+                out.append(
+                    RecognizedTextBlock(
+                        text: text,
+                        bbox: rect,
+                        confidence: Float(top.confidence),
+                        language: nil
+                    )
+                )
+            }
+
+            return out
+        }.value
     }
 }
 

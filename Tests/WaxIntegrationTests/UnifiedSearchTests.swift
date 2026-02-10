@@ -141,7 +141,7 @@ private struct TestEmbedder2D: EmbeddingProvider, Sendable {
 
 #if canImport(Metal)
 @Test
-func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
+func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
     guard MTLCreateSystemDefaultDevice() != nil else { return }
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
@@ -156,12 +156,8 @@ func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
         )
         try await orchestrator.remember("hello world")
 
-        do {
-            _ = try await orchestrator.recall(query: "hello", embedding: [2.0, 0.0])
-            #expect(Bool(false))
-        } catch {
-            #expect(Bool(true))
-        }
+        let result = try await orchestrator.recall(query: "hello", embedding: [2.0, 0.0])
+        #expect(!result.items.isEmpty)
 
         try await orchestrator.close()
     }
@@ -183,6 +179,25 @@ func metalVectorSearchRejectsNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(request)
 
         #expect(response.results.first?.frameId == id0)
+
+        try await wax.close()
+    }
+}
+
+@Test func vectorOnlySearchWithoutEmbeddingThrows() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        do {
+            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5))
+            Issue.record("Expected WaxError for vectorOnly search without embedding")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("requires a non-empty query embedding"))
+        }
 
         try await wax.close()
     }
