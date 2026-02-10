@@ -19,6 +19,7 @@ public struct AgeThresholds: Sendable, Equatable {
     public var oldDays: Int
     
     public init(recentDays: Int = 7, oldDays: Int = 30) {
+        precondition(recentDays <= oldDays, "recentDays (\(recentDays)) must be <= oldDays (\(oldDays))")
         self.recentDays = recentDays
         self.oldDays = oldDays
     }
@@ -35,6 +36,7 @@ public struct ImportanceThresholds: Sendable, Equatable {
     public var gistThreshold: Float
     
     public init(fullThreshold: Float = 0.6, gistThreshold: Float = 0.3) {
+        precondition(gistThreshold < fullThreshold, "gistThreshold (\(gistThreshold)) must be < fullThreshold (\(fullThreshold))")
         self.fullThreshold = fullThreshold
         self.gistThreshold = gistThreshold
     }
@@ -60,7 +62,9 @@ public enum TierSelectionPolicy: Sendable, Equatable {
 
 // MARK: - FastRAGConfig
 
+/// Configuration for the FastRAG context builder, controlling token budgets, search parameters, and surrogate tier selection.
 public struct FastRAGConfig: Sendable, Equatable {
+    /// Assembly mode: fast (expansion + snippets) or denseCached (expansion + surrogates + snippets).
     public enum Mode: Sendable, Equatable {
         case fast
         case denseCached
@@ -91,7 +95,7 @@ public struct FastRAGConfig: Sendable, Equatable {
 
     /// Search parameters used to collect candidates.
     public var searchTopK: Int = 24
-    public var searchMode: SearchMode = .hybrid(alpha: 1.0)
+    public var searchMode: SearchMode = .hybrid(alpha: 0.5)
     public var rrfK: Int = 60
     public var previewMaxBytes: Int = 512
     
@@ -102,6 +106,10 @@ public struct FastRAGConfig: Sendable, Equatable {
     
     /// Enable query-aware tier selection (boosts tier for specific queries)
     public var enableQueryAwareTierSelection: Bool = true
+    
+    /// Optional fixed "now" timestamp used for deterministic tier selection.
+    /// When nil, Wax uses wall clock time.
+    public var deterministicNowMs: Int64? = nil
 
     public init(
         mode: Mode = .fast,
@@ -113,11 +121,12 @@ public struct FastRAGConfig: Sendable, Equatable {
         maxSurrogates: Int = 8,
         surrogateMaxTokens: Int = 60,
         searchTopK: Int = 24,
-        searchMode: SearchMode = .hybrid(alpha: 1.0),
+        searchMode: SearchMode = .hybrid(alpha: 0.5),
         rrfK: Int = 60,
         previewMaxBytes: Int = 512,
         tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced,
-        enableQueryAwareTierSelection: Bool = true
+        enableQueryAwareTierSelection: Bool = true,
+        deterministicNowMs: Int64? = nil
     ) {
         self.mode = mode
         self.maxContextTokens = maxContextTokens
@@ -133,6 +142,6 @@ public struct FastRAGConfig: Sendable, Equatable {
         self.previewMaxBytes = previewMaxBytes
         self.tierSelectionPolicy = tierSelectionPolicy
         self.enableQueryAwareTierSelection = enableQueryAwareTierSelection
+        self.deterministicNowMs = deterministicNowMs
     }
 }
-

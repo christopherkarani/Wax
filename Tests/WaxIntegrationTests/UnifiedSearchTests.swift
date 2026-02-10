@@ -183,3 +183,22 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+@Test func vectorOnlySearchWithoutEmbeddingThrows() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        do {
+            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5))
+            Issue.record("Expected WaxError for vectorOnly search without embedding")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("requires a non-empty query embedding"))
+        }
+
+        try await wax.close()
+    }
+}

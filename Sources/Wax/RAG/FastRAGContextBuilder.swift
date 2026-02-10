@@ -49,7 +49,7 @@ public struct FastRAGContextBuilder: Sendable {
         let querySignals: QuerySignals? = clamped.enableQueryAwareTierSelection 
             ? queryAnalyzer.analyze(query: query) 
             : nil
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let nowMs = clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000)
 
         // Prefetch surrogate metadata in parallel with expansion work.
         // This keeps determinism while overlapping Wax actor hops.
@@ -61,7 +61,9 @@ public struct FastRAGContextBuilder: Sendable {
         async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
-        async let allFrameMetasTask: [FrameMeta] = shouldPrefetchSurrogates ? wax.frameMetas() : []
+        async let sourceFrameMetasTask: [UInt64: FrameMeta] = shouldPrefetchSurrogates
+            ? wax.frameMetas(frameIds: sourceFrameIds)
+            : [:]
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
@@ -135,9 +137,8 @@ public struct FastRAGContextBuilder: Sendable {
                 scorer: ImportanceScorer()
             )
 
-            // Get frame metas for timestamp access (needed for tier selection)
-            let allFrameMetas = await allFrameMetasTask
-            let frameMetaMap = Dictionary(uniqueKeysWithValues: allFrameMetas.map { ($0.id, $0) })
+            // Get only source frame metas needed for timestamp access.
+            let frameMetaMap = await sourceFrameMetasTask
 
             let surrogateContents = await surrogateContentsTask
 

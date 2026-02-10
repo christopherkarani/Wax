@@ -178,6 +178,81 @@ Then add targets as needed:
 .product(name: "Wax", package: "Wax")
 ```
 
+## PDF Ingestion
+
+```swift
+import Foundation
+import Wax
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-memory")
+    .appendingPathExtension("mv2s")
+var config = OrchestratorConfig.default
+config.enableVectorSearch = false
+let orchestrator = try await MemoryOrchestrator(at: storeURL, config: config)
+try await orchestrator.remember(
+    pdfAt: URL(fileURLWithPath: "/path/to/report.pdf"),
+    metadata: ["source": "report"]
+)
+let ctx = try await orchestrator.recall(query: "key findings")
+try await orchestrator.flush()
+```
+
+*Note: v1 supports text-based PDFs only (no OCR).*
+
+## Photo Library RAG (On-Device, Photos-only)
+
+Wax now includes a Photos-backed RAG layer that ingests `PHAsset`s **offline-only** (no iCloud downloads), extracts metadata/OCR, computes multimodal embeddings, and returns **RAG-ready context** with text surrogates plus optional pixel payloads (thumbnails/crops).
+
+**Key points**
+- Offline-only bytes: `PHImageRequestOptions.isNetworkAccessAllowed = false` (iCloud-only assets are indexed as **metadata-only** and marked degraded).
+- Capture-time semantics: frames are written with the photo’s **capture timestamp**, not ingest time.
+- Sendable-safe public API: query images use `Data` wrappers (`PhotoQueryImage`), and returned pixels use `PhotoPixel`.
+
+```swift
+import Foundation
+import Wax
+import CoreGraphics
+
+// Your on-device CLIP-like (text↔image) embedding provider.
+struct MyEmbedder: MultimodalEmbeddingProvider {
+    let dimensions: Int = 768
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
+    func embed(text: String) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[0] = 1
+        return v
+    }
+    func embed(image: CGImage) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[1] = 1
+        return v
+    }
+}
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-photos")
+    .appendingPathExtension("mv2s")
+
+var config = PhotoRAGConfig.default
+config.vectorEnginePreference = .cpuOnly
+
+let photoRAG = try await PhotoRAGOrchestrator(
+    storeURL: storeURL,
+    config: config,
+    embedder: MyEmbedder()
+)
+
+// Host app must obtain Photos permission before calling.
+try await photoRAG.syncLibrary(scope: .fullLibrary)
+
+let ctx = try await photoRAG.recall(.init(text: "Costco receipt", resultLimit: 8))
+try await photoRAG.flush()
+```
+
 ## Video RAG (On-Device)
 
 Wax includes an on-device Video RAG layer that ingests **local file videos** and **Photos videos** (offline-only), segments them into fixed windows, computes **keyframe embeddings** per segment, optionally indexes **host-supplied transcripts**, and returns **RAG-ready context** grouped by video.
@@ -203,8 +278,19 @@ struct MyEmbedder: MultimodalEmbeddingProvider {
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
 
-    func embed(text: String) async throws -> [Float] { /* on-device */ [] }
-    func embed(image: CGImage) async throws -> [Float] { /* on-device */ [] }
+    func embed(text: String) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[0] = 1
+        return v
+    }
+
+    func embed(image: CGImage) async throws -> [Float] {
+        // Replace with CoreML model inference.
+        var v = [Float](repeating: 0, count: dimensions)
+        v[1] = 1
+        return v
+    }
 }
 
 struct MyTranscriptProvider: VideoTranscriptProvider {
@@ -233,16 +319,27 @@ let ctx = try await rag.recall(.init(text: "hello wax"))
 try await rag.flush()
 ```
 
-### Sync Photos videos (offline-only)
+### Sync Photos Videos (Offline-Only)
 
 Photos ingestion is offline-only: iCloud-only assets are indexed as **metadata-only** and marked degraded.
 
 ```swift
-import Wax
-
 #if canImport(Photos)
 try await rag.syncLibrary(scope: .fullLibrary)
 #endif
+```
+
+## Capture-Time Timestamps (Advanced)
+
+If you’re building domain-specific pipelines (e.g. photo capture time, event time), Wax supports explicitly setting per-frame timestamps at write time:
+
+```swift
+import Wax
+
+let wax = try await Wax.create(at: storeURL)
+let captureMs: Int64 = 1_700_000_000_000
+_ = try await wax.put(Data(), options: .init(kind: "photo.root"), timestampMs: captureMs)
+try await wax.commit()
 ```
 
 ## Contributing
@@ -252,6 +349,12 @@ We welcome issues and PRs. For local validation:
 ```bash
 cd Wax
 swift test
+```
+
+MiniLM CoreML inference tests are opt-in:
+
+```bash
+WAX_TEST_MINILM=1 swift test
 ```
 
 If you're exploring the file format or retrieval research, start with the core engine (`Sources/WaxCore/`) and the benchmarks (`Tests/WaxIntegrationTests/`). We are especially interested in:
