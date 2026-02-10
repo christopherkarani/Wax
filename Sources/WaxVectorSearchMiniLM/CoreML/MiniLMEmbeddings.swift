@@ -2,6 +2,7 @@ import CoreML
 import Foundation
 import Accelerate
 
+/// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
 @available(macOS 15.0, iOS 18.0, *)
 public final class MiniLMEmbeddings {
     public enum InitError: LocalizedError, Sendable {
@@ -21,9 +22,9 @@ public final class MiniLMEmbeddings {
         }
     }
 
-    public struct Overrides: @unchecked Sendable {
-        var modelURLProvider: (() -> URL?)?
-        var tokenizerFactory: (() throws -> BertTokenizer)?
+    public struct Overrides: Sendable {
+        var modelURLProvider: (@Sendable () -> URL?)?
+        var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
         var usesBundleFallback: Bool
 
         static let `default` = Overrides(
@@ -94,11 +95,13 @@ public final class MiniLMEmbeddings {
 
     // MARK: - Dense Embeddings
 
+    /// Encode a single sentence to a 384-dimensional embedding vector.
     public func encode(sentence: String) async -> [Float]? {
         guard let embeddings = await encode(batch: [sentence]) else { return nil }
         return embeddings.first
     }
 
+    /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
     public func encode(batch sentences: [String]) async -> [[Float]]? {
         var reuse: BatchInputBuffers?
         return encode(batch: sentences, reuseBuffers: &reuse)
@@ -130,6 +133,7 @@ public final class MiniLMEmbeddings {
         )
     }
 
+    /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
     public func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
         let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
         let output = try? model.prediction(input: inputFeatures)
@@ -201,12 +205,13 @@ private extension MiniLMEmbeddings {
                 lock.unlock()
                 return cached
             }
-            lock.unlock()
+            defer { lock.unlock() }
 
+            // NOTE: CoreML / Espresso compilation has been observed to deadlock when multiple threads
+            // load the same model concurrently. Serializing model loads avoids that class of issues
+            // and preserves determinism for callers initializing `MiniLMEmbeddings` in parallel.
             let model = try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            lock.lock()
             models[key] = model
-            lock.unlock()
             return model
         }
     }

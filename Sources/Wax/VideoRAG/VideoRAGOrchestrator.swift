@@ -1,8 +1,10 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 import WaxCore
 import WaxVectorSearch
+import os
 
 #if canImport(AVFoundation)
 import AVFoundation
@@ -78,8 +80,11 @@ public actor VideoRAGOrchestrator {
         return plans.map { VideoSegmentTimeRange(startMs: $0.startMs, endMs: $0.endMs) }
     }
 
-    private let wax: Wax
-    private let session: WaxSession
+    /// The underlying Wax store for frame storage and indexing.
+    public let wax: Wax
+    /// The active Wax session for reads and writes.
+    public let session: WaxSession
+    /// Configuration controlling segment duration, pixel sizes, transcript budgets, and search parameters.
     public let config: VideoRAGConfig
 
     private let embedder: any MultimodalEmbeddingProvider
@@ -98,11 +103,20 @@ public actor VideoRAGOrchestrator {
         self.embedder = embedder
         self.transcriptProvider = transcriptProvider
 
+        if config.requireOnDeviceProviders {
+            guard embedder.executionMode == .onDeviceOnly else {
+                throw WaxError.io("VideoRAG requires on-device embedding provider")
+            }
+            if let transcriptProvider, transcriptProvider.executionMode != .onDeviceOnly {
+                throw WaxError.io("VideoRAG requires on-device transcript provider")
+            }
+        }
+
         if config.vectorEnginePreference != .cpuOnly, embedder.normalize == false {
             throw WaxError.io("Metal vector search requires normalized embeddings (set embedder.normalize=true or use cpuOnly)")
         }
 
-        if FileManager.default.fileExists(atPath: storeURL.path) {
+        if FileManager.default.fileExists(atPath: storeURL.path(percentEncoded: false)) {
             self.wax = try await Wax.open(at: storeURL)
         } else {
             self.wax = try await Wax.create(at: storeURL)
@@ -128,6 +142,7 @@ public actor VideoRAGOrchestrator {
     }
 
     #if canImport(Photos)
+    /// Scope for syncing videos from the Photos library.
     public enum VideoScope: Sendable, Equatable {
         case fullLibrary
         case assetIDs([String])
@@ -155,8 +170,6 @@ public actor VideoRAGOrchestrator {
             }
         }
         try await ingest(photoAssetIDs: ids)
-        try await session.commit()
-        try await rebuildIndex()
     }
     #endif
 
@@ -166,6 +179,7 @@ public actor VideoRAGOrchestrator {
         guard !unique.isEmpty else { return }
 
         for file in unique {
+            try Task.checkCancellation()
             try await ingestOneFile(file)
         }
 
@@ -251,7 +265,7 @@ public actor VideoRAGOrchestrator {
             timelineFallbackLimit: timelineFallbackLimit
         )
 
-        let response = try await wax.search(request)
+        let response = try await session.search(request)
         guard !response.results.isEmpty else {
             return VideoRAGContext(query: query, items: [], diagnostics: .init())
         }
@@ -466,18 +480,13 @@ public actor VideoRAGOrchestrator {
     // MARK: - Delete / flush
 
     public func delete(videoID: VideoID) async throws {
-        // Robust: scan once; deletion is a rare operation and should be correct.
-        let metas = await wax.frameMetas()
-        var toDelete: [UInt64] = []
-        toDelete.reserveCapacity(64)
-        for meta in metas {
-            guard meta.status != .deleted else { continue }
-            guard let entries = meta.metadata?.entries else { continue }
-            guard entries[MetaKey.sourceID] == videoID.id else { continue }
-            let expectedSource = (videoID.source == .photos) ? "photos" : "file"
-            guard entries[MetaKey.source] == expectedSource else { continue }
-            toDelete.append(meta.id)
+        guard let rootId = index.rootByVideoID[videoID] else { return }
+
+        var toDelete: [UInt64] = [rootId]
+        if let segmentIds = index.segmentIdsByVideoID[videoID] {
+            toDelete.append(contentsOf: segmentIds)
         }
+
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
         }
@@ -495,7 +504,7 @@ public actor VideoRAGOrchestrator {
         guard file.url.isFileURL else {
             throw VideoIngestError.invalidVideo(reason: "file URL must be a file:// URL")
         }
-        guard FileManager.default.fileExists(atPath: file.url.path) else {
+        guard FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)) else {
             throw VideoIngestError.fileMissing(id: file.id, url: file.url)
         }
 
@@ -632,6 +641,7 @@ public actor VideoRAGOrchestrator {
         options.reserveCapacity(segments.count)
 
         for (idx, segment) in segments.enumerated() {
+            try Task.checkCancellation()
             var vec = try await embedder.embed(image: keyframes[idx])
             if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
             guard vec.count == embedder.dimensions else {
@@ -663,21 +673,29 @@ public actor VideoRAGOrchestrator {
         // Capture-time semantics: segment frames share the video's capture timestamp so
         // `VideoQuery.timeRange` behaves as a capture-time filter.
         let timestamps = Array(repeating: captureMs, count: segments.count)
-        let frameIds = try await session.putBatch(
-            contents: contents,
-            embeddings: embeddings,
-            identity: embedder.identity,
-            options: options,
-            timestampsMs: timestamps,
-            compression: .plain
-        )
+        let batchSize = config.segmentWriteBatchSize
+        var allFrameIds: [UInt64] = []
+        allFrameIds.reserveCapacity(segments.count)
+
+        for start in stride(from: 0, to: segments.count, by: batchSize) {
+            let end = min(start + batchSize, segments.count)
+            let batchFrameIds = try await session.putBatch(
+                contents: Array(contents[start..<end]),
+                embeddings: Array(embeddings[start..<end]),
+                identity: embedder.identity,
+                options: Array(options[start..<end]),
+                timestampsMs: Array(timestamps[start..<end]),
+                compression: .plain
+            )
+            allFrameIds.append(contentsOf: batchFrameIds)
+        }
 
         // Index segments that have transcript text.
         var textFrameIds: [UInt64] = []
         var texts: [String] = []
-        textFrameIds.reserveCapacity(frameIds.count)
-        texts.reserveCapacity(frameIds.count)
-        for (idx, frameId) in frameIds.enumerated() {
+        textFrameIds.reserveCapacity(allFrameIds.count)
+        texts.reserveCapacity(allFrameIds.count)
+        for (idx, frameId) in allFrameIds.enumerated() {
             let text = String(data: contents[idx], encoding: .utf8) ?? ""
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
             textFrameIds.append(frameId)
@@ -795,13 +813,16 @@ public actor VideoRAGOrchestrator {
         generator.requestedTimeToleranceBefore = tol
         generator.requestedTimeToleranceAfter = tol
 
-        var images: [CGImage] = []
-        images.reserveCapacity(times.count)
-        for time in times {
-            var actual = CMTime.zero
-            let cg = try generator.copyCGImage(at: time, actualTime: &actual)
-            images.append(cg)
-        }
+        let images = try await Task.detached(priority: .userInitiated) {
+            var result: [CGImage] = []
+            result.reserveCapacity(times.count)
+            for time in times {
+                var actual = CMTime.zero
+                let cg = try generator.copyCGImage(at: time, actualTime: &actual)
+                result.append(cg)
+            }
+            return result
+        }.value
 
         return (durationMs: durationMs, keyframes: images)
     }
@@ -836,7 +857,10 @@ public actor VideoRAGOrchestrator {
         options.version = .current
 
         return try await withCheckedThrowingContinuation { continuation in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
             PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
+                guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
+
                 let inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
                 let cancelled = (info?[PHImageCancelledKey] as? NSNumber)?.boolValue ?? false
                 let error = info?[PHImageErrorKey] as? NSError
@@ -869,7 +893,7 @@ public actor VideoRAGOrchestrator {
 
     private static func encodePNG(_ image: CGImage) throws -> Data {
         let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
+        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
             throw WaxError.io("failed to create image destination")
         }
         CGImageDestinationAddImage(dest, image, nil)
@@ -926,8 +950,12 @@ public actor VideoRAGOrchestrator {
         generator.requestedTimeToleranceBefore = tol
         generator.requestedTimeToleranceAfter = tol
         let time = CMTime(seconds: Double(midMs) / 1000.0, preferredTimescale: 600)
-        var actual = CMTime.zero
-        let cg = try generator.copyCGImage(at: time, actualTime: &actual)
+
+        let cg = try await Task.detached(priority: .userInitiated) {
+            var actual = CMTime.zero
+            return try generator.copyCGImage(at: time, actualTime: &actual)
+        }.value
+
         let png = try Self.encodePNG(cg)
         return VideoThumbnail(data: png, format: .png, width: cg.width, height: cg.height)
     }
@@ -968,8 +996,9 @@ public actor VideoRAGOrchestrator {
     private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> TimeRange? {
         guard let range else { return nil }
         let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
-        let before = Int64(range.upperBound.timeIntervalSince1970 * 1000)
-        return TimeRange(after: after, before: before)
+        let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
+        let beforeExclusive = beforeInclusive == Int64.max ? beforeInclusive : beforeInclusive + 1
+        return TimeRange(after: after, before: beforeExclusive)
     }
 
     private static func makeSegments(
@@ -1037,10 +1066,28 @@ public actor VideoRAGOrchestrator {
         out.reserveCapacity(segments.count)
 
         for seg in segments {
-            var parts: [String] = []
-            for chunk in normalized where overlapsAtLeast250ms(chunk: chunk, seg: seg) {
-                parts.append(chunk.text)
+            // Binary search for first chunk that could overlap (chunk.startMs < seg.endMs)
+            var lo = 0, hi = normalized.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if normalized[mid].endMs <= seg.startMs {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
             }
+            let startIndex = lo
+
+            var parts: [String] = []
+            // Scan forward from startIndex until chunk.startMs >= seg.endMs
+            for idx in startIndex..<normalized.count {
+                let chunk = normalized[idx]
+                if chunk.startMs >= seg.endMs { break }
+                if overlapsAtLeast250ms(chunk: chunk, seg: seg) {
+                    parts.append(chunk.text)
+                }
+            }
+
             guard !parts.isEmpty else { continue }
             let joined = parts.joined(separator: "\n")
             let capped = cappedUTF8(joined, maxBytes: maxBytes)
@@ -1098,7 +1145,7 @@ public actor VideoRAGOrchestrator {
         let entries = rootMeta.metadata?.entries ?? [:]
         if let captureStr = entries[MetaKey.captureMs], let ms = Int64(captureStr) {
             let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
-            parts.append("Captured \(ISO8601DateFormatter().string(from: date))")
+            parts.append("Captured \(date.formatted(.iso8601))")
         }
         if let durationStr = entries[MetaKey.durationMs], let ms = Int64(durationStr) {
             parts.append("Duration \(formatMMSS(ms))")

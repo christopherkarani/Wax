@@ -1018,6 +1018,7 @@ public actor Wax {
             }
 
             let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
+            var pendingEmbeddingMaxSequence: UInt64?
             for mutation in ordered {
                 guard case .putEmbedding(let embedding) = mutation.entry else { continue }
                 guard embedding.dimension == dimension else {
@@ -1025,13 +1026,15 @@ public actor Wax {
                         reason: "pending embedding dimension mismatch vs staged vec index: expected \(dimension), got \(embedding.dimension)"
                     )
                 }
+                pendingEmbeddingMaxSequence = mutation.sequence
             }
 
             stagedVecIndex = StagedVecIndex(
                 bytes: bytes,
                 vectorCount: vectorCount,
                 dimension: dimension,
-                similarity: similarity
+                similarity: similarity,
+                pendingEmbeddingMaxSequence: pendingEmbeddingMaxSequence
             )
             stagedVecIndexStampCounter &+= 1
             stagedVecIndexStamp = stagedVecIndexStampCounter
@@ -1055,6 +1058,16 @@ public actor Wax {
             }
             if hasPendingEmbedding {
                 throw WaxError.io("vector index must be staged before committing embeddings")
+            }
+        } else if let stagedVecIndex {
+            let latestPendingEmbeddingSequence = pendingMutations.reduce(nil as UInt64?) { current, mutation in
+                guard case .putEmbedding = mutation.entry else { return current }
+                return mutation.sequence
+            }
+            if latestPendingEmbeddingSequence != stagedVecIndex.pendingEmbeddingMaxSequence {
+                throw WaxError.io(
+                    "vector index is stale relative to pending embeddings; restage vector index before commit"
+                )
             }
         }
 
@@ -1292,7 +1305,7 @@ public actor Wax {
         } catch let error as WaxError {
             if case .frameNotFound = error {
                 guard let meta = await pendingFrameMeta(frameId: frameId) else { throw error }
-                return try await withWriteLock { try await frameContentFromMetaUnlocked(meta) }
+                return try await withReadLock { try await frameContentFromMetaUnlocked(meta) }
             }
             throw error
         }
@@ -1781,11 +1794,33 @@ public actor Wax {
 
     public func close() async throws {
         try await withWriteLock {
+            var commitError: Error?
+            if dirty || stagedLexIndex != nil || stagedVecIndex != nil {
+                do {
+                    try await commitLocked()
+                } catch {
+                    commitError = error
+                }
+            }
+
             let file = self.file
             let lock = self.lock
-            try await io.run {
-                try file.close()
-                try lock.release()
+            var closeError: Error?
+            do {
+                try await io.run {
+                    try file.close()
+                    try lock.release()
+                }
+            } catch {
+                closeError = error
+            }
+
+            if let commitError, !Self.isRecoverableAutoCommitError(commitError) {
+                // Commit error indicates potential data loss; prioritize it over close errors.
+                throw commitError
+            }
+            if let closeError {
+                throw closeError
             }
         }
     }
@@ -1912,6 +1947,7 @@ public actor Wax {
         var vectorCount: UInt64
         var dimension: UInt32
         var similarity: VecSimilarity
+        var pendingEmbeddingMaxSequence: UInt64?
     }
 
     private func nextSegmentId() -> UInt64 {
@@ -1931,6 +1967,12 @@ public actor Wax {
             indexes: toc.indexes,
             timeIndex: toc.timeIndex
         )
+    }
+
+    private static func isRecoverableAutoCommitError(_ error: Error) -> Bool {
+        guard case WaxError.io(let message) = error else { return false }
+        return message.contains("vector index must be staged before committing embeddings")
+            || message.contains("vector index is stale relative to pending embeddings")
     }
 
     private static func collectFramePayloadRanges(

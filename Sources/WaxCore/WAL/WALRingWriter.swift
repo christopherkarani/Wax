@@ -17,6 +17,7 @@ public final class WALRingWriter {
     public private(set) var pendingBytes: UInt64
     public private(set) var lastSequence: UInt64
     private var bytesSinceFsync: UInt64
+    private var isFaulted = false
 
     public init(
         file: FDFile,
@@ -46,6 +47,9 @@ public final class WALRingWriter {
 
     @discardableResult
     public func append(payload: Data, flags: WALFlags = []) throws -> UInt64 {
+        guard !isFaulted else {
+            throw WaxError.io("WAL writer is faulted after a partial write failure")
+        }
         guard !payload.isEmpty else {
             throw WaxError.encodingError(reason: "wal payload must be non-empty")
         }
@@ -133,6 +137,9 @@ public final class WALRingWriter {
     /// Append multiple payloads in a single pass, reusing padding and wrap calculations.
     /// Returns the sequence numbers for the appended data records (padding records are excluded).
     public func appendBatch(payloads: [Data], flags: WALFlags = []) throws -> [UInt64] {
+        guard !isFaulted else {
+            throw WaxError.io("WAL writer is faulted after a partial write failure")
+        }
         guard !payloads.isEmpty else { return [] }
         guard walSize > 0 else {
             throw WaxError.capacityExceeded(limit: 0, requested: 0)
@@ -205,8 +212,13 @@ public final class WALRingWriter {
             localWritePos = (localWritePos + entrySize) % walSize
         }
 
-        for op in operations {
-            try file.writeAll(op.bytes, at: op.offset)
+        do {
+            for op in operations {
+                try file.writeAll(op.bytes, at: op.offset)
+            }
+        } catch {
+            isFaulted = true
+            throw error
         }
 
         lastSequence = localLastSequence

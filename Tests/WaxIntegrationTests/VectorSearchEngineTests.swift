@@ -121,9 +121,9 @@ import WaxVectorSearch
 
     do {
         try await wax.commit()
-        #expect(Bool(false))
+        Issue.record("Expected error when committing embeddings without staged vector index")
     } catch {
-        // Expected.
+        // Expected: vector index must be staged before committing embeddings
     }
 
     try await wax.close()
@@ -147,9 +147,9 @@ import WaxVectorSearch
     let reopened = try await Wax.open(at: fileURL)
     do {
         try await reopened.putEmbedding(frameId: 0, vector: [1, 0, 0, 0, 0])
-        #expect(Bool(false))
+        Issue.record("Expected error for dimension mismatch against committed vec index")
     } catch {
-        // Expected.
+        // Expected: dimension mismatch vs committed vec index
     }
     try await reopened.close()
     try FileManager.default.removeItem(at: tempDir)
@@ -167,13 +167,48 @@ import WaxVectorSearch
 
     do {
         try await wax.stageVecIndexForNextCommit(bytes: Data([0x01]), vectorCount: 0, dimension: 5, similarity: .cosine)
-        #expect(Bool(false))
+        Issue.record("Expected error for pending embedding dimension mismatch vs staged vec index")
     } catch {
-        // Expected.
+        // Expected: pending embedding dimension mismatch
     }
 
     try await wax.close()
     try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func commitRejectsStaleStagedVectorIndexWhenPendingEmbeddingsChange() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let wax = try await Wax.create(at: fileURL)
+
+    let frame0 = try await wax.put(Data("first".utf8))
+    try await wax.putEmbedding(frameId: frame0, vector: [1.0, 0.0, 0.0, 0.0])
+    try await wax.stageVecIndexForNextCommit(
+        bytes: Data([0x01]),
+        vectorCount: 1,
+        dimension: 4,
+        similarity: .cosine
+    )
+
+    let frame1 = try await wax.put(Data("second".utf8))
+    try await wax.putEmbedding(frameId: frame1, vector: [0.0, 1.0, 0.0, 0.0])
+
+    do {
+        try await wax.commit()
+        Issue.record("Expected error for stale staged vector index")
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("vector index is stale"))
+    }
+
+    try await wax.close()
 }
 
 @Test func crashRecoveryAllowsVectorCommitWithoutReprovidingEmbeddings() async throws {

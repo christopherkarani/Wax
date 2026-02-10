@@ -84,6 +84,15 @@ private struct SegmentScopedTranscriptProvider: VideoTranscriptProvider {
     }
 }
 
+private struct NetworkTranscriptProvider: VideoTranscriptProvider {
+    var executionMode: ProviderExecutionMode { .mayUseNetwork }
+
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        return []
+    }
+}
+
 @Test
 func videoRAGFileIngestRespectsCaptureTimeRangeForSegmentSearch() async throws {
     try await TempFiles.withTempFile { url in
@@ -124,5 +133,26 @@ func videoRAGFileIngestRespectsCaptureTimeRangeForSegmentSearch() async throws {
 
         #expect(ctx.items.count == 1)
         #expect(ctx.items.first?.summaryText.contains(SegmentScopedTranscriptProvider.token) == true)
+    }
+}
+
+@Test
+func videoRAGRejectsNetworkTranscriptProviderByDefault() async throws {
+    try await TempFiles.withTempFile { url in
+        do {
+            _ = try await VideoRAGOrchestrator(
+                storeURL: url,
+                config: .default,
+                embedder: TestVideoEmbedder(),
+                transcriptProvider: NetworkTranscriptProvider()
+            )
+            Issue.record("Expected WaxError for network transcript provider")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("on-device transcript provider"))
+        }
     }
 }

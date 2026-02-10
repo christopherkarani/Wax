@@ -2,7 +2,9 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
+/// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
 public actor MemoryOrchestrator {
+    /// Policy controlling when to compute query embeddings for vector search.
     public enum QueryEmbeddingPolicy: Sendable, Equatable {
         case never
         case ifAvailable
