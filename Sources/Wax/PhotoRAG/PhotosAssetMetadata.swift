@@ -11,6 +11,8 @@ import CoreLocation
 #endif
 
 enum PhotosAssetMetadata {
+    private static let photosRequestTimeout: Duration = .seconds(10)
+
     struct EXIF: Sendable {
         var cameraMake: String?
         var cameraModel: String?
@@ -107,7 +109,10 @@ enum PhotosAssetMetadata {
 
         let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(data: Data?, isLocal: Bool), Error>) in
             let resumed = OSAllocatedUnfairLock(initialState: false)
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, info in
+            let manager = PHImageManager.default()
+            var requestID: PHImageRequestID = PHInvalidImageRequestID
+
+            requestID = manager.requestImageDataAndOrientation(for: asset, options: options) { data, _, _, info in
                 guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
 
                 let inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
@@ -129,6 +134,15 @@ enum PhotosAssetMetadata {
                     return
                 }
                 continuation.resume(returning: (data: data, isLocal: true))
+            }
+
+            Task { @MainActor in
+                try? await Task.sleep(for: photosRequestTimeout)
+                guard resumed.withLock({ let was = $0; $0 = true; return !was }) else { return }
+                if requestID != PHInvalidImageRequestID {
+                    manager.cancelImageRequest(requestID)
+                }
+                continuation.resume(returning: (data: nil, isLocal: false))
             }
         }
 
@@ -193,4 +207,3 @@ enum PhotosAssetMetadata {
         return nil
     }
 }
-
