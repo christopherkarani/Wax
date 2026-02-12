@@ -111,6 +111,21 @@ private enum SQLiteBlobInspector {
     #expect(results.allSatisfy { ($0.snippet ?? "").isEmpty == false })
 }
 
+@Test func indexBatchEmptyTextRemovesStaleRow() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 7, text: "Stale searchable text")
+
+    let before = try await engine.search(query: "Stale", topK: 10)
+    #expect(before.map(\.frameId) == [7])
+
+    try await engine.indexBatch(frameIds: [7], texts: ["  \n\t  "])
+
+    let after = try await engine.search(query: "Stale", topK: 10)
+    #expect(after.isEmpty)
+    let count = try await engine.count()
+    #expect(count == 0)
+}
+
 @Test func searchScoresAreOrderedAndNonConstant() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Swift")

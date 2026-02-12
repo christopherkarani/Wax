@@ -91,3 +91,46 @@ import Testing
     // `close()` auto-commits pending mutations; this test intentionally leaves an invalid mutation pending.
     _ = try? await wax.close()
 }
+
+@Test func pendingDeleteIsVisibleInIncludingPendingReads() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let frameId = try await wax.put(Data("payload".utf8))
+    try await wax.commit()
+
+    try await wax.delete(frameId: frameId)
+
+    let single = try await wax.frameMetaIncludingPending(frameId: frameId)
+    #expect(single.status == .deleted)
+
+    let batch = await wax.frameMetasIncludingPending(frameIds: [frameId])
+    #expect(batch[frameId]?.status == .deleted)
+
+    try await wax.close()
+}
+
+@Test func pendingSupersedeIsVisibleInIncludingPendingReads() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let oldId = try await wax.put(Data("old".utf8))
+    try await wax.commit()
+
+    let newId = try await wax.put(Data("new".utf8))
+    try await wax.supersede(supersededId: oldId, supersedingId: newId)
+
+    let oldSingle = try await wax.frameMetaIncludingPending(frameId: oldId)
+    #expect(oldSingle.supersededBy == newId)
+
+    let newSingle = try await wax.frameMetaIncludingPending(frameId: newId)
+    #expect(newSingle.supersedes == oldId)
+
+    let batch = await wax.frameMetasIncludingPending(frameIds: [oldId, newId])
+    #expect(batch[oldId]?.supersededBy == newId)
+    #expect(batch[newId]?.supersedes == oldId)
+
+    try await wax.close()
+}

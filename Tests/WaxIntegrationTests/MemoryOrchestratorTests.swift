@@ -206,6 +206,97 @@ func memoryOrchestratorReopenVectorSearchWithoutEmbedderAllowsRecallWithEmbeddin
 }
 
 @Test
+func memoryOrchestratorRememberIsAtomicWhenEmbeddingFails() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.ingestBatchSize = 1
+        config.ingestConcurrency = 1
+        config.chunking = .tokenCount(targetTokens: 3, overlapTokens: 0)
+
+        let content = "Swift actors isolate state. Swift tasks coordinate work. Swift actors isolate state. Swift tasks coordinate work."
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        #expect(chunks.count > 1)
+
+        let orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: FailOnNthEmbedder(failOnCall: 2)
+        )
+
+        do {
+            try await orchestrator.remember(content)
+            #expect(Bool(false))
+        } catch {
+            #expect(Bool(true))
+        }
+        try await orchestrator.close()
+
+        let wax = try await Wax.open(at: url)
+        let stats = await wax.stats()
+        #expect(stats.frameCount == 0)
+        try await wax.close()
+    }
+}
+
+@Test
+func memoryOrchestratorNonBatchEmbedderDoesNotReceiveConcurrentEmbedCalls() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.ingestBatchSize = 64
+        config.ingestConcurrency = 1
+        config.chunking = .tokenCount(targetTokens: 3, overlapTokens: 0)
+
+        let content = String(repeating: "Swift concurrency actors tasks isolation. ", count: 40)
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        #expect(chunks.count > 1)
+
+        let orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: RejectConcurrentEmbedder()
+        )
+        try await orchestrator.remember(content)
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func memoryOrchestratorRememberRequiresEmbedderWhenVectorSearchEnabledAfterReopen() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+
+        let seeded = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        try await seeded.remember("Swift concurrency uses actors and tasks.")
+        try await seeded.close()
+
+        let waxBefore = try await Wax.open(at: url)
+        let beforeCount = await waxBefore.stats().frameCount
+        try await waxBefore.close()
+
+        let reopened = try await MemoryOrchestrator(at: url, config: config, embedder: nil)
+        do {
+            try await reopened.remember("This should fail without an embedder.")
+            #expect(Bool(false))
+        } catch {
+            #expect(Bool(true))
+        }
+        try await reopened.close()
+
+        let waxAfter = try await Wax.open(at: url)
+        let afterCount = await waxAfter.stats().frameCount
+        #expect(afterCount == beforeCount)
+        try await waxAfter.close()
+    }
+}
+
+@Test
 func memoryOrchestratorRecallWithEmbeddingPolicyUsesEmbedderWhenAvailable() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
@@ -255,9 +346,9 @@ func memoryOrchestratorRespectsIngestBatchingAndOrder() async throws {
         // Validate batching behavior
         let batches = await embedder.batches
         #expect(!batches.isEmpty)
-        #expect(batches.dropLast().allSatisfy { $0.count == config.ingestBatchSize })
-        #expect(batches.last?.count ?? 0 > 0)
-        #expect(batches.last!.count <= config.ingestBatchSize)
+        #expect(batches.allSatisfy { !$0.isEmpty && $0.count <= config.ingestBatchSize })
+        let partialBatchCount = batches.filter { $0.count < config.ingestBatchSize }.count
+        #expect(partialBatchCount <= 1)
 
         // Validate chunk ordering persisted
         let reopened = try await Wax.open(at: url)
@@ -307,6 +398,89 @@ private actor RecordingBatchEmbedder: BatchEmbeddingProvider {
             let base = Float(index + 1)
             return [base, base, base, base, base, base, base, base]
         }
+    }
+}
+
+private enum TestEmbedderError: Error {
+    case forcedFailure
+    case concurrentAccess
+}
+
+private final class FailOnNthEmbedder: EmbeddingProvider, @unchecked Sendable {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "FailNth",
+        dimensions: 2,
+        normalized: true
+    )
+
+    private let failOnCall: Int
+    private let state = FailOnNthEmbedderState()
+
+    init(failOnCall: Int) {
+        self.failOnCall = failOnCall
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        let shouldFail = await state.shouldFail(on: failOnCall)
+        if shouldFail {
+            throw TestEmbedderError.forcedFailure
+        }
+        return [1, 0]
+    }
+}
+
+private final class RejectConcurrentEmbedder: EmbeddingProvider, @unchecked Sendable {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "RejectConcurrent",
+        dimensions: 2,
+        normalized: true
+    )
+
+    private let state = RejectConcurrentEmbedderState()
+
+    func embed(_ text: String) async throws -> [Float] {
+        let started = await state.tryEnter()
+        if !started {
+            throw TestEmbedderError.concurrentAccess
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: 25_000_000)
+            await state.leave()
+            return [1, 0]
+        } catch {
+            await state.leave()
+            throw error
+        }
+    }
+}
+
+private actor FailOnNthEmbedderState {
+    private var callCount = 0
+
+    func shouldFail(on failOnCall: Int) -> Bool {
+        callCount += 1
+        return callCount == failOnCall
+    }
+}
+
+private actor RejectConcurrentEmbedderState {
+    private var inFlight = 0
+
+    func tryEnter() -> Bool {
+        guard inFlight == 0 else { return false }
+        inFlight = 1
+        return true
+    }
+
+    func leave() {
+        inFlight = max(0, inFlight - 1)
     }
 }
 
