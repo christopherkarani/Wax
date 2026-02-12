@@ -367,14 +367,29 @@ public actor Wax {
             }
             var header = selected.page
 
+            let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
+            let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
+
             let footerSlice: FooterSlice
-            if let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url) {
-                footerSlice = fastFooter
-            } else {
-                guard let scanned = try FooterScanner.findLastValidFooter(in: url) else {
-                    throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            switch (fastFooter, scannedFooter) {
+            case (.some(let fast), .some(let scanned)):
+                // Crash can happen after footer fsync but before header page update.
+                // Prefer the newest valid footer rather than trusting stale header pointers.
+                if scanned.footer.generation > fast.footer.generation {
+                    footerSlice = scanned
+                } else if scanned.footer.generation == fast.footer.generation,
+                    scanned.footerOffset > fast.footerOffset
+                {
+                    footerSlice = scanned
+                } else {
+                    footerSlice = fast
                 }
+            case (.some(let fast), .none):
+                footerSlice = fast
+            case (.none, .some(let scanned)):
                 footerSlice = scanned
+            case (.none, .none):
+                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
             }
 
             let toc = try MV2STOC.decode(from: footerSlice.tocBytes)
@@ -1417,6 +1432,51 @@ public actor Wax {
 
     private func frameStoredContentUnlocked(frameId: UInt64) async throws -> Data {
         let frame = try frameMetaUnlocked(frameId: frameId)
+        let stored = try await readStoredPayloadFromMeta(frame)
+        _ = try Self.validateStoredPayloadChecksum(stored, frame: frame)
+        return stored
+    }
+
+    private func frameContentUnlocked(frameId: UInt64) async throws -> Data {
+        let frame = try frameMetaUnlocked(frameId: frameId)
+        return try await frameContentFromMeta(frame)
+    }
+
+    private func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
+        let stored = try await readStoredPayloadFromMeta(frame)
+        if frame.payloadLength == 0 { return stored }
+
+        let storedChecksum = try Self.validateStoredPayloadChecksum(stored, frame: frame)
+        guard frame.canonicalEncoding != .plain else {
+            guard storedChecksum == frame.checksum else {
+                throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
+            }
+            return stored
+        }
+
+        guard let canonicalLength = frame.canonicalLength else {
+            throw WaxError.invalidToc(reason: "missing canonical_length for frame \(frame.id)")
+        }
+        guard canonicalLength <= UInt64(Int.max) else {
+            throw WaxError.io("canonical payload too large: \(canonicalLength)")
+        }
+        let canonical = try PayloadCompressor.decompress(
+            stored,
+            algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
+            uncompressedLength: Int(canonicalLength)
+        )
+        let canonicalChecksum = SHA256Checksum.digest(canonical)
+        guard canonicalChecksum == frame.checksum else {
+            throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
+        }
+        return canonical
+    }
+
+    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+        try await frameContentFromMeta(frame)
+    }
+
+    private func readStoredPayloadFromMeta(_ frame: FrameMeta) async throws -> Data {
         if frame.payloadLength == 0 { return Data() }
         guard frame.payloadLength <= UInt64(Int.max) else {
             throw WaxError.io("payload too large: \(frame.payloadLength)")
@@ -1427,50 +1487,16 @@ public actor Wax {
         }
     }
 
-    private func frameContentUnlocked(frameId: UInt64) async throws -> Data {
-        let frame = try frameMetaUnlocked(frameId: frameId)
-        let stored = try await frameStoredContentUnlocked(frameId: frameId)
-        guard frame.canonicalEncoding != .plain else { return stored }
-
-        guard let canonicalLength = frame.canonicalLength else {
-            throw WaxError.invalidToc(reason: "missing canonical_length for frame \(frameId)")
-        }
-        guard canonicalLength <= UInt64(Int.max) else {
-            throw WaxError.io("canonical payload too large: \(canonicalLength)")
-        }
-        return try PayloadCompressor.decompress(
-            stored,
-            algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-            uncompressedLength: Int(canonicalLength)
-        )
-    }
-
-    private func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
+    private static func validateStoredPayloadChecksum(_ stored: Data, frame: FrameMeta) throws -> Data {
         if frame.payloadLength == 0 { return Data() }
-        guard frame.payloadLength <= UInt64(Int.max) else {
-            throw WaxError.io("payload too large: \(frame.payloadLength)")
+        guard let expectedStoredChecksum = frame.storedChecksum else {
+            throw WaxError.invalidToc(reason: "frame \(frame.id) missing stored_checksum")
         }
-        let file = self.file
-        let stored = try await io.run {
-            try file.readExactly(length: Int(frame.payloadLength), at: frame.payloadOffset)
+        let storedChecksum = SHA256Checksum.digest(stored)
+        guard storedChecksum == expectedStoredChecksum else {
+            throw WaxError.checksumMismatch("frame \(frame.id) stored_checksum mismatch")
         }
-        guard frame.canonicalEncoding != .plain else { return stored }
-
-        guard let canonicalLength = frame.canonicalLength else {
-            throw WaxError.invalidToc(reason: "missing canonical_length for frame \(frame.id)")
-        }
-        guard canonicalLength <= UInt64(Int.max) else {
-            throw WaxError.io("canonical payload too large: \(canonicalLength)")
-        }
-        return try PayloadCompressor.decompress(
-            stored,
-            algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-            uncompressedLength: Int(canonicalLength)
-        )
-    }
-
-    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
-        try await frameContentFromMeta(frame)
+        return storedChecksum
     }
 
     private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
@@ -1842,7 +1868,7 @@ public actor Wax {
                 closeError = error
             }
 
-            if let commitError, !Self.isRecoverableAutoCommitError(commitError) {
+            if let commitError {
                 // Commit error indicates potential data loss; prioritize it over close errors.
                 throw commitError
             }
@@ -1994,12 +2020,6 @@ public actor Wax {
             indexes: toc.indexes,
             timeIndex: toc.timeIndex
         )
-    }
-
-    private static func isRecoverableAutoCommitError(_ error: Error) -> Bool {
-        guard case WaxError.io(let message) = error else { return false }
-        return message.contains("vector index must be staged before committing embeddings")
-            || message.contains("vector index is stale relative to pending embeddings")
     }
 
     private static func collectFramePayloadRanges(
