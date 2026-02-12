@@ -944,14 +944,9 @@ public actor Wax {
 
     public func pendingFrameMeta(frameId: UInt64) async -> FrameMeta? {
         await withReadLock {
-            var last: PutFrame?
-            for mutation in pendingMutations {
-                guard case .putFrame(let put) = mutation.entry else { continue }
-                guard put.frameId == frameId else { continue }
-                last = put
-            }
-            guard let last else { return nil }
-            return try? FrameMeta.fromPut(last)
+            let maxCommittedId = UInt64(toc.frames.count)
+            guard frameId >= maxCommittedId else { return nil }
+            return frameMetasIncludingPendingUnlocked(frameIds: [frameId])[frameId]
         }
     }
 
@@ -1213,38 +1208,7 @@ public actor Wax {
 
     public func frameMetasIncludingPending(frameIds: [UInt64]) async -> [UInt64: FrameMeta] {
         await withReadLock {
-            var metas: [UInt64: FrameMeta] = [:]
-            metas.reserveCapacity(frameIds.count)
-
-            let maxId = UInt64(toc.frames.count)
-            var missing: Set<UInt64> = []
-            missing.reserveCapacity(frameIds.count)
-
-            for frameId in frameIds {
-                if frameId < maxId {
-                    metas[frameId] = toc.frames[Int(frameId)]
-                } else {
-                    missing.insert(frameId)
-                }
-            }
-
-            guard !missing.isEmpty else { return metas }
-
-            var pendingById: [UInt64: PutFrame] = [:]
-            pendingById.reserveCapacity(missing.count)
-            for mutation in pendingMutations {
-                guard case .putFrame(let put) = mutation.entry else { continue }
-                guard missing.contains(put.frameId) else { continue }
-                pendingById[put.frameId] = put
-            }
-
-            for (frameId, put) in pendingById {
-                if let meta = try? FrameMeta.fromPut(put) {
-                    metas[frameId] = meta
-                }
-            }
-
-            return metas
+            frameMetasIncludingPendingUnlocked(frameIds: frameIds)
         }
     }
 
@@ -1282,14 +1246,12 @@ public actor Wax {
     }
 
     public func frameMetaIncludingPending(frameId: UInt64) async throws -> FrameMeta {
-        do {
-            return try await frameMeta(frameId: frameId)
-        } catch let error as WaxError {
-            if case .frameNotFound = error,
-               let pending = await pendingFrameMeta(frameId: frameId) {
-                return pending
+        try await withReadLock {
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: [frameId])
+            guard let meta = metas[frameId] else {
+                throw WaxError.frameNotFound(frameId: frameId)
             }
-            throw error
+            return meta
         }
     }
 
@@ -1300,14 +1262,12 @@ public actor Wax {
     }
 
     public func frameContentIncludingPending(frameId: UInt64) async throws -> Data {
-        do {
-            return try await frameContent(frameId: frameId)
-        } catch let error as WaxError {
-            if case .frameNotFound = error {
-                guard let meta = await pendingFrameMeta(frameId: frameId) else { throw error }
-                return try await withReadLock { try await frameContentFromMetaUnlocked(meta) }
+        try await withReadLock {
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: [frameId])
+            guard let meta = metas[frameId] else {
+                throw WaxError.frameNotFound(frameId: frameId)
             }
-            throw error
+            return try await frameContentFromMetaUnlocked(meta)
         }
     }
 
@@ -1518,6 +1478,73 @@ public actor Wax {
             throw WaxError.frameNotFound(frameId: frameId)
         }
         return toc.frames[Int(frameId)]
+    }
+
+    private func frameMetasIncludingPendingUnlocked(frameIds: [UInt64]) -> [UInt64: FrameMeta] {
+        let trackedFrameIds = Set(frameIds)
+        guard !trackedFrameIds.isEmpty else { return [:] }
+
+        var metas: [UInt64: FrameMeta] = [:]
+        metas.reserveCapacity(trackedFrameIds.count)
+
+        let maxCommittedId = UInt64(toc.frames.count)
+        for frameId in trackedFrameIds where frameId < maxCommittedId {
+            metas[frameId] = toc.frames[Int(frameId)]
+        }
+
+        guard !pendingMutations.isEmpty else { return metas }
+
+        let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
+        for mutation in ordered {
+            switch mutation.entry {
+            case .putFrame(let put):
+                guard trackedFrameIds.contains(put.frameId) else { continue }
+                guard let pendingMeta = try? FrameMeta.fromPut(put) else { continue }
+                metas[put.frameId] = pendingMeta
+
+            case .deleteFrame(let delete):
+                guard trackedFrameIds.contains(delete.frameId),
+                      var meta = metas[delete.frameId]
+                else { continue }
+                meta.status = .deleted
+                metas[delete.frameId] = meta
+
+            case .supersedeFrame(let supersede):
+                guard supersede.supersededId != supersede.supersedingId else { continue }
+
+                if trackedFrameIds.contains(supersede.supersededId) {
+                    guard let supersededMeta = metas[supersede.supersededId] else { continue }
+                    if let existing = supersededMeta.supersededBy,
+                       existing != supersede.supersedingId {
+                        continue
+                    }
+                }
+
+                if trackedFrameIds.contains(supersede.supersedingId) {
+                    guard let supersedingMeta = metas[supersede.supersedingId] else { continue }
+                    if let existing = supersedingMeta.supersedes,
+                       existing != supersede.supersededId {
+                        continue
+                    }
+                }
+
+                if trackedFrameIds.contains(supersede.supersededId),
+                   var supersededMeta = metas[supersede.supersededId] {
+                    supersededMeta.supersededBy = supersede.supersedingId
+                    metas[supersede.supersededId] = supersededMeta
+                }
+                if trackedFrameIds.contains(supersede.supersedingId),
+                   var supersedingMeta = metas[supersede.supersedingId] {
+                    supersedingMeta.supersedes = supersede.supersededId
+                    metas[supersede.supersedingId] = supersedingMeta
+                }
+
+            case .putEmbedding:
+                continue
+            }
+        }
+
+        return metas
     }
 
     public func readCommittedLexIndexBytes() async throws -> Data? {
