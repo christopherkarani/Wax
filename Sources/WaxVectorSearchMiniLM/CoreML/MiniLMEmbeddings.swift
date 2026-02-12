@@ -70,20 +70,12 @@ public final class MiniLMEmbeddings {
             return defaultConfig
         }()
 
-        do {
-            self.model = try Self.loadModel(configuration: config, overrides: overrides)
-        } catch {
-            if let initError = error as? InitError {
-                throw initError
-            }
-            throw InitError.modelLoadFailed(error.localizedDescription)
-        }
-
+        let tokenizer: BertTokenizer
         do {
             if let factory = overrides.tokenizerFactory {
-                self.tokenizer = try factory()
+                tokenizer = try factory()
             } else {
-                self.tokenizer = try BertTokenizer()
+                tokenizer = try BertTokenizer()
             }
         } catch {
             if let initError = error as? InitError {
@@ -91,6 +83,19 @@ public final class MiniLMEmbeddings {
             }
             throw InitError.tokenizerLoadFailed(error.localizedDescription)
         }
+
+        let model: all_MiniLM_L6_v2
+        do {
+            model = try Self.loadModel(configuration: config, overrides: overrides)
+        } catch {
+            if let initError = error as? InitError {
+                throw initError
+            }
+            throw InitError.modelLoadFailed(error.localizedDescription)
+        }
+
+        self.tokenizer = tokenizer
+        self.model = model
     }
 
     // MARK: - Dense Embeddings

@@ -30,6 +30,7 @@ import Wax
 
         try await session.commit()
         await session.close()
+        try await wax.close()
 
         let reopened = try await Wax.open(at: url)
         let reader = try await reopened.openSession(.readOnly, config: config)
@@ -44,6 +45,7 @@ import Wax
         )
         #expect(facts.hits.contains { $0.fact.predicate == PredicateKey("writes") })
         await reader.close()
+        try await reopened.close()
     }
 }
 

@@ -75,9 +75,9 @@ import Testing
     defer { try? FileManager.default.removeItem(at: url) }
 
     let wax = try await Wax.create(at: url)
-    try await wax.supersede(supersededId: 1, supersedingId: 2)
 
     do {
+        try await wax.supersede(supersededId: 1, supersedingId: 2)
         try await wax.commit()
         #expect(Bool(false))
     } catch let error as WaxError {
@@ -87,5 +87,7 @@ import Testing
             #expect(Bool(false))
         }
     }
-    try await wax.close()
+
+    // `close()` auto-commits pending mutations; this test intentionally leaves an invalid mutation pending.
+    _ = try? await wax.close()
 }

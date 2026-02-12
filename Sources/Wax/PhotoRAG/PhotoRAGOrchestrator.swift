@@ -228,13 +228,14 @@ public actor PhotoRAGOrchestrator {
         let queryEmbedding = try await buildQueryEmbedding(text: queryText, image: query.image)
 
         let mode: SearchMode = {
-            if queryText == nil {
+            switch (queryText, queryEmbedding) {
+            case (.none, .some):
                 return .vectorOnly
-            }
-            if queryEmbedding == nil {
+            case (.some, .some):
+                return .hybrid(alpha: config.hybridAlpha)
+            case (.some, .none), (.none, .none):
                 return .textOnly
             }
-            return .hybrid(alpha: config.hybridAlpha)
         }()
 
         let timeRange = Self.toWaxTimeRange(query.timeRange)
