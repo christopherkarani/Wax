@@ -1,4 +1,0 @@
-- Verify every API claim is supported by `Sources/Wax`.
-- Verify constraints are supported by `README.md` or tests.
-- Confirm examples compile conceptually (signatures, throws, async).
-- Ensure no new claims without evidence.

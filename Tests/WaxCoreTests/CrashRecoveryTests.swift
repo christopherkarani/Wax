@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-@Test func recoveryAfterPutNoCommitReplaysPendingWAL() async throws {
+@Test func closeWithPendingMutationsCommitsBeforeShutdown() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
@@ -15,8 +15,8 @@ import Testing
     do {
         let wax = try await Wax.open(at: url)
         let stats = await wax.stats()
-        #expect(stats.frameCount == 0)
-        #expect(stats.pendingFrames == 1)
+        #expect(stats.frameCount == 1)
+        #expect(stats.pendingFrames == 0)
 
         try await wax.commit()
         let newStats = await wax.stats()
@@ -52,7 +52,7 @@ import Testing
     }
 }
 
-@Test func walReplayFiltersByCommittedSequence() async throws {
+@Test func closeAfterCommittedAndPendingMutationsPersistsAllFrames() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
@@ -67,8 +67,8 @@ import Testing
     do {
         let wax = try await Wax.open(at: url)
         let stats = await wax.stats()
-        #expect(stats.frameCount == 1)
-        #expect(stats.pendingFrames == 1)
+        #expect(stats.frameCount == 2)
+        #expect(stats.pendingFrames == 0)
         try await wax.close()
     }
 }

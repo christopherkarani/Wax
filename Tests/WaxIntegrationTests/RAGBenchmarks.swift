@@ -4,6 +4,9 @@ import Foundation
 
 final class RAGPerformanceBenchmarks: XCTestCase {
     private let scale = BenchmarkScale.current()
+    private var runXCTestBenchmarks: Bool {
+        ProcessInfo.processInfo.environment["WAX_RUN_XCTEST_BENCHMARKS"] == "1"
+    }
     private var collectMetrics: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_METRICS"] == "1"
     }
@@ -12,6 +15,13 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     }
     private var runSampledLatency: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_SAMPLES"] == "1"
+    }
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        guard runXCTestBenchmarks else {
+            throw XCTSkip("Set WAX_RUN_XCTEST_BENCHMARKS=1 to run XCTest benchmark suite.")
+        }
     }
 
     func testIngestTextOnlyPerformance() async throws {
@@ -475,6 +485,9 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     }
 
     func testColdOpenHybridSearchPerformance() async throws {
+        guard ProcessInfo.processInfo.environment["WAX_BENCHMARK_COLD_OPEN"] == "1" else {
+            throw XCTSkip("Set WAX_BENCHMARK_COLD_OPEN=1 to run cold-open hybrid search benchmark.")
+        }
         let scale = self.scale
         let iterations = max(1, min(3, scale.iterations))
         try await TempFiles.withTempFile { url in
