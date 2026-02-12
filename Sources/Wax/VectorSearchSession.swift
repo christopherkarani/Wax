@@ -5,8 +5,10 @@ import WaxVectorSearch
 public actor WaxVectorSearchSession {
     public let wax: Wax
     public let engine: any VectorSearchEngine
+    public let metric: VectorMetric
     public let dimensions: Int
     private var lastPendingEmbeddingSequence: UInt64?
+    private var pendingRemovedFrameIds: Set<UInt64> = []
 
     public init(
         wax: Wax,
@@ -15,6 +17,7 @@ public actor WaxVectorSearchSession {
         preference: VectorEnginePreference = .auto
     ) async throws {
         self.wax = wax
+        self.metric = metric
         self.dimensions = dimensions
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             // Try Metal first; if load fails, fall back to CPU without aborting the session.
@@ -33,15 +36,21 @@ public actor WaxVectorSearchSession {
 
     public func add(frameId: UInt64, vector: [Float]) async throws {
         try await engine.add(frameId: frameId, vector: vector)
+        pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: vector)
     }
 
     public func remove(frameId: UInt64) async throws {
         try await engine.remove(frameId: frameId)
+        pendingRemovedFrameIds.insert(frameId)
     }
 
     public func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        try await engine.search(vector: vector, topK: topK)
+        var query = vector
+        if metric == .cosine, !query.isEmpty, !VectorMath.isNormalizedL2(query) {
+            query = VectorMath.normalizeL2(query)
+        }
+        return try await engine.search(vector: query, topK: topK)
     }
 
     public func putWithEmbedding(
@@ -70,6 +79,7 @@ public actor WaxVectorSearchSession {
 
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await engine.add(frameId: frameId, vector: embedding)
+        pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
     }
@@ -120,6 +130,9 @@ public actor WaxVectorSearchSession {
 
         // Batch add to vector engine
         try await engine.addBatch(frameIds: frameIds, vectors: embeddings)
+        for frameId in frameIds {
+            pendingRemovedFrameIds.remove(frameId)
+        }
 
         // Batch put embeddings to WAL
         try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: embeddings)
@@ -144,8 +157,14 @@ public actor WaxVectorSearchSession {
             let vectors = snapshot.embeddings.map(\.vector)
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         }
+        if !pendingRemovedFrameIds.isEmpty {
+            for frameId in pendingRemovedFrameIds {
+                try await engine.remove(frameId: frameId)
+            }
+        }
         lastPendingEmbeddingSequence = snapshot.latestSequence
         try await engine.stageForCommit(into: wax)
+        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
 }
 

@@ -90,16 +90,6 @@ public actor MemoryOrchestrator {
             docMeta.entries["session_id"] = session.uuidString
         }
 
-        let docId = try await session.put(
-            Data(content.utf8),
-            options: FrameMetaSubset(
-                role: .document,
-                metadata: docMeta
-            )
-        )
-
-        guard !chunks.isEmpty else { return }
-
         let chunkCount = chunks.count
         let localSession = session
         let localEmbedder = embedder
@@ -107,12 +97,25 @@ public actor MemoryOrchestrator {
         let sessionId = currentSessionId
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
+        let fileManager = FileManager.default
+
+        guard !chunks.isEmpty else {
+            _ = try await localSession.put(
+                Data(content.utf8),
+                options: FrameMetaSubset(
+                    role: .document,
+                    metadata: docMeta
+                )
+            )
+            return
+        }
+
+        if useVectorSearch, localEmbedder == nil {
+            throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+        }
 
         struct IngestBatchResult {
             let index: Int
-            let contents: [Data]
-            let texts: [String]
-            let options: [FrameMetaSubset]
             let embeddings: [[Float]]?
         }
 
@@ -124,55 +127,22 @@ public actor MemoryOrchestrator {
             }
 
         let parallelism = max(1, config.ingestConcurrency)
-        var pendingResults: [Int: IngestBatchResult] = [:]
-        var nextCommitIndex = 0
 
-        func commit(_ result: IngestBatchResult) async throws {
-            if let embeddings = result.embeddings, config.enableVectorSearch {
-                let frameIds = try await localSession.putBatch(
-                    contents: result.contents,
-                    embeddings: embeddings,
-                    identity: localEmbedder?.identity,
-                    options: result.options
-                )
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
-                }
-            } else {
-                let frameIds = try await localSession.putBatch(contents: result.contents, options: result.options)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: result.texts)
-                }
-            }
+        let stagingDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("wax-ingest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: stagingDirectory) }
+        if useVectorSearch {
+            try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         }
+
+        var stagedEmbeddingFiles: [Int: URL] = [:]
+        stagedEmbeddingFiles.reserveCapacity(batchRanges.count)
+        var preparedBatchCount = 0
 
         try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
             func enqueue(_ entry: (index: Int, range: Range<Int>)) {
                 group.addTask {
                     let batchChunks = Array(chunks[entry.range])
-
-                    var batchOptions: [FrameMetaSubset] = []
-                    batchOptions.reserveCapacity(batchChunks.count)
-
-                    for (localIdx, globalIdx) in entry.range.enumerated() {
-                        var options = FrameMetaSubset()
-                        options.role = .chunk
-                        options.parentId = docId
-                        options.chunkIndex = UInt32(globalIdx)
-                        options.chunkCount = UInt32(chunkCount)
-                        options.searchText = batchChunks[localIdx]
-
-                        var meta = Metadata(metadata)
-                        if let sessionId {
-                            meta.entries["session_id"] = sessionId.uuidString
-                        }
-                        options.metadata = meta
-                        batchOptions.append(options)
-                    }
-
-                    let batchContents = batchChunks.map { Data($0.utf8) }
 
                     if let localEmbedder = localEmbedder, useVectorSearch {
                         let embeddings = try await Self.prepareEmbeddingsBatchOptimized(
@@ -182,18 +152,12 @@ public actor MemoryOrchestrator {
                         )
                         return IngestBatchResult(
                             index: entry.index,
-                            contents: batchContents,
-                            texts: batchChunks,
-                            options: batchOptions,
                             embeddings: embeddings
                         )
                     }
 
                     return IngestBatchResult(
                         index: entry.index,
-                        contents: batchContents,
-                        texts: batchChunks,
-                        options: batchOptions,
                         embeddings: nil
                     )
                 }
@@ -212,17 +176,81 @@ public actor MemoryOrchestrator {
             while inFlight > 0 {
                 guard let result = try await group.next() else { break }
                 inFlight -= 1
-                pendingResults[result.index] = result
 
-                while let ready = pendingResults[nextCommitIndex] {
-                    try await commit(ready)
-                    pendingResults[nextCommitIndex] = nil
-                    nextCommitIndex += 1
+                if let embeddings = result.embeddings {
+                    let fileURL = stagingDirectory.appendingPathComponent("batch-\(result.index).emb")
+                    try Self.writeEmbeddings(embeddings, to: fileURL)
+                    stagedEmbeddingFiles[result.index] = fileURL
                 }
+                preparedBatchCount += 1
 
                 if let next = iterator.next() {
                     enqueue(next)
                     inFlight += 1
+                }
+            }
+        }
+
+        guard preparedBatchCount == batchRanges.count else {
+            throw WaxError.io(
+                "ingest batching incomplete: expected \(batchRanges.count) prepared batches, got \(preparedBatchCount)"
+            )
+        }
+        if useVectorSearch, stagedEmbeddingFiles.count != batchRanges.count {
+            throw WaxError.io(
+                "ingest batching incomplete: expected \(batchRanges.count) staged embedding batches, got \(stagedEmbeddingFiles.count)"
+            )
+        }
+
+        let docId = try await localSession.put(
+            Data(content.utf8),
+            options: FrameMetaSubset(
+                role: .document,
+                metadata: docMeta
+            )
+        )
+
+        for entry in batchRanges {
+            let batchChunks = Array(chunks[entry.range])
+            let batchContents = batchChunks.map { Data($0.utf8) }
+            var options: [FrameMetaSubset] = []
+            options.reserveCapacity(batchChunks.count)
+            for (localIdx, globalIdx) in entry.range.enumerated() {
+                var option = FrameMetaSubset()
+                option.role = .chunk
+                option.parentId = docId
+                option.chunkIndex = UInt32(globalIdx)
+                option.chunkCount = UInt32(chunkCount)
+                option.searchText = batchChunks[localIdx]
+
+                var chunkMeta = Metadata(metadata)
+                if let sessionId {
+                    chunkMeta.entries["session_id"] = sessionId.uuidString
+                }
+                option.metadata = chunkMeta
+                options.append(option)
+            }
+
+            if useVectorSearch {
+                guard let fileURL = stagedEmbeddingFiles[entry.index] else {
+                    throw WaxError.io("missing staged embeddings for batch \(entry.index)")
+                }
+                let embeddings = try Self.readEmbeddings(from: fileURL)
+                let frameIds = try await localSession.putBatch(
+                    contents: batchContents,
+                    embeddings: embeddings,
+                    identity: localEmbedder?.identity,
+                    options: options
+                )
+
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                }
+            } else {
+                let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
+
+                if config.enableTextSearch {
+                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
                 }
             }
         }
@@ -277,45 +305,13 @@ public actor MemoryOrchestrator {
                 // Use optimized batch embedding - 3-8x faster than sequential
                 vectors = try await batchEmbedder.embed(batch: missingTexts)
             } else {
-                // Fallback to concurrent individual embeds with controlled parallelism
-                vectors = try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-                    // Limit concurrent tasks to avoid overwhelming the system
-                    let maxConcurrent = min(8, missingTexts.count)
-                    var pending = 0
-                    var nextIndex = 0
-                    var out = [[Float]](repeating: [], count: missingTexts.count)
-                    
-                    // Prime the task group with initial batch
-                    while nextIndex < missingTexts.count && pending < maxConcurrent {
-                        let idx = nextIndex
-                        let text = missingTexts[idx]
-                        group.addTask {
-                            let vec = try await embedder.embed(text)
-                            return (idx, vec)
-                        }
-                        pending += 1
-                        nextIndex += 1
-                    }
-                    
-                    // Process results and add new tasks as slots become available
-                    for try await (idx, vec) in group {
-                        out[idx] = vec
-                        pending -= 1
-                        
-                        if nextIndex < missingTexts.count {
-                            let newIdx = nextIndex
-                            let newText = missingTexts[newIdx]
-                            group.addTask {
-                                let vec = try await embedder.embed(newText)
-                                return (newIdx, vec)
-                            }
-                            pending += 1
-                            nextIndex += 1
-                        }
-                    }
-                    
-                    return out
+                var sequentialVectors: [[Float]] = []
+                sequentialVectors.reserveCapacity(missingTexts.count)
+                for text in missingTexts {
+                    let vector = try await embedder.embed(text)
+                    sequentialVectors.append(vector)
                 }
+                vectors = sequentialVectors
             }
 
             guard vectors.count == missingIndices.count else {
@@ -425,6 +421,78 @@ public actor MemoryOrchestrator {
     @inline(__always)
     private static func normalizedL2(_ vector: [Float]) -> [Float] {
         VectorMath.normalizeL2(vector)
+    }
+
+    private static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
+        var data = Data()
+        data.reserveCapacity(8 + embeddings.reduce(0) { $0 + ($1.count * 4) })
+
+        var count = UInt32(embeddings.count).littleEndian
+        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+
+        for vector in embeddings {
+            guard vector.count <= Int(UInt32.max) else {
+                throw WaxError.encodingError(reason: "embedding dimension exceeds UInt32.max")
+            }
+            var dimension = UInt32(vector.count).littleEndian
+            withUnsafeBytes(of: &dimension) { data.append(contentsOf: $0) }
+            for value in vector {
+                var bits = value.bitPattern.littleEndian
+                withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+            }
+        }
+
+        try data.write(to: url, options: .atomic)
+    }
+
+    private static func readEmbeddings(from url: URL) throws -> [[Float]] {
+        let data = try Data(contentsOf: url)
+        var offset = 0
+
+        func readUInt32() throws -> UInt32 {
+            guard data.count - offset >= 4 else {
+                throw WaxError.decodingError(reason: "invalid embedding batch payload")
+            }
+            var raw: UInt32 = 0
+            _ = withUnsafeMutableBytes(of: &raw) { destination in
+                data.copyBytes(to: destination, from: offset..<(offset + 4))
+            }
+            let value = UInt32(littleEndian: raw)
+            offset += 4
+            return value
+        }
+
+        let count = try Int(readUInt32())
+        var embeddings: [[Float]] = []
+        embeddings.reserveCapacity(count)
+
+        for _ in 0..<count {
+            let dimension = try Int(readUInt32())
+            guard dimension >= 0 else {
+                throw WaxError.decodingError(reason: "invalid embedding dimension")
+            }
+            guard data.count - offset >= dimension * 4 else {
+                throw WaxError.decodingError(reason: "invalid embedding batch payload")
+            }
+            var vector: [Float] = []
+            vector.reserveCapacity(dimension)
+            for _ in 0..<dimension {
+                var raw: UInt32 = 0
+                _ = withUnsafeMutableBytes(of: &raw) { destination in
+                    data.copyBytes(to: destination, from: offset..<(offset + 4))
+                }
+                let bits = UInt32(littleEndian: raw)
+                vector.append(Float(bitPattern: bits))
+                offset += 4
+            }
+            embeddings.append(vector)
+        }
+
+        guard offset == data.count else {
+            throw WaxError.decodingError(reason: "invalid embedding batch payload trailing bytes")
+        }
+
+        return embeddings
     }
 
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {

@@ -110,9 +110,12 @@ public actor FTS5SearchEngine {
 
         for (frameId, text) in zip(frameIds, texts) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
             let frameIdValue = try Self.toInt64(frameId)
-            enqueuePendingOp(frameIdValue: frameIdValue, op: .upsert(trimmed))
+            if trimmed.isEmpty {
+                enqueuePendingOp(frameIdValue: frameIdValue, op: .delete)
+            } else {
+                enqueuePendingOp(frameIdValue: frameIdValue, op: .upsert(trimmed))
+            }
         }
         try await flushPendingOpsIfThresholdExceeded()
     }

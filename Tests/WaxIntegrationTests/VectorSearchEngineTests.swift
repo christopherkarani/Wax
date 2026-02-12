@@ -75,6 +75,61 @@ import WaxVectorSearch
     #expect(!VectorMath.isNormalizedL2([2.0, 0.0, 0.0]))
 }
 
+@Test func vectorSearchSessionAddThenRemoveBeforeCommitPersistsRemoval() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let wax = try await Wax.create(at: fileURL)
+    let session = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+    let frameId = try await wax.put(Data("payload".utf8))
+    try await session.add(frameId: frameId, vector: [1.0, 0.0])
+    try await session.remove(frameId: frameId)
+    try await session.commit()
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: fileURL)
+    let session2 = try await reopened.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+    let hits = try await session2.search(vector: [1.0, 0.0], topK: 10)
+    #expect(!hits.contains(where: { $0.frameId == frameId }))
+    try await reopened.close()
+}
+
+@Test func vectorSearchSessionCosineSearchNormalizesScaledQueries() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let wax = try await Wax.create(at: fileURL)
+    let session = try await wax.enableVectorSearch(metric: .cosine, dimensions: 2, preference: .metalPreferred)
+
+    let frameA = try await wax.put(Data("a".utf8))
+    let frameB = try await wax.put(Data("b".utf8))
+    try await session.add(frameId: frameA, vector: [1.0, 0.0])
+    try await session.add(frameId: frameB, vector: [0.0, 1.0])
+
+    let unitHits = try await session.search(vector: [1.0, 0.0], topK: 2)
+    let scaledHits = try await session.search(vector: [12.0, 0.0], topK: 2)
+
+    #expect(unitHits.first?.frameId == frameA)
+    #expect(scaledHits.first?.frameId == frameA)
+    #expect(unitHits.first != nil)
+    #expect(scaledHits.first != nil)
+    if let unitScore = unitHits.first?.score, let scaledScore = scaledHits.first?.score {
+        #expect(abs(unitScore - scaledScore) < 0.001)
+    }
+
+    try await session.commit()
+    try await wax.close()
+}
+
 @Test func mv2sVecIndexPersistsAndReopens() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
@@ -126,7 +181,16 @@ import WaxVectorSearch
         // Expected: vector index must be staged before committing embeddings
     }
 
-    try await wax.close()
+    do {
+        try await wax.close()
+        Issue.record("Expected close to propagate auto-commit failure")
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("vector index must be staged before committing embeddings"))
+    }
     try FileManager.default.removeItem(at: tempDir)
 }
 
@@ -172,7 +236,16 @@ import WaxVectorSearch
         // Expected: pending embedding dimension mismatch
     }
 
-    try await wax.close()
+    do {
+        try await wax.close()
+        Issue.record("Expected close to propagate auto-commit failure")
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("vector index must be staged before committing embeddings"))
+    }
     try FileManager.default.removeItem(at: tempDir)
 }
 
@@ -208,7 +281,16 @@ import WaxVectorSearch
         #expect(message.contains("vector index is stale"))
     }
 
-    try await wax.close()
+    do {
+        try await wax.close()
+        Issue.record("Expected close to propagate stale auto-commit failure")
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("vector index is stale"))
+    }
 }
 
 @Test func crashRecoveryAllowsVectorCommitWithoutReprovidingEmbeddings() async throws {
@@ -222,7 +304,16 @@ import WaxVectorSearch
         let session = try await wax.enableVectorSearch(dimensions: 4)
         _ = try await session.putWithEmbedding(Data("First".utf8), embedding: [1.0, 0.0, 0.0, 0.0])
         // Simulate crash by closing without commit.
-        try await wax.close()
+        do {
+            try await wax.close()
+            Issue.record("Expected close to propagate auto-commit failure")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("vector index must be staged before committing embeddings"))
+        }
     }
 
     do {

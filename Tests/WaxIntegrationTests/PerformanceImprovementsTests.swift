@@ -182,7 +182,16 @@ func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
         let next = await wax.pendingEmbeddingMutations(since: lastSeq)
         #expect(next.embeddings.count == 1)
 
-        try await wax.close()
+        do {
+            try await wax.close()
+            Issue.record("Expected close to propagate auto-commit failure for pending embeddings")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("vector index must be staged before committing embeddings"))
+        }
     }
 }
 
