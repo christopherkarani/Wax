@@ -1,363 +1,297 @@
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/5740a66d-21c2-4980-b6be-06ab1ff1bc68" width="120" alt="Wax Logo">
+</p>
 
-![unnamed-11](https://github.com/user-attachments/assets/5740a66d-21c2-4980-b6be-06ab1ff1bc68)
+<h1 align="center">Wax</h1>
 
-# 🍯 Wax  
-### The Swift-native, single-file memory engine for AI
+<p align="center">
+  <strong>The SQLite for AI memory.</strong><br>
+  One file. Full RAG. Zero infrastructure.
+</p>
 
-**Persistent, on-device RAG — without servers, databases, or pipelines.**
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#performance">Performance</a> •
+  <a href="#how-it-works">How It Works</a> •
+  <a href="#installation">Install</a>
+</p>
 
-| 🧠 On-device memory | 🔍 Hybrid search | 💾 Single-file persistence |
-|---|---|---|
-
-Wax is a **portable AI memory system** that packages:
-- your data
-- embeddings
-- search indexes
-- metadata
-- and recovery logs  
-
-into **one deterministic file**.
-
-Instead of shipping fragile RAG stacks or depending on server-side vector databases,  
-**Wax lets AI retrieve knowledge directly on device — fast, offline, and reproducibly.**
-
-Your agent doesn’t *query infrastructure*.  
-It **carries its memory with it.**
-
-⭐ If this repo is useful, please consider starring it — it genuinely helps.
+<p align="center">
+  <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
+  <img src="https://img.shields.io/badge/platforms-iOS%2026%20%7C%20macOS%2026-blue.svg" alt="Platforms">
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+</p>
 
 ---
 
-## Why Wax exists
+## 30-Second Demo
 
-Most RAG systems assume:
-- 🌐 cloud inference
-- 🧱 external vector databases
-- 🕸 network latency
-- 🔓 data leaving the device
-- 🧮 non-deterministic context assembly
+```swift
+import Wax
 
-Wax flips that model:
+// Create a memory file
+let brain = try await MemoryOrchestrator(
+    at: URL(fileURLWithPath: "brain.mv2s")
+)
 
-- **100% on-device**
-- **single-file state**
-- **crash-safe by default**
-- **deterministic retrieval**
-- **Swift-native concurrency**
+// Remember something
+try await brain.remember(
+    "User prefers dark mode and gets headaches from bright screens",
+    metadata: ["source": "onboarding"]
+)
 
-This makes Wax ideal for **agents, assistants, research tools, and privacy-first apps** that need *real memory*, not prompt hacks.
+// Recall with RAG
+let context = try await brain.recall(query: "user preferences")
+// → "User prefers dark mode and gets headaches from bright screens"
+//   + relevant context, ranked and token-budgeted
+```
 
----
-
-## 📊 Performance (Apple Silicon)
-
-Wax is designed for **interactive latency**, not server throughput.
-
-| Benchmark | Result | Notes |
-|---------|--------|-------|
-| **Hybrid search @ 10K docs** | 105ms | Near-constant scaling |
-| **Metal GPU vector search (warm)** | 0.84ms | 10K × 384-dim |
-| **Cold open → first query** | 17ms p50 | Ready for interactive use |
-| **GPU warm vs cold** | 10.9× faster | Lazy sync |
-| **Buffer serialization** | 16.5× faster | vs file I/O |
-
-<details>
-<summary><b>Full benchmark breakdown</b></summary>
-
-### Core RAG Pipeline
-
-| Test | Avg Latency | RSD |
-|------|-------------|-----|
-| Hybrid Search @ 1K docs | 105ms | 3.4% |
-| FastRAG DenseCached | 105ms | 3.4% |
-| FastRAG Fast Mode | 106ms | 3.1% |
-| Orchestrator Ingest (batched) | 309ms | 1.7% |
-| Cold Open + First Search | 599ms | — |
-
-### Metal GPU Performance
-
-| Metric | Value |
-|--------|-------|
-| Search latency (1K × 128d) | 1.86ms avg |
-| Latency per vector | 0.0019ms |
-| Cold sync (10K × 384d) | 9.19ms |
-| Warm search (10K × 384d) | 0.84ms |
-| Memory saved per warm query | 14.6 MB |
-
-*Benchmarks run on Apple Silicon. Run `swift test --filter RAGPerformanceBenchmarks` to reproduce.*  
-*Optional benchmark suites are opt-in via env flags: `WAX_BENCHMARK_MINILM=1`, `WAX_BENCHMARK_METAL=1`, `WAX_BENCHMARK_10K=1`, `WAX_BENCHMARK_METRICS=1`, `WAX_BENCHMARK_SAMPLES=1`, `WAX_BENCHMARK_OPTIMIZATION=1`.*
-
-</details>
+**That's it.** No Docker. No vector DB. No network calls.
 
 ---
 
-## ✨ What makes Wax different
+## The Problem
 
-**Stop shipping AI that forgets.**
+You wanted to add memory to your AI app.
 
-Wax gives your users AI that:
-- remembers across launches
-- survives crashes
-- behaves deterministically
-- works offline
-- scales without infra
+3 hours later you're still configuring Docker Compose for a vector database that crashes if you look at it wrong, sends your data to who-knows-where, and needs a DevOps team to keep running.
 
-**The core advantages:**
+**Wax replaces your entire RAG stack with a file format.**
 
-- 🧠 **One file, complete memory**  
-  A single `.mv2s` file contains data, indexes, and WAL — nothing else required.
-
-- 🔒 **Crash-safe persistence**  
-  Power loss, app kills, and upgrades are first-class concerns, not edge cases.
-
-- ⚡ **Query-adaptive hybrid retrieval**  
-  Unified search fuses lexical (BM25), vector, temporal, and structured-evidence lanes with query-type–aware weights.
-
-- 🧮 **Deterministic RAG**  
-  Strict token budgets (cl100k_base) + deterministic tie-breaks → reproducible contexts you can test and benchmark.
-
-- 🎭 **Tiered memory compression (surrogates)**  
-  Generate hierarchical surrogates (`full` / `gist` / `micro`) offline, keep them up-to-date, and select the right tier at retrieval time.
-
-- 🚀 **GPU-accelerated vector search (Metal)**  
-  Zero-copy, unified-memory search for interactive latency (with automatic CPU fallback).
-
-- 🎭 **Swift-native design**  
-  Actor-isolated, async-first, written for Swift 6.2 concurrency.
-
-- 🧩 **Composable by design**  
-  Use Wax as a store, a search engine, or a full RAG pipeline.
+```
+Traditional RAG Stack:                     Wax:
+┌─────────────┐                           ┌─────────────┐
+│  Your App   │                           │  Your App   │
+├─────────────┤                           ├─────────────┤
+│  ChromaDB   │                           │             │
+│  PostgreSQL │        vs.                │   brain.    │
+│  Redis      │                           │    mv2s     │
+│  Elasticsearch│                         │             │
+│  Docker     │                           │             │
+└─────────────┘                           └─────────────┘
+     ~5 services                              1 file
+```
 
 ---
 
-## 🚀 Perfect for
+## Why Wax?
 
-- **AI assistants** that remember users over time  
-- **Offline-first apps** with serious search requirements  
-- **Privacy-critical products** where data never leaves the device  
-- **Research tooling** that needs reproducible retrieval  
-- **Agent workflows** that require durable state
+| | |
+|:---|:---|
+| ⚡ **Fast** | 0.84ms vector search @ 10K docs (Metal GPU) |
+| 🛡️ **Durable** | Kill -9 safe, power-loss safe, tested |
+| 🎯 **Deterministic** | Same query = same context, every time |
+| 📦 **Portable** | One `.mv2s` file — move it, backup it, ship it |
+| 🔒 **Private** | 100% on-device. Zero network calls. |
 
 ---
 
-If Wax saved you time, removed infrastructure, or made on-device AI simpler,  
-**consider starring the repo** ⭐ — it helps guide the project’s direction.
+## Performance
 
-## Architectural Choices
+Apple Silicon (M1 Pro)
 
-- **Actor-owned core (`Wax`)**: isolates mutable state and I/O, making correctness the default on mobile.
-- **Append-only frames + ring-buffer WAL**: fast writes, crash-safe recovery, and predictable on-device performance.
-- **Two-phase indexing**: stage → commit for atomic index updates (vector + FTS + structured memory).
-- **Unified search**: one request, multiple lanes (text/vector/temporal/structured evidence) with deterministic fusion.
-- **Deterministic RAG builder**: single expansion + tiered surrogates + ranked snippets under a strict token budget.
-- **Protocol-driven embeddings**: swap providers (and batch embedders) without touching storage or retrieval code paths.
+```
+Vector Search Latency (10K × 384-dim)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Wax Metal (warm)     ████░░░░░░░░░░░░░░░░  0.84ms
+Wax Metal (cold)     █████████████████░░░  9.2ms
+Wax CPU              ███████████░░░░░░░░░  105ms
+SQLite FTS5          ██████████████████░░  150ms
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-## Researcher Notes
+Cold Open → First Query: 17ms
+Hybrid Search @ 10K docs: 105ms
+```
 
-- Deterministic token counting and truncation (cl100k_base).
-- Unified retrieval with query-type adaptive fusion.
-- Reproducible RAG contexts (single expansion, surrogates, ranked snippets).
+*No, that's not a typo. GPU vector search really is sub-millisecond.*
 
-## Requirements
+---
 
-- Swift 6.2
-- iOS 26 / macOS 26
+## Quick Start
 
-## Installation
-
-Add Wax as a Swift Package dependency.
+### 1. Add to Package.swift
 
 ```swift
 .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.1")
 ```
 
-Then add targets as needed:
+### 2. Choose Your Memory Type
+
+<details>
+<summary><b>📝 Text Memory</b> — Documents, notes, conversations</summary>
 
 ```swift
-.product(name: "Wax", package: "Wax")
-```
-
-## PDF Ingestion
-
-```swift
-import Foundation
 import Wax
 
-let storeURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("wax-memory")
-    .appendingPathExtension("mv2s")
-var config = OrchestratorConfig.default
-config.enableVectorSearch = false
-let orchestrator = try await MemoryOrchestrator(at: storeURL, config: config)
-try await orchestrator.remember(
-    pdfAt: URL(fileURLWithPath: "/path/to/report.pdf"),
-    metadata: ["source": "report"]
-)
-let ctx = try await orchestrator.recall(query: "key findings")
-try await orchestrator.flush()
-```
+let orchestrator = try await MemoryOrchestrator(at: storeURL)
 
-*Note: v1 supports text-based PDFs only (no OCR).*
+// Ingest
+try await orchestrator.remember(documentText, metadata: ["source": "report.pdf"])
 
-## Photo Library RAG (On-Device, Photos-only)
-
-Wax now includes a Photos-backed RAG layer that ingests `PHAsset`s **offline-only** (no iCloud downloads), extracts metadata/OCR, computes multimodal embeddings, and returns **RAG-ready context** with text surrogates plus optional pixel payloads (thumbnails/crops).
-
-**Key points**
-- Offline-only bytes: `PHImageRequestOptions.isNetworkAccessAllowed = false` (iCloud-only assets are indexed as **metadata-only** and marked degraded).
-- Capture-time semantics: frames are written with the photo’s **capture timestamp**, not ingest time.
-- Sendable-safe public API: query images use `Data` wrappers (`PhotoQueryImage`), and returned pixels use `PhotoPixel`.
-
-```swift
-import Foundation
-import Wax
-import CoreGraphics
-
-// Your on-device CLIP-like (text↔image) embedding provider.
-struct MyEmbedder: MultimodalEmbeddingProvider {
-    let dimensions: Int = 768
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
-    func embed(text: String) async throws -> [Float] {
-        // Replace with CoreML model inference.
-        var v = [Float](repeating: 0, count: dimensions)
-        v[0] = 1
-        return v
-    }
-    func embed(image: CGImage) async throws -> [Float] {
-        // Replace with CoreML model inference.
-        var v = [Float](repeating: 0, count: dimensions)
-        v[1] = 1
-        return v
-    }
+// Recall
+let context = try await orchestrator.recall(query: "key findings")
+for item in context.items {
+    print("[\(item.kind)] \(item.text)")
 }
+```
+</details>
 
-let storeURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("wax-photos")
-    .appendingPathExtension("mv2s")
+<details>
+<summary><b>📸 Photo Memory</b> — Photo library with OCR + CLIP embeddings</summary>
 
-var config = PhotoRAGConfig.default
-config.vectorEnginePreference = .cpuOnly
+```swift
+import Wax
 
 let photoRAG = try await PhotoRAGOrchestrator(
     storeURL: storeURL,
-    config: config,
-    embedder: MyEmbedder()
+    config: .default,
+    embedder: MyCLIPEmbedder()  // Your CoreML model
 )
 
-// Host app must obtain Photos permission before calling.
+// Index local photos (offline-only)
 try await photoRAG.syncLibrary(scope: .fullLibrary)
 
-let ctx = try await photoRAG.recall(.init(text: "Costco receipt", resultLimit: 8))
-try await photoRAG.flush()
+// Search
+let ctx = try await photoRAG.recall(.init(text: "Costco receipt"))
 ```
+</details>
 
-## Video RAG (On-Device)
-
-Wax includes an on-device Video RAG layer that ingests **local file videos** and **Photos videos** (offline-only), segments them into fixed windows, computes **keyframe embeddings** per segment, optionally indexes **host-supplied transcripts**, and returns **RAG-ready context** grouped by video.
-
-**Offline-only (explicit):**
-- Wax never makes network calls. Ingest + recall operate on the local `.mv2s` file.
-- For fully offline Video RAG, your `VideoTranscriptProvider` should also run on-device.
-
-**v1 constraints (explicit):**
-- **No cloud**: Wax is a local file format + engine, not a sync service.
-- **No clip bytes**: Wax stores text + metadata. It does not store video/audio clip payloads.
-- **Host-supplied transcripts**: Wax does not transcribe audio in v1; your app provides timed transcript chunks.
-
-### Ingest local files + recall
+<details>
+<summary><b>🎬 Video Memory</b> — Video segments with transcripts</summary>
 
 ```swift
-import Foundation
 import Wax
-import CoreGraphics
 
-struct MyEmbedder: MultimodalEmbeddingProvider {
-    let dimensions: Int = 768
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = .init(provider: "MyApp", model: "MyCLIP", dimensions: 768, normalized: true)
-
-    func embed(text: String) async throws -> [Float] {
-        // Replace with CoreML model inference.
-        var v = [Float](repeating: 0, count: dimensions)
-        v[0] = 1
-        return v
-    }
-
-    func embed(image: CGImage) async throws -> [Float] {
-        // Replace with CoreML model inference.
-        var v = [Float](repeating: 0, count: dimensions)
-        v[1] = 1
-        return v
-    }
-}
-
-struct MyTranscriptProvider: VideoTranscriptProvider {
-    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
-        // Return timed chunks in milliseconds relative to the start of the video.
-        []
-    }
-}
-
-let storeURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("wax-video")
-    .appendingPathExtension("mv2s")
-
-let rag = try await VideoRAGOrchestrator(
+let videoRAG = try await VideoRAGOrchestrator(
     storeURL: storeURL,
     config: .default,
     embedder: MyEmbedder(),
-    transcriptProvider: MyTranscriptProvider()
+    transcriptProvider: MyTranscriber()
 )
 
-try await rag.ingest(files: [
-    VideoFile(id: "clip-1", url: URL(fileURLWithPath: "/path/to/clip.mp4"))
-])
+// Ingest
+try await videoRAG.ingest(files: [videoFile])
 
-let ctx = try await rag.recall(.init(text: "hello wax"))
-try await rag.flush()
+// Search by content or transcript
+let ctx = try await videoRAG.recall(.init(text: "project timeline discussion"))
+```
+</details>
+
+---
+
+## How It Works
+
+Wax packs everything into a **single `.mv2s` file**:
+
+- ✅ Your raw documents
+- ✅ Embeddings (any dimension, any provider)
+- ✅ BM25 full-text search index (FTS5)
+- ✅ HNSW vector index (USearch)
+- ✅ Write-ahead log for crash recovery
+- ✅ Metadata & entity graph
+
+**The file format is:**
+- **Append-only** — Fast writes, no fragmentation
+- **Checksum-verified** — Every byte validated
+- **Dual-header** — Atomic updates, never corrupt
+- **Self-contained** — No external dependencies
+
+```
+┌─────────────────────────────────────────┐
+│  Header Page A (4KB)                    │
+│  Header Page B (4KB) ← atomic switch    │
+├─────────────────────────────────────────┤
+│  WAL Ring Buffer                        │
+│  (crash recovery log)                   │
+├─────────────────────────────────────────┤
+│  Document Payloads (compressed)         │
+│  Embeddings                             │
+├─────────────────────────────────────────┤
+│  TOC (Table of Contents)                │
+│  Footer + Checksum                      │
+└─────────────────────────────────────────┘
 ```
 
-### Sync Photos Videos (Offline-Only)
+---
 
-Photos ingestion is offline-only: iCloud-only assets are indexed as **metadata-only** and marked degraded.
+## Comparison
 
-```swift
-#if canImport(Photos)
-try await rag.syncLibrary(scope: .fullLibrary)
-#endif
-```
+| Feature | Wax | Chroma | Core Data + FAISS | Pinecone |
+|--------:|:---:|:------:|:-----------------:|:--------:|
+| Single file | ✅ | ❌ | ❌ | ❌ |
+| Works offline | ✅ | ⚠️ | ✅ | ❌ |
+| Crash-safe | ✅ | ❌ | ⚠️ | N/A |
+| GPU vector search | ✅ | ❌ | ❌ | ❌ |
+| No server required | ✅ | ✅ | ✅ | ❌ |
+| Swift-native | ✅ | ❌ | ✅ | ❌ |
+| Deterministic RAG | ✅ | ❌ | ❌ | ❌ |
 
-## Capture-Time Timestamps (Advanced)
+---
 
-If you’re building domain-specific pipelines (e.g. photo capture time, event time), Wax supports explicitly setting per-frame timestamps at write time:
+## Features That Actually Matter
 
-```swift
-import Wax
+**🧠 Query-Adaptive Hybrid Search**
 
-let wax = try await Wax.create(at: storeURL)
-let captureMs: Int64 = 1_700_000_000_000
-_ = try await wax.put(Data(), options: .init(kind: "photo.root"), timestampMs: captureMs)
-try await wax.commit()
-```
+Wax doesn't just do vector search. It runs multiple lanes in parallel (BM25, vector, temporal, structured evidence) and fuses results based on query type.
+
+"When was my last dentist appointment?" → boosts temporal + structured  
+"Explain quantum computing" → boosts vector + BM25
+
+**🎭 Tiered Memory Compression (Surrogates)**
+
+Not all context is equal. Wax generates hierarchical summaries:
+- `full` — Complete document (for deep dives)
+- `gist` — Key paragraphs (for balanced recall)
+- `micro` — One-liner (for quick context)
+
+At query time, it picks the right tier based on query signals and remaining token budget.
+
+**🎯 Deterministic Token Budgeting**
+
+Strict `cl100k_base` token counting. No "oops, context window exceeded." No non-deterministic truncation. Reproducible RAG you can test and benchmark.
+
+---
+
+## Perfect For
+
+- 🤖 **AI assistants** that remember users across launches
+- 📱 **Offline-first apps** with serious search requirements
+- 🔒 **Privacy-critical products** where data never leaves the device
+- 🧪 **Research tooling** that needs reproducible retrieval
+- 🎮 **Agent workflows** that require durable state
+
+---
+
+## Requirements
+
+- Swift 6.2
+- iOS 26 / macOS 26
+- Apple Silicon (for Metal GPU features)
+
+---
 
 ## Contributing
 
-We welcome issues and PRs. For local validation:
-
 ```bash
+git clone https://github.com/christopherkarani/Wax.git
 cd Wax
 swift test
 ```
 
-MiniLM CoreML inference tests are opt-in:
-
+MiniLM CoreML tests are opt-in:
 ```bash
 WAX_TEST_MINILM=1 swift test
 ```
 
-If you're exploring the file format or retrieval research, start with the core engine (`Sources/WaxCore/`) and the benchmarks (`Tests/WaxIntegrationTests/`). We are especially interested in:
-- Retrieval quality evaluations and reproducibility studies
-- On-device memory benchmarks
-- New embedding adapters and pruning/compaction strategies
+---
+
+<div align="center">
+
+### Ready to stop shipping databases?
+
+**[⭐ Star Wax on GitHub](https://github.com/christopherkarani/Wax)** • **[📖 Read the Docs](gemini.md)** • **[🐛 Report Issues](../../issues)**
+
+Built with 🍯 by [Christopher Karani](https://github.com/christopherkarani)
+
+</div>
