@@ -943,6 +943,27 @@ public actor Wax {
 
     public func supersede(supersededId: UInt64, supersedingId: UInt64) async throws {
         try await withWriteLock {
+            // Check committed state for reverse relationship
+            if supersededId < UInt64(toc.frames.count) {
+                let supersededMeta = toc.frames[Int(supersededId)]
+                if supersededMeta.supersedes == supersedingId {
+                    throw WaxError.invalidToc(reason: "supersede cycle detected: frame \(supersededId) already supersedes frame \(supersedingId)")
+                }
+            }
+            if supersedingId < UInt64(toc.frames.count) {
+                let supersedingMeta = toc.frames[Int(supersedingId)]
+                if supersedingMeta.supersededBy == supersededId {
+                    throw WaxError.invalidToc(reason: "supersede cycle detected: frame \(supersedingId) is already superseded by frame \(supersededId)")
+                }
+            }
+            // Check pending mutations for reverse relationship
+            for pending in pendingMutations {
+                if case .supersedeFrame(let s) = pending.entry,
+                   s.supersededId == supersedingId, s.supersedingId == supersededId {
+                    throw WaxError.invalidToc(reason: "supersede cycle detected: reverse supersede already pending for frames \(supersededId) and \(supersedingId)")
+                }
+            }
+
             let entry = WALEntry.supersedeFrame(
                 SupersedeFrame(supersededId: supersededId, supersedingId: supersedingId)
             )

@@ -38,9 +38,16 @@ public struct BatchInputBuffers: @unchecked Sendable {
 
 public final class BertTokenizer: @unchecked Sendable {
     private static let sharedBasicTokenizer = BasicTokenizer()
-    private static let vocabCacheLock = NSLock()
-    nonisolated(unsafe) private static var cachedVocabData: VocabData?
-    nonisolated(unsafe) private static var vocabLoadCount: Int = 0
+
+    /// Thread-safe container for vocab cache state, replacing `nonisolated(unsafe)` statics.
+    /// All access to mutable state goes through the internal lock.
+    private final class VocabCacheState: @unchecked Sendable {
+        let lock = NSLock()
+        var data: VocabData?
+        var loadCount: Int = 0
+    }
+
+    private static let vocabCache = VocabCacheState()
 
     private let basicTokenizer: BasicTokenizer
     private let wordpieceTokenizer: WordpieceTokenizer
@@ -373,12 +380,12 @@ private extension BertTokenizer {
     }
 
     static func loadVocab() throws -> VocabData {
-        vocabCacheLock.lock()
-        if let cached = cachedVocabData {
-            vocabCacheLock.unlock()
+        vocabCache.lock.lock()
+        if let cached = vocabCache.data {
+            vocabCache.lock.unlock()
             return cached
         }
-        vocabCacheLock.unlock()
+        vocabCache.lock.unlock()
 
         guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw WaxError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
@@ -394,14 +401,14 @@ private extension BertTokenizer {
             idsToTokens[i] = token
         }
         let loaded = VocabData(vocab: vocab, idsToTokens: idsToTokens)
-        vocabCacheLock.lock()
-        if let cached = cachedVocabData {
-            vocabCacheLock.unlock()
+        vocabCache.lock.lock()
+        if let cached = vocabCache.data {
+            vocabCache.lock.unlock()
             return cached
         }
-        cachedVocabData = loaded
-        vocabLoadCount += 1
-        vocabCacheLock.unlock()
+        vocabCache.data = loaded
+        vocabCache.loadCount += 1
+        vocabCache.lock.unlock()
         return loaded
     }
 
@@ -424,16 +431,16 @@ private extension BertTokenizer {
 #if DEBUG
 extension BertTokenizer {
     static func _resetVocabCacheForTests() {
-        vocabCacheLock.lock()
-        cachedVocabData = nil
-        vocabLoadCount = 0
-        vocabCacheLock.unlock()
+        vocabCache.lock.lock()
+        vocabCache.data = nil
+        vocabCache.loadCount = 0
+        vocabCache.lock.unlock()
     }
 
     static func _vocabLoadCountForTests() -> Int {
-        vocabCacheLock.lock()
-        let count = vocabLoadCount
-        vocabCacheLock.unlock()
+        vocabCache.lock.lock()
+        let count = vocabCache.loadCount
+        vocabCache.lock.unlock()
         return count
     }
 }
