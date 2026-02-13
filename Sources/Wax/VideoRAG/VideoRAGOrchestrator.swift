@@ -1018,7 +1018,15 @@ public actor VideoRAGOrchestrator {
         guard let range else { return nil }
         let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
         let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
-        let beforeExclusive = beforeInclusive == Int64.max ? beforeInclusive : beforeInclusive + 1
+        
+        // Handle unbounded ranges (e.g., Date...Date.distantFuture)
+        // Check for very large dates that represent "no upper bound"
+        let beforeExclusive: Int64
+        if beforeInclusive > Int64.max - 1 {
+            beforeExclusive = Int64.max
+        } else {
+            beforeExclusive = beforeInclusive + 1
+        }
         return TimeRange(after: after, before: beforeExclusive)
     }
 
