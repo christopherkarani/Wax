@@ -55,3 +55,43 @@ private struct TestEmbedder: EmbeddingProvider, Sendable {
         return VectorMath.normalizeL2([0.5, 0.5])
     }
 }
+
+private struct NetworkEmbedder: EmbeddingProvider, Sendable {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "Network",
+        dimensions: 2,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .mayUseNetwork
+
+    func embed(_ text: String) async throws -> [Float] {
+        return VectorMath.normalizeL2([0.5, 0.5])
+    }
+}
+
+@Test
+func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        do {
+            _ = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: NetworkEmbedder()
+            )
+            Issue.record("Expected WaxError for network embedding provider")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                return
+            }
+            #expect(message.contains("on-device embedding provider"))
+        } catch {
+            Issue.record("Expected WaxError, got \(error)")
+        }
+    }
+}

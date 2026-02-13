@@ -455,6 +455,8 @@ public actor VideoRAGOrchestrator {
         let counter = try await TokenCounter.shared()
         let perItemCap = max(1, query.contextBudget.maxTextTokens / max(1, items.count))
         let processed = await counter.countAndTruncateBatch(items.map(\.summaryText), maxTokens: perItemCap)
+        assert(processed.count == items.count, "countAndTruncateBatch must return exactly one result per input")
+        guard processed.count == items.count else { return VideoRAGContext(query: query, items: [], diagnostics: .init()) }
 
         var usedTokens = 0
         var budgeted: [VideoRAGItem] = []
@@ -815,16 +817,12 @@ public actor VideoRAGOrchestrator {
         generator.requestedTimeToleranceBefore = tol
         generator.requestedTimeToleranceAfter = tol
 
-        let images = try await Task.detached(priority: .userInitiated) {
-            var result: [CGImage] = []
-            result.reserveCapacity(times.count)
-            for time in times {
-                var actual = CMTime.zero
-                let cg = try generator.copyCGImage(at: time, actualTime: &actual)
-                result.append(cg)
-            }
-            return result
-        }.value
+        var images: [CGImage] = []
+        images.reserveCapacity(times.count)
+        for time in times {
+            let cg = try await cgImage(generator: generator, for: time)
+            images.append(cg)
+        }
 
         return (durationMs: durationMs, keyframes: images)
     }
@@ -972,10 +970,7 @@ public actor VideoRAGOrchestrator {
         generator.requestedTimeToleranceAfter = tol
         let time = CMTime(seconds: Double(midMs) / 1000.0, preferredTimescale: 600)
 
-        let cg = try await Task.detached(priority: .userInitiated) {
-            var actual = CMTime.zero
-            return try generator.copyCGImage(at: time, actualTime: &actual)
-        }.value
+        let cg = try await cgImage(generator: generator, for: time)
 
         let png = try Self.encodePNG(cg)
         return VideoThumbnail(data: png, format: .png, width: cg.width, height: cg.height)
@@ -987,6 +982,33 @@ public actor VideoRAGOrchestrator {
         throw VideoIngestError.unsupportedPlatform(reason: "AVFoundation is unavailable on this platform")
     }
     #endif
+
+    private func cgImage(generator: AVAssetImageGenerator, for time: CMTime) async throws -> CGImage {
+        try await withCheckedThrowingContinuation { continuation in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) {
+                _, image, _, result, error in
+                guard resumed.withLock({ state in
+                    defer { state = true }
+                    return !state
+                }) else { return }
+                switch result {
+                case .succeeded:
+                    if let image {
+                        continuation.resume(returning: image)
+                    } else {
+                        continuation.resume(throwing: WaxError.io("Video frame generation returned no image"))
+                    }
+                case .cancelled:
+                    continuation.resume(throwing: WaxError.io("Video keyframe generation was cancelled"))
+                case .failed:
+                    continuation.resume(throwing: error ?? WaxError.io("Video keyframe generation failed"))
+                @unknown default:
+                    continuation.resume(throwing: WaxError.io("Video keyframe generation failed"))
+                }
+            }
+        }
+    }
 
     // MARK: - Pure helpers
 
