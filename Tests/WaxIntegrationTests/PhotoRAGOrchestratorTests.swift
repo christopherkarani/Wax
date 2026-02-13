@@ -136,3 +136,77 @@ func photoRAGRejectsNetworkOCRProviderByDefault() async throws {
         }
     }
 }
+
+@Test
+func photoRAGRecallIncludesSearchableTagsFromIndexedFrames() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let captureMs: Int64 = 1_700_000_000_000
+        var rootMeta = Metadata()
+        rootMeta.entries["photos.asset_id"] = "A"
+        rootMeta.entries["photo.capture_ms"] = String(captureMs)
+
+        let rootId = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: "photo.root", metadata: rootMeta),
+            compression: .plain,
+            timestampMs: captureMs
+        )
+
+        let tagsText = "beach, sunset, travel"
+        let tagsId = try await session.put(
+            Data(tagsText.utf8),
+            options: FrameMetaSubset(kind: "photo.tags", parentId: rootId, metadata: rootMeta),
+            compression: .plain,
+            timestampMs: captureMs
+        )
+        try await session.indexTextBatch(frameIds: [tagsId], texts: [tagsText])
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let query = PhotoQuery(
+            text: "sunset",
+            image: nil,
+            timeRange: nil,
+            location: nil,
+            filters: .none,
+            resultLimit: 5,
+            contextBudget: ContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 4)
+        )
+
+        let ctx = try await orchestrator.recall(query)
+        #expect(!ctx.items.isEmpty)
+        #expect(ctx.items.first?.assetID == "A")
+        #expect(ctx.items.first?.summaryText.contains("Tags:") == true)
+        #expect(ctx.items.first?.summaryText.contains("beach, sunset") == true)
+
+        try await orchestrator.flush()
+    }
+}
