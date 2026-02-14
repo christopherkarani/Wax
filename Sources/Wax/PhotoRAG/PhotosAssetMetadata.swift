@@ -21,6 +21,7 @@ enum PhotosAssetMetadata {
         var dateTimeOriginalMs: Int64?
         var gpsLatitude: Double?
         var gpsLongitude: Double?
+        var keywords: [String] = []
     }
 
     struct Location: Sendable {
@@ -174,6 +175,10 @@ enum PhotosAssetMetadata {
             }
         }
 
+        if let iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            out.keywords = Self.parseKeywords(iptc[kCGImagePropertyIPTCKeywords])
+        }
+
         if let orientation = props[kCGImagePropertyOrientation] as? Int {
             out.orientation = orientation
         }
@@ -190,6 +195,34 @@ enum PhotosAssetMetadata {
         }
 
         return out
+    }
+
+    private static func parseKeywords(_ value: Any?) -> [String] {
+        let rawValues: [String] = switch value {
+        case .none:
+            []
+        case let values as [Any]:
+            values.compactMap { $0 as? String }
+        case let value as String:
+            value
+                .split { $0 == "," || $0 == ";" }
+                .map { String($0) }
+        default:
+            []
+        }
+
+        var unique: [String] = []
+        var seen: Set<String> = []
+        unique.reserveCapacity(rawValues.count)
+
+        for raw in rawValues {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed.lowercased()).inserted {
+                unique.append(trimmed)
+            }
+        }
+        return unique
     }
 
     private static let exifDateFormatter: DateFormatter = {

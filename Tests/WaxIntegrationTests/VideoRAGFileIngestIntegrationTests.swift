@@ -72,6 +72,57 @@ func videoRAGFileIngestWritesSearchableTranscriptAndRecallFindsIt() async throws
     }
 }
 
+@Test
+func videoRAGFileIngestRecallWithThumbsIsDeterministic() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 4, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 1
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 2
+        config.searchTopK = 30
+        config.includeThumbnailsInContext = true
+
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: TestVideoEmbedder(),
+            transcriptProvider: TestTranscriptProvider()
+        )
+
+        try await rag.ingest(files: [VideoFile(id: "fixture", url: mp4Url, captureDate: nil)])
+        try await rag.flush()
+
+        let query = VideoQuery(
+            text: TestTranscriptProvider.token,
+            timeRange: nil,
+            videoIDs: nil,
+            resultLimit: 5,
+            segmentLimitPerVideo: 5,
+            contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 2, maxTranscriptLinesPerSegment: 2)
+        )
+
+        let first = try await rag.recall(query)
+        let second = try await rag.recall(query)
+
+        #expect(first == second)
+        #expect(first.items.count == 1)
+        #expect(first.items.first?.summaryText.contains(TestTranscriptProvider.token) == true)
+
+        let firstThumbnails = first.items.flatMap(\.segments).compactMap(\.thumbnail)
+        let secondThumbnails = second.items.flatMap(\.segments).compactMap(\.thumbnail)
+
+        #expect(firstThumbnails == secondThumbnails)
+        #expect(firstThumbnails.isEmpty == false)
+    }
+}
+
 private struct SegmentScopedTranscriptProvider: VideoTranscriptProvider {
     static let token = "SEGMENT_TOKEN"
 

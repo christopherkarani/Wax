@@ -2,16 +2,6 @@
 import Foundation
 import WaxVectorSearch
 
-/// Declares whether a provider runs entirely on-device or may use network services.
-///
-/// PhotoRAG and VideoRAG validate this at init when `requireOnDeviceProviders` is true.
-public enum ProviderExecutionMode: String, Sendable, Equatable {
-    /// Provider runs entirely on-device with no network calls.
-    case onDeviceOnly
-    /// Provider may call network services (e.g., cloud API).
-    case mayUseNetwork
-}
-
 /// A host-supplied multimodal embedding provider shared by Photo and Video RAG.
 ///
 /// Requirements:

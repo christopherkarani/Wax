@@ -26,6 +26,15 @@ public struct PhotoRAGConfig: Sendable, Equatable {
     /// Maximum number of region crops to embed per photo.
     public var maxRegionsPerPhoto: Int
 
+    // MARK: - OCR limits
+
+    /// Maximum OCR text blocks stored per photo during ingest.
+    public var maxOCRBlocksPerPhoto: Int
+    /// Maximum lines in the OCR summary frame.
+    public var maxOCRSummaryLines: Int
+    /// Maximum concurrent region embedding tasks during ingest.
+    public var regionEmbeddingConcurrency: Int
+
     // MARK: - Search
 
     /// Number of candidate results fetched from the search engine before filtering.
@@ -34,6 +43,9 @@ public struct PhotoRAGConfig: Sendable, Equatable {
     public var hybridAlpha: Float
     /// Preferred vector search engine (auto, Metal GPU, or CPU-only).
     public var vectorEnginePreference: VectorEnginePreference
+    /// Weight for text embedding when fusing text + image query embeddings (0.0–1.0).
+    /// The image weight is `1.0 - textEmbeddingWeight`.
+    public var textEmbeddingWeight: Float
     /// When true, validates that all providers declare `.onDeviceOnly` execution mode.
     public var requireOnDeviceProviders: Bool
 
@@ -60,9 +72,13 @@ public struct PhotoRAGConfig: Sendable, Equatable {
         enableOCR: Bool = true,
         enableRegionEmbeddings: Bool = true,
         maxRegionsPerPhoto: Int = 8,
+        maxOCRBlocksPerPhoto: Int = 64,
+        maxOCRSummaryLines: Int = 32,
+        regionEmbeddingConcurrency: Int = 4,
         searchTopK: Int = 200,
         hybridAlpha: Float = 0.5,
         vectorEnginePreference: VectorEnginePreference = .auto,
+        textEmbeddingWeight: Float = 0.6,
         requireOnDeviceProviders: Bool = true,
         includeThumbnailsInContext: Bool = true,
         includeRegionCropsInContext: Bool = true,
@@ -77,14 +93,26 @@ public struct PhotoRAGConfig: Sendable, Equatable {
         self.enableOCR = enableOCR
         self.enableRegionEmbeddings = enableRegionEmbeddings
         self.maxRegionsPerPhoto = max(0, maxRegionsPerPhoto)
+        self.maxOCRBlocksPerPhoto = max(1, maxOCRBlocksPerPhoto)
+        self.maxOCRSummaryLines = max(1, maxOCRSummaryLines)
+        self.regionEmbeddingConcurrency = max(1, regionEmbeddingConcurrency)
         self.searchTopK = max(0, searchTopK)
-        self.hybridAlpha = min(1, max(0, hybridAlpha))
+        self.hybridAlpha = Self.clamp01(hybridAlpha)
         self.vectorEnginePreference = vectorEnginePreference
+        self.textEmbeddingWeight = Self.clamp01(textEmbeddingWeight)
         self.requireOnDeviceProviders = requireOnDeviceProviders
         self.includeThumbnailsInContext = includeThumbnailsInContext
         self.includeRegionCropsInContext = includeRegionCropsInContext
         self.regionCropMaxPixelSize = max(1, regionCropMaxPixelSize)
         self.queryEmbeddingCacheCapacity = max(0, queryEmbeddingCacheCapacity)
+    }
+
+    @inline(__always)
+    private static func clamp01(_ value: Float) -> Float {
+        if value == .infinity { return 1 }
+        if value == -.infinity { return 0 }
+        guard value.isFinite else { return 0.5 }
+        return min(1, max(0, value))
     }
 
     public static let `default` = PhotoRAGConfig()

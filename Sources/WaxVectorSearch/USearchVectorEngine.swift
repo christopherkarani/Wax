@@ -14,17 +14,29 @@ public actor USearchVectorEngine {
     private var reservedCapacity: UInt32
     private let index: USearchIndex
     private let io: BlockingIOExecutor
-    private let opLock = AsyncMutex()
+    private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
 
-    private func withOpLock<T>(_ body: () async throws -> T) async rethrows -> T {
-        await opLock.lock()
+    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.writeLock()
         do {
-            let value = try await body()
-            await opLock.unlock()
-            return value
+            let result = try await body()
+            await opLock.writeUnlock()
+            return result
         } catch {
-            await opLock.unlock()
+            await opLock.writeUnlock()
+            throw error
+        }
+    }
+
+    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+        await opLock.readLock()
+        do {
+            let result = try await body()
+            await opLock.readUnlock()
+            return result
+        } catch {
+            await opLock.readUnlock()
             throw error
         }
     }
@@ -68,7 +80,7 @@ public actor USearchVectorEngine {
     }
 
     public func add(frameId: UInt64, vector: [Float]) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             try validate(vector)
             let index = self.index
             let isEmpty = vectorCount == 0
@@ -96,7 +108,7 @@ public actor USearchVectorEngine {
             throw WaxError.encodingError(reason: "addBatch: frameIds.count != vectors.count")
         }
 
-        try await withOpLock {
+        try await withWriteLock {
             // Validate all vectors first (fast, no I/O)
             let expectedDims = dimensions
             for vector in vectors {
@@ -175,7 +187,7 @@ public actor USearchVectorEngine {
     }
 
     public func remove(frameId: UInt64) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             guard vectorCount > 0 else { return }
             let index = self.index
             let removed = try await io.run { try index.remove(key: frameId) }
@@ -187,7 +199,7 @@ public actor USearchVectorEngine {
     }
 
     public func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        try await withOpLock {
+        try await withReadLock {
             guard vectorCount > 0 else { return [] }
             try validate(vector)
             let limit = Self.clampTopK(topK)
@@ -204,7 +216,7 @@ public actor USearchVectorEngine {
     }
 
     public func serialize() async throws -> Data {
-        try await withOpLock {
+        try await withReadLock {
             let index = self.index
             let metric = self.metric
             let dimensions = self.dimensions
@@ -221,7 +233,7 @@ public actor USearchVectorEngine {
     }
 
     public func deserialize(_ data: Data) async throws {
-        try await withOpLock {
+        try await withWriteLock {
             let decoded = try VectorSerializer.decodeVecSegment(from: data)
             switch decoded {
             case .uSearch(let info, let payload):
