@@ -74,13 +74,21 @@ public struct VideoRAGConfig: Sendable, Equatable {
         self.embedMaxPixelSize = max(1, embedMaxPixelSize)
         self.maxTranscriptBytesPerSegment = max(0, maxTranscriptBytesPerSegment)
         self.searchTopK = max(0, searchTopK)
-        self.hybridAlpha = min(1, max(0, hybridAlpha))
+        self.hybridAlpha = Self.clamp01(hybridAlpha)
         self.vectorEnginePreference = vectorEnginePreference
         self.timelineFallbackLimit = max(0, timelineFallbackLimit)
         self.requireOnDeviceProviders = requireOnDeviceProviders
         self.includeThumbnailsInContext = includeThumbnailsInContext
         self.thumbnailMaxPixelSize = max(1, thumbnailMaxPixelSize)
         self.queryEmbeddingCacheCapacity = max(0, queryEmbeddingCacheCapacity)
+    }
+
+    @inline(__always)
+    private static func clamp01(_ value: Float) -> Float {
+        if value == .infinity { return 1 }
+        if value == -.infinity { return 0 }
+        guard value.isFinite else { return 0.5 }
+        return min(1, max(0, value))
     }
 
     public static let `default` = VideoRAGConfig()

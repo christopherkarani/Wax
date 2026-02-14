@@ -389,6 +389,8 @@ public actor PhotoRAGOrchestrator {
         // Apply text budget.
         let perItemCap = max(1, query.contextBudget.maxTextTokens / max(1, items.count))
         let processed = await tokenCounter.countAndTruncateBatch(items.map(\.summaryText), maxTokens: perItemCap)
+        assert(processed.count == items.count, "countAndTruncateBatch must return exactly one result per input")
+        guard processed.count == items.count else { return PhotoRAGContext(query: query, items: [], diagnostics: .init()) }
         var usedTokens = 0
         var budgetedItems: [PhotoRAGItem] = []
         budgetedItems.reserveCapacity(items.count)
@@ -540,6 +542,8 @@ public actor PhotoRAGOrchestrator {
             Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
         }
 
+        let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)
+
         // Derived frames to write (non-embedded)
         var derivedContents: [Data] = []
         var derivedOptions: [FrameMetaSubset] = []
@@ -560,16 +564,20 @@ public actor PhotoRAGOrchestrator {
             addDerived(kind: FrameKind.captionShort, text: captionText, searchable: true)
         }
 
+        if let derivedTagsText {
+            addDerived(kind: FrameKind.tags, text: derivedTagsText, searchable: true)
+        }
+
         // OCR block frames (not indexed) + one summary frame (indexed)
         if !ocrBlocks.isEmpty {
             // Summary
-            let summary = Self.buildOCRSummary(ocrBlocks, maxLines: 32)
+            let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
             if !summary.isEmpty {
                 addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
             }
 
             // Blocks
-            for block in ocrBlocks.prefix(64) {
+            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
                 meta.entries["photo.ocr.confidence"] = String(block.confidence)
@@ -628,7 +636,7 @@ public actor PhotoRAGOrchestrator {
 
                 try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
                     var activeCount = 0
-                    let maxConcurrency = 4
+                    let maxConcurrency = self.config.regionEmbeddingConcurrency
                     var cropIterator = crops.makeIterator()
 
                     // Start initial batch
@@ -779,8 +787,10 @@ public actor PhotoRAGOrchestrator {
         let lat = center.latitude
         let lon = center.longitude
 
+        // 111,000 meters ≈ 1 degree of latitude (standard geodetic approximation).
         let latDelta = radius / 111_000.0
         // Cap lonDelta to 180 degrees to prevent unbounded expansion near poles.
+        // cos(lat) adjusts for longitude convergence; max(1e-6, ...) prevents division by zero at poles.
         let lonDelta = min(180.0, radius / max(1e-6, 111_000.0 * cos(lat * .pi / 180)))
 
         let minLat = lat - latDelta
@@ -808,6 +818,8 @@ public actor PhotoRAGOrchestrator {
         }
 
         guard latBinCount > 0, lonBinCount > 0 else { return nil }
+        // Degenerate guard: if the search area is too large (>100k bins, ~radius >5000km),
+        // skip location filtering entirely and let the query proceed without spatial constraint.
         guard latBinCount * lonBinCount < 100_000 else { return nil }
 
         var allowlist: Set<UInt64> = []
@@ -886,9 +898,9 @@ public actor PhotoRAGOrchestrator {
         case (nil, let i?):
             return i
         case (let t?, let i?):
-            // Weighted sum in shared embedding space.
-            let wt: Float = 0.6
-            let wi: Float = 0.4
+            // Weighted sum in shared embedding space (configurable via textEmbeddingWeight).
+            let wt: Float = config.textEmbeddingWeight
+            let wi: Float = 1.0 - config.textEmbeddingWeight
             guard t.count == i.count else {
                 throw WaxError.io("query embedding dimension mismatch (text=\(t.count), image=\(i.count))")
             }
@@ -1150,6 +1162,37 @@ public actor PhotoRAGOrchestrator {
             parts.append("Text: \(top)")
         }
         return parts.joined(separator: " • ")
+    }
+
+    private static func buildPhotoTags(from metadata: PhotosAssetMetadata.Record, captionText: String?) -> String? {
+        var tags: [String] = []
+        tags.reserveCapacity(16)
+        var seen: Set<String> = []
+
+        for keyword in metadata.exif.keywords {
+            let normalized = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { continue }
+            let key = normalized.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            tags.append(normalized)
+        }
+
+        if tags.isEmpty, let captionText {
+            let splitCaption = captionText
+                .split { $0.isWhitespace || $0 == "," || $0 == "." || $0 == ";" || $0 == "|" || $0 == "-" }
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count >= 3 }
+            for token in splitCaption {
+                let normalized = token.lowercased()
+                if seen.insert(normalized).inserted {
+                    tags.append(token)
+                }
+                if tags.count >= 16 { break }
+            }
+        }
+
+        guard !tags.isEmpty else { return nil }
+        return tags.joined(separator: ", ")
     }
 
     private static func baseMetadata(

@@ -16,6 +16,9 @@ public struct OrchestratorConfig: Sendable {
     /// This avoids doing Metal device discovery during static initialization.
     public var useMetalVectorSearch: Bool = true
 
+    /// When true, rejects text embedding providers that report `executionMode == .mayUseNetwork`.
+    public var requireOnDeviceProviders: Bool = true
+
     public init() {}
 
     public static let `default` = OrchestratorConfig()

@@ -32,6 +32,12 @@ public actor MemoryOrchestrator {
             _ = try? await TokenCounter.preload()
             return true
         }()
+
+        if config.requireOnDeviceProviders, let localEmbedder = embedder {
+            guard localEmbedder.executionMode == .onDeviceOnly else {
+                throw WaxError.io("MemoryOrchestrator requires on-device embedding provider")
+            }
+        }
         
         if FileManager.default.fileExists(atPath: url.path) {
             self.wax = try await Wax.open(at: url)
@@ -82,6 +88,17 @@ public actor MemoryOrchestrator {
 
     // MARK: - Ingestion
 
+    /// Ingest text content into the memory store, chunking and embedding as configured.
+    ///
+    /// Content is split into chunks and written in batches. Each batch is committed
+    /// independently to the underlying store.
+    ///
+    /// - Important: Batch writes are **not atomic**. If a failure occurs mid-ingest
+    ///   (e.g., embedding provider error, I/O failure), earlier batches may already be
+    ///   committed while later batches are lost. The committed state remains consistent
+    ///   (WAL guarantees crash safety), but the ingested content may be incomplete.
+    ///   Callers requiring all-or-nothing semantics should validate post-ingest or
+    ///   implement their own rollback by superseding the document frame on failure.
     public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
