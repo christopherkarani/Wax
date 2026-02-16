@@ -414,7 +414,7 @@ public actor WaxSession {
         }
     }
 
-    private func stageVectorForCommit(using engine: any VectorSearchEngine) async throws {
+    private func stageVectorForCommit(using engine: some VectorSearchEngine) async throws {
         let snapshot = await wax.pendingEmbeddingMutations(since: lastPendingEmbeddingSequence)
         if let latest = snapshot.latestSequence,
            let last = lastPendingEmbeddingSequence,
