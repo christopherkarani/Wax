@@ -4,7 +4,7 @@ import WaxCore
 public protocol MaintenableMemory: Sendable {
     func optimizeSurrogates(
         options: MaintenanceOptions,
-        generator: any SurrogateGenerator
+        generator: some SurrogateGenerator
     ) async throws -> MaintenanceReport
 
     func compactIndexes(options: MaintenanceOptions) async throws -> MaintenanceReport
@@ -38,7 +38,7 @@ public extension MemoryOrchestrator {
 
     func optimizeSurrogates(
         options: MaintenanceOptions,
-        generator: any SurrogateGenerator
+        generator: some SurrogateGenerator
     ) async throws -> MaintenanceReport {
         let start = ContinuousClock.now
 

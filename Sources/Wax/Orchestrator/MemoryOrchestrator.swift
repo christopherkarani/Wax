@@ -277,7 +277,7 @@ public actor MemoryOrchestrator {
     /// Minimizes cache lookups and maximizes batch embedding efficiency.
     private static func prepareEmbeddingsBatchOptimized(
         chunks: [String],
-        embedder: any EmbeddingProvider,
+        embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [[Float]] {
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
@@ -364,7 +364,7 @@ public actor MemoryOrchestrator {
     /// Legacy method for backward compatibility
     private static func prepareEmbeddingsBatch(
         chunks: [String],
-        embedder: any EmbeddingProvider,
+        embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [[Float]] {
         try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache)
@@ -532,7 +532,7 @@ public actor MemoryOrchestrator {
 
     private static func embedOne(
         _ text: String,
-        embedder: any EmbeddingProvider,
+        embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [Float] {
         let key = EmbeddingKey.make(
@@ -555,7 +555,7 @@ public actor MemoryOrchestrator {
 
     private static func prepareEmbeddings(
         chunks: [String],
-        embedder: any EmbeddingProvider,
+        embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [Int: [Float]] {
         var out: [Int: [Float]] = [:]
