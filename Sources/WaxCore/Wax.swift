@@ -24,6 +24,7 @@ public struct WaxWALStats: Equatable, Sendable {
     public var sentinelWriteCount: UInt64
     public var writeCallCount: UInt64
     public var autoCommitCount: UInt64
+    public var replaySnapshotHitCount: UInt64
 
     public init(
         walSize: UInt64,
@@ -36,7 +37,8 @@ public struct WaxWALStats: Equatable, Sendable {
         checkpointCount: UInt64,
         sentinelWriteCount: UInt64,
         writeCallCount: UInt64,
-        autoCommitCount: UInt64
+        autoCommitCount: UInt64,
+        replaySnapshotHitCount: UInt64
     ) {
         self.walSize = walSize
         self.writePos = writePos
@@ -49,6 +51,7 @@ public struct WaxWALStats: Equatable, Sendable {
         self.sentinelWriteCount = sentinelWriteCount
         self.writeCallCount = writeCallCount
         self.autoCommitCount = autoCommitCount
+        self.replaySnapshotHitCount = replaySnapshotHitCount
     }
 }
 
@@ -92,9 +95,11 @@ public actor Wax {
     private var generation: UInt64
     private var dirty: Bool
     private var walAutoCommitCount: UInt64
+    private var walReplaySnapshotHitCount: UInt64
     private let walProactiveCommitThresholdBytes: UInt64?
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
+    private let walReplayStateSnapshotEnabled: Bool
 
     private struct WriterWaiter {
         let id: UUID
@@ -123,9 +128,11 @@ public actor Wax {
         generation: UInt64,
         dirty: Bool,
         walAutoCommitCount: UInt64,
+        walReplaySnapshotHitCount: UInt64,
         walProactiveCommitThresholdBytes: UInt64?,
         walProactiveCommitMaxWalSizeBytes: UInt64?,
-        walProactiveCommitMinPendingBytes: UInt64
+        walProactiveCommitMinPendingBytes: UInt64,
+        walReplayStateSnapshotEnabled: Bool
     ) {
         self.url = url
         self.io = io
@@ -146,9 +153,11 @@ public actor Wax {
         self.generation = generation
         self.dirty = dirty
         self.walAutoCommitCount = walAutoCommitCount
+        self.walReplaySnapshotHitCount = walReplaySnapshotHitCount
         self.walProactiveCommitThresholdBytes = walProactiveCommitThresholdBytes
         self.walProactiveCommitMaxWalSizeBytes = walProactiveCommitMaxWalSizeBytes
         self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
+        self.walReplayStateSnapshotEnabled = walReplayStateSnapshotEnabled
     }
 
     private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
@@ -457,6 +466,7 @@ public actor Wax {
             generation: 0,
             dirty: false,
             walAutoCommitCount: 0,
+            walReplaySnapshotHitCount: 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,
@@ -469,7 +479,8 @@ public actor Wax {
             ),
             walProactiveCommitMinPendingBytes: walProactiveCommitMinPendingBytes(
                 options.walProactiveCommitMinPendingBytes
-            )
+            ),
+            walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
     }
 
@@ -499,7 +510,8 @@ public actor Wax {
             pendingMutations: [PendingMutation],
             dataEnd: UInt64,
             generation: UInt64,
-            dirty: Bool
+            dirty: Bool,
+            replaySnapshotUsed: Bool
         ) in
             let lock = try FileLock.acquire(at: url, mode: .exclusive)
             let file = try FDFile.open(at: url)
@@ -510,48 +522,108 @@ public actor Wax {
                 throw WaxError.invalidHeader(reason: "no valid header pages")
             }
             var header = selected.page
+            let selectedHeaderFileGeneration = header.fileGeneration
+
+            func newerFooter(_ lhs: FooterSlice, _ rhs: FooterSlice) -> FooterSlice {
+                if rhs.footer.generation > lhs.footer.generation { return rhs }
+                if rhs.footer.generation == lhs.footer.generation,
+                   rhs.footerOffset > lhs.footerOffset {
+                    return rhs
+                }
+                return lhs
+            }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
-            let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
+            let snapshotFooter: FooterSlice?
+            if options.walReplayStateSnapshotEnabled,
+               let snapshot = header.walReplaySnapshot {
+                snapshotFooter = try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
+            } else {
+                snapshotFooter = nil
+            }
+            let shouldBypassFooterScanWithSnapshot = options.walReplayStateSnapshotEnabled
+                && (header.walReplaySnapshot?.fileGeneration ?? 0) > selectedHeaderFileGeneration
+                && snapshotFooter != nil
 
             let footerSlice: FooterSlice
-            switch (fastFooter, scannedFooter) {
-            case (.some(let fast), .some(let scanned)):
-                // Crash can happen after footer fsync but before header page update.
-                // Prefer the newest valid footer rather than trusting stale header pointers.
-                if scanned.footer.generation > fast.footer.generation {
-                    footerSlice = scanned
-                } else if scanned.footer.generation == fast.footer.generation,
-                    scanned.footerOffset > fast.footerOffset
-                {
-                    footerSlice = scanned
+            if shouldBypassFooterScanWithSnapshot, let snapshotFooter {
+                if let fastFooter {
+                    footerSlice = newerFooter(fastFooter, snapshotFooter)
                 } else {
-                    footerSlice = fast
+                    footerSlice = snapshotFooter
                 }
-            case (.some(let fast), .none):
-                footerSlice = fast
-            case (.none, .some(let scanned)):
-                footerSlice = scanned
-            case (.none, .none):
-                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            } else {
+                let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
+                switch (fastFooter, scannedFooter) {
+                case (.some(let fast), .some(let scanned)):
+                    // Crash can happen after footer fsync but before header page update.
+                    // Prefer the newest valid footer rather than trusting stale header pointers.
+                    footerSlice = newerFooter(fast, scanned)
+                case (.some(let fast), .none):
+                    footerSlice = fast
+                case (.none, .some(let scanned)):
+                    footerSlice = scanned
+                case (.none, .none):
+                    throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+                }
             }
 
             let toc = try MV2STOC.decode(from: footerSlice.tocBytes)
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
+            let recoveredCommittedSeq = footerSlice.footer.walCommittedSeq
+            let selectedHeaderWasStale = selectedHeaderFileGeneration != footerSlice.footer.generation
             header.footerOffset = footerSlice.footerOffset
             header.fileGeneration = footerSlice.footer.generation
-            header.walCommittedSeq = footerSlice.footer.walCommittedSeq
+            header.walCommittedSeq = recoveredCommittedSeq
             header.tocChecksum = footerSlice.footer.tocHash
 
             let walReader = WALRingReader(file: file, walOffset: header.walOffset, walSize: header.walSize)
-            let committedSeq = footerSlice.footer.walCommittedSeq
-            let pendingScan = try walReader.scanPendingMutationsWithState(
-                from: header.walCheckpointPos,
-                committedSeq: committedSeq
-            )
-            let pendingMutations = pendingScan.pendingMutations
-            let scanState = pendingScan.state
+            let committedSeq = recoveredCommittedSeq
+            let persistedReplaySnapshot = header.walReplaySnapshot
+            let shouldAttemptPersistedReplaySnapshot = options.walReplayStateSnapshotEnabled
+                && persistedReplaySnapshot?.fileGeneration == footerSlice.footer.generation
+                && persistedReplaySnapshot?.walCommittedSeq == committedSeq
+                && persistedReplaySnapshot?.footerOffset == footerSlice.footerOffset
+            let shouldAttemptHeaderCursorSnapshot = options.walReplayStateSnapshotEnabled
+                && !selectedHeaderWasStale
+                && header.walCheckpointPos == header.walWritePos
+
+            let pendingMutations: [PendingMutation]
+            let scanState: WALScanState
+            var usedReplaySnapshot = false
+            if shouldAttemptPersistedReplaySnapshot,
+               let snapshot = persistedReplaySnapshot,
+               snapshot.walCheckpointPos == snapshot.walWritePos,
+               try walReader.isTerminalMarker(at: snapshot.walWritePos)
+            {
+                // Fast path: replay snapshot persisted with the committed generation (survives stale header pointers).
+                pendingMutations = []
+                scanState = WALScanState(
+                    lastSequence: max(committedSeq, snapshot.walLastSequence),
+                    writePos: snapshot.walWritePos % header.walSize,
+                    pendingBytes: 0
+                )
+                usedReplaySnapshot = true
+            } else if shouldAttemptHeaderCursorSnapshot,
+                      try walReader.isTerminalMarker(at: header.walWritePos)
+            {
+                // Fast path for files that predate replay snapshots but have consistent header cursors.
+                pendingMutations = []
+                scanState = WALScanState(
+                    lastSequence: committedSeq,
+                    writePos: header.walWritePos % header.walSize,
+                    pendingBytes: 0
+                )
+                usedReplaySnapshot = true
+            } else {
+                let pendingScan = try walReader.scanPendingMutationsWithState(
+                    from: header.walCheckpointPos,
+                    committedSeq: committedSeq
+                )
+                pendingMutations = pendingScan.pendingMutations
+                scanState = pendingScan.state
+            }
             let lastSequence = max(committedSeq, scanState.lastSequence)
             let effectiveCheckpointPos: UInt64
             let effectivePendingBytes: UInt64
@@ -562,6 +634,8 @@ public actor Wax {
                 effectiveCheckpointPos = header.walCheckpointPos
                 effectivePendingBytes = scanState.pendingBytes
             }
+            header.walWritePos = scanState.writePos
+            header.walCheckpointPos = effectiveCheckpointPos
             let wal = WALRingWriter(
                 file: file,
                 walOffset: header.walOffset,
@@ -604,7 +678,8 @@ public actor Wax {
                 pendingMutations: pendingMutations,
                 dataEnd: dataEnd,
                 generation: footerSlice.footer.generation,
-                dirty: !pendingMutations.isEmpty
+                dirty: !pendingMutations.isEmpty,
+                replaySnapshotUsed: usedReplaySnapshot
             )
         }
 
@@ -628,6 +703,7 @@ public actor Wax {
             generation: opened.generation,
             dirty: opened.dirty,
             walAutoCommitCount: 0,
+            walReplaySnapshotHitCount: opened.replaySnapshotUsed ? 1 : 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: opened.header.walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,
@@ -640,7 +716,8 @@ public actor Wax {
             ),
             walProactiveCommitMinPendingBytes: walProactiveCommitMinPendingBytes(
                 options.walProactiveCommitMinPendingBytes
-            )
+            ),
+            walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
     }
 
@@ -1398,6 +1475,27 @@ public actor Wax {
             generation: generation &+ 1,
             walCommittedSeq: appliedWalSeq
         )
+        let wal = self.wal
+        let walState = await io.run {
+            (
+                writePos: wal.writePos,
+                lastSequence: wal.lastSequence
+            )
+        }
+        let replaySnapshot = MV2SHeaderPage.WALReplaySnapshot(
+            fileGeneration: footer.generation,
+            walCommittedSeq: appliedWalSeq,
+            footerOffset: footerOffset,
+            walWritePos: walState.writePos,
+            walCheckpointPos: walState.writePos,
+            walPendingBytes: 0,
+            walLastSequence: max(appliedWalSeq, walState.lastSequence)
+        )
+
+        if walReplayStateSnapshotEnabled {
+            try await persistReplaySnapshotOnSelectedHeaderPage(replaySnapshot)
+        }
+
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
             try file.writeAll(try footer.encode(), at: footerOffset)
@@ -1408,10 +1506,9 @@ public actor Wax {
         header.fileGeneration = footer.generation
         header.tocChecksum = Data(tocChecksum)
         header.walCommittedSeq = appliedWalSeq
-        let wal = self.wal
-        let walWritePos = await io.run { wal.writePos }
-        header.walCheckpointPos = walWritePos
-        header.walWritePos = walWritePos
+        header.walReplaySnapshot = replaySnapshot
+        header.walCheckpointPos = walState.writePos
+        header.walWritePos = walState.writePos
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
@@ -1968,7 +2065,8 @@ public actor Wax {
                 checkpointCount: wal.checkpointCount,
                 sentinelWriteCount: wal.sentinelWriteCount,
                 writeCallCount: wal.writeCallCount,
-                autoCommitCount: walAutoCommitCount
+                autoCommitCount: walAutoCommitCount,
+                replaySnapshotHitCount: walReplaySnapshotHitCount
             )
         }
     }
@@ -2131,6 +2229,17 @@ public actor Wax {
     }
 
     // MARK: - Internal helpers
+
+    private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: MV2SHeaderPage.WALReplaySnapshot) async throws {
+        var snapshotPage = header
+        snapshotPage.walReplaySnapshot = snapshot
+        let offset = UInt64(selectedHeaderPageIndex) * Constants.headerPageSize
+        let file = self.file
+        let encoded = try snapshotPage.encodeWithChecksum()
+        try await io.run {
+            try file.writeAll(encoded, at: offset)
+        }
+    }
 
     private func writeHeaderPage(_ page: MV2SHeaderPage) async throws {
         let nextIndex = selectedHeaderPageIndex == 0 ? 1 : 0

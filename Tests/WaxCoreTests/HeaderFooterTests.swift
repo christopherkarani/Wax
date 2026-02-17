@@ -28,6 +28,34 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
     #expect(decoded.tocChecksum == header.tocChecksum)
 }
 
+@Test func headerReplaySnapshotRoundtrip() throws {
+    let snapshot = MV2SHeaderPage.WALReplaySnapshot(
+        fileGeneration: 9,
+        walCommittedSeq: 42,
+        footerOffset: testFooterOffset,
+        walWritePos: 1234,
+        walCheckpointPos: 1234,
+        walPendingBytes: 0,
+        walLastSequence: 42
+    )
+    let header = MV2SHeaderPage(
+        headerPageGeneration: 1,
+        fileGeneration: 9,
+        footerOffset: testFooterOffset,
+        walOffset: Constants.walOffset,
+        walSize: Constants.defaultWalSize,
+        walWritePos: 1234,
+        walCheckpointPos: 1234,
+        walCommittedSeq: 42,
+        walReplaySnapshot: snapshot,
+        tocChecksum: Data(repeating: 0xAB, count: 32)
+    )
+
+    let encoded = try header.encodeWithChecksum()
+    let decoded = try MV2SHeaderPage.decodeWithChecksumValidation(from: encoded)
+    #expect(decoded.walReplaySnapshot == snapshot)
+}
+
 @Test func headerChecksumDetectsCorruption() throws {
     let header = MV2SHeaderPage(
         headerPageGeneration: 1,

@@ -12,6 +12,10 @@ final class WALCompactionBenchmarks: XCTestCase {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_WAL_GUARDRAILS"] == "1"
     }
 
+    private var replayGuardrailsEnabled: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS"] == "1"
+    }
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         guard isEnabled else {
@@ -107,6 +111,112 @@ final class WALCompactionBenchmarks: XCTestCase {
             enabled.pressure.pendingBytesP95,
             disabled.pressure.pendingBytesP95
         )
+    }
+
+    func testReplayStateSnapshotGuardrails() async throws {
+        guard replayGuardrailsEnabled else {
+            throw XCTSkip("Set WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 to run replay snapshot guardrails.")
+        }
+
+        let baseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wal-replay-snapshot-\(UUID().uuidString)")
+            .appendingPathExtension("mv2s")
+        let disabledURL = baseURL.deletingPathExtension().appendingPathExtension("disabled.mv2s")
+        let enabledURL = baseURL.deletingPathExtension().appendingPathExtension("enabled.mv2s")
+        defer {
+            try? FileManager.default.removeItem(at: baseURL)
+            try? FileManager.default.removeItem(at: disabledURL)
+            try? FileManager.default.removeItem(at: enabledURL)
+        }
+
+        try await prepareReplaySnapshotStressFile(at: baseURL)
+        try FileManager.default.copyItem(at: baseURL, to: disabledURL)
+        try FileManager.default.copyItem(at: baseURL, to: enabledURL)
+
+        let disabled = try await measureReopenLatency(
+            at: disabledURL,
+            iterations: 8,
+            options: WaxOptions(walReplayStateSnapshotEnabled: false)
+        )
+        let enabled = try await measureReopenLatency(
+            at: enabledURL,
+            iterations: 8,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+
+        XCTAssertGreaterThanOrEqual(enabled.snapshotHits, 1)
+        XCTAssertLessThanOrEqual(
+            enabled.summary.p95Ms,
+            disabled.summary.p95Ms * 0.80 + 20.0
+        )
+        XCTAssertLessThanOrEqual(
+            enabled.summary.p99Ms,
+            disabled.summary.p99Ms * 0.80 + 30.0
+        )
+    }
+
+    private func prepareReplaySnapshotStressFile(at url: URL) async throws {
+        let wax = try await Wax.create(
+            at: url,
+            walSize: 4 * 1024 * 1024,
+            options: WaxOptions(
+                walProactiveCommitThresholdPercent: nil,
+                walReplayStateSnapshotEnabled: true
+            )
+        )
+
+        _ = try await wax.put(
+            Data("seed".utf8),
+            options: FrameMetaSubset(searchText: "seed")
+        )
+        try await wax.commit()
+
+        for index in 0..<20_000 {
+            _ = try await wax.put(
+                Data("replay-snapshot-\(index)".utf8),
+                options: FrameMetaSubset(searchText: "replay-snapshot-\(index)")
+            )
+        }
+        try await wax.commit()
+        try await wax.close()
+
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            XCTFail("expected valid header pages")
+            return
+        }
+
+        let selectedOffset: UInt64 = selected.pageIndex == 0 ? 0 : Constants.headerPageSize
+        try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
+        try file.fsync()
+    }
+
+    private func measureReopenLatency(
+        at url: URL,
+        iterations: Int,
+        options: WaxOptions
+    ) async throws -> (summary: WALCompactionLatencySummary, snapshotHits: Int) {
+        let clock = ContinuousClock()
+        var samples: [Double] = []
+        samples.reserveCapacity(iterations)
+        var snapshotHits = 0
+
+        for _ in 0..<iterations {
+            let start = clock.now
+            let wax = try await Wax.open(at: url, options: options)
+            let elapsedMs = Double((clock.now - start).components.attoseconds) / 1_000_000_000_000_000
+            samples.append(elapsedMs)
+            let stats = await wax.walStats()
+            if stats.replaySnapshotHitCount > 0 {
+                snapshotHits += 1
+            }
+            try await wax.close()
+        }
+
+        return (WALCompactionLatencySummary.from(samples: samples), snapshotHits)
     }
 }
 

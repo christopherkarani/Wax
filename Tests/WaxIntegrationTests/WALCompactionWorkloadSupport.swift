@@ -211,6 +211,7 @@ struct WALCompactionPressureSummary: Codable, Sendable {
     let autoCommitCount: UInt64
     let sentinelWriteCount: UInt64
     let writeCallCount: UInt64
+    let replaySnapshotHitCount: UInt64
 }
 
 struct WALCompactionFileGrowthPoint: Codable, Sendable {
@@ -473,7 +474,8 @@ enum WALCompactionHarness {
             checkpointCount: finalWalStats.checkpointCount,
             autoCommitCount: finalWalStats.autoCommitCount,
             sentinelWriteCount: finalWalStats.sentinelWriteCount,
-            writeCallCount: finalWalStats.writeCallCount
+            writeCallCount: finalWalStats.writeCallCount,
+            replaySnapshotHitCount: finalWalStats.replaySnapshotHitCount
         )
 
         let duration = durationMs(clock.now - started)

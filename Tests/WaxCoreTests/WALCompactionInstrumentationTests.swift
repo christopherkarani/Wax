@@ -204,3 +204,30 @@ import Testing
     #expect(largeWalStats.autoCommitCount == 0)
     try await largeWal.close()
 }
+
+@Test func waxWalStatsExposeReplaySnapshotHitsOnReopen() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(
+            at: url,
+            walSize: 512 * 1024,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+        _ = try await wax.put(
+            Data("snapshot-hit".utf8),
+            options: FrameMetaSubset(searchText: "snapshot-hit")
+        )
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    let reopened = try await Wax.open(
+        at: url,
+        options: WaxOptions(walReplayStateSnapshotEnabled: true)
+    )
+    let stats = await reopened.walStats()
+    #expect(stats.replaySnapshotHitCount > 0)
+    try await reopened.close()
+}
