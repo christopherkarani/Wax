@@ -12,6 +12,43 @@ public struct WaxStats: Equatable, Sendable {
     }
 }
 
+public struct WaxWALStats: Equatable, Sendable {
+    public var walSize: UInt64
+    public var writePos: UInt64
+    public var checkpointPos: UInt64
+    public var pendingBytes: UInt64
+    public var committedSeq: UInt64
+    public var lastSeq: UInt64
+    public var wrapCount: UInt64
+    public var checkpointCount: UInt64
+    public var sentinelWriteCount: UInt64
+    public var autoCommitCount: UInt64
+
+    public init(
+        walSize: UInt64,
+        writePos: UInt64,
+        checkpointPos: UInt64,
+        pendingBytes: UInt64,
+        committedSeq: UInt64,
+        lastSeq: UInt64,
+        wrapCount: UInt64,
+        checkpointCount: UInt64,
+        sentinelWriteCount: UInt64,
+        autoCommitCount: UInt64
+    ) {
+        self.walSize = walSize
+        self.writePos = writePos
+        self.checkpointPos = checkpointPos
+        self.pendingBytes = pendingBytes
+        self.committedSeq = committedSeq
+        self.lastSeq = lastSeq
+        self.wrapCount = wrapCount
+        self.checkpointCount = checkpointCount
+        self.sentinelWriteCount = sentinelWriteCount
+        self.autoCommitCount = autoCommitCount
+    }
+}
+
 public struct PendingEmbeddingSnapshot: Equatable, Sendable {
     public let embeddings: [PutEmbedding]
     public let latestSequence: UInt64?
@@ -51,6 +88,7 @@ public actor Wax {
     private var dataEnd: UInt64
     private var generation: UInt64
     private var dirty: Bool
+    private var walAutoCommitCount: UInt64
 
     private struct WriterWaiter {
         let id: UUID
@@ -77,7 +115,8 @@ public actor Wax {
         stagedVecIndexStampCounter: UInt64,
         dataEnd: UInt64,
         generation: UInt64,
-        dirty: Bool
+        dirty: Bool,
+        walAutoCommitCount: UInt64
     ) {
         self.url = url
         self.io = io
@@ -97,6 +136,7 @@ public actor Wax {
         self.dataEnd = dataEnd
         self.generation = generation
         self.dirty = dirty
+        self.walAutoCommitCount = walAutoCommitCount
     }
 
     private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
@@ -137,6 +177,7 @@ public actor Wax {
         }
 
         try await commitLocked()
+        walAutoCommitCount &+= 1
         guard wal.canAppend(payloadSize: payloadSize) else {
             throw WaxError.capacityExceeded(limit: wal.walSize, requested: UInt64(payloadSize))
         }
@@ -157,6 +198,7 @@ public actor Wax {
         }
 
         try await commitLocked()
+        walAutoCommitCount &+= 1
         guard wal.canAppendBatch(payloadSizes: payloadSizes) else {
             let requested = UInt64(payloadSizes.reduce(0, +))
             throw WaxError.capacityExceeded(limit: wal.walSize, requested: requested)
@@ -325,7 +367,8 @@ public actor Wax {
             stagedVecIndexStampCounter: 0,
             dataEnd: created.dataEnd,
             generation: 0,
-            dirty: false
+            dirty: false,
+            walAutoCommitCount: 0
         )
     }
 
@@ -482,7 +525,8 @@ public actor Wax {
             stagedVecIndexStampCounter: 0,
             dataEnd: opened.dataEnd,
             generation: opened.generation,
-            dirty: opened.dirty
+            dirty: opened.dirty,
+            walAutoCommitCount: 0
         )
     }
 
@@ -1001,6 +1045,30 @@ public actor Wax {
                     requested: UInt64(byteCount)
                 )
             }
+
+            let checksum = SHA256Checksum.digest(bytes)
+            let bytesLength = UInt64(byteCount)
+
+            if let stagedLexIndex {
+                let stagedChecksum = SHA256Checksum.digest(stagedLexIndex.bytes)
+                if stagedLexIndex.docCount == docCount,
+                   stagedLexIndex.version == version,
+                   UInt64(stagedLexIndex.bytes.count) == bytesLength,
+                   stagedChecksum == checksum {
+                    return
+                }
+            }
+
+            if let committed = toc.indexes.lex,
+               committed.docCount == docCount,
+               committed.version == version,
+               committed.bytesLength == bytesLength,
+               committed.checksum == checksum {
+                stagedLexIndex = nil
+                stagedLexIndexStamp = nil
+                return
+            }
+
             stagedLexIndex = StagedLexIndex(bytes: bytes, docCount: docCount, version: version)
             stagedLexIndexStampCounter &+= 1
             stagedLexIndexStamp = stagedLexIndexStampCounter
@@ -1058,6 +1126,33 @@ public actor Wax {
                     )
                 }
                 pendingEmbeddingMaxSequence = mutation.sequence
+            }
+
+            let checksum = SHA256Checksum.digest(bytes)
+            let bytesLength = UInt64(byteCount)
+
+            if let stagedVecIndex {
+                let stagedChecksum = SHA256Checksum.digest(stagedVecIndex.bytes)
+                if stagedVecIndex.vectorCount == vectorCount,
+                   stagedVecIndex.dimension == dimension,
+                   stagedVecIndex.similarity == similarity,
+                   stagedVecIndex.pendingEmbeddingMaxSequence == pendingEmbeddingMaxSequence,
+                   UInt64(stagedVecIndex.bytes.count) == bytesLength,
+                   stagedChecksum == checksum {
+                    return
+                }
+            }
+
+            if pendingEmbeddingMaxSequence == nil,
+               let committed = toc.indexes.vec,
+               committed.vectorCount == vectorCount,
+               committed.dimension == dimension,
+               committed.similarity == similarity,
+               committed.bytesLength == bytesLength,
+               committed.checksum == checksum {
+                stagedVecIndex = nil
+                stagedVecIndexStamp = nil
+                return
             }
 
             stagedVecIndex = StagedVecIndex(
@@ -1738,6 +1833,23 @@ public actor Wax {
                 frameCount: UInt64(toc.frames.count),
                 pendingFrames: UInt64(pending),
                 generation: generation
+            )
+        }
+    }
+
+    public func walStats() async -> WaxWALStats {
+        await withReadLock {
+            WaxWALStats(
+                walSize: wal.walSize,
+                writePos: wal.writePos,
+                checkpointPos: wal.checkpointPos,
+                pendingBytes: wal.pendingBytes,
+                committedSeq: header.walCommittedSeq,
+                lastSeq: wal.lastSequence,
+                wrapCount: wal.wrapCount,
+                checkpointCount: wal.checkpointCount,
+                sentinelWriteCount: wal.sentinelWriteCount,
+                autoCommitCount: walAutoCommitCount
             )
         }
     }
