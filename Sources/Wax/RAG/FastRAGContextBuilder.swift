@@ -264,7 +264,7 @@ public struct FastRAGContextBuilder: Sendable {
                 await withTaskGroup(of: (Int, String).self) { group in
                     for (index, (result, preview)) in snippetCandidates.enumerated() {
                         group.addTask {
-                            guard Self.shouldUseFullFrameForSnippet(preview: preview, intent: queryIntent) else {
+                            guard Self.shouldUseFullFrameForSnippet(preview: preview, intent: queryIntent, analyzer: queryAnalyzer) else {
                                 return (index, preview)
                             }
                             do {
@@ -342,7 +342,7 @@ public struct FastRAGContextBuilder: Sendable {
         return c
     }
 
-    static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent) -> Bool {
+    static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent, analyzer: QueryAnalyzer) -> Bool {
         if preview.isEmpty { return false }
         let lower = preview.lowercased()
 
@@ -351,7 +351,7 @@ public struct FastRAGContextBuilder: Sendable {
                 || lower.contains("appointment")
                 || lower.contains("beta")
                 || lower.contains("timeline")
-            if hintsTemporal && !containsDateLiteral(preview) {
+            if hintsTemporal && !analyzer.containsDateLiteral(preview) {
                 return true
             }
         }
@@ -377,6 +377,8 @@ public struct FastRAGContextBuilder: Sendable {
         let intents = analyzer.detectIntent(query: query)
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
         let queryEntities = analyzer.entityTerms(query: query)
+        let queryYears = analyzer.yearTerms(in: query)
+        let queryDateKeys = analyzer.normalizedDateKeys(in: query)
         let vectorInfluenced: Bool
         switch config.searchMode {
         case .vectorOnly:
@@ -390,6 +392,14 @@ public struct FastRAGContextBuilder: Sendable {
             return results
         }
 
+        // Scoring weights calibrated for answer-focused reranking (FastRAG context assembly).
+        // These intentionally differ from UnifiedSearch.intentAwareRerank weights:
+        //   - Higher recall weight (0.80 vs 0.55) — FastRAG needs comprehensive coverage
+        //     since it feeds a deterministic context builder, not a search results page.
+        //   - Higher entity coverage weight (1.25 vs 0.30) — answer extraction depends
+        //     heavily on entity presence, so missing entities are penalized more aggressively.
+        //   - Simpler distractor detection (looksDistractor) — FastRAG doesn't need the
+        //     broader distractor set used by UnifiedSearch for general search quality.
         func score(_ result: SearchResponse.Result) -> Float {
             var total = result.score
             guard let preview = result.previewText, !preview.isEmpty else { return total }
@@ -397,20 +407,40 @@ public struct FastRAGContextBuilder: Sendable {
             let previewLower = preview.lowercased()
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
             let previewEntities = analyzer.entityTerms(query: preview)
+            let previewYears = analyzer.yearTerms(in: preview)
+            let previewDateKeys = analyzer.normalizedDateKeys(in: preview)
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
                 let overlap = Float(queryTerms.intersection(previewTerms).count)
                 let recall = overlap / Float(max(1, queryTerms.count))
                 let precision = overlap / Float(max(1, previewTerms.count))
-                total += recall * 0.80
-                total += precision * 0.40
+                total += recall * 0.80     // High recall weight: answer builder needs all relevant content
+                total += precision * 0.40  // Moderate precision: avoids diluting with loosely matching frames
             }
 
             if !queryEntities.isEmpty {
                 let hits = queryEntities.intersection(previewEntities).count
                 let coverage = Float(hits) / Float(max(1, queryEntities.count))
-                total += coverage * (vectorInfluenced ? 1.25 : 0.90)
+                total += coverage * (vectorInfluenced ? 1.25 : 0.90)  // Entity match is critical for answer extraction
                 if hits == 0 {
-                    total -= vectorInfluenced ? 0.65 : 0.35
+                    total -= vectorInfluenced ? 0.65 : 0.35  // Vector results with zero entity overlap are likely distractors
+                }
+            }
+
+            if !queryYears.isEmpty {
+                let yearHits = queryYears.intersection(previewYears).count
+                let yearCoverage = Float(yearHits) / Float(max(1, queryYears.count))
+                total += yearCoverage * 1.35  // Year match strongly disambiguates temporal queries
+                if yearHits == 0, !previewYears.isEmpty {
+                    total -= vectorInfluenced ? 1.35 : 1.05  // Wrong year is worse than no year
+                }
+            }
+
+            if !queryDateKeys.isEmpty {
+                let dateHits = queryDateKeys.intersection(previewDateKeys).count
+                let dateCoverage = Float(dateHits) / Float(max(1, queryDateKeys.count))
+                total += dateCoverage * 1.15  // Full date match (YYYY-MM-DD) is high signal
+                if dateHits == 0, !previewDateKeys.isEmpty {
+                    total -= vectorInfluenced ? 1.15 : 0.90  // Wrong date is actively harmful
                 }
             }
 
@@ -419,8 +449,13 @@ public struct FastRAGContextBuilder: Sendable {
                 total += 0.45
             }
             if intents.contains(.asksDate),
-               (previewLower.contains("public launch") || previewLower.contains("launch is") || containsDateLiteral(preview)) {
+               (previewLower.contains("public launch") || previewLower.contains("launch is") || analyzer.containsDateLiteral(preview)) {
                 total += 0.45
+            }
+            if intents.contains(.asksDate),
+               RerankingHelpers.containsTentativeLaunchLanguage(previewLower) {
+                let basePenalty = config.answerDistractorPenalty
+                total -= vectorInfluenced ? basePenalty * 2.8 : basePenalty * 1.8
             }
             if intents.contains(.asksOwnership),
                (previewLower.contains("owns deployment readiness") || previewLower.contains(" owns ")) {
@@ -429,7 +464,7 @@ public struct FastRAGContextBuilder: Sendable {
             if looksDistractor(previewLower) {
                 let basePenalty = config.answerDistractorPenalty
                 total -= vectorInfluenced ? basePenalty * 2.2 : basePenalty
-                if vectorInfluenced, intents.contains(.asksDate), !containsDateLiteral(preview) {
+                if vectorInfluenced, intents.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
                     total -= 0.35
                 }
             }
@@ -449,6 +484,10 @@ public struct FastRAGContextBuilder: Sendable {
         return head + results.dropFirst(cappedWindow)
     }
 
+    /// FastRAG distractor check — narrower than UnifiedSearch.looksDistractorLike.
+    /// Includes "no authoritative" (confidence-undermining language) which UnifiedSearch omits.
+    /// Omits "allergic", "draft memo", "tentative", "pending approval" which are already
+    /// handled by dedicated intent-specific penalties in the FastRAG scoring path.
     private static func looksDistractor(_ text: String) -> Bool {
         text.contains("no authoritative")
             || text.contains("weekly report")
@@ -457,15 +496,8 @@ public struct FastRAGContextBuilder: Sendable {
             || text.contains("distractor")
     }
 
-    private static func containsDateLiteral(_ text: String) -> Bool {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b"#
-        ) else {
-            return false
-        }
-        let range = NSRange(location: 0, length: text.utf16.count)
-        return regex.firstMatch(in: text, range: range) != nil
-    }
+    // containsTentativeLaunchLanguage → RerankingHelpers (shared with UnifiedSearch)
+    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private func expansionText(
         frameId: UInt64,

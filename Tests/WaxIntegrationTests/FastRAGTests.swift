@@ -85,6 +85,57 @@ func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
 }
 
 @Test
+func fastRAGUsingSessionMatchesWaxSearchDeterministically() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(Data("Swift concurrency uses actors.".utf8))
+        try await text.index(frameId: id0, text: "Swift concurrency uses actors.")
+        let id1 = try await wax.put(Data("Swift task groups enable parallel work.".utf8))
+        try await text.index(frameId: id1, text: "Swift task groups enable parallel work.")
+        try await text.commit()
+
+        let builder = FastRAGContextBuilder()
+        var config = FastRAGConfig(
+            mode: .fast,
+            maxContextTokens: 60,
+            expansionMaxTokens: 24,
+            snippetMaxTokens: 12,
+            maxSnippets: 4,
+            searchTopK: 6,
+            searchMode: .textOnly
+        )
+        config.deterministicNowMs = 1_700_000_000_000
+
+        let session = try await wax.openSession(.readOnly)
+        let viaSessionA = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            session: session,
+            config: config
+        )
+        let viaSessionB = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            session: session,
+            config: config
+        )
+        let viaWax = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            config: config
+        )
+
+        #expect(viaSessionA == viaSessionB)
+        #expect(viaSessionA == viaWax)
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
+@Test
 func fastRAGSkipsNonUTF8ExpansionCandidates() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -427,13 +478,15 @@ func deterministicAnswerExtractorMergesOwnerAndLaunchDateAcrossItems() {
 func snippetFallbackTriggersForDateIntentWhenPreviewLacksDateLiteral() {
     let shouldFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
         preview: "For project Atlas-01, public launch details are documented in roadmap notes.",
-        intent: [.asksDate]
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
     )
     #expect(shouldFallback)
 
     let shouldNotFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
         preview: "For project Atlas-01, public launch is July 4, 2026.",
-        intent: [.asksDate]
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
     )
     #expect(!shouldNotFallback)
 }
@@ -535,13 +588,15 @@ func deterministicAnswerExtractorSupportsISOAndAbbreviatedLaunchDates() {
 func snippetFallbackRecognizesISOAndAbbreviatedMonthDateLiterals() {
     let shouldNotFallbackISO = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
         preview: "For project Atlas-10, public launch is 2026-08-13.",
-        intent: [.asksDate]
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
     )
     #expect(!shouldNotFallbackISO)
 
     let shouldNotFallbackAbbreviated = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
         preview: "For project Atlas-10, public launch is Aug 13, 2026.",
-        intent: [.asksDate]
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
     )
     #expect(!shouldNotFallbackAbbreviated)
 }

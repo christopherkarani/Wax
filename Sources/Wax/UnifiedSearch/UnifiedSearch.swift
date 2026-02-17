@@ -98,18 +98,42 @@ extension Wax {
         async let textResultsAsync: [TextSearchResult] = {
             guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
             let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
+            let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
+
+            func merged(
+                base: [TextSearchResult],
+                fallback: [TextSearchResult],
+                limit: Int
+            ) -> [TextSearchResult] {
+                guard !base.isEmpty else {
+                    return Array(fallback.prefix(limit))
+                }
+                if base.count >= limit { return Array(base.prefix(limit)) }
+
+                var seen = Set(base.map(\.frameId))
+                var combined = base
+                combined.reserveCapacity(limit)
+                for candidate in fallback {
+                    guard !seen.contains(candidate.frameId) else { continue }
+                    combined.append(candidate)
+                    seen.insert(candidate.frameId)
+                    if combined.count >= limit { break }
+                }
+                return combined
+            }
+
             do {
                 let base = try await textEngine.search(query: primaryQuery, topK: candidateLimit)
-                guard base.isEmpty, let fallback = Self.orExpandedQuery(from: trimmedQuery) else {
-                    return base
+                guard let fallbackQuery, fallbackQuery != primaryQuery else {
+                    return Array(base.prefix(candidateLimit))
                 }
-                guard fallback != primaryQuery else { return base }
-                return try await textEngine.search(query: fallback, topK: candidateLimit)
+                let fallback = try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
+                return merged(base: base, fallback: fallback, limit: candidateLimit)
             } catch {
-                guard let fallback = Self.orExpandedQuery(from: trimmedQuery) else {
+                guard let fallbackQuery else {
                     throw error
                 }
-                return try await textEngine.search(query: fallback, topK: candidateLimit)
+                return try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
             }
         }()
 
@@ -531,24 +555,34 @@ extension Wax {
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
         let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
-        if tokens.isEmpty { return nil }
-        let quoted = tokens.map { token -> String in
+        let quotedTokens = tokens.map { token -> String in
             let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
             return "\"\(escaped)\""
         }
-        return quoted.joined(separator: " OR ")
+        let quotedPhrases = normalizedQuotedPhrases(from: query).map { phrase -> String in
+            let escaped = phrase.replacingOccurrences(of: "\"", with: "\"\"")
+            return "\"\(escaped)\""
+        }
+        let clauses = quotedPhrases + quotedTokens
+        guard !clauses.isEmpty else { return nil }
+        return clauses.joined(separator: " OR ")
     }
 
     private static func primaryFTSQuery(from query: String, maxTokens: Int = 16) -> String? {
         guard requiresSafeFTSNormalization(query) else { return query }
         let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
-        if tokens.isEmpty { return nil }
-        let quoted = tokens.map { token -> String in
+        let quotedTokens = tokens.map { token -> String in
             let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
             return "\"\(escaped)\""
         }
+        let quotedPhrases = normalizedQuotedPhrases(from: query).map { phrase -> String in
+            let escaped = phrase.replacingOccurrences(of: "\"", with: "\"\"")
+            return "\"\(escaped)\""
+        }
+        let clauses = quotedPhrases + quotedTokens
+        guard !clauses.isEmpty else { return nil }
         // Use AND-like semantics for the first pass; fallback can broaden with OR.
-        return quoted.joined(separator: " ")
+        return clauses.joined(separator: " ")
     }
 
     private struct RRFFusedCandidate {
@@ -669,6 +703,10 @@ extension Wax {
         let intents = analyzer.detectIntent(query: query)
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
         let queryEntities = analyzer.entityTerms(query: query)
+        let queryYears = analyzer.yearTerms(in: query)
+        let queryDateKeys = analyzer.normalizedDateKeys(in: query)
+        let rawPhrases = rawQuotedPhrases(from: query)
+        let normalizedPhrases = normalizedQuotedPhrases(from: query)
         let queryNumericEntities = queryEntities.filter { termContainsDigits($0) }
         let queryAlphaEntities = queryEntities.filter { isLettersOnly($0) }
         let queryNumericTerms = queryTerms.filter { isDigitsOnly($0) }
@@ -677,7 +715,14 @@ extension Wax {
             || intents.contains(.asksDate)
             || intents.contains(.asksOwnership)
 
-        if !hasTargetIntent || queryEntities.isEmpty {
+        let hasDisambiguationSignals =
+            !queryEntities.isEmpty
+            || !queryYears.isEmpty
+            || !queryDateKeys.isEmpty
+            || !rawPhrases.isEmpty
+            || !normalizedPhrases.isEmpty
+
+        if !hasTargetIntent || !hasDisambiguationSignals {
             return results
         }
 
@@ -686,20 +731,32 @@ extension Wax {
             let score: Float
         }
 
+        // Scoring weights calibrated for search-result reranking (UnifiedSearch output).
+        // These intentionally differ from FastRAGContextBuilder.rerankCandidatesForAnswer:
+        //   - Lower recall/precision weights (0.55/0.25 vs 0.80/0.40) — search results
+        //     show previews where false positives are more visible to users.
+        //   - Separate numeric/alpha entity scoring with higher numeric weight (1.95) —
+        //     search queries often disambiguate via IDs like "person18" or "atlas10".
+        //   - Broader distractor detection (looksDistractorLike) — search results page
+        //     needs wider filtering since items aren't further filtered by a context builder.
         func compositeScore(for result: SearchResponse.Result) -> Float {
             var total = result.score
             guard let preview = result.previewText, !preview.isEmpty else { return total }
 
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
             let previewEntities = analyzer.entityTerms(query: preview)
+            let previewYears = analyzer.yearTerms(in: preview)
+            let previewDateKeys = analyzer.normalizedDateKeys(in: preview)
             let previewAlphaEntities = previewEntities.filter { isLettersOnly($0) }
             let lower = preview.lowercased()
+            let normalizedLower = normalizedPhraseComparableText(preview)
+            let vectorInfluenced = result.sources.contains(.vector)
 
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
                 let overlap = Float(queryTerms.intersection(previewTerms).count)
                 let recall = overlap / Float(max(1, queryTerms.count))
                 let precision = overlap / Float(max(1, previewTerms.count))
-                total += recall * 0.55
+                total += recall * 0.55   // Lower than FastRAG: false positives more visible in search UI
                 total += precision * 0.25
             }
 
@@ -731,9 +788,59 @@ extension Wax {
                 }
             }
 
+            if !queryYears.isEmpty {
+                let yearHits = queryYears.intersection(previewYears).count
+                let yearCoverage = Float(yearHits) / Float(max(1, queryYears.count))
+                total += yearCoverage * 1.25
+                if yearHits == 0, !previewYears.isEmpty {
+                    total -= 1.10
+                }
+            }
+
+            if !queryDateKeys.isEmpty {
+                let dateHits = queryDateKeys.intersection(previewDateKeys).count
+                let dateCoverage = Float(dateHits) / Float(max(1, queryDateKeys.count))
+                total += dateCoverage * 1.15
+                if dateHits == 0, !previewDateKeys.isEmpty {
+                    total -= 0.95
+                }
+            }
+
+            if !rawPhrases.isEmpty {
+                let exactPhraseHits = rawPhrases.filter { phrase in
+                    lower.contains(phrase.lowercased())
+                }.count
+                if exactPhraseHits > 0 {
+                    total += Float(exactPhraseHits) * 1.20
+                } else {
+                    total -= 0.35
+                }
+            }
+
+            if !normalizedPhrases.isEmpty {
+                let normalizedHits = normalizedPhrases.filter { phrase in
+                    normalizedLower.contains(phrase)
+                }.count
+                let coverage = Float(normalizedHits) / Float(max(1, normalizedPhrases.count))
+                total += coverage * 0.75
+                if normalizedHits == 0 {
+                    total -= 0.20
+                }
+            }
+
             if intents.contains(.asksLocation) {
-                if lower.contains("moved to") || lower.contains("move to") || lower.contains("city") {
-                    total += 1.35
+                if containsMovedToLocationPattern(preview) {
+                    total += 1.60
+                } else if lower.contains("moved to") || lower.contains("move to") {
+                    total += 0.45
+                } else if lower.contains("city") {
+                    total += 0.10
+                }
+                if lower.contains("without a destination")
+                    || lower.contains("city move")
+                    || lower.contains("retrospective")
+                {
+                    total -= 0.75
                 }
                 if lower.contains("allergic") || lower.contains("health") || lower.contains("peanut") {
                     total -= 1.10
@@ -744,8 +851,21 @@ extension Wax {
             }
 
             if intents.contains(.asksDate) {
-                if lower.contains("public launch") || containsDateLiteral(preview) {
+                let tentative = RerankingHelpers.containsTentativeLaunchLanguage(lower)
+                if lower.contains("public launch is"), !tentative {
+                    total += 1.70
+                } else if lower.contains("public launch") || analyzer.containsDateLiteral(preview) {
                     total += 1.20
+                }
+                if tentative {
+                    let scaledPenalty = max(
+                        vectorInfluenced ? 2.90 : 2.45,
+                        result.score * (vectorInfluenced ? 1.60 : 1.40)
+                    )
+                    total -= scaledPenalty
+                }
+                if lower.contains("draft memo") {
+                    total -= vectorInfluenced ? 1.45 : 1.20
                 }
                 if lower.contains(" owns ") || lower.contains("owner") || lower.contains("deployment readiness") {
                     total -= 0.40
@@ -795,24 +915,34 @@ extension Wax {
         return rerankedHead + Array(results.dropFirst(cappedWindow))
     }
 
+    /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.
+    /// Includes "allergic", "draft memo", "tentative", "pending approval" because UnifiedSearch
+    /// needs wider filtering for search result quality. Omits "no authoritative" (only relevant
+    /// for answer-focused context assembly where confidence-undermining language matters).
     private static func looksDistractorLike(_ text: String) -> Bool {
         text.contains("weekly report")
             || text.contains("checklist")
             || text.contains("signoff")
             || text.contains("allergic")
             || text.contains("distractor")
+            || text.contains("draft memo")
+            || text.contains("tentative")
+            || text.contains("pending approval")
     }
 
-    private static func containsDateLiteral(_ text: String) -> Bool {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b"#,
-            options: [.caseInsensitive]
-        ) else {
-            return false
-        }
+    // containsTentativeLaunchLanguage → RerankingHelpers (shared with FastRAGContextBuilder)
+
+    private static let movedToLocationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:moved|move)\s+to\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b"#
+    )
+
+    private static func containsMovedToLocationPattern(_ text: String) -> Bool {
+        guard let regex = movedToLocationRegex else { return false }
         let range = NSRange(location: 0, length: text.utf16.count)
         return regex.firstMatch(in: text, range: range) != nil
     }
+
+    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private static func isDigitsOnly(_ text: String) -> Bool {
         !text.isEmpty && text.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
@@ -835,6 +965,7 @@ extension Wax {
     private static let ftsStopWords: Set<String> = [
         "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
         "on", "or", "the", "to", "what", "when", "where", "which", "who", "with",
+        "date",
     ]
 
     private static func normalizedFTSTokens(from query: String, maxTokens: Int) -> [String] {
@@ -861,10 +992,64 @@ extension Wax {
         return tokens
     }
 
+    private static func rawQuotedPhrases(from query: String, maxPhrases: Int = 4) -> [String] {
+        guard let regex = quotedPhraseRegex else { return [] }
+        let range = NSRange(location: 0, length: query.utf16.count)
+        let matches = regex.matches(in: query, range: range)
+
+        var phrases: [String] = []
+        phrases.reserveCapacity(min(maxPhrases, matches.count))
+        for match in matches {
+            guard phrases.count < maxPhrases else { break }
+            let capture = match.range(at: 1)
+            guard capture.location != NSNotFound,
+                  let swiftRange = Range(capture, in: query)
+            else {
+                continue
+            }
+            let phrase = query[swiftRange].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !phrase.isEmpty else { continue }
+            phrases.append(phrase)
+        }
+        return phrases
+    }
+
+    private static func normalizedQuotedPhrases(
+        from query: String,
+        maxPhrases: Int = 4,
+        maxTokensPerPhrase: Int = 8
+    ) -> [String] {
+        var seen: Set<String> = []
+        var normalized: [String] = []
+
+        for phrase in rawQuotedPhrases(from: query, maxPhrases: maxPhrases) {
+            let tokens = normalizedFTSTokens(from: phrase, maxTokens: maxTokensPerPhrase)
+            guard !tokens.isEmpty else { continue }
+            let value = tokens.joined(separator: " ")
+            if seen.insert(value).inserted {
+                normalized.append(value)
+            }
+        }
+
+        return normalized
+    }
+
+    private static func normalizedPhraseComparableText(_ text: String) -> String {
+        text
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .joined(separator: " ")
+    }
+
     private static let asciiPunctuationScalars: Set<UnicodeScalar> = {
         let scalars = "!\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~".unicodeScalars
         return Set(scalars)
     }()
+
+    private static let quotedPhraseRegex = try? NSRegularExpression(
+        pattern: #""([^"]+)""#
+    )
 
     private static func structuredEntityCandidates(
         query: String,

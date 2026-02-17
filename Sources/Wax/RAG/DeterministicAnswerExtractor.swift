@@ -3,6 +3,11 @@ import Foundation
 /// Deterministic query-aware answer extractor over retrieved RAG items.
 /// Keeps Wax fully offline while producing concise answer spans for benchmarking
 /// and deterministic answer-style contexts.
+///
+/// - Important: This type is designed for **benchmark and evaluation use only**.
+///   It uses hardcoded extraction patterns (ownership, flight, allergy, pet, etc.)
+///   tuned to the `LongMemoryBenchmarkHarness` fixture set. It is not a general-purpose
+///   answer extractor and should not be used in production retrieval pipelines.
 public struct DeterministicAnswerExtractor: Sendable {
     private let analyzer = QueryAnalyzer()
 
@@ -17,6 +22,8 @@ public struct DeterministicAnswerExtractor: Sendable {
         let lowerQuery = query.lowercased()
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
         let queryEntities = analyzer.entityTerms(query: query)
+        let queryYears = analyzer.yearTerms(in: query)
+        let queryDateKeys = analyzer.normalizedDateKeys(in: query)
         let intent = analyzer.detectIntent(query: query)
         let asksTravel = lowerQuery.contains("flying") || lowerQuery.contains("flight") || lowerQuery.contains("travel")
         let asksAllergy = lowerQuery.contains("allergy") || lowerQuery.contains("allergic")
@@ -40,28 +47,26 @@ public struct DeterministicAnswerExtractor: Sendable {
             let relevance = relevanceScore(
                 queryTerms: queryTerms,
                 queryEntities: queryEntities,
+                queryYears: queryYears,
+                queryDateKeys: queryDateKeys,
                 text: text,
                 base: normalized.item.score
             )
 
             if let owner = Self.firstMatch(
-                pattern: #"\b([A-Z][a-z]+)\s+owns\s+deployment\s+readiness\b"#,
+                regex: Self.ownershipRegex,
                 in: text,
                 capture: 1
             ) {
                 ownerCandidates.append(.init(text: owner, score: relevance + 0.50))
             }
 
-            if let launchDate = Self.firstMatch(
-                pattern: #"\bpublic\s+launch[^.]*?((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})\b"#,
-                in: text,
-                capture: 1
-            ) {
+            if let launchDate = firstLaunchDate(in: text) {
                 launchDateCandidates.append(.init(text: launchDate, score: relevance + 0.55))
             }
 
             if let appointmentDateTime = Self.firstMatch(
-                pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(?:AM|PM)\b"#,
+                regex: Self.appointmentDateTimeRegex,
                 in: text,
                 capture: 0
             ) {
@@ -69,7 +74,7 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let movedCity = Self.firstMatch(
-                pattern: #"\b[Mm]oved\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"#,
+                regex: Self.movedCityRegex,
                 in: text,
                 capture: 1
             ) {
@@ -77,7 +82,7 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let destination = Self.firstMatch(
-                pattern: #"\b[Ff]light\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"#,
+                regex: Self.flightDestinationRegex,
                 in: text,
                 capture: 1
             ) {
@@ -85,7 +90,7 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let allergy = Self.firstMatch(
-                pattern: #"\ballergic\s+to\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)\b"#,
+                regex: Self.allergyRegex,
                 in: text,
                 capture: 1
             ) {
@@ -93,7 +98,7 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let preference = Self.firstMatch(
-                pattern: #"\bprefers\s+([^\.]+)"#,
+                regex: Self.preferenceRegex,
                 in: text,
                 capture: 1
             ) {
@@ -101,7 +106,7 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let petName = Self.firstMatch(
-                pattern: #"\bnamed\s+([A-Z][a-z]+)\b"#,
+                regex: Self.petNameRegex,
                 in: text,
                 capture: 1
             ) {
@@ -109,18 +114,14 @@ public struct DeterministicAnswerExtractor: Sendable {
             }
 
             if let adoptedDate = Self.firstMatch(
-                pattern: #"\bin\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"#,
+                regex: Self.adoptionDateRegex,
                 in: text,
                 capture: 1
             ) {
                 adoptionDateCandidates.append(.init(text: adoptedDate, score: relevance + 0.40))
             }
 
-            if let genericDate = Self.firstMatch(
-                pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b"#,
-                in: text,
-                capture: 0
-            ) {
+            if let genericDate = firstDateLiteral(in: text) {
                 dateCandidates.append(.init(text: genericDate, score: relevance + 0.20))
             }
         }
@@ -203,11 +204,15 @@ public struct DeterministicAnswerExtractor: Sendable {
     private func relevanceScore(
         queryTerms: Set<String>,
         queryEntities: Set<String>,
+        queryYears: Set<String>,
+        queryDateKeys: Set<String>,
         text: String,
         base: Float
     ) -> Double {
         var score = Double(base)
-        guard !queryTerms.isEmpty || !queryEntities.isEmpty else { return score }
+        guard !queryTerms.isEmpty || !queryEntities.isEmpty || !queryYears.isEmpty || !queryDateKeys.isEmpty else {
+            return score
+        }
         let terms = Set(analyzer.normalizedTerms(query: text))
         if !queryTerms.isEmpty, !terms.isEmpty {
             let overlap = Double(queryTerms.intersection(terms).count)
@@ -224,7 +229,44 @@ public struct DeterministicAnswerExtractor: Sendable {
                 score -= 0.70
             }
         }
+        if !queryYears.isEmpty {
+            let textYears = analyzer.yearTerms(in: text)
+            let hits = queryYears.intersection(textYears).count
+            let coverage = Double(hits) / Double(max(1, queryYears.count))
+            score += coverage * 1.45
+            if hits == 0, !textYears.isEmpty {
+                score -= 1.35
+            }
+        }
+        if !queryDateKeys.isEmpty {
+            let textDateKeys = analyzer.normalizedDateKeys(in: text)
+            let hits = queryDateKeys.intersection(textDateKeys).count
+            let coverage = Double(hits) / Double(max(1, queryDateKeys.count))
+            score += coverage * 1.25
+            if hits == 0, !textDateKeys.isEmpty {
+                score -= 1.10
+            }
+        }
         return score
+    }
+
+    private func firstLaunchDate(in text: String) -> String? {
+        guard let regex = Self.launchClauseRegex else { return nil }
+
+        let range = NSRange(location: 0, length: text.utf16.count)
+        let matches = regex.matches(in: text, options: [], range: range)
+        for match in matches {
+            guard let clauseRange = Range(match.range, in: text) else { continue }
+            let clause = String(text[clauseRange])
+            if let date = analyzer.dateLiterals(in: clause).first {
+                return date
+            }
+        }
+        return nil
+    }
+
+    private func firstDateLiteral(in text: String) -> String? {
+        analyzer.dateLiterals(in: text).first
     }
 
     private func bestCandidate(in candidates: [AnswerCandidate]) -> String? {
@@ -271,8 +313,39 @@ public struct DeterministicAnswerExtractor: Sendable {
             .filter { !$0.isEmpty }
     }
 
-    private static func firstMatch(pattern: String, in text: String, capture: Int) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    // MARK: - Pre-compiled Patterns
+
+    private static let ownershipRegex = try? NSRegularExpression(
+        pattern: #"\b([A-Z][a-z]+)\s+owns\s+deployment\s+readiness\b"#
+    )
+    private static let appointmentDateTimeRegex = try? NSRegularExpression(
+        pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(?:AM|PM)\b"#
+    )
+    private static let movedCityRegex = try? NSRegularExpression(
+        pattern: #"\b[Mm]oved\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"#
+    )
+    private static let flightDestinationRegex = try? NSRegularExpression(
+        pattern: #"\b[Ff]light\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"#
+    )
+    private static let allergyRegex = try? NSRegularExpression(
+        pattern: #"\ballergic\s+to\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)\b"#
+    )
+    private static let preferenceRegex = try? NSRegularExpression(
+        pattern: #"\bprefers\s+([^\.]+)"#
+    )
+    private static let petNameRegex = try? NSRegularExpression(
+        pattern: #"\bnamed\s+([A-Z][a-z]+)\b"#
+    )
+    private static let adoptionDateRegex = try? NSRegularExpression(
+        pattern: #"\bin\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"#
+    )
+    private static let launchClauseRegex = try? NSRegularExpression(
+        pattern: #"\bpublic\s+launch[^.\n]*"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func firstMatch(regex: NSRegularExpression?, in text: String, capture: Int) -> String? {
+        guard let regex else { return nil }
         let range = NSRange(location: 0, length: text.utf16.count)
         guard let match = regex.firstMatch(in: text, range: range) else { return nil }
         guard capture <= match.numberOfRanges - 1 else { return nil }

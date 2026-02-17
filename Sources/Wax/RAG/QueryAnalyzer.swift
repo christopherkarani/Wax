@@ -124,14 +124,75 @@ public struct QueryAnalyzer: Sendable {
                     index > 0 &&
                     Self.entityCueWords.contains(raw[index - 1]) &&
                     normalized.count >= 4
+                let hasNameFollowerCue =
+                    index + 1 < raw.count &&
+                    Self.nameFollowerCueWords.contains(raw[index + 1]) &&
+                    normalized.count >= 4
 
-                if hasUppercase || hasEntityCue {
+                if hasUppercase || hasEntityCue || hasNameFollowerCue {
                     entities.insert(normalized)
                 }
             }
         }
 
         return entities
+    }
+
+    /// Four-digit year cues extracted from text (for timeline disambiguation).
+    public func yearTerms(in text: String) -> Set<String> {
+        Set(
+            text
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .map(String.init)
+                .filter {
+                    $0.count == 4 &&
+                    $0.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
+                }
+        )
+    }
+
+    /// Date literals in encounter order. Supports full month names, abbreviated month names, and ISO YYYY-MM-DD.
+    public func dateLiterals(in text: String) -> [String] {
+        let full = Self.captureMatches(regex: Self.fullMonthDateRegex, text: text, captureGroup: 0)
+        let abbreviated = Self.captureMatches(regex: Self.abbreviatedMonthDateRegex, text: text, captureGroup: 0)
+        let iso = Self.captureMatches(regex: Self.isoDateRegex, text: text, captureGroup: 0)
+
+        let all = (full + abbreviated + iso)
+            .sorted { lhs, rhs in
+                if lhs.location != rhs.location { return lhs.location < rhs.location }
+                return lhs.value.count < rhs.value.count
+            }
+
+        var seen: Set<String> = []
+        var ordered: [String] = []
+        ordered.reserveCapacity(all.count)
+        for item in all {
+            let value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if seen.insert(value).inserted {
+                ordered.append(value)
+            }
+        }
+        return ordered
+    }
+
+    /// Normalized date keys in ISO form (YYYY-MM-DD) across supported date literal formats.
+    public func normalizedDateKeys(in text: String) -> Set<String> {
+        let literals = dateLiterals(in: text)
+        var keys: Set<String> = []
+        keys.reserveCapacity(literals.count)
+
+        for literal in literals {
+            if let key = Self.normalizedDateKey(from: literal) {
+                keys.insert(key)
+            }
+        }
+
+        return keys
+    }
+
+    /// True when any supported date literal is present.
+    public func containsDateLiteral(_ text: String) -> Bool {
+        !dateLiterals(in: text).isEmpty
     }
 
     public func detectIntent(query: String) -> QueryIntent {
@@ -201,10 +262,44 @@ public struct QueryAnalyzer: Sendable {
         "for", "about", "did", "does", "with", "from"
     ]
 
+    private static let nameFollowerCueWords: Set<String> = [
+        "moved", "move", "owns", "owned", "launch", "launched"
+    ]
+
     private static let entityNoiseTerms: Set<String> = [
         "city", "date", "owner", "owns", "launch", "public", "project", "beta",
         "deployment", "readiness", "timeline", "status", "updates", "update",
         "report", "checklist", "signoff", "team", "health", "allergic",
+    ]
+
+    private static let fullMonthDateRegex = try? NSRegularExpression(
+        pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let abbreviatedMonthDateRegex = try? NSRegularExpression(
+        pattern: #"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\b"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let isoDateRegex = try? NSRegularExpression(
+        pattern: #"\b\d{4}-\d{2}-\d{2}\b"#,
+        options: []
+    )
+
+    private static let monthByName: [String: Int] = [
+        "january": 1, "jan": 1,
+        "february": 2, "feb": 2,
+        "march": 3, "mar": 3,
+        "april": 4, "apr": 4,
+        "may": 5,
+        "june": 6, "jun": 6,
+        "july": 7, "jul": 7,
+        "august": 8, "aug": 8,
+        "september": 9, "sep": 9, "sept": 9,
+        "october": 10, "oct": 10,
+        "november": 11, "nov": 11,
+        "december": 12, "dec": 12,
     ]
 
     private static func containsLetters(_ token: String) -> Bool {
@@ -221,5 +316,50 @@ public struct QueryAnalyzer: Sendable {
 
     private static func isDigitsOnly(_ token: String) -> Bool {
         !token.isEmpty && token.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
+    }
+
+    private static func captureMatches(
+        regex: NSRegularExpression?,
+        text: String,
+        captureGroup: Int
+    ) -> [(location: Int, value: String)] {
+        guard let regex else { return [] }
+        let range = NSRange(location: 0, length: text.utf16.count)
+        return regex.matches(in: text, options: [], range: range).compactMap { match in
+            guard captureGroup < match.numberOfRanges else { return nil }
+            let capture = match.range(at: captureGroup)
+            guard capture.location != NSNotFound,
+                  let swiftRange = Range(capture, in: text)
+            else {
+                return nil
+            }
+            return (location: capture.location, value: String(text[swiftRange]))
+        }
+    }
+
+    private static func normalizedDateKey(from literal: String) -> String? {
+        let trimmed = literal.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let isoMatch = captureMatches(regex: isoDateRegex, text: trimmed, captureGroup: 0).first,
+           isoMatch.value == trimmed {
+            return isoMatch.value
+        }
+
+        let parts = trimmed
+            .replacingOccurrences(of: ",", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard parts.count == 3 else { return nil }
+
+        let monthToken = parts[0].lowercased().replacingOccurrences(of: ".", with: "")
+        guard let month = monthByName[monthToken],
+              let day = Int(parts[1]),
+              let year = Int(parts[2]),
+              (1...31).contains(day),
+              (1900...2999).contains(year)
+        else {
+            return nil
+        }
+
+        return String(format: "%04d-%02d-%02d", year, month, day)
     }
 }

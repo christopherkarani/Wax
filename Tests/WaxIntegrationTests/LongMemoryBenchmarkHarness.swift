@@ -478,7 +478,11 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
 
     private static func sanitizedQuery(_ query: String) -> String {
         let cleaned = query.unicodeScalars.map { scalar -> Character in
-            if CharacterSet.alphanumerics.contains(scalar) {
+            if CharacterSet.alphanumerics.contains(scalar)
+                || scalar == "\""
+                || scalar == "-"
+                || scalar == "'"
+            {
                 return Character(scalar)
             }
             return " "
@@ -509,6 +513,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             let lower = item.text.lowercased()
             if intent.contains(.asksLocation), lower.contains("moved to") { total += 0.35 }
             if intent.contains(.asksDate), lower.contains("public launch") { total += 0.35 }
+            if intent.contains(.asksDate), analyzer.containsDateLiteral(item.text) { total += 0.20 }
             if intent.contains(.asksOwnership), lower.contains("owns deployment readiness") { total += 0.35 }
             return total
         }
