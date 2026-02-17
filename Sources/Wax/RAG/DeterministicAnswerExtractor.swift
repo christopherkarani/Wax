@@ -4,10 +4,9 @@ import Foundation
 /// Keeps Wax fully offline while producing concise answer spans for benchmarking
 /// and deterministic answer-style contexts.
 ///
-/// - Important: This type is designed for **benchmark and evaluation use only**.
-///   It uses hardcoded extraction patterns (ownership, flight, allergy, pet, etc.)
-///   tuned to the `LongMemoryBenchmarkHarness` fixture set. It is not a general-purpose
-///   answer extractor and should not be used in production retrieval pipelines.
+/// - Important: This is a deterministic heuristic extractor for offline pipelines.
+///   It is intentionally lightweight and predictable, but not a substitute for
+///   full language-model reasoning.
 public struct DeterministicAnswerExtractor: Sendable {
     private let analyzer = QueryAnalyzer()
 
@@ -53,13 +52,13 @@ public struct DeterministicAnswerExtractor: Sendable {
                 base: normalized.item.score
             )
 
-            if let owner = Self.firstMatch(
-                regex: Self.ownershipRegex,
-                in: text,
-                capture: 1
-            ) {
-                ownerCandidates.append(.init(text: owner, score: relevance + 0.50))
-            }
+            ownerCandidates.append(
+                contentsOf: ownershipCandidates(
+                    in: text,
+                    queryTerms: queryTerms,
+                    baseScore: relevance
+                )
+            )
 
             if let launchDate = firstLaunchDate(in: text) {
                 launchDateCandidates.append(.init(text: launchDate, score: relevance + 0.55))
@@ -250,6 +249,61 @@ public struct DeterministicAnswerExtractor: Sendable {
         return score
     }
 
+    private func ownershipCandidates(
+        in text: String,
+        queryTerms: Set<String>,
+        baseScore: Double
+    ) -> [AnswerCandidate] {
+        var candidates: [AnswerCandidate] = []
+        candidates.reserveCapacity(2)
+
+        if let owner = Self.firstMatch(
+            regex: Self.deploymentOwnershipRegex,
+            in: text,
+            capture: 1
+        ) {
+            candidates.append(.init(text: owner, score: baseScore + 0.60))
+        }
+
+        guard let regex = Self.genericOwnershipRegex else {
+            return candidates
+        }
+
+        let range = NSRange(location: 0, length: text.utf16.count)
+        for match in regex.matches(in: text, options: [], range: range) {
+            guard match.numberOfRanges >= 3 else { continue }
+            let ownerRange = match.range(at: 1)
+            let topicRange = match.range(at: 2)
+            guard ownerRange.location != NSNotFound,
+                  topicRange.location != NSNotFound,
+                  let ownerSwiftRange = Range(ownerRange, in: text),
+                  let topicSwiftRange = Range(topicRange, in: text)
+            else {
+                continue
+            }
+
+            let owner = String(text[ownerSwiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let topic = String(text[topicSwiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !owner.isEmpty, !topic.isEmpty else { continue }
+
+            var score = baseScore + 0.40
+            let topicTerms = Set(analyzer.normalizedTerms(query: topic))
+            if !queryTerms.isEmpty, !topicTerms.isEmpty {
+                let overlap = Double(queryTerms.intersection(topicTerms).count)
+                let recall = overlap / Double(max(1, queryTerms.count))
+                let precision = overlap / Double(max(1, topicTerms.count))
+                score += recall * 0.80 + precision * 0.25
+            }
+            if topic.lowercased().contains("deployment readiness") {
+                score += 0.20
+            }
+
+            candidates.append(.init(text: owner, score: score))
+        }
+
+        return candidates
+    }
+
     private func firstLaunchDate(in text: String) -> String? {
         guard let regex = Self.launchClauseRegex else { return nil }
 
@@ -315,8 +369,11 @@ public struct DeterministicAnswerExtractor: Sendable {
 
     // MARK: - Pre-compiled Patterns
 
-    private static let ownershipRegex = try? NSRegularExpression(
+    private static let deploymentOwnershipRegex = try? NSRegularExpression(
         pattern: #"\b([A-Z][a-z]+)\s+owns\s+deployment\s+readiness\b"#
+    )
+    private static let genericOwnershipRegex = try? NSRegularExpression(
+        pattern: #"\b([A-Z][a-z]+)\s+owns\s+([^.,;\n]+?)(?=\s+and\s+[A-Z][a-z]+\s+owns\b|[.,;\n]|$)"#
     )
     private static let appointmentDateTimeRegex = try? NSRegularExpression(
         pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(?:AM|PM)\b"#

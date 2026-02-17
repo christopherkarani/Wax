@@ -538,6 +538,44 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
     }
 }
 
+@Test func singleQuotedPhraseIntentPrefersExactHyphenatedPhraseMatch() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let distractorID = try await wax.put(
+            Data("Atlas 10 launch date planning notes: atlas 10 launch date rehearsal, atlas 10 launch date checklist, atlas 10 launch date draft for August 30, 2026.".utf8)
+        )
+        try await text.index(
+            frameId: distractorID,
+            text: "Atlas 10 launch date planning notes: atlas 10 launch date rehearsal, atlas 10 launch date checklist, atlas 10 launch date draft for August 30, 2026."
+        )
+
+        let phraseMatchID = try await wax.put(
+            Data("Release ledger canonical phrase Atlas-10 launch date is August 13, 2026.".utf8)
+        )
+        try await text.index(
+            frameId: phraseMatchID,
+            text: "Release ledger canonical phrase Atlas-10 launch date is August 13, 2026."
+        )
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "what is 'Atlas-10 launch date' ???",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == phraseMatchID)
+        #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}
+
 @Test func launchDateQueryRejectsTentativeDistractorForSameEntity() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -571,6 +609,67 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         #expect(response.results.first?.frameId == authoritativeID)
         #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}
+
+@Test func hybridSearchRankingDiagnosticsTopKIsScopedAndStable() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let vec = try await wax.enableVectorSearch(dimensions: 4, preference: .cpuOnly)
+
+        let id0 = try await vec.putWithEmbedding(
+            Data("Swift concurrency guide".utf8),
+            embedding: [1.0, 0.0, 0.0, 0.0]
+        )
+        try await text.index(frameId: id0, text: "Swift concurrency guide")
+
+        let id1 = try await vec.putWithEmbedding(
+            Data("Swift actors and tasks".utf8),
+            embedding: [0.9, 0.1, 0.0, 0.0]
+        )
+        try await text.index(frameId: id1, text: "Swift actors and tasks")
+
+        let id2 = try await vec.putWithEmbedding(
+            Data("Rust ownership".utf8),
+            embedding: [0.0, 1.0, 0.0, 0.0]
+        )
+        try await text.index(frameId: id2, text: "Rust ownership")
+
+        try await text.commit()
+        try await vec.commit()
+
+        let request = SearchRequest(
+            query: "Swift concurrency",
+            embedding: [1.0, 0.0, 0.0, 0.0],
+            vectorEnginePreference: .cpuOnly,
+            mode: .hybrid(alpha: 0.5),
+            topK: 3,
+            enableRankingDiagnostics: true,
+            rankingDiagnosticsTopK: 1
+        )
+
+        let responseA = try await wax.search(request)
+        let responseB = try await wax.search(request)
+
+        #expect(responseA == responseB)
+        #expect(responseA.results.count == 3)
+        #expect(responseA.results[0].rankingDiagnostics != nil)
+        #expect(responseA.results[1].rankingDiagnostics == nil)
+        #expect(responseA.results[2].rankingDiagnostics == nil)
+
+        if let lanes = responseA.results[0].rankingDiagnostics?.laneContributions {
+            for idx in 1..<lanes.count {
+                #expect(lanes[idx - 1].rrfScore >= lanes[idx].rrfScore)
+                if lanes[idx - 1].rrfScore == lanes[idx].rrfScore {
+                    #expect(lanes[idx - 1].source.rawValue <= lanes[idx].source.rawValue)
+                }
+            }
+        } else {
+            #expect(Bool(false))
+        }
 
         try await wax.close()
     }

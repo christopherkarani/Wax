@@ -600,3 +600,56 @@ func snippetFallbackRecognizesISOAndAbbreviatedMonthDateLiterals() {
     )
     #expect(!shouldNotFallbackAbbreviated)
 }
+
+@Test
+func queryAnalyzerRecognizesExpandedDeterministicDateFormats() {
+    let analyzer = QueryAnalyzer()
+
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is August 13 2026."))
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 13 Aug 2026."))
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 2026/8/13."))
+
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is August 13 2026.") == Set(["2026-08-13"]))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 13 Aug 2026.") == Set(["2026-08-13"]))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2026/8/13.") == Set(["2026-08-13"]))
+}
+
+@Test
+func snippetFallbackRecognizesDayFirstAndSlashDateLiterals() {
+    let analyzer = QueryAnalyzer()
+
+    let shouldNotFallbackDayFirst = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 13 Aug 2026.",
+        intent: [.asksDate],
+        analyzer: analyzer
+    )
+    #expect(!shouldNotFallbackDayFirst)
+
+    let shouldNotFallbackSlash = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 2026/8/13.",
+        intent: [.asksDate],
+        analyzer: analyzer
+    )
+    #expect(!shouldNotFallbackSlash)
+}
+
+@Test
+func deterministicAnswerExtractorHandlesGenericOwnershipQueries() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Who owns release readiness for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 42,
+                score: 0.91,
+                sources: [.text],
+                text: "For Atlas-10, Priya owns release readiness and Noah owns QA."
+            ),
+        ],
+        totalTokens: 17
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Priya")
+}

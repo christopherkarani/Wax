@@ -606,7 +606,11 @@ extension Wax {
             var sources: [SearchResponse.Source] = []
             var laneContributions: [SearchResponse.RankingLaneContribution] = []
         }
+        let estimatedFrameCount = lists.reduce(into: 0) { partial, list in
+            partial += list.frameIds.count
+        }
         var byFrame: [UInt64: Accumulator] = [:]
+        byFrame.reserveCapacity(estimatedFrameCount)
 
         for list in lists {
             guard list.weight > 0 else { continue }
@@ -633,19 +637,23 @@ extension Wax {
             }
         }
 
-        var ranked: [RRFFusedCandidate] = byFrame.map { frameId, acc in
+        var ranked: [RRFFusedCandidate] = []
+        ranked.reserveCapacity(byFrame.count)
+        for (frameId, acc) in byFrame {
             let contributions = includeDiagnostics
                 ? acc.laneContributions.sorted { lhs, rhs in
                     if lhs.rrfScore != rhs.rrfScore { return lhs.rrfScore > rhs.rrfScore }
                     return lhs.source.rawValue < rhs.source.rawValue
                 }
                 : []
-            return RRFFusedCandidate(
-                frameId: frameId,
-                score: acc.score,
-                bestRank: acc.bestRank,
-                sources: acc.sources.sorted { $0.rawValue < $1.rawValue },
-                laneContributions: contributions
+            ranked.append(
+                RRFFusedCandidate(
+                    frameId: frameId,
+                    score: acc.score,
+                    bestRank: acc.bestRank,
+                    sources: acc.sources.sorted { $0.rawValue < $1.rawValue },
+                    laneContributions: contributions
+                )
             )
         }
 
@@ -656,8 +664,10 @@ extension Wax {
         }
 
         let topDiagLimit = max(1, diagnosticsTopK)
-
-        return ranked.enumerated().map { index, candidate in
+        var fused: [(frameId: UInt64, score: Float, sources: [SearchResponse.Source], diagnostics: SearchResponse.RankingDiagnostics?)] = []
+        fused.reserveCapacity(ranked.count)
+        for index in ranked.indices {
+            let candidate = ranked[index]
             let diagnostics: SearchResponse.RankingDiagnostics?
             if includeDiagnostics, index < topDiagLimit {
                 let reason: SearchResponse.RankingTieBreakReason
@@ -682,13 +692,16 @@ extension Wax {
                 diagnostics = nil
             }
 
-            return (
-                frameId: candidate.frameId,
-                score: candidate.score,
-                sources: candidate.sources,
-                diagnostics: diagnostics
+            fused.append(
+                (
+                    frameId: candidate.frameId,
+                    score: candidate.score,
+                    sources: candidate.sources,
+                    diagnostics: diagnostics
+                )
             )
         }
+        return fused
     }
 
     private static func intentAwareRerank(
@@ -706,6 +719,7 @@ extension Wax {
         let queryYears = analyzer.yearTerms(in: query)
         let queryDateKeys = analyzer.normalizedDateKeys(in: query)
         let rawPhrases = rawQuotedPhrases(from: query)
+        let lowerRawPhrases = rawPhrases.map { $0.lowercased() }
         let normalizedPhrases = normalizedQuotedPhrases(from: query)
         let queryNumericEntities = queryEntities.filter { termContainsDigits($0) }
         let queryAlphaEntities = queryEntities.filter { isLettersOnly($0) }
@@ -726,11 +740,6 @@ extension Wax {
             return results
         }
 
-        struct Candidate {
-            let result: SearchResponse.Result
-            let score: Float
-        }
-
         // Scoring weights calibrated for search-result reranking (UnifiedSearch output).
         // These intentionally differ from FastRAGContextBuilder.rerankCandidatesForAnswer:
         //   - Lower recall/precision weights (0.55/0.25 vs 0.80/0.40) — search results
@@ -743,13 +752,14 @@ extension Wax {
             var total = result.score
             guard let preview = result.previewText, !preview.isEmpty else { return total }
 
-            let previewTerms = Set(analyzer.normalizedTerms(query: preview))
-            let previewEntities = analyzer.entityTerms(query: preview)
-            let previewYears = analyzer.yearTerms(in: preview)
-            let previewDateKeys = analyzer.normalizedDateKeys(in: preview)
+            let comparablePreview = dehighlightedPreviewText(preview)
+            let previewTerms = Set(analyzer.normalizedTerms(query: comparablePreview))
+            let previewEntities = analyzer.entityTerms(query: comparablePreview)
+            let previewYears = analyzer.yearTerms(in: comparablePreview)
+            let previewDateKeys = analyzer.normalizedDateKeys(in: comparablePreview)
             let previewAlphaEntities = previewEntities.filter { isLettersOnly($0) }
-            let lower = preview.lowercased()
-            let normalizedLower = normalizedPhraseComparableText(preview)
+            let lower = comparablePreview.lowercased()
+            let normalizedLower = normalizedPhraseComparableText(comparablePreview)
             let vectorInfluenced = result.sources.contains(.vector)
 
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
@@ -806,30 +816,48 @@ extension Wax {
                 }
             }
 
-            if !rawPhrases.isEmpty {
-                let exactPhraseHits = rawPhrases.filter { phrase in
-                    lower.contains(phrase.lowercased())
-                }.count
+            let strictRawPhrases = lowerRawPhrases.filter { phrase in
+                phrase.contains("-") || phrase.split(whereSeparator: \.isWhitespace).count >= 2
+            }
+            var exactPhraseHits = 0
+            var strictExactHits = 0
+            if !lowerRawPhrases.isEmpty {
+                for phrase in lowerRawPhrases where lower.contains(phrase) {
+                    exactPhraseHits += 1
+                }
+                for phrase in strictRawPhrases where lower.contains(phrase) {
+                    strictExactHits += 1
+                }
+                let strictPhraseIntent = !strictRawPhrases.isEmpty
                 if exactPhraseHits > 0 {
-                    total += Float(exactPhraseHits) * 1.20
+                    total += Float(exactPhraseHits) * (strictPhraseIntent ? 2.10 : 1.20)
                 } else {
-                    total -= 0.35
+                    total -= strictPhraseIntent ? 1.40 : 0.35
+                }
+                let strictMisses = strictRawPhrases.count - strictExactHits
+                if strictMisses > 0 {
+                    total -= Float(strictMisses) * 0.85
                 }
             }
 
             if !normalizedPhrases.isEmpty {
-                let normalizedHits = normalizedPhrases.filter { phrase in
-                    normalizedLower.contains(phrase)
-                }.count
+                var normalizedHits = 0
+                for phrase in normalizedPhrases where normalizedLower.contains(phrase) {
+                    normalizedHits += 1
+                }
                 let coverage = Float(normalizedHits) / Float(max(1, normalizedPhrases.count))
-                total += coverage * 0.75
+                let strictPhraseMiss = !strictRawPhrases.isEmpty && strictExactHits == 0
+                total += coverage * (strictPhraseMiss ? 0.20 : 0.75)
+                if strictPhraseMiss {
+                    total -= 0.55
+                }
                 if normalizedHits == 0 {
-                    total -= 0.20
+                    total -= strictPhraseMiss ? 0.45 : 0.20
                 }
             }
 
             if intents.contains(.asksLocation) {
-                if containsMovedToLocationPattern(preview) {
+                if containsMovedToLocationPattern(comparablePreview) {
                     total += 1.60
                 } else if lower.contains("moved to") || lower.contains("move to") {
                     total += 0.45
@@ -854,7 +882,7 @@ extension Wax {
                 let tentative = RerankingHelpers.containsTentativeLaunchLanguage(lower)
                 if lower.contains("public launch is"), !tentative {
                     total += 1.70
-                } else if lower.contains("public launch") || analyzer.containsDateLiteral(preview) {
+                } else if lower.contains("public launch") || analyzer.containsDateLiteral(comparablePreview) {
                     total += 1.20
                 }
                 if tentative {
@@ -891,28 +919,38 @@ extension Wax {
             return total
         }
 
-        var head = Array(results.prefix(cappedWindow)).map { result in
-            Candidate(result: result, score: compositeScore(for: result))
+        var scoredHead: [(index: Int, score: Float)] = []
+        scoredHead.reserveCapacity(cappedWindow)
+        for index in 0..<cappedWindow {
+            let result = results[index]
+            scoredHead.append((index: index, score: compositeScore(for: result)))
         }
-        head.sort { lhs, rhs in
+        scoredHead.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
-            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
-            return lhs.result.frameId < rhs.result.frameId
+            let lhsResult = results[lhs.index]
+            let rhsResult = results[rhs.index]
+            if lhsResult.score != rhsResult.score { return lhsResult.score > rhsResult.score }
+            return lhsResult.frameId < rhsResult.frameId
         }
 
-        let rerankedHead = head.enumerated().map { index, candidate -> SearchResponse.Result in
-            var result = candidate.result
+        var rerankedHead: [SearchResponse.Result] = []
+        rerankedHead.reserveCapacity(cappedWindow)
+        for (rank, candidate) in scoredHead.enumerated() {
+            var result = results[candidate.index]
             if var diagnostics = result.rankingDiagnostics {
-                diagnostics.tieBreakReason = index == 0 ? .topResult : .rerankComposite
+                diagnostics.tieBreakReason = rank == 0 ? .topResult : .rerankComposite
                 result.rankingDiagnostics = diagnostics
             }
-            return result
+            rerankedHead.append(result)
         }
 
         if cappedWindow == results.count {
             return rerankedHead
         }
-        return rerankedHead + Array(results.dropFirst(cappedWindow))
+        var combined = rerankedHead
+        combined.reserveCapacity(results.count)
+        combined.append(contentsOf: results.dropFirst(cappedWindow))
+        return combined
     }
 
     /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.
@@ -993,23 +1031,41 @@ extension Wax {
     }
 
     private static func rawQuotedPhrases(from query: String, maxPhrases: Int = 4) -> [String] {
-        guard let regex = quotedPhraseRegex else { return [] }
         let range = NSRange(location: 0, length: query.utf16.count)
-        let matches = regex.matches(in: query, range: range)
+        var matches: [(location: Int, phrase: String)] = []
 
+        for regex in quotedPhraseRegexes {
+            for match in regex.matches(in: query, range: range) {
+                let capture = match.range(at: 1)
+                guard capture.location != NSNotFound,
+                      let swiftRange = Range(capture, in: query)
+                else {
+                    continue
+                }
+                let phrase = query[swiftRange].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !phrase.isEmpty else { continue }
+                matches.append((location: capture.location, phrase: String(phrase)))
+            }
+        }
+
+        matches.sort { lhs, rhs in
+            if lhs.location != rhs.location { return lhs.location < rhs.location }
+            return lhs.phrase.count < rhs.phrase.count
+        }
+
+        var seen: Set<String> = []
         var phrases: [String] = []
         phrases.reserveCapacity(min(maxPhrases, matches.count))
         for match in matches {
             guard phrases.count < maxPhrases else { break }
-            let capture = match.range(at: 1)
-            guard capture.location != NSNotFound,
-                  let swiftRange = Range(capture, in: query)
-            else {
-                continue
+            let hasSignal = match.phrase.unicodeScalars.contains {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
             }
-            let phrase = query[swiftRange].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !phrase.isEmpty else { continue }
-            phrases.append(phrase)
+            guard hasSignal else { continue }
+            let key = match.phrase.lowercased()
+            if seen.insert(key).inserted {
+                phrases.append(match.phrase)
+            }
         }
         return phrases
     }
@@ -1042,14 +1098,24 @@ extension Wax {
             .joined(separator: " ")
     }
 
+    private static func dehighlightedPreviewText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "[", with: "")
+            .replacingOccurrences(of: "]", with: "")
+    }
+
     private static let asciiPunctuationScalars: Set<UnicodeScalar> = {
         let scalars = "!\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~".unicodeScalars
         return Set(scalars)
     }()
 
-    private static let quotedPhraseRegex = try? NSRegularExpression(
-        pattern: #""([^"]+)""#
-    )
+    private static let quotedPhraseRegexes: [NSRegularExpression] = {
+        let patterns = [
+            #""([^"]+)""#,
+            #"'([^']+)'"#,
+        ]
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
 
     private static func structuredEntityCandidates(
         query: String,

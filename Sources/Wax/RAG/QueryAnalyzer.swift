@@ -151,13 +151,19 @@ public struct QueryAnalyzer: Sendable {
         )
     }
 
-    /// Date literals in encounter order. Supports full month names, abbreviated month names, and ISO YYYY-MM-DD.
+    /// Date literals in encounter order.
+    ///
+    /// Supported deterministic formats:
+    /// - `Month D, YYYY` and `Month D YYYY` (full + abbreviated months)
+    /// - `D Month YYYY` and `D Mon YYYY`
+    /// - ISO-like `YYYY-MM-DD`, plus `/` or `.` separators and 1-2 digit month/day
     public func dateLiterals(in text: String) -> [String] {
         let full = Self.captureMatches(regex: Self.fullMonthDateRegex, text: text, captureGroup: 0)
         let abbreviated = Self.captureMatches(regex: Self.abbreviatedMonthDateRegex, text: text, captureGroup: 0)
+        let dayFirst = Self.captureMatches(regex: Self.dayFirstMonthDateRegex, text: text, captureGroup: 0)
         let iso = Self.captureMatches(regex: Self.isoDateRegex, text: text, captureGroup: 0)
 
-        let all = (full + abbreviated + iso)
+        let all = (full + abbreviated + dayFirst + iso)
             .sorted { lhs, rhs in
                 if lhs.location != rhs.location { return lhs.location < rhs.location }
                 return lhs.value.count < rhs.value.count
@@ -273,17 +279,22 @@ public struct QueryAnalyzer: Sendable {
     ]
 
     private static let fullMonthDateRegex = try? NSRegularExpression(
-        pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b"#,
+        pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*|\s+)\d{4}\b"#,
         options: [.caseInsensitive]
     )
 
     private static let abbreviatedMonthDateRegex = try? NSRegularExpression(
-        pattern: #"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\b"#,
+        pattern: #"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}(?:,\s*|\s+)\d{4}\b"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let dayFirstMonthDateRegex = try? NSRegularExpression(
+        pattern: #"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?(?:,\s*|\s+)\d{4}\b"#,
         options: [.caseInsensitive]
     )
 
     private static let isoDateRegex = try? NSRegularExpression(
-        pattern: #"\b\d{4}-\d{2}-\d{2}\b"#,
+        pattern: #"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b"#,
         options: []
     )
 
@@ -341,7 +352,20 @@ public struct QueryAnalyzer: Sendable {
         let trimmed = literal.trimmingCharacters(in: .whitespacesAndNewlines)
         if let isoMatch = captureMatches(regex: isoDateRegex, text: trimmed, captureGroup: 0).first,
            isoMatch.value == trimmed {
-            return isoMatch.value
+            let components = trimmed
+                .split(whereSeparator: { $0 == "-" || $0 == "/" || $0 == "." })
+                .map(String.init)
+            guard components.count == 3,
+                  let year = Int(components[0]),
+                  let month = Int(components[1]),
+                  let day = Int(components[2]),
+                  (1900...2999).contains(year),
+                  (1...12).contains(month),
+                  (1...31).contains(day)
+            else {
+                return nil
+            }
+            return String(format: "%04d-%02d-%02d", year, month, day)
         }
 
         let parts = trimmed
@@ -350,15 +374,34 @@ public struct QueryAnalyzer: Sendable {
             .map(String.init)
         guard parts.count == 3 else { return nil }
 
-        let monthToken = parts[0].lowercased().replacingOccurrences(of: ".", with: "")
-        guard let month = monthByName[monthToken],
-              let day = Int(parts[1]),
-              let year = Int(parts[2]),
-              (1...31).contains(day),
-              (1900...2999).contains(year)
-        else {
+        let first = parts[0].lowercased().replacingOccurrences(of: ".", with: "")
+        let second = parts[1].lowercased().replacingOccurrences(of: ".", with: "")
+        let third = parts[2]
+
+        let year: Int
+        let month: Int
+        let day: Int
+
+        if let parsedMonth = monthByName[first],
+           let parsedDay = Int(parts[1]),
+           let parsedYear = Int(third) {
+            year = parsedYear
+            month = parsedMonth
+            day = parsedDay
+        } else if let parsedDay = Int(parts[0]),
+                  let parsedMonth = monthByName[second],
+                  let parsedYear = Int(third) {
+            year = parsedYear
+            month = parsedMonth
+            day = parsedDay
+        } else {
             return nil
         }
+
+        guard (1900...2999).contains(year),
+              (1...12).contains(month),
+              (1...31).contains(day)
+        else { return nil }
 
         return String(format: "%04d-%02d-%02d", year, month, day)
     }
