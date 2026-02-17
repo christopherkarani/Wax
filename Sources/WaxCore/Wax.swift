@@ -89,6 +89,7 @@ public actor Wax {
     private var generation: UInt64
     private var dirty: Bool
     private var walAutoCommitCount: UInt64
+    private let walProactiveCommitThresholdBytes: UInt64?
 
     private struct WriterWaiter {
         let id: UUID
@@ -116,7 +117,8 @@ public actor Wax {
         dataEnd: UInt64,
         generation: UInt64,
         dirty: Bool,
-        walAutoCommitCount: UInt64
+        walAutoCommitCount: UInt64,
+        walProactiveCommitThresholdBytes: UInt64?
     ) {
         self.url = url
         self.io = io
@@ -137,6 +139,7 @@ public actor Wax {
         self.generation = generation
         self.dirty = dirty
         self.walAutoCommitCount = walAutoCommitCount
+        self.walProactiveCommitThresholdBytes = walProactiveCommitThresholdBytes
     }
 
     private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
@@ -163,16 +166,61 @@ public actor Wax {
         }
     }
 
-    private func ensureWalCapacityLocked(payloadSize: Int) async throws {
-        if wal.canAppend(payloadSize: payloadSize) {
-            return
-        }
-
+    private func canAutoCommitForWalPressureLocked() -> Bool {
         let hasPendingEmbedding = pendingMutations.contains { mutation in
             if case .putEmbedding = mutation.entry { return true }
             return false
         }
-        if hasPendingEmbedding && stagedVecIndex == nil {
+        return !(hasPendingEmbedding && stagedVecIndex == nil)
+    }
+
+    private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
+        guard payloadSize > 0 else { return nil }
+        guard payloadSize <= Int(UInt32.max) else { return nil }
+        return UInt64(WALRecord.headerSize) + UInt64(payloadSize)
+    }
+
+    private func estimatedWalBytesForAppendBatch(payloadSizes: [Int]) -> UInt64? {
+        guard !payloadSizes.isEmpty else { return nil }
+
+        let headerSize = UInt64(WALRecord.headerSize)
+        var total: UInt64 = 0
+        for payloadSize in payloadSizes {
+            guard payloadSize > 0 else { return nil }
+            guard payloadSize <= Int(UInt32.max) else { return nil }
+            let bytes = headerSize + UInt64(payloadSize)
+            let (next, overflowed) = total.addingReportingOverflow(bytes)
+            if overflowed { return nil }
+            total = next
+        }
+        return total
+    }
+
+    private func maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: UInt64) async throws {
+        guard let thresholdBytes = walProactiveCommitThresholdBytes else { return }
+        guard estimatedIncomingWalBytes > 0 else { return }
+        guard canAutoCommitForWalPressureLocked() else { return }
+
+        let pendingBytes = wal.pendingBytes
+        guard pendingBytes > 0 else { return }
+
+        let (projectedPendingBytes, overflowed) = pendingBytes.addingReportingOverflow(estimatedIncomingWalBytes)
+        let projected = overflowed ? UInt64.max : projectedPendingBytes
+        guard projected >= thresholdBytes else { return }
+
+        try await commitLocked()
+        walAutoCommitCount &+= 1
+    }
+
+    private func ensureWalCapacityLocked(payloadSize: Int) async throws {
+        if let estimated = estimatedWalBytesForAppend(payloadSize: payloadSize) {
+            try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
+        }
+        if wal.canAppend(payloadSize: payloadSize) {
+            return
+        }
+
+        if !canAutoCommitForWalPressureLocked() {
             throw WaxError.io("WAL capacity exceeded before vector index staged; stageForCommit() and commit() earlier or increase wal_size.")
         }
 
@@ -185,15 +233,14 @@ public actor Wax {
 
     private func ensureWalCapacityLocked(payloadSizes: [Int]) async throws {
         guard !payloadSizes.isEmpty else { return }
+        if let estimated = estimatedWalBytesForAppendBatch(payloadSizes: payloadSizes) {
+            try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
+        }
         if wal.canAppendBatch(payloadSizes: payloadSizes) {
             return
         }
 
-        let hasPendingEmbedding = pendingMutations.contains { mutation in
-            if case .putEmbedding = mutation.entry { return true }
-            return false
-        }
-        if hasPendingEmbedding && stagedVecIndex == nil {
+        if !canAutoCommitForWalPressureLocked() {
             throw WaxError.io("WAL capacity exceeded before vector index staged; stageForCommit() and commit() earlier or increase wal_size.")
         }
 
@@ -264,6 +311,18 @@ public actor Wax {
     }
 
     // MARK: - Lifecycle
+
+    private static func walProactiveCommitThresholdBytes(
+        walSize: UInt64,
+        thresholdPercent: UInt8?
+    ) -> UInt64? {
+        guard let thresholdPercent else { return nil }
+        guard thresholdPercent > 0 else { return nil }
+        guard thresholdPercent < 100 else { return nil }
+
+        let threshold = (walSize * UInt64(thresholdPercent)) / 100
+        return max(1, min(threshold, walSize))
+    }
 
     /// Create a new, empty `.mv2s` file.
     public static func create(
@@ -368,7 +427,11 @@ public actor Wax {
             dataEnd: created.dataEnd,
             generation: 0,
             dirty: false,
-            walAutoCommitCount: 0
+            walAutoCommitCount: 0,
+            walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
+                walSize: walSize,
+                thresholdPercent: options.walProactiveCommitThresholdPercent
+            )
         )
     }
 
@@ -526,7 +589,11 @@ public actor Wax {
             dataEnd: opened.dataEnd,
             generation: opened.generation,
             dirty: opened.dirty,
-            walAutoCommitCount: 0
+            walAutoCommitCount: 0,
+            walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
+                walSize: opened.header.walSize,
+                thresholdPercent: options.walProactiveCommitThresholdPercent
+            )
         )
     }
 
