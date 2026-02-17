@@ -16,6 +16,7 @@ public struct DeterministicAnswerExtractor: Sendable {
 
         let lowerQuery = query.lowercased()
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        let queryEntities = analyzer.entityTerms(query: query)
         let intent = analyzer.detectIntent(query: query)
         let asksTravel = lowerQuery.contains("flying") || lowerQuery.contains("flight") || lowerQuery.contains("travel")
         let asksAllergy = lowerQuery.contains("allergy") || lowerQuery.contains("allergic")
@@ -36,7 +37,12 @@ public struct DeterministicAnswerExtractor: Sendable {
 
         for normalized in normalizedItems {
             let text = normalized.text
-            let relevance = relevanceScore(queryTerms: queryTerms, text: text, base: normalized.item.score)
+            let relevance = relevanceScore(
+                queryTerms: queryTerms,
+                queryEntities: queryEntities,
+                text: text,
+                base: normalized.item.score
+            )
 
             if let owner = Self.firstMatch(
                 pattern: #"\b([A-Z][a-z]+)\s+owns\s+deployment\s+readiness\b"#,
@@ -194,14 +200,31 @@ public struct DeterministicAnswerExtractor: Sendable {
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func relevanceScore(queryTerms: Set<String>, text: String, base: Float) -> Double {
-        guard !queryTerms.isEmpty else { return Double(base) }
+    private func relevanceScore(
+        queryTerms: Set<String>,
+        queryEntities: Set<String>,
+        text: String,
+        base: Float
+    ) -> Double {
+        var score = Double(base)
+        guard !queryTerms.isEmpty || !queryEntities.isEmpty else { return score }
         let terms = Set(analyzer.normalizedTerms(query: text))
-        guard !terms.isEmpty else { return Double(base) }
-        let overlap = Double(queryTerms.intersection(terms).count)
-        let recall = overlap / Double(max(1, queryTerms.count))
-        let precision = overlap / Double(max(1, terms.count))
-        return Double(base) + recall * 0.70 + precision * 0.30
+        if !queryTerms.isEmpty, !terms.isEmpty {
+            let overlap = Double(queryTerms.intersection(terms).count)
+            let recall = overlap / Double(max(1, queryTerms.count))
+            let precision = overlap / Double(max(1, terms.count))
+            score += recall * 0.70 + precision * 0.30
+        }
+        if !queryEntities.isEmpty {
+            let textEntities = analyzer.entityTerms(query: text)
+            let hits = queryEntities.intersection(textEntities).count
+            let coverage = Double(hits) / Double(max(1, queryEntities.count))
+            score += coverage * 0.95
+            if hits == 0 {
+                score -= 0.70
+            }
+        }
+        return score
     }
 
     private func bestCandidate(in candidates: [AnswerCandidate]) -> String? {

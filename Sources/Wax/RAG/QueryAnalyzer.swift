@@ -87,11 +87,11 @@ public struct QueryAnalyzer: Sendable {
 
     /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
     public func entityTerms(query: String) -> Set<String> {
-        let raw = query
-            .lowercased()
+        let original = query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
             .filter { !$0.isEmpty }
+        let raw = original.map { $0.lowercased() }
         guard !raw.isEmpty else { return [] }
 
         var entities: Set<String> = []
@@ -107,6 +107,26 @@ public struct QueryAnalyzer: Sendable {
                 let rhs = raw[index + 1]
                 if Self.isLettersOnly(lhs), Self.isDigitsOnly(rhs) {
                     entities.insert(lhs + rhs)
+                }
+            }
+        }
+
+        if !original.isEmpty {
+            for (index, token) in original.enumerated() {
+                let normalized = token.lowercased()
+                guard Self.isLettersOnly(normalized) else { continue }
+                guard normalized.count >= 3 else { continue }
+                guard !Self.stopWords.contains(normalized) else { continue }
+                guard !Self.entityNoiseTerms.contains(normalized) else { continue }
+
+                let hasUppercase = token.unicodeScalars.contains { CharacterSet.uppercaseLetters.contains($0) }
+                let hasEntityCue =
+                    index > 0 &&
+                    Self.entityCueWords.contains(raw[index - 1]) &&
+                    normalized.count >= 4
+
+                if hasUppercase || hasEntityCue {
+                    entities.insert(normalized)
                 }
             }
         }
@@ -175,6 +195,16 @@ public struct QueryAnalyzer: Sendable {
     private static let stopWords: Set<String> = [
         "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
         "on", "or", "the", "to", "what", "when", "where", "which", "who", "with"
+    ]
+
+    private static let entityCueWords: Set<String> = [
+        "for", "about", "did", "does", "with", "from"
+    ]
+
+    private static let entityNoiseTerms: Set<String> = [
+        "city", "date", "owner", "owns", "launch", "public", "project", "beta",
+        "deployment", "readiness", "timeline", "status", "updates", "update",
+        "report", "checklist", "signoff", "team", "health", "allergic",
     ]
 
     private static func containsLetters(_ token: String) -> Bool {

@@ -97,11 +97,20 @@ extension Wax {
 
         async let textResultsAsync: [TextSearchResult] = {
             guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
-            let base = try await textEngine.search(query: trimmedQuery, topK: candidateLimit)
-            guard base.isEmpty, let fallback = Self.orExpandedQuery(from: trimmedQuery) else {
-                return base
+            let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
+            do {
+                let base = try await textEngine.search(query: primaryQuery, topK: candidateLimit)
+                guard base.isEmpty, let fallback = Self.orExpandedQuery(from: trimmedQuery) else {
+                    return base
+                }
+                guard fallback != primaryQuery else { return base }
+                return try await textEngine.search(query: fallback, topK: candidateLimit)
+            } catch {
+                guard let fallback = Self.orExpandedQuery(from: trimmedQuery) else {
+                    throw error
+                }
+                return try await textEngine.search(query: fallback, topK: candidateLimit)
             }
-            return try await textEngine.search(query: fallback, topK: candidateLimit)
         }()
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
@@ -521,16 +530,25 @@ extension Wax {
     }
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
-        let tokens = query.split(whereSeparator: { $0.isWhitespace })
+        let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
         if tokens.isEmpty { return nil }
-        let capped = tokens.prefix(max(0, maxTokens))
-
-        let quoted = capped.map { raw -> String in
-            let token = String(raw)
+        let quoted = tokens.map { token -> String in
             let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
             return "\"\(escaped)\""
         }
         return quoted.joined(separator: " OR ")
+    }
+
+    private static func primaryFTSQuery(from query: String, maxTokens: Int = 16) -> String? {
+        guard requiresSafeFTSNormalization(query) else { return query }
+        let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
+        if tokens.isEmpty { return nil }
+        let quoted = tokens.map { token -> String in
+            let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
+            return "\"\(escaped)\""
+        }
+        // Use AND-like semantics for the first pass; fallback can broaden with OR.
+        return quoted.joined(separator: " ")
     }
 
     private struct RRFFusedCandidate {
@@ -650,7 +668,9 @@ extension Wax {
 
         let intents = analyzer.detectIntent(query: query)
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
-        let queryEntities = analyzer.entityTerms(query: query).filter { termContainsDigits($0) }
+        let queryEntities = analyzer.entityTerms(query: query)
+        let queryNumericEntities = queryEntities.filter { termContainsDigits($0) }
+        let queryAlphaEntities = queryEntities.filter { isLettersOnly($0) }
         let queryNumericTerms = queryTerms.filter { isDigitsOnly($0) }
         let hasTargetIntent =
             intents.contains(.asksLocation)
@@ -672,6 +692,7 @@ extension Wax {
 
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
             let previewEntities = analyzer.entityTerms(query: preview)
+            let previewAlphaEntities = previewEntities.filter { isLettersOnly($0) }
             let lower = preview.lowercased()
 
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
@@ -685,13 +706,28 @@ extension Wax {
             if !queryEntities.isEmpty {
                 let entityHits = queryEntities.intersection(previewEntities).count
                 let coverage = Float(entityHits) / Float(max(1, queryEntities.count))
-                total += coverage * 1.9
+                if !queryNumericEntities.isEmpty {
+                    let numericHits = queryNumericEntities.intersection(previewEntities).count
+                    let numericCoverage = Float(numericHits) / Float(max(1, queryNumericEntities.count))
+                    total += numericCoverage * 1.95
+                }
+                if !queryAlphaEntities.isEmpty {
+                    let alphaHits = queryAlphaEntities.intersection(previewAlphaEntities).count
+                    let alphaCoverage = Float(alphaHits) / Float(max(1, queryAlphaEntities.count))
+                    total += alphaCoverage * 1.25
+                }
+                total += coverage * 0.30
                 if entityHits == 0 {
-                    total -= 0.85
+                    total -= !queryNumericEntities.isEmpty ? 0.85 : 0.45
                     if !queryNumericTerms.isEmpty,
                        !queryNumericTerms.intersection(previewTerms).isEmpty {
                         total -= 0.75
                     }
+                }
+                if !queryAlphaEntities.isEmpty,
+                   queryAlphaEntities.intersection(previewAlphaEntities).isEmpty,
+                   !previewAlphaEntities.isEmpty {
+                    total -= 0.40
                 }
             }
 
@@ -782,8 +818,47 @@ extension Wax {
         !text.isEmpty && text.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
     }
 
+    private static func isLettersOnly(_ text: String) -> Bool {
+        !text.isEmpty && text.unicodeScalars.allSatisfy { CharacterSet.letters.contains($0) }
+    }
+
     private static func termContainsDigits(_ text: String) -> Bool {
         text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+    }
+
+    private static func requiresSafeFTSNormalization(_ query: String) -> Bool {
+        query.unicodeScalars.contains { scalar in
+            scalar.isASCII && asciiPunctuationScalars.contains(scalar)
+        }
+    }
+
+    private static let ftsStopWords: Set<String> = [
+        "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
+        "on", "or", "the", "to", "what", "when", "where", "which", "who", "with",
+    ]
+
+    private static func normalizedFTSTokens(from query: String, maxTokens: Int) -> [String] {
+        let capped = max(0, maxTokens)
+        guard capped > 0 else { return [] }
+        var seen: Set<String> = []
+        var tokens: [String] = []
+        tokens.reserveCapacity(capped)
+
+        for token in structuredAliasTokens(from: query) {
+            let normalized = token.lowercased()
+            guard !normalized.isEmpty else { continue }
+            guard !ftsStopWords.contains(normalized) else { continue }
+            let hasLettersOrDigits = normalized.unicodeScalars.contains {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+            }
+            guard hasLettersOrDigits else { continue }
+            if seen.insert(normalized).inserted {
+                tokens.append(normalized)
+                if tokens.count >= capped { break }
+            }
+        }
+
+        return tokens
     }
 
     private static let asciiPunctuationScalars: Set<UnicodeScalar> = {

@@ -376,6 +376,16 @@ public struct FastRAGContextBuilder: Sendable {
 
         let intents = analyzer.detectIntent(query: query)
         let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        let queryEntities = analyzer.entityTerms(query: query)
+        let vectorInfluenced: Bool
+        switch config.searchMode {
+        case .vectorOnly:
+            vectorInfluenced = true
+        case .hybrid(let alpha):
+            vectorInfluenced = alpha < 0.999
+        case .textOnly:
+            vectorInfluenced = false
+        }
         if intents.isEmpty && queryTerms.isEmpty {
             return results
         }
@@ -386,12 +396,22 @@ public struct FastRAGContextBuilder: Sendable {
 
             let previewLower = preview.lowercased()
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
+            let previewEntities = analyzer.entityTerms(query: preview)
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
                 let overlap = Float(queryTerms.intersection(previewTerms).count)
                 let recall = overlap / Float(max(1, queryTerms.count))
                 let precision = overlap / Float(max(1, previewTerms.count))
                 total += recall * 0.80
                 total += precision * 0.40
+            }
+
+            if !queryEntities.isEmpty {
+                let hits = queryEntities.intersection(previewEntities).count
+                let coverage = Float(hits) / Float(max(1, queryEntities.count))
+                total += coverage * (vectorInfluenced ? 1.25 : 0.90)
+                if hits == 0 {
+                    total -= vectorInfluenced ? 0.65 : 0.35
+                }
             }
 
             if intents.contains(.asksLocation),
@@ -407,7 +427,11 @@ public struct FastRAGContextBuilder: Sendable {
                 total += 0.45
             }
             if looksDistractor(previewLower) {
-                total -= config.answerDistractorPenalty
+                let basePenalty = config.answerDistractorPenalty
+                total -= vectorInfluenced ? basePenalty * 2.2 : basePenalty
+                if vectorInfluenced, intents.contains(.asksDate), !containsDateLiteral(preview) {
+                    total -= 0.35
+                }
             }
             return total
         }
