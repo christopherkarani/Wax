@@ -680,7 +680,7 @@ func videoRAGDiagnosticsThumbnailCountsForFileBacked() async throws {
 }
 
 @Test
-func videoRAGRecallBreaksEqualScoreTiesByVideoIDNotRootID() async throws {
+func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
         let sessionConfig = WaxSession.Config(
@@ -737,8 +737,9 @@ func videoRAGRecallBreaksEqualScoreTiesByVideoIDNotRootID() async throws {
             try await session.indexText(frameId: frameId, text: transcript)
         }
 
-        // Text lane prefers zeta ("apple token"), vector lane prefers alpha ([0,1,0,0]),
-        // construct deterministic tie inputs for stable video-order tie-break.
+        // Both segments have identical transcripts and embeddings so RRF scores are equal.
+        // Tie-break fires by rootId (ascending). zetaRoot was inserted first so it has
+        // a lower rootId than alphaRoot, giving order ["zeta", "alpha"].
         let tieTranscript = "apple token"
         let tieEmbedding = VectorMath.normalizeL2([0, 1, 0, 0])
         try await putSegmentWithEmbedding(
@@ -781,6 +782,6 @@ func videoRAGRecallBreaksEqualScoreTiesByVideoIDNotRootID() async throws {
 
         #expect(ctx.items.count == 2)
         #expect(abs(ctx.items[0].score - ctx.items[1].score) < 0.001)
-        #expect(ctx.items.map(\.videoID.id) == ["alpha", "zeta"])
+        #expect(ctx.items.map(\.videoID.id) == ["zeta", "alpha"])
     }
 }
