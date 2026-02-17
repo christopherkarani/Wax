@@ -426,3 +426,152 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+@Test func lowercaseNameOnlyEntityWithoutCueWordsPrefersMoveSentence() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let distractorID = try await wax.put(
+            Data("Noah city move retrospective: city move city move noah city move checklist without a destination.".utf8)
+        )
+        try await text.index(
+            frameId: distractorID,
+            text: "Noah city move retrospective: city move city move noah city move checklist without a destination."
+        )
+
+        let targetID = try await wax.put(
+            Data("Noah moved to Boise in 2021 and joined release engineering.".utf8)
+        )
+        try await text.index(frameId: targetID, text: "Noah moved to Boise in 2021 and joined release engineering.")
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "which city noah moved to",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == targetID)
+        #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}
+
+@Test func sameNameCollisionUsesProjectAndTimelineCues() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let olderTimelineID = try await wax.put(
+            Data("In the 2025 Atlas-10 timeline, Noah owns deployment readiness and public launch is July 9, 2025. Atlas-10 launch date Atlas-10 launch date Atlas-10 launch date.".utf8)
+        )
+        try await text.index(
+            frameId: olderTimelineID,
+            text: "In the 2025 Atlas-10 timeline, Noah owns deployment readiness and public launch is July 9, 2025. Atlas-10 launch date Atlas-10 launch date Atlas-10 launch date."
+        )
+
+        let currentTimelineID = try await wax.put(
+            Data("In the 2026 Atlas-10 timeline, Noah owns deployment readiness and public launch is August 13, 2026.".utf8)
+        )
+        try await text.index(
+            frameId: currentTimelineID,
+            text: "In the 2026 Atlas-10 timeline, Noah owns deployment readiness and public launch is August 13, 2026."
+        )
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "for noah on atlas-10 in 2026 what is the public launch date",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == currentTimelineID)
+        #expect(response.results.map(\.frameId).contains(olderTimelineID))
+
+        try await wax.close()
+    }
+}
+
+@Test func quotedPhraseIntentPrefersExactHyphenatedPhraseMatch() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let distractorID = try await wax.put(
+            Data("Atlas 10 launch date planning notes cover launch date rehearsal and launch date checklist for August 30, 2026.".utf8)
+        )
+        try await text.index(
+            frameId: distractorID,
+            text: "Atlas 10 launch date planning notes cover launch date rehearsal and launch date checklist for August 30, 2026."
+        )
+
+        let phraseMatchID = try await wax.put(
+            Data(#"The release ledger states "Atlas-10 launch date" is August 13, 2026."#.utf8)
+        )
+        try await text.index(
+            frameId: phraseMatchID,
+            text: #"The release ledger states "Atlas-10 launch date" is August 13, 2026."#
+        )
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: #"what is "Atlas-10 launch date" ???"#,
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == phraseMatchID)
+        #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}
+
+@Test func launchDateQueryRejectsTentativeDistractorForSameEntity() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let distractorID = try await wax.put(
+            Data("Draft memo: for project Atlas-10, public launch date is August 21, 2026 and remains tentative pending approval.".utf8)
+        )
+        try await text.index(
+            frameId: distractorID,
+            text: "Draft memo: for project Atlas-10, public launch date is August 21, 2026 and remains tentative pending approval."
+        )
+
+        let authoritativeID = try await wax.put(
+            Data("For project Atlas-10, public launch is August 13, 2026.".utf8)
+        )
+        try await text.index(
+            frameId: authoritativeID,
+            text: "For project Atlas-10, public launch is August 13, 2026."
+        )
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "What is the public launch date for Atlas-10?",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == authoritativeID)
+        #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}

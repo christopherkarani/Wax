@@ -465,3 +465,83 @@ func deterministicAnswerExtractorPrefersMatchingEntityInVectorLikeDateDistractor
     let answer = extractor.extractAnswer(query: context.query, items: context.items)
     #expect(answer == "August 13, 2026")
 }
+
+@Test
+func deterministicAnswerExtractorDisambiguatesSameNameUsingProjectAndTimelineCues() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "For Noah on Atlas-10 in 2026, what is the public launch date?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 30,
+                score: 1.20,
+                sources: [.vector],
+                text: "In the 2025 Atlas-10 rollout, Noah owns deployment readiness and public launch is July 9, 2025."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 31,
+                score: 0.72,
+                sources: [.text, .vector],
+                text: "In the 2026 Atlas-10 rollout, Noah owns deployment readiness and public launch is August 13, 2026."
+            ),
+        ],
+        totalTokens: 44
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "August 13, 2026")
+}
+
+@Test
+func deterministicAnswerExtractorSupportsISOAndAbbreviatedLaunchDates() {
+    let extractor = DeterministicAnswerExtractor()
+
+    let isoContext = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 1,
+                score: 0.9,
+                sources: [.text],
+                text: "For project Atlas-10, public launch is 2026-08-13."
+            ),
+        ],
+        totalTokens: 14
+    )
+    let isoAnswer = extractor.extractAnswer(query: isoContext.query, items: isoContext.items)
+    #expect(isoAnswer == "2026-08-13")
+
+    let abbreviatedContext = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 2,
+                score: 0.9,
+                sources: [.text],
+                text: "For project Atlas-10, public launch is Aug 13, 2026."
+            ),
+        ],
+        totalTokens: 14
+    )
+    let abbreviatedAnswer = extractor.extractAnswer(query: abbreviatedContext.query, items: abbreviatedContext.items)
+    #expect(abbreviatedAnswer == "Aug 13, 2026")
+}
+
+@Test
+func snippetFallbackRecognizesISOAndAbbreviatedMonthDateLiterals() {
+    let shouldNotFallbackISO = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 2026-08-13.",
+        intent: [.asksDate]
+    )
+    #expect(!shouldNotFallbackISO)
+
+    let shouldNotFallbackAbbreviated = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is Aug 13, 2026.",
+        intent: [.asksDate]
+    )
+    #expect(!shouldNotFallbackAbbreviated)
+}
