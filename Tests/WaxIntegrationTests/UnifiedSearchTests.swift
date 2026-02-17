@@ -205,6 +205,43 @@ import Wax
     }
 }
 
+@Test func timelineFallbackHonorsMetadataFilter() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let includedID = try await wax.put(
+            Data("On-call runbook for release".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["source": "email"]))
+        )
+        try await text.index(frameId: includedID, text: "On-call runbook for release")
+
+        _ = try await wax.put(
+            Data("On-call retrospective notes".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["source": "notes"]))
+        )
+
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "query-with-no-primary-hits",
+            mode: .textOnly,
+            topK: 10,
+            frameFilter: FrameFilter(
+                metadataFilter: .init(requiredEntries: ["source": "email"])
+            ),
+            allowTimelineFallback: true,
+            timelineFallbackLimit: 10
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.map(\.frameId) == [includedID])
+        #expect(response.results.allSatisfy { $0.sources == [.timeline] })
+
+        try await wax.close()
+    }
+}
+
 private struct TestEmbedder2D: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
     let normalize: Bool = true

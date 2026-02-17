@@ -365,23 +365,6 @@ extension Wax {
             let rankingDiagnostics: SearchResponse.RankingDiagnostics?
         }
 
-        func passesFilters(
-            meta: FrameMeta,
-            frameId: UInt64,
-            score: Float
-        ) -> Bool {
-            if let minScore = request.minScore, score < minScore { return false }
-            if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { return false }
-            if let allowlist = filter.frameIds, !allowlist.contains(frameId) { return false }
-            if !filter.includeDeleted, meta.status == .deleted { return false }
-            if !filter.includeSuperseded, meta.supersededBy != nil { return false }
-            if !filter.includeSurrogates, meta.kind == "surrogate" { return false }
-            if let metadataFilter = filter.metadataFilter, !Self.matches(metadataFilter: metadataFilter, meta: meta) {
-                return false
-            }
-            return true
-        }
-
         var pendingResults: [PendingResult] = []
         pendingResults.reserveCapacity(min(requestedTopK, baseResults.count))
 
@@ -396,9 +379,14 @@ extension Wax {
                 let metaById = await frameMetasIncludingPending(frameIds: baseResults.map(\.frameId))
                 
                 for item in baseResults {
-                    if let minScore = request.minScore, item.score < minScore { continue }
                     guard let meta = metaById[item.frameId] else { continue }
-                    guard passesFilters(meta: meta, frameId: item.frameId, score: item.score) else { continue }
+                    guard Self.passesFrameFilter(
+                        meta: meta,
+                        frameId: item.frameId,
+                        score: item.score,
+                        request: request,
+                        filter: filter
+                    ) else { continue }
 
                     pendingResults.append(
                         PendingResult(
@@ -417,7 +405,6 @@ extension Wax {
             } else {
                 // Lazy loading for small result sets - avoids dictionary overhead
                 for item in baseResults {
-                    if let minScore = request.minScore, item.score < minScore { continue }
                     let meta: FrameMeta
                     do {
                         meta = try await frameMetaIncludingPending(frameId: item.frameId)
@@ -429,7 +416,13 @@ extension Wax {
                         )
                         continue
                     }
-                    guard passesFilters(meta: meta, frameId: item.frameId, score: item.score) else { continue }
+                    guard Self.passesFrameFilter(
+                        meta: meta,
+                        frameId: item.frameId,
+                        score: item.score,
+                        request: request,
+                        filter: filter
+                    ) else { continue }
 
                     pendingResults.append(
                         PendingResult(
@@ -526,13 +519,14 @@ extension Wax {
 
         for (rank, meta) in frames.enumerated() {
             let frameId = meta.id
-
-            if let allowlist = filter.frameIds, !allowlist.contains(frameId) { continue }
-            if !filter.includeDeleted, meta.status == .deleted { continue }
-            if !filter.includeSuperseded, meta.supersededBy != nil { continue }
-            if !filter.includeSurrogates, meta.kind == "surrogate" { continue }
-
             let score = 1 / Float(max(0, request.rrfK) + rank + 1)
+            guard Self.passesFrameFilter(
+                meta: meta,
+                frameId: frameId,
+                score: score,
+                request: request,
+                filter: filter
+            ) else { continue }
             let previewText = previewById[frameId]
                 .flatMap { String(data: $0, encoding: .utf8) }
 
@@ -1241,6 +1235,25 @@ extension Wax {
             }
         }
 
+        return true
+    }
+
+    private static func passesFrameFilter(
+        meta: FrameMeta,
+        frameId: UInt64,
+        score: Float,
+        request: SearchRequest,
+        filter: FrameFilter
+    ) -> Bool {
+        if let minScore = request.minScore, score < minScore { return false }
+        if let timeRange = request.timeRange, !timeRange.contains(meta.timestamp) { return false }
+        if let allowlist = filter.frameIds, !allowlist.contains(frameId) { return false }
+        if !filter.includeDeleted, meta.status == .deleted { return false }
+        if !filter.includeSuperseded, meta.supersededBy != nil { return false }
+        if !filter.includeSurrogates, meta.kind == "surrogate" { return false }
+        if let metadataFilter = filter.metadataFilter, !matches(metadataFilter: metadataFilter, meta: meta) {
+            return false
+        }
         return true
     }
 }

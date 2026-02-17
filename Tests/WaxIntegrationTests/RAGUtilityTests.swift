@@ -139,6 +139,15 @@ import Testing
     #expect(intent.contains(.multiHop))
 }
 
+@Test func detectIntentFlagsLocationForMovedFormsWithoutWhereOrCity() {
+    let analyzer = QueryAnalyzer()
+    let movedIntent = analyzer.detectIntent(query: "Noah moved to Boise in 2021")
+    let movingIntent = analyzer.detectIntent(query: "Noah is moving to Boise next month")
+
+    #expect(movedIntent.contains(.asksLocation))
+    #expect(movingIntent.contains(.asksLocation))
+}
+
 // MARK: - SurrogateTierSelector Tests
 
 @Test func disabledPolicyAlwaysReturnsFull() {

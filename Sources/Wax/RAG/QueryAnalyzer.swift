@@ -212,7 +212,9 @@ public struct QueryAnalyzer: Sendable {
         if lower.contains("city")
             || lower.contains("where")
             || terms.contains("move")
-            || terms.contains("moved")
+            || terms.contains("mov")
+            || lower.contains("moved")
+            || lower.contains("moving")
         {
             intent.insert(.asksLocation)
         }
