@@ -1907,6 +1907,10 @@ public actor Wax {
         }
     }
 
+    public func fileURL() -> URL {
+        url
+    }
+
     public func walStats() async -> WaxWALStats {
         await withReadLock {
             WaxWALStats(
