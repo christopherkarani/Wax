@@ -222,3 +222,83 @@ import Testing
         try await reopened.close()
     }
 }
+
+@Test func openScansPastStaleSnapshotFooterWhenOnlyHeaderPageIsStale() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    func selectedHeader(at fileURL: URL) throws -> MV2SHeaderPage {
+        let file = try FDFile.open(at: fileURL)
+        defer { try? file.close() }
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            throw WaxError.invalidHeader(reason: "no valid header pages")
+        }
+        return selected.page
+    }
+
+    do {
+        let wax = try await Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        _ = try await wax.put(Data("v1".utf8), options: FrameMetaSubset(searchText: "v1"))
+        try await wax.commit()
+        try await wax.close()
+    }
+    let gen1Header = try selectedHeader(at: url)
+
+    do {
+        let wax = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        _ = try await wax.put(Data("v2".utf8), options: FrameMetaSubset(searchText: "v2"))
+        try await wax.commit()
+        try await wax.close()
+    }
+    let gen2Header = try selectedHeader(at: url)
+
+    do {
+        let wax = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        _ = try await wax.put(Data("v3".utf8), options: FrameMetaSubset(searchText: "v3"))
+        try await wax.commit()
+        try await wax.close()
+    }
+    let latestHeader = try selectedHeader(at: url)
+
+    // Build a stale-but-valid header where:
+    // - header points at generation 1
+    // - replay snapshot points at generation 2 (newer than header)
+    // - newest footer on disk is generation 3
+    // With the old bypass, open would choose generation 2 and miss generation 3.
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        var staleHeader = latestHeader
+        staleHeader.fileGeneration = gen1Header.fileGeneration
+        staleHeader.footerOffset = gen1Header.footerOffset
+        staleHeader.walCommittedSeq = gen1Header.walCommittedSeq
+        staleHeader.tocChecksum = gen1Header.tocChecksum
+        staleHeader.walReplaySnapshot = MV2SHeaderPage.WALReplaySnapshot(
+            fileGeneration: gen2Header.fileGeneration,
+            walCommittedSeq: gen2Header.walCommittedSeq,
+            footerOffset: gen2Header.footerOffset,
+            walWritePos: gen2Header.walWritePos,
+            walCheckpointPos: gen2Header.walCheckpointPos,
+            walPendingBytes: 0,
+            walLastSequence: gen2Header.walCommittedSeq
+        )
+        staleHeader.headerPageGeneration = latestHeader.headerPageGeneration &+ 1
+
+        try file.writeAll(try staleHeader.encodeWithChecksum(), at: 0)
+        try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: Constants.headerPageSize)
+        try file.fsync()
+    }
+
+    do {
+        let reopened = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == 3)
+        #expect(try await reopened.frameContent(frameId: 0) == Data("v1".utf8))
+        #expect(try await reopened.frameContent(frameId: 1) == Data("v2".utf8))
+        #expect(try await reopened.frameContent(frameId: 2) == Data("v3".utf8))
+        try await reopened.close()
+    }
+}

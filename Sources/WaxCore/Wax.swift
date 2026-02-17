@@ -541,32 +541,24 @@ public actor Wax {
             } else {
                 snapshotFooter = nil
             }
-            let shouldBypassFooterScanWithSnapshot = options.walReplayStateSnapshotEnabled
-                && (header.walReplaySnapshot?.fileGeneration ?? 0) > selectedHeaderFileGeneration
-                && snapshotFooter != nil
 
             let footerSlice: FooterSlice
-            if shouldBypassFooterScanWithSnapshot, let snapshotFooter {
-                if let fastFooter {
-                    footerSlice = newerFooter(fastFooter, snapshotFooter)
-                } else {
-                    footerSlice = snapshotFooter
-                }
-            } else {
-                let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
-                switch (fastFooter, scannedFooter) {
-                case (.some(let fast), .some(let scanned)):
-                    // Crash can happen after footer fsync but before header page update.
-                    // Prefer the newest valid footer rather than trusting stale header pointers.
-                    footerSlice = newerFooter(fast, scanned)
-                case (.some(let fast), .none):
-                    footerSlice = fast
-                case (.none, .some(let scanned)):
-                    footerSlice = scanned
-                case (.none, .none):
-                    throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
-                }
+            let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
+            var footerCandidates: [FooterSlice] = []
+            footerCandidates.reserveCapacity(3)
+            if let fastFooter {
+                footerCandidates.append(fastFooter)
             }
+            if let snapshotFooter {
+                footerCandidates.append(snapshotFooter)
+            }
+            if let scannedFooter {
+                footerCandidates.append(scannedFooter)
+            }
+            guard let firstFooterCandidate = footerCandidates.first else {
+                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            }
+            footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate, newerFooter)
 
             let toc = try MV2STOC.decode(from: footerSlice.tocBytes)
             let dataStart = header.walOffset + header.walSize
