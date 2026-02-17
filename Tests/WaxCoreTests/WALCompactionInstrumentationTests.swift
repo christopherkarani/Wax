@@ -20,6 +20,41 @@ import Testing
         #expect(writer.wrapCount == 1)
         #expect(writer.checkpointCount == 1)
         #expect(writer.sentinelWriteCount == 4)
+        #expect(writer.writeCallCount < 9)
+    }
+}
+
+@Test func walRingWriterInlinesContiguousSentinelWrite() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 2048)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 1024)
+        let payload = Data(repeating: 0xA5, count: 64)
+
+        _ = try writer.append(payload: payload)
+
+        #expect(writer.sentinelWriteCount == 1)
+        #expect(writer.writeCallCount == 1)
+    }
+}
+
+@Test func walRingWriterCoalescesBatchOperationsIntoSingleWrite() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 4096)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 2048)
+        let payloads = (0..<5).map { index in
+            Data(repeating: UInt8(40 + index), count: 80)
+        }
+
+        let sequences = try writer.appendBatch(payloads: payloads)
+        #expect(sequences.count == payloads.count)
+        #expect(writer.sentinelWriteCount == 1)
+        #expect(writer.writeCallCount == 1)
     }
 }
 

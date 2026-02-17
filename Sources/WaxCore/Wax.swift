@@ -22,6 +22,7 @@ public struct WaxWALStats: Equatable, Sendable {
     public var wrapCount: UInt64
     public var checkpointCount: UInt64
     public var sentinelWriteCount: UInt64
+    public var writeCallCount: UInt64
     public var autoCommitCount: UInt64
 
     public init(
@@ -34,6 +35,7 @@ public struct WaxWALStats: Equatable, Sendable {
         wrapCount: UInt64,
         checkpointCount: UInt64,
         sentinelWriteCount: UInt64,
+        writeCallCount: UInt64,
         autoCommitCount: UInt64
     ) {
         self.walSize = walSize
@@ -45,6 +47,7 @@ public struct WaxWALStats: Equatable, Sendable {
         self.wrapCount = wrapCount
         self.checkpointCount = checkpointCount
         self.sentinelWriteCount = sentinelWriteCount
+        self.writeCallCount = writeCallCount
         self.autoCommitCount = autoCommitCount
     }
 }
@@ -1916,6 +1919,7 @@ public actor Wax {
                 wrapCount: wal.wrapCount,
                 checkpointCount: wal.checkpointCount,
                 sentinelWriteCount: wal.sentinelWriteCount,
+                writeCallCount: wal.writeCallCount,
                 autoCommitCount: walAutoCommitCount
             )
         }
