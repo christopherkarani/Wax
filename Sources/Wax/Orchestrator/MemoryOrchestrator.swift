@@ -12,7 +12,7 @@ public actor MemoryOrchestrator {
     }
 
     let wax: Wax
-    private let config: OrchestratorConfig
+    let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
@@ -20,6 +20,12 @@ public actor MemoryOrchestrator {
     private let embeddingCache: EmbeddingMemoizer?
 
     private var currentSessionId: UUID?
+    var flushCount: UInt64 = 0
+    var lastWriteActivityAt: ContinuousClock.Instant = .now
+    var lastScheduledLiveSetMaintenanceReport: ScheduledLiveSetMaintenanceReport?
+    var scheduledLiveSetMaintenanceTask: Task<Void, Never>?
+    var scheduledLiveSetMaintenanceQueued = false
+    var scheduledLiveSetMaintenanceLastCompletedAt: ContinuousClock.Instant?
 
     public init(
         at url: URL,
@@ -29,14 +35,23 @@ public actor MemoryOrchestrator {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
         async let tokenizerPrewarm: Bool = { 
-            _ = try? await TokenCounter.preload()
+            do {
+                _ = try await TokenCounter.preload()
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "tokenizer prewarm",
+                    fallback: "cold start on first use"
+                )
+            }
             return true
         }()
 
         if config.requireOnDeviceProviders, let localEmbedder = embedder {
-            guard localEmbedder.executionMode == .onDeviceOnly else {
-                throw WaxError.io("MemoryOrchestrator requires on-device embedding provider")
-            }
+            try ProviderValidation.validateOnDevice(
+                [.init(name: "embedding provider", executionMode: localEmbedder.executionMode)],
+                orchestratorName: "MemoryOrchestrator"
+            )
         }
         
         if FileManager.default.fileExists(atPath: url.path) {
@@ -48,11 +63,10 @@ public actor MemoryOrchestrator {
         self.config = config
         self.ragBuilder = FastRAGContextBuilder()
         self.embedder = embedder
-        if embedder != nil, config.embeddingCacheCapacity > 0 {
-            self.embeddingCache = EmbeddingMemoizer(capacity: config.embeddingCacheCapacity)
-        } else {
-            self.embeddingCache = nil
-        }
+        self.embeddingCache = EmbeddingMemoizer.fromConfig(
+            capacity: config.embeddingCacheCapacity,
+            enabled: embedder != nil
+        )
 
         if config.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
@@ -100,6 +114,7 @@ public actor MemoryOrchestrator {
     ///   Callers requiring all-or-nothing semantics should validate post-ingest or
     ///   implement their own rollback by superseding the document frame on failure.
     public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
+        lastWriteActivityAt = .now
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
         var docMeta = Metadata(metadata)
@@ -424,12 +439,65 @@ public actor MemoryOrchestrator {
 
     public func flush() async throws {
         try await session.commit()
+        flushCount &+= 1
+        enqueueScheduledLiveSetMaintenance()
     }
 
     public func close() async throws {
         try await flush()
+        if let task = scheduledLiveSetMaintenanceTask {
+            await task.value
+        }
         await session.close()
         try await wax.close()
+    }
+
+    public func scheduledLiveSetMaintenanceReport() -> ScheduledLiveSetMaintenanceReport? {
+        lastScheduledLiveSetMaintenanceReport
+    }
+
+    private func enqueueScheduledLiveSetMaintenance() {
+        guard config.liveSetRewriteSchedule.enabled else { return }
+        scheduledLiveSetMaintenanceQueued = true
+        guard scheduledLiveSetMaintenanceTask == nil else { return }
+
+        scheduledLiveSetMaintenanceTask = Task(priority: .utility) { [self] in
+            await drainScheduledLiveSetMaintenanceQueue()
+        }
+    }
+
+    private func drainScheduledLiveSetMaintenanceQueue() async {
+        while scheduledLiveSetMaintenanceQueued {
+            scheduledLiveSetMaintenanceQueued = false
+            let triggerFlushCount = flushCount
+            do {
+                if let report = try await runScheduledLiveSetMaintenanceIfNeeded(
+                    flushCount: triggerFlushCount,
+                    force: false,
+                    triggeredByFlush: true
+                ) {
+                    lastScheduledLiveSetMaintenanceReport = report
+                }
+            } catch {
+                lastScheduledLiveSetMaintenanceReport = ScheduledLiveSetMaintenanceReport(
+                    outcome: .rewriteFailed,
+                    triggeredByFlush: true,
+                    flushCount: triggerFlushCount,
+                    deadPayloadBytes: 0,
+                    totalPayloadBytes: 0,
+                    deadPayloadFraction: 0,
+                    candidateURL: nil,
+                    rewriteReport: nil,
+                    rollbackPerformed: false,
+                    notes: ["scheduled maintenance task failed: \(error)"]
+                )
+            }
+        }
+
+        scheduledLiveSetMaintenanceTask = nil
+        if scheduledLiveSetMaintenanceQueued {
+            enqueueScheduledLiveSetMaintenance()
+        }
     }
 
     // MARK: - Math helpers
@@ -511,6 +579,16 @@ public actor MemoryOrchestrator {
 
         return embeddings
     }
+
+    #if DEBUG
+    package static func _writeEmbeddingsForTesting(_ embeddings: [[Float]], to url: URL) throws {
+        try writeEmbeddings(embeddings, to: url)
+    }
+
+    package static func _readEmbeddingsForTesting(from url: URL) throws -> [[Float]] {
+        try readEmbeddings(from: url)
+    }
+    #endif
 
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
         switch policy {

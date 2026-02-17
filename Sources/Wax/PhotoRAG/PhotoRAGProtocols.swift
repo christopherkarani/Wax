@@ -22,7 +22,7 @@ public struct RecognizedTextBlock: Sendable, Equatable {
 
 /// Provider for on-device optical character recognition.
 ///
-/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
+/// Conforming types must be `Sendable`.
 public protocol OCRProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
@@ -32,7 +32,7 @@ public protocol OCRProvider: Sendable {
 
 /// Provider for on-device image captioning.
 ///
-/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
+/// Conforming types must be `Sendable`.
 public protocol CaptionProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
@@ -40,10 +40,18 @@ public protocol CaptionProvider: Sendable {
     func caption(for image: CGImage) async throws -> String
 }
 
-public extension OCRProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
+// MARK: - Deprecated Defaults (migration aid)
+
+extension OCRProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your OCRProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
 
-public extension CaptionProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
+extension CaptionProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CaptionProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }

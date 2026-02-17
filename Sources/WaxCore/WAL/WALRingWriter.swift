@@ -11,11 +11,16 @@ public final class WALRingWriter {
     public let walOffset: UInt64
     public let walSize: UInt64
     private let fsyncPolicy: WALFsyncPolicy
+    private static let sentinelData = Data(repeating: 0, count: WALRecord.headerSize)
 
     public private(set) var writePos: UInt64
     public private(set) var checkpointPos: UInt64
     public private(set) var pendingBytes: UInt64
     public private(set) var lastSequence: UInt64
+    public private(set) var wrapCount: UInt64
+    public private(set) var checkpointCount: UInt64
+    public private(set) var sentinelWriteCount: UInt64
+    public private(set) var writeCallCount: UInt64
     private var bytesSinceFsync: UInt64
     private var isFaulted = false
 
@@ -27,6 +32,10 @@ public final class WALRingWriter {
         checkpointPos: UInt64 = 0,
         pendingBytes: UInt64 = 0,
         lastSequence: UInt64 = 0,
+        wrapCount: UInt64 = 0,
+        checkpointCount: UInt64 = 0,
+        sentinelWriteCount: UInt64 = 0,
+        writeCallCount: UInt64 = 0,
         fsyncPolicy: WALFsyncPolicy = .onCommit
     ) {
         self.file = file
@@ -42,6 +51,10 @@ public final class WALRingWriter {
         }
         self.pendingBytes = pendingBytes
         self.lastSequence = lastSequence
+        self.wrapCount = wrapCount
+        self.checkpointCount = checkpointCount
+        self.sentinelWriteCount = sentinelWriteCount
+        self.writeCallCount = writeCallCount
         self.bytesSinceFsync = 0
     }
 
@@ -96,8 +109,11 @@ public final class WALRingWriter {
         if remaining < headerSize {
             if remaining > 0 {
                 let zeroTail = Data(repeating: 0, count: Int(remaining))
-                try file.writeAll(zeroTail, at: walOffset + writePos)
+                try writeAllCounted(zeroTail, at: walOffset + writePos)
                 pendingBytes += remaining
+            }
+            if writePos != 0 {
+                wrapCount &+= 1
             }
             writePos = 0
             remaining = walSize
@@ -113,22 +129,43 @@ public final class WALRingWriter {
             let paddingSequence = lastSequence &+ 1
             let paddingRecord = WALRecord.padding(sequence: paddingSequence, skipBytes: skipBytes)
             let paddingData = try paddingRecord.encode()
-            try file.writeAll(paddingData, at: walOffset + writePos)
+            try writeAllCounted(paddingData, at: walOffset + writePos)
             lastSequence = paddingSequence
             pendingBytes += remaining
+            if writePos != 0 {
+                wrapCount &+= 1
+            }
             writePos = 0
         }
 
         let sequence = lastSequence &+ 1
         let record = WALRecord.data(sequence: sequence, flags: flags, payload: payload)
         let recordData = try record.encode()
-        try file.writeAll(recordData, at: walOffset + writePos)
+        let recordStart = writePos
+        let recordEnd = recordStart + entrySize
+        let canInlineSentinel =
+            recordEnd < walSize &&
+            (walSize - recordEnd) >= headerSize &&
+            (pendingBytes + entrySize) < walSize
+
+        if canInlineSentinel {
+            var combined = Data()
+            combined.reserveCapacity(recordData.count + WALRecord.headerSize)
+            combined.append(recordData)
+            combined.append(Self.sentinelData)
+            try writeAllCounted(combined, at: walOffset + recordStart)
+            sentinelWriteCount &+= 1
+        } else {
+            try writeAllCounted(recordData, at: walOffset + recordStart)
+        }
 
         lastSequence = sequence
         pendingBytes += entrySize
-        writePos = (writePos + entrySize) % walSize
+        writePos = recordEnd == walSize ? 0 : recordEnd
 
-        try writeSentinel()
+        if !canInlineSentinel {
+            try writeSentinel()
+        }
         bytesSinceFsync &+= totalNeeded
         try maybeFsync()
         return sequence
@@ -152,6 +189,7 @@ public final class WALRingWriter {
         var localWritePos = writePos
         var localPendingBytes = pendingBytes
         var localLastSequence = lastSequence
+        var localWrapCount = wrapCount
         var totalWritten: UInt64 = 0
 
         func appendOperation(offset: UInt64, data: Data) {
@@ -179,6 +217,9 @@ public final class WALRingWriter {
                     appendOperation(offset: walOffset + localWritePos, data: zeroTail)
                     localPendingBytes &+= remaining
                 }
+                if localWritePos != 0 {
+                    localWrapCount &+= 1
+                }
                 localWritePos = 0
                 remaining = walSize
             }
@@ -194,6 +235,9 @@ public final class WALRingWriter {
                 appendOperation(offset: walOffset + localWritePos, data: paddingData)
                 localLastSequence = paddingSeq
                 localPendingBytes &+= remaining
+                if localWritePos != 0 {
+                    localWrapCount &+= 1
+                }
                 localWritePos = 0
             }
 
@@ -212,9 +256,34 @@ public final class WALRingWriter {
             localWritePos = (localWritePos + entrySize) % walSize
         }
 
+        var coalesced: [(offset: UInt64, bytes: Data)] = []
+        coalesced.reserveCapacity(operations.count)
+        for op in operations {
+            if let lastIndex = coalesced.indices.last {
+                let lastEnd = coalesced[lastIndex].offset + UInt64(coalesced[lastIndex].bytes.count)
+                if lastEnd == op.offset {
+                    coalesced[lastIndex].bytes.append(op.bytes)
+                    continue
+                }
+            }
+            coalesced.append(op)
+        }
+
+        var inlinedSentinel = false
+        if localPendingBytes < walSize,
+           localWritePos <= walSize - headerSize,
+           let lastIndex = coalesced.indices.last {
+            let sentinelOffset = walOffset + localWritePos
+            let lastEnd = coalesced[lastIndex].offset + UInt64(coalesced[lastIndex].bytes.count)
+            if lastEnd == sentinelOffset {
+                coalesced[lastIndex].bytes.append(Self.sentinelData)
+                inlinedSentinel = true
+            }
+        }
+
         do {
-            for op in operations {
-                try file.writeAll(op.bytes, at: op.offset)
+            for op in coalesced {
+                try writeAllCounted(op.bytes, at: op.offset)
             }
         } catch {
             isFaulted = true
@@ -224,9 +293,14 @@ public final class WALRingWriter {
         lastSequence = localLastSequence
         pendingBytes = localPendingBytes
         writePos = localWritePos
+        wrapCount = localWrapCount
         bytesSinceFsync &+= totalWritten
 
-        try writeSentinel()
+        if inlinedSentinel {
+            sentinelWriteCount &+= 1
+        } else {
+            try writeSentinel()
+        }
         try maybeFsync()
         return sequences
     }
@@ -321,6 +395,7 @@ public final class WALRingWriter {
         checkpointPos = writePos
         pendingBytes = 0
         bytesSinceFsync = 0
+        checkpointCount &+= 1
     }
 
     public func flush() throws {
@@ -351,8 +426,11 @@ public final class WALRingWriter {
         if remaining < headerSize {
             if remaining > 0 {
                 let zeroTail = Data(repeating: 0, count: Int(remaining))
-                try file.writeAll(zeroTail, at: walOffset + writePos)
+                try writeAllCounted(zeroTail, at: walOffset + writePos)
                 pendingBytes += remaining
+            }
+            if writePos != 0 {
+                wrapCount &+= 1
             }
             writePos = 0
             remaining = walSize
@@ -362,8 +440,13 @@ public final class WALRingWriter {
             return
         }
 
-        let sentinel = Data(repeating: 0, count: WALRecord.headerSize)
-        try file.writeAll(sentinel, at: walOffset + writePos)
+        try writeAllCounted(Self.sentinelData, at: walOffset + writePos)
+        sentinelWriteCount &+= 1
+    }
+
+    private func writeAllCounted(_ data: Data, at offset: UInt64) throws {
+        try file.writeAll(data, at: offset)
+        writeCallCount &+= 1
     }
 }
 

@@ -160,6 +160,13 @@ actor EmbeddingMemoizer {
     }
 }
 
+extension EmbeddingMemoizer {
+    static func fromConfig(capacity: Int, enabled: Bool = true) -> EmbeddingMemoizer? {
+        guard enabled, capacity > 0 else { return nil }
+        return EmbeddingMemoizer(capacity: capacity)
+    }
+}
+
 enum EmbeddingKey {
     static func make(text: String, identity: EmbeddingIdentity?, dimensions: Int, normalized: Bool) -> UInt64 {
         var hasher = FNV1a64()

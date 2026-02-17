@@ -20,38 +20,38 @@ import CoreLocation
 /// RAG-ready context with text surrogates and optional pixel payloads (thumbnails/crops).
 public actor PhotoRAGOrchestrator {
     private enum FrameKind {
-        static let root = "photo.root"
-        static let ocrBlock = "photo.ocr.block"
-        static let ocrSummary = "photo.ocr.summary"
-        static let captionShort = "photo.caption.short"
-        static let tags = "photo.tags"
-        static let region = "photo.region"
-        static let syncState = "system.photos.sync_state"
+        static let root = PhotoFrameKind.root.rawValue
+        static let ocrBlock = PhotoFrameKind.ocrBlock.rawValue
+        static let ocrSummary = PhotoFrameKind.ocrSummary.rawValue
+        static let captionShort = PhotoFrameKind.captionShort.rawValue
+        static let tags = PhotoFrameKind.tags.rawValue
+        static let region = PhotoFrameKind.region.rawValue
+        static let syncState = PhotoFrameKind.syncState.rawValue
     }
 
     private enum MetaKey {
-        static let assetID = "photos.asset_id"
-        static let captureMs = "photo.capture_ms"
-        static let isLocal = "photo.availability.local"
-        static let pipelineVersion = "photo.pipeline.version"
+        static let assetID = PhotoMetadataKey.assetID.rawValue
+        static let captureMs = PhotoMetadataKey.captureMs.rawValue
+        static let isLocal = PhotoMetadataKey.isLocal.rawValue
+        static let pipelineVersion = PhotoMetadataKey.pipelineVersion.rawValue
 
-        static let lat = "photo.location.lat"
-        static let lon = "photo.location.lon"
-        static let gpsAccuracyM = "photo.location.accuracy_m"
+        static let lat = PhotoMetadataKey.lat.rawValue
+        static let lon = PhotoMetadataKey.lon.rawValue
+        static let gpsAccuracyM = PhotoMetadataKey.gpsAccuracyM.rawValue
 
-        static let cameraMake = "photo.camera.make"
-        static let cameraModel = "photo.camera.model"
-        static let lensModel = "photo.lens"
+        static let cameraMake = PhotoMetadataKey.cameraMake.rawValue
+        static let cameraModel = PhotoMetadataKey.cameraModel.rawValue
+        static let lensModel = PhotoMetadataKey.lensModel.rawValue
 
-        static let width = "photo.width"
-        static let height = "photo.height"
-        static let orientation = "photo.orientation"
+        static let width = PhotoMetadataKey.width.rawValue
+        static let height = PhotoMetadataKey.height.rawValue
+        static let orientation = PhotoMetadataKey.orientation.rawValue
 
-        static let bboxX = "photo.bbox.x"
-        static let bboxY = "photo.bbox.y"
-        static let bboxW = "photo.bbox.w"
-        static let bboxH = "photo.bbox.h"
-        static let regionType = "photo.region.type"
+        static let bboxX = PhotoMetadataKey.bboxX.rawValue
+        static let bboxY = PhotoMetadataKey.bboxY.rawValue
+        static let bboxW = PhotoMetadataKey.bboxW.rawValue
+        static let bboxH = PhotoMetadataKey.bboxH.rawValue
+        static let regionType = PhotoMetadataKey.regionType.rawValue
     }
 
     private struct LocationBin: Hashable, Sendable {
@@ -109,15 +109,16 @@ public actor PhotoRAGOrchestrator {
         self.ocr = ocr
 
         if config.requireOnDeviceProviders {
-            guard embedder.executionMode == .onDeviceOnly else {
-                throw WaxError.io("PhotoRAG requires on-device embedding provider")
+            var checks: [ProviderValidation.ProviderCheck] = [
+                .init(name: "embedding provider", executionMode: embedder.executionMode)
+            ]
+            if let ocr {
+                checks.append(.init(name: "OCR provider", executionMode: ocr.executionMode))
             }
-            if let ocr, ocr.executionMode != .onDeviceOnly {
-                throw WaxError.io("PhotoRAG requires on-device OCR provider")
+            if let captioner {
+                checks.append(.init(name: "caption provider", executionMode: captioner.executionMode))
             }
-            if let captioner, captioner.executionMode != .onDeviceOnly {
-                throw WaxError.io("PhotoRAG requires on-device caption provider")
-            }
+            try ProviderValidation.validateOnDevice(checks, orchestratorName: "PhotoRAG")
         }
 
         if FileManager.default.fileExists(atPath: storeURL.path(percentEncoded: false)) {
@@ -140,11 +141,7 @@ public actor PhotoRAGOrchestrator {
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
 
-        if config.queryEmbeddingCacheCapacity > 0 {
-            self.queryEmbeddingCache = EmbeddingMemoizer(capacity: config.queryEmbeddingCacheCapacity)
-        } else {
-            self.queryEmbeddingCache = nil
-        }
+        self.queryEmbeddingCache = EmbeddingMemoizer.fromConfig(capacity: config.queryEmbeddingCacheCapacity)
 
         try await rebuildIndex()
     }
@@ -536,10 +533,20 @@ public actor PhotoRAGOrchestrator {
         }
 
         // Caption
-        let captionText: String? = if let captioner {
-            try? await captioner.caption(for: ocrImage)
+        let captionText: String?
+        if let captioner {
+            do {
+                captionText = try await captioner.caption(for: ocrImage)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "photo caption generation",
+                    fallback: "skip caption for asset"
+                )
+                captionText = nil
+            }
         } else {
-            Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
+            captionText = Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
         }
 
         let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)

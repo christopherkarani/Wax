@@ -489,7 +489,10 @@ public actor FTS5SearchEngine {
         return try await io.run {
             try dbQueue.writeWithoutTransaction { db in
                 if compact {
-                    try db.execute(sql: "VACUUM")
+                    let freelistCount = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
+                    if freelistCount > 0 {
+                        try db.execute(sql: "VACUUM")
+                    }
                 }
                 let connection = try Self.requireConnection(db)
                 return try FTS5Serializer.serialize(connection: connection)

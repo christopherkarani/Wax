@@ -118,6 +118,36 @@ import Testing
     #expect(signals.wordCount == 0)
 }
 
+@Test func normalizedTermsRemovesStopWordsAndNormalizesInflections() {
+    let analyzer = QueryAnalyzer()
+    let terms = analyzer.normalizedTerms(query: "Which city did Person01 move to in 2026?")
+    #expect(terms.contains("city"))
+    #expect(terms.contains("person01"))
+    #expect(terms.contains("move"))
+    #expect(terms.contains("2026"))
+    #expect(!terms.contains("which"))
+    #expect(!terms.contains("to"))
+}
+
+@Test func detectIntentFlagsOwnershipDateAndMultiHop() {
+    let analyzer = QueryAnalyzer()
+    let intent = analyzer.detectIntent(
+        query: "For Atlas-01, who owns deployment readiness and what is the public launch date?"
+    )
+    #expect(intent.contains(.asksOwnership))
+    #expect(intent.contains(.asksDate))
+    #expect(intent.contains(.multiHop))
+}
+
+@Test func detectIntentFlagsLocationForMovedFormsWithoutWhereOrCity() {
+    let analyzer = QueryAnalyzer()
+    let movedIntent = analyzer.detectIntent(query: "Noah moved to Boise in 2021")
+    let movingIntent = analyzer.detectIntent(query: "Noah is moving to Boise next month")
+
+    #expect(movedIntent.contains(.asksLocation))
+    #expect(movingIntent.contains(.asksLocation))
+}
+
 // MARK: - SurrogateTierSelector Tests
 
 @Test func disabledPolicyAlwaysReturnsFull() {

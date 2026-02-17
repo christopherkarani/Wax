@@ -96,3 +96,66 @@ import Testing
         }
     }
 }
+
+@Test func walPendingScanWithStateMatchesLegacyTwoPassScan() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 2048)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 1024)
+        let payload1 = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 1)))
+        let payload2 = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 2)))
+        _ = try writer.append(payload: payload1)
+        _ = try writer.append(payload: payload2)
+
+        let reader = WALRingReader(file: file, walOffset: 0, walSize: 1024)
+        let legacyPending = try reader.scanPendingMutations(from: 0, committedSeq: 1)
+        let legacyState = try reader.scanState(from: 0)
+
+        let combined = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 1)
+        #expect(combined.pendingMutations == legacyPending)
+        #expect(combined.state == legacyState)
+    }
+}
+
+@Test func walPendingScanWithStatePreservesDecodeFailureBehavior() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 4096)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 2048)
+
+        // Valid WAL record envelope but invalid WALEntry opcode payload.
+        _ = try writer.append(payload: Data([0xFF]))
+        let validPayload = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 42)))
+        _ = try writer.append(payload: validPayload)
+
+        let reader = WALRingReader(file: file, walOffset: 0, walSize: 2048)
+        let legacyPending = try reader.scanPendingMutations(from: 0, committedSeq: 0)
+        let legacyState = try reader.scanState(from: 0)
+        #expect(legacyPending.isEmpty)
+        #expect(legacyState.lastSequence == 2)
+
+        let combined = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+        #expect(combined.pendingMutations == legacyPending)
+        #expect(combined.state == legacyState)
+    }
+}
+
+@Test func walReplayTerminalMarkerDetectionMatchesWriteCursor() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 4096)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 2048)
+        let payload = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 1)))
+        _ = try writer.append(payload: payload)
+
+        let reader = WALRingReader(file: file, walOffset: 0, walSize: 2048)
+        #expect(try reader.isTerminalMarker(at: writer.writePos))
+        #expect((try reader.isTerminalMarker(at: 0)) == false)
+    }
+}

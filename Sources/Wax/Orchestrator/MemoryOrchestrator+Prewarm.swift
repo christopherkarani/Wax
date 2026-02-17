@@ -6,7 +6,15 @@ import WaxVectorSearchMiniLM
 
 public enum WaxPrewarm {
     public static func tokenizer() async {
-        _ = try? await TokenCounter.shared()
+        do {
+            _ = try await TokenCounter.shared()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "wax prewarm tokenizer",
+                fallback: "cold start on first use"
+            )
+        }
     }
 
     #if canImport(WaxVectorSearchMiniLM)

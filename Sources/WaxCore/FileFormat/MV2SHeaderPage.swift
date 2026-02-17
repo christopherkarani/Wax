@@ -6,6 +6,46 @@ public struct MV2SHeaderPage: Equatable, Sendable {
 
     private static let headerChecksumOffset: Int = 104
     private static let headerChecksumCount: Int = 32
+    private static let replaySnapshotMagicOffset: Int = 136
+    private static let replaySnapshotMagicCount: Int = 8
+    private static let replaySnapshotGenerationOffset: Int = 144
+    private static let replaySnapshotCommittedSeqOffset: Int = 152
+    private static let replaySnapshotFooterOffsetOffset: Int = 160
+    private static let replaySnapshotWritePosOffset: Int = 168
+    private static let replaySnapshotCheckpointPosOffset: Int = 176
+    private static let replaySnapshotPendingBytesOffset: Int = 184
+    private static let replaySnapshotLastSequenceOffset: Int = 192
+    private static let replaySnapshotFlagsOffset: Int = 200
+    private static let replaySnapshotValidFlag: UInt64 = 0x1
+    private static let replaySnapshotMagic = Data([0x57, 0x41, 0x4C, 0x53, 0x4E, 0x41, 0x50, 0x31]) // WALSNAP1
+
+    public struct WALReplaySnapshot: Equatable, Sendable {
+        public var fileGeneration: UInt64
+        public var walCommittedSeq: UInt64
+        public var footerOffset: UInt64
+        public var walWritePos: UInt64
+        public var walCheckpointPos: UInt64
+        public var walPendingBytes: UInt64
+        public var walLastSequence: UInt64
+
+        public init(
+            fileGeneration: UInt64,
+            walCommittedSeq: UInt64,
+            footerOffset: UInt64,
+            walWritePos: UInt64,
+            walCheckpointPos: UInt64,
+            walPendingBytes: UInt64,
+            walLastSequence: UInt64
+        ) {
+            self.fileGeneration = fileGeneration
+            self.walCommittedSeq = walCommittedSeq
+            self.footerOffset = footerOffset
+            self.walWritePos = walWritePos
+            self.walCheckpointPos = walCheckpointPos
+            self.walPendingBytes = walPendingBytes
+            self.walLastSequence = walLastSequence
+        }
+    }
 
     public var formatVersion: UInt16
     public var specMajor: UInt8
@@ -20,6 +60,8 @@ public struct MV2SHeaderPage: Equatable, Sendable {
     public var walWritePos: UInt64
     public var walCheckpointPos: UInt64
     public var walCommittedSeq: UInt64
+
+    public var walReplaySnapshot: WALReplaySnapshot?
 
     public var tocChecksum: Data
     public var headerChecksum: Data
@@ -36,6 +78,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         walWritePos: UInt64,
         walCheckpointPos: UInt64,
         walCommittedSeq: UInt64,
+        walReplaySnapshot: WALReplaySnapshot? = nil,
         tocChecksum: Data,
         headerChecksum: Data = Data(repeating: 0, count: 32)
     ) {
@@ -50,6 +93,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         self.walWritePos = walWritePos
         self.walCheckpointPos = walCheckpointPos
         self.walCommittedSeq = walCommittedSeq
+        self.walReplaySnapshot = walReplaySnapshot
         self.tocChecksum = tocChecksum
         self.headerChecksum = headerChecksum
     }
@@ -95,6 +139,21 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         putUInt64(walCommittedSeq, at: 64)
 
         page.replaceSubrange(72..<104, with: tocChecksum)
+
+        if let snapshot = walReplaySnapshot {
+            page.replaceSubrange(
+                Self.replaySnapshotMagicOffset..<(Self.replaySnapshotMagicOffset + Self.replaySnapshotMagicCount),
+                with: Self.replaySnapshotMagic
+            )
+            putUInt64(snapshot.fileGeneration, at: Self.replaySnapshotGenerationOffset)
+            putUInt64(snapshot.walCommittedSeq, at: Self.replaySnapshotCommittedSeqOffset)
+            putUInt64(snapshot.footerOffset, at: Self.replaySnapshotFooterOffsetOffset)
+            putUInt64(snapshot.walWritePos, at: Self.replaySnapshotWritePosOffset)
+            putUInt64(snapshot.walCheckpointPos, at: Self.replaySnapshotCheckpointPosOffset)
+            putUInt64(snapshot.walPendingBytes, at: Self.replaySnapshotPendingBytesOffset)
+            putUInt64(snapshot.walLastSequence, at: Self.replaySnapshotLastSequenceOffset)
+            putUInt64(Self.replaySnapshotValidFlag, at: Self.replaySnapshotFlagsOffset)
+        }
 
         let computed = Self.computeHeaderChecksum(over: page)
         page.replaceSubrange(Self.headerChecksumOffset..<(Self.headerChecksumOffset + Self.headerChecksumCount), with: computed)
@@ -164,6 +223,26 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         let walWritePos = readUInt64(at: 48)
         let walCheckpointPos = readUInt64(at: 56)
         let walCommittedSeq = readUInt64(at: 64)
+        let replaySnapshotMagic = data.subdata(
+            in: Self.replaySnapshotMagicOffset..<(Self.replaySnapshotMagicOffset + Self.replaySnapshotMagicCount)
+        )
+        let replaySnapshotFlags = readUInt64(at: Self.replaySnapshotFlagsOffset)
+        let walReplaySnapshot: WALReplaySnapshot?
+        if replaySnapshotMagic == Self.replaySnapshotMagic,
+           (replaySnapshotFlags & Self.replaySnapshotValidFlag) != 0
+        {
+            walReplaySnapshot = WALReplaySnapshot(
+                fileGeneration: readUInt64(at: Self.replaySnapshotGenerationOffset),
+                walCommittedSeq: readUInt64(at: Self.replaySnapshotCommittedSeqOffset),
+                footerOffset: readUInt64(at: Self.replaySnapshotFooterOffsetOffset),
+                walWritePos: readUInt64(at: Self.replaySnapshotWritePosOffset),
+                walCheckpointPos: readUInt64(at: Self.replaySnapshotCheckpointPosOffset),
+                walPendingBytes: readUInt64(at: Self.replaySnapshotPendingBytesOffset),
+                walLastSequence: readUInt64(at: Self.replaySnapshotLastSequenceOffset)
+            )
+        } else {
+            walReplaySnapshot = nil
+        }
 
         let tocChecksum = data.subdata(in: 72..<104)
         let headerChecksum = data.subdata(in: Self.headerChecksumOffset..<(Self.headerChecksumOffset + Self.headerChecksumCount))
@@ -179,6 +258,22 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         }
         guard walCheckpointPos <= walSize else {
             throw WaxError.invalidHeader(reason: "wal_checkpoint_pos must be <= wal_size")
+        }
+        if let walReplaySnapshot {
+            guard walReplaySnapshot.walWritePos <= walSize else {
+                throw WaxError.invalidHeader(reason: "wal_replay_snapshot.wal_write_pos must be <= wal_size")
+            }
+            guard walReplaySnapshot.walCheckpointPos <= walSize else {
+                throw WaxError.invalidHeader(reason: "wal_replay_snapshot.wal_checkpoint_pos must be <= wal_size")
+            }
+            guard walReplaySnapshot.walPendingBytes <= walSize else {
+                throw WaxError.invalidHeader(reason: "wal_replay_snapshot.wal_pending_bytes must be <= wal_size")
+            }
+            guard walReplaySnapshot.footerOffset >= walOffset + walSize else {
+                throw WaxError.invalidHeader(
+                    reason: "wal_replay_snapshot.footer_offset must be >= wal_offset + wal_size"
+                )
+            }
         }
         guard footerOffset >= walOffset + walSize else {
             throw WaxError.invalidHeader(reason: "footer_offset must be >= wal_offset + wal_size")
@@ -196,6 +291,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
             walWritePos: walWritePos,
             walCheckpointPos: walCheckpointPos,
             walCommittedSeq: walCommittedSeq,
+            walReplaySnapshot: walReplaySnapshot,
             tocChecksum: tocChecksum,
             headerChecksum: headerChecksum
         )

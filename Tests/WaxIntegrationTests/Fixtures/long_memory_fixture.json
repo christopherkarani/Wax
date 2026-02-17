@@ -1,0 +1,207 @@
+{
+  "name": "wax-long-memory-v1",
+  "documents": [
+    {
+      "id": "doc_profile_city",
+      "text": "Avery moved to Seattle in 2021 and prefers rain walks before work.",
+      "metadata": {
+        "source": "profile",
+        "session": "onboarding"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "profile"
+        }
+      ],
+      "labels": [
+        "public"
+      ]
+    },
+    {
+      "id": "doc_health_dentist",
+      "text": "Avery's dentist appointment is on March 12, 2026 at 3:30 PM with Dr. Lin at Pine Dental.",
+      "metadata": {
+        "source": "calendar",
+        "session": "health"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "health"
+        }
+      ],
+      "labels": [
+        "private"
+      ]
+    },
+    {
+      "id": "doc_pet",
+      "text": "Avery adopted a corgi named Pixel in July 2024.",
+      "metadata": {
+        "source": "journal",
+        "session": "life"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "pets"
+        }
+      ],
+      "labels": [
+        "public"
+      ]
+    },
+    {
+      "id": "doc_project_nova_timeline",
+      "text": "Project Nova beta starts on April 8, 2026 and the public launch is scheduled for June 2, 2026.",
+      "metadata": {
+        "source": "roadmap",
+        "session": "work"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "project_nova"
+        }
+      ],
+      "labels": [
+        "work"
+      ]
+    },
+    {
+      "id": "doc_project_nova_owner",
+      "text": "For Project Nova, Jordan owns QA and Priya owns deployment readiness.",
+      "metadata": {
+        "source": "notes",
+        "session": "work"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "project_nova"
+        }
+      ],
+      "labels": [
+        "work"
+      ]
+    },
+    {
+      "id": "doc_travel",
+      "text": "Avery booked a flight to Tokyo for September 2026 and prefers aisle seats.",
+      "metadata": {
+        "source": "travel",
+        "session": "personal"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "travel"
+        }
+      ],
+      "labels": [
+        "private"
+      ]
+    },
+    {
+      "id": "doc_food",
+      "text": "Avery is allergic to peanuts and avoids peanut oil.",
+      "metadata": {
+        "source": "health",
+        "session": "preferences"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "food"
+        }
+      ],
+      "labels": [
+        "private"
+      ]
+    },
+    {
+      "id": "doc_comm_pref",
+      "text": "Avery prefers concise status updates with bullet points and explicit due dates.",
+      "metadata": {
+        "source": "communication",
+        "session": "preferences"
+      },
+      "tags": [
+        {
+          "key": "topic",
+          "value": "communication"
+        }
+      ],
+      "labels": [
+        "public"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "q_city",
+      "text": "Which city did Avery move to?",
+      "expected_document_ids": [
+        "doc_profile_city"
+      ],
+      "expected_answer": "Seattle"
+    },
+    {
+      "id": "q_dentist_time",
+      "text": "When is Avery's dentist appointment?",
+      "expected_document_ids": [
+        "doc_health_dentist"
+      ],
+      "expected_answer": "March 12, 2026 at 3:30 PM"
+    },
+    {
+      "id": "q_pet",
+      "text": "What is the name of Avery's dog and when was it adopted?",
+      "expected_document_ids": [
+        "doc_pet"
+      ],
+      "expected_answer": "Pixel in July 2024"
+    },
+    {
+      "id": "q_nova_launch",
+      "text": "What is the public launch date for Project Nova?",
+      "expected_document_ids": [
+        "doc_project_nova_timeline"
+      ],
+      "expected_answer": "June 2, 2026"
+    },
+    {
+      "id": "q_nova_owner",
+      "text": "Who owns deployment readiness for Project Nova?",
+      "expected_document_ids": [
+        "doc_project_nova_owner"
+      ],
+      "expected_answer": "Priya"
+    },
+    {
+      "id": "q_travel",
+      "text": "Where is Avery flying in September 2026?",
+      "expected_document_ids": [
+        "doc_travel"
+      ],
+      "expected_answer": "Tokyo"
+    },
+    {
+      "id": "q_allergy",
+      "text": "What food allergy does Avery have?",
+      "expected_document_ids": [
+        "doc_food"
+      ],
+      "expected_answer": "allergic to peanuts"
+    },
+    {
+      "id": "q_comm_style",
+      "text": "How should status updates be written for Avery?",
+      "expected_document_ids": [
+        "doc_comm_pref"
+      ],
+      "expected_answer": "concise status updates with bullet points and explicit due dates"
+    }
+  ]
+}

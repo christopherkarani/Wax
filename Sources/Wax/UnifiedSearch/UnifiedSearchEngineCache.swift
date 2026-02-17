@@ -53,13 +53,13 @@ actor UnifiedSearchEngineCache {
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
         let waxId = ObjectIdentifier(wax)
 
-        if let stamp = await wax.stagedLexIndexStamp(),
-           let _ = await wax.readStagedLexIndexBytes() {
+        if let stamp = await wax.stagedLexIndexStamp() {
+            let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
             if let cached = textByWax[waxId], cached.key == key {
                 return cached.engine
             }
-            guard let bytes = await wax.readStagedLexIndexBytes() else {
+            guard let bytes = stagedBytes else {
                 let engine = try FTS5SearchEngine.inMemory()
                 textByWax[waxId] = CachedText(key: .empty, engine: engine)
                 return engine

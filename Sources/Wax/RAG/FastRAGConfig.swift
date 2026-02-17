@@ -98,6 +98,15 @@ public struct FastRAGConfig: Sendable, Equatable {
     public var searchMode: SearchMode = .hybrid(alpha: 0.5)
     public var rrfK: Int = 60
     public var previewMaxBytes: Int = 512
+
+    /// Enable deterministic query-aware reranking for context item ordering.
+    public var enableAnswerFocusedRanking: Bool = true
+
+    /// Max top candidates to rerank for answer-focused ordering.
+    public var answerRerankWindow: Int = 12
+
+    /// Penalty for distractor-like snippets during answer-focused ranking.
+    public var answerDistractorPenalty: Float = 0.30
     
     // MARK: - Tier Selection
     
@@ -124,6 +133,9 @@ public struct FastRAGConfig: Sendable, Equatable {
         searchMode: SearchMode = .hybrid(alpha: 0.5),
         rrfK: Int = 60,
         previewMaxBytes: Int = 512,
+        enableAnswerFocusedRanking: Bool = true,
+        answerRerankWindow: Int = 12,
+        answerDistractorPenalty: Float = 0.30,
         tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced,
         enableQueryAwareTierSelection: Bool = true,
         deterministicNowMs: Int64? = nil
@@ -140,6 +152,9 @@ public struct FastRAGConfig: Sendable, Equatable {
         self.searchMode = searchMode
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
+        self.enableAnswerFocusedRanking = enableAnswerFocusedRanking
+        self.answerRerankWindow = answerRerankWindow
+        self.answerDistractorPenalty = answerDistractorPenalty
         self.tierSelectionPolicy = tierSelectionPolicy
         self.enableQueryAwareTierSelection = enableQueryAwareTierSelection
         self.deterministicNowMs = deterministicNowMs
