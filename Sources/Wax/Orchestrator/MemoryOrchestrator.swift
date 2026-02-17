@@ -12,7 +12,7 @@ public actor MemoryOrchestrator {
     }
 
     let wax: Wax
-    private let config: OrchestratorConfig
+    let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
@@ -20,6 +20,12 @@ public actor MemoryOrchestrator {
     private let embeddingCache: EmbeddingMemoizer?
 
     private var currentSessionId: UUID?
+    var flushCount: UInt64 = 0
+    var lastWriteActivityAt: ContinuousClock.Instant = .now
+    var lastScheduledLiveSetMaintenanceReport: ScheduledLiveSetMaintenanceReport?
+    var scheduledLiveSetMaintenanceTask: Task<Void, Never>?
+    var scheduledLiveSetMaintenanceQueued = false
+    var scheduledLiveSetMaintenanceLastCompletedAt: ContinuousClock.Instant?
 
     public init(
         at url: URL,
@@ -108,6 +114,7 @@ public actor MemoryOrchestrator {
     ///   Callers requiring all-or-nothing semantics should validate post-ingest or
     ///   implement their own rollback by superseding the document frame on failure.
     public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
+        lastWriteActivityAt = .now
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
         var docMeta = Metadata(metadata)
@@ -432,12 +439,65 @@ public actor MemoryOrchestrator {
 
     public func flush() async throws {
         try await session.commit()
+        flushCount &+= 1
+        enqueueScheduledLiveSetMaintenance()
     }
 
     public func close() async throws {
         try await flush()
+        if let task = scheduledLiveSetMaintenanceTask {
+            await task.value
+        }
         await session.close()
         try await wax.close()
+    }
+
+    public func scheduledLiveSetMaintenanceReport() -> ScheduledLiveSetMaintenanceReport? {
+        lastScheduledLiveSetMaintenanceReport
+    }
+
+    private func enqueueScheduledLiveSetMaintenance() {
+        guard config.liveSetRewriteSchedule.enabled else { return }
+        scheduledLiveSetMaintenanceQueued = true
+        guard scheduledLiveSetMaintenanceTask == nil else { return }
+
+        scheduledLiveSetMaintenanceTask = Task(priority: .utility) { [self] in
+            await drainScheduledLiveSetMaintenanceQueue()
+        }
+    }
+
+    private func drainScheduledLiveSetMaintenanceQueue() async {
+        while scheduledLiveSetMaintenanceQueued {
+            scheduledLiveSetMaintenanceQueued = false
+            let triggerFlushCount = flushCount
+            do {
+                if let report = try await runScheduledLiveSetMaintenanceIfNeeded(
+                    flushCount: triggerFlushCount,
+                    force: false,
+                    triggeredByFlush: true
+                ) {
+                    lastScheduledLiveSetMaintenanceReport = report
+                }
+            } catch {
+                lastScheduledLiveSetMaintenanceReport = ScheduledLiveSetMaintenanceReport(
+                    outcome: .rewriteFailed,
+                    triggeredByFlush: true,
+                    flushCount: triggerFlushCount,
+                    deadPayloadBytes: 0,
+                    totalPayloadBytes: 0,
+                    deadPayloadFraction: 0,
+                    candidateURL: nil,
+                    rewriteReport: nil,
+                    rollbackPerformed: false,
+                    notes: ["scheduled maintenance task failed: \(error)"]
+                )
+            }
+        }
+
+        scheduledLiveSetMaintenanceTask = nil
+        if scheduledLiveSetMaintenanceQueued {
+            enqueueScheduledLiveSetMaintenance()
+        }
     }
 
     // MARK: - Math helpers
