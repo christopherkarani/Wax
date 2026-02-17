@@ -119,3 +119,106 @@ import Testing
         try await wax.close()
     }
 }
+
+@Test func openUsesPersistedReplaySnapshotWhenNewestHeaderPageIsMissing() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(
+            at: url,
+            walSize: 2 * 1024 * 1024,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+        _ = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+        try await wax.commit()
+
+        for index in 0..<2_000 {
+            _ = try await wax.put(
+                Data("payload-\(index)".utf8),
+                options: FrameMetaSubset(searchText: "payload-\(index)")
+            )
+        }
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    // Simulate a missing latest header page and force selection of the older page.
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            Issue.record("Expected valid header pages")
+            return
+        }
+        let selectedOffset = UInt64(selected.pageIndex) * Constants.headerPageSize
+        try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
+        try file.fsync()
+    }
+
+    do {
+        let reopened = try await Wax.open(
+            at: url,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == 2_001)
+        let walStats = await reopened.walStats()
+        #expect(walStats.replaySnapshotHitCount == 1)
+        try await reopened.close()
+    }
+}
+
+@Test func openFallsBackToReplayScanWhenPersistedCursorNoLongerTerminal() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+        _ = try await wax.put(
+            Data("seed".utf8),
+            options: FrameMetaSubset(searchText: "seed")
+        )
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    // Simulate crash window by appending WAL after the persisted cursor without updating header/footer.
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            Issue.record("Expected valid header pages")
+            return
+        }
+
+        let writer = WALRingWriter(
+            file: file,
+            walOffset: selected.page.walOffset,
+            walSize: selected.page.walSize,
+            writePos: selected.page.walWritePos,
+            checkpointPos: selected.page.walCheckpointPos,
+            pendingBytes: 0,
+            lastSequence: selected.page.walCommittedSeq
+        )
+        let payload = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 0)))
+        _ = try writer.append(payload: payload)
+        try file.fsync()
+    }
+
+    do {
+        let reopened = try await Wax.open(at: url)
+        let meta = try await reopened.frameMetaIncludingPending(frameId: 0)
+        #expect(meta.status == .deleted)
+
+        let walStats = await reopened.walStats()
+        #expect(walStats.pendingBytes > 0)
+        try await reopened.close()
+    }
+}

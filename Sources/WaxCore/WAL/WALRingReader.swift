@@ -43,6 +43,28 @@ public final class WALRingReader {
         self.walSize = walSize
     }
 
+    /// Checks whether the persisted cursor currently points at a terminal marker.
+    ///
+    /// A `true` result means open can safely treat WAL replay as empty from this cursor.
+    public func isTerminalMarker(at cursor: UInt64) throws -> Bool {
+        guard walSize > 0 else { return true }
+        let normalized = cursor % walSize
+        let remaining = walSize - normalized
+        guard remaining >= UInt64(WALRecord.headerSize) else { return false }
+
+        let headerData = try file.readExactly(length: WALRecord.headerSize, at: walOffset + normalized)
+        let header: WALRecordHeader
+        do {
+            header = try WALRecordHeader.decode(from: headerData, offset: normalized)
+        } catch let error as WaxError {
+            if case .walCorruption = error { return false }
+            throw error
+        } catch {
+            throw error
+        }
+        return header.isSentinel || header.sequence == 0
+    }
+
     public func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
         return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
             let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)

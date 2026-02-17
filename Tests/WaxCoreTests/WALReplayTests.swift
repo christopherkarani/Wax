@@ -143,3 +143,19 @@ import Testing
         #expect(combined.state == legacyState)
     }
 }
+
+@Test func walReplayTerminalMarkerDetectionMatchesWriteCursor() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 4096)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 2048)
+        let payload = try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 1)))
+        _ = try writer.append(payload: payload)
+
+        let reader = WALRingReader(file: file, walOffset: 0, walSize: 2048)
+        #expect(try reader.isTerminalMarker(at: writer.writePos))
+        #expect((try reader.isTerminalMarker(at: 0)) == false)
+    }
+}
