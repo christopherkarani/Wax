@@ -126,11 +126,31 @@ private struct LongMemoryAnswerOverlap: Codable, Sendable {
     let expectedTokens: Int
 }
 
+private struct LongMemoryLaneContributionDiagnostics: Codable, Sendable {
+    let source: String
+    let weight: Float
+    let rank: Int
+    let rrfScore: Float
+}
+
+private struct LongMemoryRankedDocumentDiagnostics: Codable, Sendable {
+    let rank: Int
+    let frameID: UInt64
+    let documentID: String?
+    let score: Float
+    let sources: [String]
+    let bestLaneRank: Int?
+    let tieBreakReason: String?
+    let laneContributions: [LongMemoryLaneContributionDiagnostics]
+}
+
 private struct LongMemoryQueryDiagnostics: Codable, Sendable {
     let queryID: String
     let queryText: String
     let expectedDocumentIDs: [String]
     let topDocumentIDs: [String]
+    let firstRelevantRank: Int?
+    let topRankedDocuments: [LongMemoryRankedDocumentDiagnostics]
     let selectedKind: String?
     let selectedDocumentID: String?
     let selectedText: String?
@@ -297,13 +317,34 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 embedding: embedding,
                 vectorEnginePreference: .cpuOnly,
                 mode: config.includeVectors ? .hybrid(alpha: config.searchAlpha) : .textOnly,
-                topK: config.topK
+                topK: config.topK,
+                enableRankingDiagnostics: config.enableDiagnostics,
+                rankingDiagnosticsTopK: 10
             )
             let response = try await wax.search(request)
             let rankedDocIDs = try await resolveDocIDs(
                 from: response.results,
                 wax: wax,
                 cache: &docIDByFrameID
+            )
+            let rankingResultsForDiagnostics: [SearchResponse.Result]
+            if config.enableDiagnostics, config.topK < 10 {
+                var diagnosticRequest = request
+                diagnosticRequest.topK = 10
+                rankingResultsForDiagnostics = try await wax.search(diagnosticRequest).results
+            } else {
+                rankingResultsForDiagnostics = response.results
+            }
+            let rankedDocIDsForDiagnostics = try await resolveDocIDs(
+                from: rankingResultsForDiagnostics,
+                wax: wax,
+                cache: &docIDByFrameID
+            )
+            let topRankedDocuments = try await rankedDiagnostics(
+                from: rankingResultsForDiagnostics,
+                wax: wax,
+                cache: &docIDByFrameID,
+                limit: 10
             )
 
             let expectedSet = Set(query.expectedDocumentIds)
@@ -313,6 +354,10 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             )
             let matchedCount = Set(rankedDocIDs).intersection(expectedSet).count
             let hitAtK = matchedCount >= requiredHits
+            let firstRelevantRank = rankedDocIDsForDiagnostics
+                .enumerated()
+                .first(where: { expectedSet.contains($0.element) })
+                .map { $0.offset + 1 }
 
             var reciprocalRank = 0.0
             for (index, docID) in rankedDocIDs.enumerated() where expectedSet.contains(docID) {
@@ -376,7 +421,9 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                         queryID: query.id,
                         queryText: query.text,
                         expectedDocumentIDs: query.expectedDocumentIds,
-                        topDocumentIDs: rankedDocIDs,
+                        topDocumentIDs: rankedDocIDsForDiagnostics,
+                        firstRelevantRank: firstRelevantRank,
+                        topRankedDocuments: topRankedDocuments,
                         selectedKind: selectedKind,
                         selectedDocumentID: selectedDocID,
                         selectedText: selectedText,
@@ -594,6 +641,54 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         return ranked
     }
 
+    private func rankedDiagnostics(
+        from results: [SearchResponse.Result],
+        wax: Wax,
+        cache: inout [UInt64: String],
+        limit: Int
+    ) async throws -> [LongMemoryRankedDocumentDiagnostics] {
+        var rows: [LongMemoryRankedDocumentDiagnostics] = []
+        rows.reserveCapacity(min(max(0, limit), results.count))
+
+        for (index, result) in results.prefix(max(0, limit)).enumerated() {
+            let docID: String?
+            if let cached = cache[result.frameId] {
+                docID = cached
+            } else {
+                let meta = try await wax.frameMeta(frameId: result.frameId)
+                let resolved = meta.metadata?.entries[benchmarkDocIDKey]
+                if let resolved {
+                    cache[result.frameId] = resolved
+                }
+                docID = resolved
+            }
+
+            let laneContributions = result.rankingDiagnostics?.laneContributions.map { lane in
+                LongMemoryLaneContributionDiagnostics(
+                    source: lane.source.rawValue,
+                    weight: lane.weight,
+                    rank: lane.rank,
+                    rrfScore: lane.rrfScore
+                )
+            } ?? []
+
+            rows.append(
+                LongMemoryRankedDocumentDiagnostics(
+                    rank: index + 1,
+                    frameID: result.frameId,
+                    documentID: docID,
+                    score: result.score,
+                    sources: result.sources.map(\.rawValue),
+                    bestLaneRank: result.rankingDiagnostics?.bestLaneRank,
+                    tieBreakReason: result.rankingDiagnostics?.tieBreakReason.rawValue,
+                    laneContributions: laneContributions
+                )
+            )
+        }
+
+        return rows
+    }
+
     private func buildMetrics(outcomes: [LongMemoryQueryOutcome]) -> LongMemoryMetrics {
         let queryCount = outcomes.count
         let hitCount = outcomes.filter(\.hitAtK).count
@@ -682,6 +777,32 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             .joined(separator: ", ")
 
         print("🧪 Long-memory diagnostics buckets: \(orderedBuckets)")
+
+        let retrievalOrder = diagnostics.sorted { lhs, rhs in
+            let lhsRank = lhs.firstRelevantRank ?? Int.max
+            let rhsRank = rhs.firstRelevantRank ?? Int.max
+            if lhsRank != rhsRank { return lhsRank > rhsRank }
+            return lhs.queryID < rhs.queryID
+        }
+
+        for entry in retrievalOrder {
+            let expected = entry.expectedDocumentIDs.joined(separator: ",")
+            let top10 = Array(entry.topDocumentIDs.prefix(10)).joined(separator: ",")
+            let firstRank = entry.firstRelevantRank.map(String.init) ?? "miss"
+            print("🧪 rank query=\(entry.queryID) firstRelevantRank=\(firstRank) expected=[\(expected)] top10=[\(top10)]")
+            print("   q=\(entry.queryText)")
+            for doc in entry.topRankedDocuments {
+                let lanes = doc.laneContributions.map { lane in
+                    "\(lane.source)#\(lane.rank) w=\(String(format: "%.3f", lane.weight)) rrf=\(String(format: "%.6f", lane.rrfScore))"
+                }.joined(separator: "; ")
+                let sources = doc.sources.joined(separator: ",")
+                print(
+                    "   #\(doc.rank) doc=\(doc.documentID ?? "nil") frame=\(doc.frameID) " +
+                    "score=\(String(format: "%.6f", doc.score)) sources=[\(sources)] " +
+                    "bestLane=\(doc.bestLaneRank.map(String.init) ?? "nil") tie=\(doc.tieBreakReason ?? "nil") lanes=[\(lanes)]"
+                )
+            }
+        }
 
         let lowest = diagnostics
             .filter { $0.expectedAnswer != nil }

@@ -22,6 +22,8 @@ public struct SearchRequest: Sendable, Equatable {
     public var metadataLoadingThreshold: Int
     public var allowTimelineFallback: Bool
     public var timelineFallbackLimit: Int
+    public var enableRankingDiagnostics: Bool
+    public var rankingDiagnosticsTopK: Int
 
     public init(
         query: String? = nil,
@@ -38,7 +40,9 @@ public struct SearchRequest: Sendable, Equatable {
         previewMaxBytes: Int = 512,
         metadataLoadingThreshold: Int = 50,
         allowTimelineFallback: Bool = false,
-        timelineFallbackLimit: Int = 10
+        timelineFallbackLimit: Int = 10,
+        enableRankingDiagnostics: Bool = false,
+        rankingDiagnosticsTopK: Int = 10
     ) {
         self.query = query
         self.embedding = embedding
@@ -55,6 +59,8 @@ public struct SearchRequest: Sendable, Equatable {
         self.metadataLoadingThreshold = metadataLoadingThreshold
         self.allowTimelineFallback = allowTimelineFallback
         self.timelineFallbackLimit = timelineFallbackLimit
+        self.enableRankingDiagnostics = enableRankingDiagnostics
+        self.rankingDiagnosticsTopK = rankingDiagnosticsTopK
     }
 }
 
