@@ -362,3 +362,67 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+@Test func punctuationHeavyQueryWithQuotesAndSymbolsDoesNotBreakFTS() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let atlas10 = try await wax.put(
+            Data("For project Atlas-10, public launch is August 13, 2026.".utf8)
+        )
+        try await text.index(frameId: atlas10, text: "For project Atlas-10, public launch is August 13, 2026.")
+
+        let atlas11 = try await wax.put(
+            Data("For project Atlas-11, public launch is September 14, 2026.".utf8)
+        )
+        try await text.index(frameId: atlas11, text: "For project Atlas-11, public launch is September 14, 2026.")
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: #"What is the public launch date for "Atlas-10"? -- !!!"#,
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == atlas10)
+        #expect(response.results.map(\.frameId).contains(atlas11))
+
+        try await wax.close()
+    }
+}
+
+@Test func nameOnlyEntityLocationQueryPrefersMatchingPerson() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let noah = try await wax.put(
+            Data("Noah moved to Austin in 2021. City move city move city move city move.".utf8)
+        )
+        try await text.index(frameId: noah, text: "Noah moved to Austin in 2021. City move city move city move city move.")
+
+        let priya = try await wax.put(
+            Data("Priya moved to Seattle in 2021 and works on release readiness.".utf8)
+        )
+        try await text.index(frameId: priya, text: "Priya moved to Seattle in 2021 and works on release readiness.")
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "Which city did Priya move to",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == priya)
+        #expect(response.results.map(\.frameId).contains(noah))
+
+        try await wax.close()
+    }
+}

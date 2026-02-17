@@ -437,3 +437,31 @@ func snippetFallbackTriggersForDateIntentWhenPreviewLacksDateLiteral() {
     )
     #expect(!shouldNotFallback)
 }
+
+@Test
+func deterministicAnswerExtractorPrefersMatchingEntityInVectorLikeDateDistractorCase() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 70,
+                score: 1.15,
+                sources: [.vector],
+                text: "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 10,
+                score: 0.72,
+                sources: [.text, .vector],
+                text: "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026."
+            ),
+        ],
+        totalTokens: 40
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "August 13, 2026")
+}
