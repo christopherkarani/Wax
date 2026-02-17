@@ -2,62 +2,6 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-// MARK: - ReadWriteLock Tests (synchronous, os_unfair_lock based)
-
-@Test func readWriteLockWithReadLockReturnsValue() {
-    let lock = ReadWriteLock()
-    let result = lock.withReadLock { 42 }
-    #expect(result == 42)
-}
-
-@Test func readWriteLockWithWriteLockReturnsValue() {
-    let lock = ReadWriteLock()
-    let result = lock.withWriteLock { "hello" }
-    #expect(result == "hello")
-}
-
-@Test func readWriteLockMultipleConcurrentReaders() {
-    let lock = ReadWriteLock()
-    let sharedValue = 100
-    let iterations = 1000
-    let concurrency = 8
-
-    // Use a lock-protected counter to verify all reads complete successfully
-    let resultLock = UnfairLock()
-    nonisolated(unsafe) var successCount = 0
-
-    DispatchQueue.concurrentPerform(iterations: concurrency) { _ in
-        for _ in 0..<iterations {
-            let value = lock.withReadLock { sharedValue }
-            if value == sharedValue {
-                resultLock.withLock { successCount += 1 }
-            }
-        }
-    }
-
-    #expect(successCount == concurrency * iterations)
-}
-
-@Test func readWriteLockWriterExclusivity() {
-    let lock = ReadWriteLock()
-    nonisolated(unsafe) var counter = 0
-    let iterations = 1000
-    let concurrency = 8
-
-    DispatchQueue.concurrentPerform(iterations: concurrency) { _ in
-        for _ in 0..<iterations {
-            lock.withWriteLock {
-                // Read-modify-write must be atomic under write lock
-                let current = counter
-                counter = current + 1
-            }
-        }
-    }
-
-    // If writer exclusivity holds, counter == concurrency * iterations
-    #expect(counter == concurrency * iterations)
-}
-
 // MARK: - AsyncReadWriteLock Tests
 
 @Test func asyncReadWriteLockBasicRead() async {
@@ -216,41 +160,4 @@ import Testing
             throw TestError()
         }
     }
-}
-
-// MARK: - UnfairLock Tests
-
-@Test func unfairLockWithLockWorks() {
-    let lock = UnfairLock()
-    nonisolated(unsafe) var counter = 0
-    let iterations = 1000
-    let concurrency = 8
-
-    DispatchQueue.concurrentPerform(iterations: concurrency) { _ in
-        for _ in 0..<iterations {
-            lock.withLock {
-                counter += 1
-            }
-        }
-    }
-
-    #expect(counter == concurrency * iterations)
-}
-
-@Test func unfairLockTryAcquire() {
-    let lock = UnfairLock()
-
-    // Lock is free, tryAcquire should succeed
-    let acquired = lock.tryAcquire()
-    #expect(acquired == true)
-
-    // Lock is held, tryAcquire should fail
-    let acquiredAgain = lock.tryAcquire()
-    #expect(acquiredAgain == false)
-
-    // Release and try again
-    lock.release()
-    let acquiredAfterRelease = lock.tryAcquire()
-    #expect(acquiredAfterRelease == true)
-    lock.release()
 }

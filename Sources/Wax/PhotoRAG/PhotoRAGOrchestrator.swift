@@ -626,6 +626,10 @@ public actor PhotoRAGOrchestrator {
 
                 guard !crops.isEmpty else { return }
 
+                // Map original region index → region for safe lookup after parallel embedding.
+                // crops may be sparse (some regions fail to crop), so direct subscript is unsafe.
+                let regionByIndex = Dictionary(uniqueKeysWithValues: crops.map { ($0.index, $0.region) })
+
                 // Embed in parallel with bounded concurrency (4 concurrent tasks)
                 var regionEmbeddings: [[Float]] = []
                 var regionContents: [Data] = []
@@ -680,7 +684,7 @@ public actor PhotoRAGOrchestrator {
 
                     // Build final arrays in correct order
                     for (index, vec) in results {
-                        let (_, _, region) = crops[index]
+                        guard let region = regionByIndex[index] else { continue }
                         regionEmbeddings.append(vec)
                         regionContents.append(Data())
 

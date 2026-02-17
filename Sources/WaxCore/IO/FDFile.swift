@@ -172,7 +172,10 @@ public final class FDFile {
         guard length > 0 else {
             throw WaxError.io("mapWritable length must be > 0")
         }
-        let endOffset = offset + UInt64(length)
+        let (endOffset, overflow) = offset.addingReportingOverflow(UInt64(length))
+        guard !overflow else {
+            throw WaxError.io("mapWritable offset overflow: \(offset) + \(length)")
+        }
         try ensureSize(atLeast: endOffset)
 
         let pageSize = UInt64(getpagesize())
@@ -196,7 +199,6 @@ public final class FDFile {
         }
 
         guard let base = ptr else {
-            munmap(ptr, mapLength)
             throw WaxError.io("mmap returned nil pointer")
         }
         let advanced = base.advanced(by: offsetDelta)
@@ -260,9 +262,9 @@ public final class FDFile {
         guard delta >= 0 else {
             throw WaxError.io("Invalid offset delta: \(delta)")
         }
-        let total = offset + UInt64(delta)
-        guard total <= UInt64(Int64.max) else {
-            throw WaxError.io("Offset too large: \(total)")
+        let (total, overflow) = offset.addingReportingOverflow(UInt64(delta))
+        guard !overflow, total <= UInt64(Int64.max) else {
+            throw WaxError.io("Offset too large: \(offset) + \(delta)")
         }
         return off_t(total)
     }
