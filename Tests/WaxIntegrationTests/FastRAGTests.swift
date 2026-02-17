@@ -653,3 +653,37 @@ func deterministicAnswerExtractorHandlesGenericOwnershipQueries() {
     let answer = extractor.extractAnswer(query: context.query, items: context.items)
     #expect(answer == "Priya")
 }
+
+@Test
+func deterministicAnswerExtractorHandlesMultiTokenOwnerNames() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Who owns release readiness for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 77,
+                score: 0.92,
+                sources: [.text],
+                text: "For Atlas-10, Mary Jane Watson owns release readiness and Noah owns QA."
+            ),
+        ],
+        totalTokens: 19
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Mary Jane Watson")
+}
+
+@Test
+func queryAnalyzerRejectsImpossibleCalendarDates() {
+    let analyzer = QueryAnalyzer()
+
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 2026-02-30."))
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 31 Apr 2026."))
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 2026-13-01."))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2026-02-30.") == [])
+
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 2028-02-29."))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2028-02-29.") == Set(["2028-02-29"]))
+}

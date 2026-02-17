@@ -370,10 +370,10 @@ public struct DeterministicAnswerExtractor: Sendable {
     // MARK: - Pre-compiled Patterns
 
     private static let deploymentOwnershipRegex = try? NSRegularExpression(
-        pattern: #"\b([A-Z][a-z]+)\s+owns\s+deployment\s+readiness\b"#
+        pattern: #"\b((?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)(?:\s+(?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)){0,3})\s+owns\s+deployment\s+readiness\b"#
     )
     private static let genericOwnershipRegex = try? NSRegularExpression(
-        pattern: #"\b([A-Z][a-z]+)\s+owns\s+([^.,;\n]+?)(?=\s+and\s+[A-Z][a-z]+\s+owns\b|[.,;\n]|$)"#
+        pattern: #"\b((?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)(?:\s+(?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)){0,3})\s+owns\s+([^.,;\n]+?)(?=\s+and\s+(?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)(?:\s+(?:[A-Z][A-Za-z]*(?:['’\-][A-Z][A-Za-z]*)?)){0,3}\s+owns\b|[.,;\n]|$)"#
     )
     private static let appointmentDateTimeRegex = try? NSRegularExpression(
         pattern: #"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(?:AM|PM)\b"#

@@ -174,6 +174,9 @@ public struct QueryAnalyzer: Sendable {
         ordered.reserveCapacity(all.count)
         for item in all {
             let value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard Self.normalizedDateKey(from: value) != nil else {
+                continue
+            }
             if seen.insert(value).inserted {
                 ordered.append(value)
             }
@@ -359,9 +362,7 @@ public struct QueryAnalyzer: Sendable {
                   let year = Int(components[0]),
                   let month = Int(components[1]),
                   let day = Int(components[2]),
-                  (1900...2999).contains(year),
-                  (1...12).contains(month),
-                  (1...31).contains(day)
+                  isValidCalendarDate(year: year, month: month, day: day)
             else {
                 return nil
             }
@@ -398,11 +399,35 @@ public struct QueryAnalyzer: Sendable {
             return nil
         }
 
-        guard (1900...2999).contains(year),
-              (1...12).contains(month),
-              (1...31).contains(day)
-        else { return nil }
+        guard isValidCalendarDate(year: year, month: month, day: day) else { return nil }
 
         return String(format: "%04d-%02d-%02d", year, month, day)
     }
+
+    private static func isValidCalendarDate(year: Int, month: Int, day: Int) -> Bool {
+        guard (1900...2999).contains(year),
+              (1...12).contains(month),
+              (1...31).contains(day)
+        else {
+            return false
+        }
+
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        components.timeZone = TimeZone(secondsFromGMT: 0)
+
+        guard let date = gregorianUTC.date(from: components) else {
+            return false
+        }
+        let resolved = gregorianUTC.dateComponents([.year, .month, .day], from: date)
+        return resolved.year == year && resolved.month == month && resolved.day == day
+    }
+
+    private static let gregorianUTC: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        return calendar
+    }()
 }
