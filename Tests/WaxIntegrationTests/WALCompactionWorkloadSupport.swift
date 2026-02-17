@@ -1,5 +1,6 @@
 import Foundation
 @testable import Wax
+import WaxCore
 
 enum WALCompactionWorkloadMode: String, Codable, Sendable {
     case textOnly = "text_only"
@@ -305,7 +306,8 @@ enum WALCompactionHarness {
     static func run(
         workload: WALCompactionWorkload,
         sampleEveryWrites: Int,
-        reopenIterations: Int
+        reopenIterations: Int,
+        waxOptions: WaxOptions = .init()
     ) async throws -> WALCompactionWorkloadResult {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wal-compaction-\(UUID().uuidString)")
@@ -315,7 +317,7 @@ enum WALCompactionHarness {
         let clock = ContinuousClock()
         let started = clock.now
 
-        let wax = try await Wax.create(at: url, walSize: workload.walSize)
+        let wax = try await Wax.create(at: url, walSize: workload.walSize, options: waxOptions)
         let sessionConfig = WaxSession.Config(
             enableTextSearch: true,
             enableVectorSearch: workload.mode == .hybrid,

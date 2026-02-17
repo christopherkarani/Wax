@@ -93,6 +93,8 @@ public actor Wax {
     private var dirty: Bool
     private var walAutoCommitCount: UInt64
     private let walProactiveCommitThresholdBytes: UInt64?
+    private let walProactiveCommitMaxWalSizeBytes: UInt64?
+    private let walProactiveCommitMinPendingBytes: UInt64
 
     private struct WriterWaiter {
         let id: UUID
@@ -121,7 +123,9 @@ public actor Wax {
         generation: UInt64,
         dirty: Bool,
         walAutoCommitCount: UInt64,
-        walProactiveCommitThresholdBytes: UInt64?
+        walProactiveCommitThresholdBytes: UInt64?,
+        walProactiveCommitMaxWalSizeBytes: UInt64?,
+        walProactiveCommitMinPendingBytes: UInt64
     ) {
         self.url = url
         self.io = io
@@ -143,6 +147,8 @@ public actor Wax {
         self.dirty = dirty
         self.walAutoCommitCount = walAutoCommitCount
         self.walProactiveCommitThresholdBytes = walProactiveCommitThresholdBytes
+        self.walProactiveCommitMaxWalSizeBytes = walProactiveCommitMaxWalSizeBytes
+        self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
     }
 
     private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
@@ -203,9 +209,13 @@ public actor Wax {
         guard let thresholdBytes = walProactiveCommitThresholdBytes else { return }
         guard estimatedIncomingWalBytes > 0 else { return }
         guard canAutoCommitForWalPressureLocked() else { return }
+        if let maxWalSizeBytes = walProactiveCommitMaxWalSizeBytes,
+           wal.walSize > maxWalSizeBytes {
+            return
+        }
 
         let pendingBytes = wal.pendingBytes
-        guard pendingBytes > 0 else { return }
+        guard pendingBytes >= walProactiveCommitMinPendingBytes else { return }
 
         let (projectedPendingBytes, overflowed) = pendingBytes.addingReportingOverflow(estimatedIncomingWalBytes)
         let projected = overflowed ? UInt64.max : projectedPendingBytes
@@ -216,7 +226,8 @@ public actor Wax {
     }
 
     private func ensureWalCapacityLocked(payloadSize: Int) async throws {
-        if let estimated = estimatedWalBytesForAppend(payloadSize: payloadSize) {
+        if walProactiveCommitThresholdBytes != nil,
+           let estimated = estimatedWalBytesForAppend(payloadSize: payloadSize) {
             try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
         }
         if wal.canAppend(payloadSize: payloadSize) {
@@ -236,7 +247,8 @@ public actor Wax {
 
     private func ensureWalCapacityLocked(payloadSizes: [Int]) async throws {
         guard !payloadSizes.isEmpty else { return }
-        if let estimated = estimatedWalBytesForAppendBatch(payloadSizes: payloadSizes) {
+        if walProactiveCommitThresholdBytes != nil,
+           let estimated = estimatedWalBytesForAppendBatch(payloadSizes: payloadSizes) {
             try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
         }
         if wal.canAppendBatch(payloadSizes: payloadSizes) {
@@ -317,14 +329,28 @@ public actor Wax {
 
     private static func walProactiveCommitThresholdBytes(
         walSize: UInt64,
-        thresholdPercent: UInt8?
+        thresholdPercent: UInt8?,
+        maxWalSizeBytes: UInt64?
     ) -> UInt64? {
+        if let maxWalSizeBytes, walSize > maxWalSizeBytes {
+            return nil
+        }
         guard let thresholdPercent else { return nil }
         guard thresholdPercent > 0 else { return nil }
         guard thresholdPercent < 100 else { return nil }
 
         let threshold = (walSize * UInt64(thresholdPercent)) / 100
         return max(1, min(threshold, walSize))
+    }
+
+    private static func walProactiveCommitMaxWalSizeBytes(_ maxWalSizeBytes: UInt64?) -> UInt64? {
+        guard let maxWalSizeBytes else { return nil }
+        guard maxWalSizeBytes > 0 else { return nil }
+        return maxWalSizeBytes
+    }
+
+    private static func walProactiveCommitMinPendingBytes(_ minPendingBytes: UInt64) -> UInt64 {
+        max(1, minPendingBytes)
     }
 
     /// Create a new, empty `.mv2s` file.
@@ -433,7 +459,16 @@ public actor Wax {
             walAutoCommitCount: 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: walSize,
-                thresholdPercent: options.walProactiveCommitThresholdPercent
+                thresholdPercent: options.walProactiveCommitThresholdPercent,
+                maxWalSizeBytes: walProactiveCommitMaxWalSizeBytes(
+                    options.walProactiveCommitMaxWalSizeBytes
+                )
+            ),
+            walProactiveCommitMaxWalSizeBytes: walProactiveCommitMaxWalSizeBytes(
+                options.walProactiveCommitMaxWalSizeBytes
+            ),
+            walProactiveCommitMinPendingBytes: walProactiveCommitMinPendingBytes(
+                options.walProactiveCommitMinPendingBytes
             )
         )
     }
@@ -595,7 +630,16 @@ public actor Wax {
             walAutoCommitCount: 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: opened.header.walSize,
-                thresholdPercent: options.walProactiveCommitThresholdPercent
+                thresholdPercent: options.walProactiveCommitThresholdPercent,
+                maxWalSizeBytes: walProactiveCommitMaxWalSizeBytes(
+                    options.walProactiveCommitMaxWalSizeBytes
+                )
+            ),
+            walProactiveCommitMaxWalSizeBytes: walProactiveCommitMaxWalSizeBytes(
+                options.walProactiveCommitMaxWalSizeBytes
+            ),
+            walProactiveCommitMinPendingBytes: walProactiveCommitMinPendingBytes(
+                options.walProactiveCommitMinPendingBytes
             )
         )
     }
