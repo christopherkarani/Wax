@@ -10,6 +10,7 @@ private struct BlendAwareEmbedder: MultimodalEmbeddingProvider {
     let dimensions: Int = 4
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "BlendAware", dimensions: 4, normalized: true)
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(text: String) async throws -> [Float] {
         _ = text
@@ -37,27 +38,27 @@ private func writePhotoBlendFixtures(at url: URL) async throws {
     let timestampMs: Int64 = 1_700_000_000_000
 
     var textMeta = Metadata()
-    textMeta.entries["photos.asset_id"] = "photo-text"
-    textMeta.entries["photo.capture_ms"] = String(timestampMs)
-    textMeta.entries["photo.availability.local"] = "true"
+    textMeta.entries[PhotoMetadataKey.assetID.rawValue] = "photo-text"
+    textMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(timestampMs)
+    textMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
     _ = try await session.put(
         Data(),
         embedding: [1, 0, 0, 0],
         identity: nil,
-        options: FrameMetaSubset(kind: "photo.root", metadata: textMeta),
+        options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: textMeta),
         compression: .plain,
         timestampMs: timestampMs
     )
 
     var imageMeta = Metadata()
-    imageMeta.entries["photos.asset_id"] = "photo-image"
-    imageMeta.entries["photo.capture_ms"] = String(timestampMs)
-    imageMeta.entries["photo.availability.local"] = "true"
+    imageMeta.entries[PhotoMetadataKey.assetID.rawValue] = "photo-image"
+    imageMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(timestampMs)
+    imageMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
     _ = try await session.put(
         Data(),
         embedding: [0, 1, 0, 0],
         identity: nil,
-        options: FrameMetaSubset(kind: "photo.root", metadata: imageMeta),
+        options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: imageMeta),
         compression: .plain,
         timestampMs: timestampMs
     )
@@ -88,6 +89,26 @@ private func blendedPhotoQuery() -> PhotoQuery {
         resultLimit: 2,
         contextBudget: ContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 1)
     )
+}
+
+private func firstAssetIDForPhotoBlendWeight(_ textEmbeddingWeight: Float) async throws -> String {
+    try await TempFiles.withTempFile { url in
+        try await writePhotoBlendFixtures(at: url)
+
+        var config = defaultPhotoSearchConfig()
+        config.textEmbeddingWeight = textEmbeddingWeight
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: BlendAwareEmbedder()
+        )
+        let result = try await orchestrator.recall(blendedPhotoQuery())
+        guard let first = result.items.first else {
+            throw WaxError.io("Expected at least one PhotoRAG result")
+        }
+        return first.assetID
+    }
 }
 
 @Test
@@ -151,33 +172,11 @@ func photoRAGConfigClampsNonFiniteBlendValues() {
 
 @Test
 func photoRAGTextImageBlendWeightChangesOrdering() async throws {
-    try await TempFiles.withTempFile { url in
-        try await writePhotoBlendFixtures(at: url)
+    let textPreferredFirst = try await firstAssetIDForPhotoBlendWeight(1.0)
+    #expect(textPreferredFirst == "photo-text")
 
-        let query = blendedPhotoQuery()
-
-        var textPrefersConfig = defaultPhotoSearchConfig()
-        textPrefersConfig.textEmbeddingWeight = 1.0
-        let textPreferringOrchestrator = try await PhotoRAGOrchestrator(
-            storeURL: url,
-            config: textPrefersConfig,
-            embedder: BlendAwareEmbedder()
-        )
-        let textFirstResult = try await textPreferringOrchestrator.recall(query)
-        #expect(textFirstResult.items.count >= 1)
-        #expect(textFirstResult.items[0].assetID == "photo-text")
-
-        var imagePrefersConfig = defaultPhotoSearchConfig()
-        imagePrefersConfig.textEmbeddingWeight = 0.0
-        let imagePreferringOrchestrator = try await PhotoRAGOrchestrator(
-            storeURL: url,
-            config: imagePrefersConfig,
-            embedder: BlendAwareEmbedder()
-        )
-        let imageFirstResult = try await imagePreferringOrchestrator.recall(query)
-        #expect(imageFirstResult.items.count >= 1)
-        #expect(imageFirstResult.items[0].assetID == "photo-image")
-    }
+    let imagePreferredFirst = try await firstAssetIDForPhotoBlendWeight(0.0)
+    #expect(imagePreferredFirst == "photo-image")
 }
 
 @Test
@@ -225,4 +224,133 @@ func videoRAGConfigClampsNonFiniteHybridAlpha() {
         hybridAlpha: -Float.infinity
     )
     #expect(infConfig.hybridAlpha == 0.0)
+}
+
+@Test
+func fastRAGRrfKZeroOrNegativeDoesNotCrash() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+
+        for value in [0, -1, -100] {
+            var config = FastRAGConfig(searchMode: .textOnly)
+            config.rrfK = value
+            let context = try await builder.build(query: "Swift", wax: wax, config: config)
+            #expect(!context.items.isEmpty)
+        }
+
+        try await wax.close()
+    }
+}
+
+@Test
+func fastRAGExpansionBudgetIsBoundedByContextBudget() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+        let counter = try await TokenCounter()
+
+        var config = FastRAGConfig(searchMode: .textOnly)
+        config.maxContextTokens = 32
+        config.expansionMaxTokens = 512
+
+        let context = try await builder.build(query: "Swift", wax: wax, config: config)
+        #expect(context.totalTokens <= config.maxContextTokens)
+        if let expanded = context.items.first(where: { $0.kind == .expanded }) {
+            #expect(await counter.count(expanded.text) <= config.maxContextTokens)
+        }
+
+        try await wax.close()
+    }
+}
+
+@Test
+func fastRAGMaxSnippetsZeroProducesNoSnippets() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+
+        var config = FastRAGConfig(searchMode: .textOnly)
+        config.maxSnippets = 0
+        config.expansionMaxTokens = 0
+        config.maxContextTokens = 128
+
+        let context = try await builder.build(query: "Swift", wax: wax, config: config)
+        #expect(context.items.allSatisfy { $0.kind != .snippet })
+
+        try await wax.close()
+    }
+}
+
+@Test
+func fastRAGNegativeBudgetsClampToZeroAtBuildTime() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+
+        var config = FastRAGConfig(searchMode: .textOnly)
+        config.maxContextTokens = -1
+        config.snippetMaxTokens = -100
+        config.maxSnippets = -5
+        config.expansionMaxTokens = -4
+        config.maxSurrogates = -3
+        config.surrogateMaxTokens = -2
+
+        let context = try await builder.build(query: "Swift", wax: wax, config: config)
+        #expect(context.totalTokens == 0)
+        #expect(context.items.isEmpty)
+
+        try await wax.close()
+    }
+}
+
+@Test
+func fastRAGSearchTopKZeroReturnsEmptyResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+
+        var config = FastRAGConfig(searchMode: .textOnly)
+        config.searchTopK = 0
+        let context = try await builder.build(query: "Swift", wax: wax, config: config)
+        #expect(context.items.isEmpty)
+        #expect(context.totalTokens == 0)
+
+        try await wax.close()
+    }
+}
+
+@Test
+func fastRAGPreviewMaxBytesZeroStillBuildsContext() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await makeSimpleRAGStore(at: url)
+        let builder = FastRAGContextBuilder()
+
+        var config = FastRAGConfig(searchMode: .textOnly)
+        config.previewMaxBytes = 0
+        let context = try await builder.build(query: "Swift", wax: wax, config: config)
+        #expect(!context.items.isEmpty)
+
+        try await wax.close()
+    }
+}
+
+private func makeSimpleRAGStore(at url: URL) async throws -> Wax {
+    let wax = try await Wax.create(at: url)
+    let text = try await wax.enableTextSearch()
+
+    let first = "Swift actors isolate state and structured concurrency coordinates tasks."
+    let second = "Rust ownership and borrowing prevent data races."
+    let third = "Temporal timeline queries retrieve recent memories."
+
+    let firstId = try await wax.put(Data(first.utf8), options: FrameMetaSubset(searchText: first))
+    let secondId = try await wax.put(Data(second.utf8), options: FrameMetaSubset(searchText: second))
+    let thirdId = try await wax.put(Data(third.utf8), options: FrameMetaSubset(searchText: third))
+
+    try await text.index(frameId: firstId, text: first)
+    try await text.index(frameId: secondId, text: second)
+    try await text.index(frameId: thirdId, text: third)
+    try await text.commit()
+
+    return wax
 }

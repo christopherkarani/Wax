@@ -14,6 +14,7 @@ public struct VisionOCRProvider: OCRProvider, Sendable {
 
     public var accuracy: Accuracy
     public var usesLanguageCorrection: Bool
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 
     public init(accuracy: Accuracy = .accurate, usesLanguageCorrection: Bool = true) {
         self.accuracy = accuracy

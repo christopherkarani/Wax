@@ -23,6 +23,11 @@ public protocol MultimodalEmbeddingProvider: Sendable {
     func embed(image: CGImage) async throws -> [Float]
 }
 
-public extension MultimodalEmbeddingProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
+// MARK: - Deprecated Default (migration aid)
+
+extension MultimodalEmbeddingProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }

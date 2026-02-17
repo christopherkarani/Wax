@@ -3,6 +3,7 @@ import Testing
 import Wax
 
 private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 8
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "Multimodal", dimensions: 8, normalized: true)
@@ -22,6 +23,7 @@ private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
 
 private struct TestTranscriptProvider: VideoTranscriptProvider {
     static let token = "INGEST_TOKEN"
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
         _ = request
@@ -125,6 +127,7 @@ func videoRAGFileIngestRecallWithThumbsIsDeterministic() async throws {
 
 private struct SegmentScopedTranscriptProvider: VideoTranscriptProvider {
     static let token = "SEGMENT_TOKEN"
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
         _ = request

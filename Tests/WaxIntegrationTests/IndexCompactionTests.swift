@@ -116,3 +116,38 @@ func compactIndexesPreservesDenseCachedSurrogateRecall() async throws {
         #expect(related.count == 1)
     }
 }
+
+@Test
+func repeatedCompactIndexesOnUnchangedCorpusDoesNotMateriallyGrowFile() async throws {
+    func fileSize(_ url: URL) throws -> UInt64 {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        return UInt64((attrs[.size] as? NSNumber)?.uint64Value ?? 0)
+    }
+
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+
+        let sentence = "Swift concurrency uses actors and tasks. Actors isolate mutable state."
+        let content = Array(repeating: sentence, count: 80).joined(separator: " ")
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember(content)
+        try await orchestrator.flush()
+
+        _ = try await orchestrator.compactIndexes()
+        let sizeAfterFirstCompact = try fileSize(url)
+
+        for _ in 0..<8 {
+            _ = try await orchestrator.compactIndexes()
+        }
+
+        let sizeAfterRepeatedCompaction = try fileSize(url)
+        let growth = sizeAfterRepeatedCompaction - sizeAfterFirstCompact
+
+        // Allow one page of tolerance for metadata churn; repeated compaction should be effectively idempotent.
+        #expect(growth <= 4096)
+        try await orchestrator.close()
+    }
+}

@@ -22,7 +22,17 @@ public enum TextChunker {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
 
-        guard let counter = try? await TokenCounter.shared() else { return [text] }
+        let counter: TokenCounter
+        do {
+            counter = try await TokenCounter.shared()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "text chunker token counter init",
+                fallback: "character-preserving unsplit text"
+            )
+            return [text]
+        }
         let tokens = await counter.encode(text)
         if tokens.count <= cappedTarget {
             return [text]
@@ -58,7 +68,15 @@ public enum TextChunker {
 
         return AsyncStream { continuation in
             Task {
-                guard let counter = try? await TokenCounter.shared() else {
+                let counter: TokenCounter
+                do {
+                    counter = try await TokenCounter.shared()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "text chunker stream token counter init",
+                        fallback: "stream original unsplit text"
+                    )
                     continuation.yield(text)
                     continuation.finish()
                     return

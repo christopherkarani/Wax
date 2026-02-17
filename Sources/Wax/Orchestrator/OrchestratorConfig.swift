@@ -18,6 +18,7 @@ public struct OrchestratorConfig: Sendable {
 
     /// When true, rejects text embedding providers that report `executionMode == .mayUseNetwork`.
     public var requireOnDeviceProviders: Bool = true
+    public var liveSetRewriteSchedule: LiveSetRewriteSchedule = .disabled
 
     public init() {}
 

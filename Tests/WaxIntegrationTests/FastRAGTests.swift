@@ -85,6 +85,57 @@ func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
 }
 
 @Test
+func fastRAGUsingSessionMatchesWaxSearchDeterministically() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(Data("Swift concurrency uses actors.".utf8))
+        try await text.index(frameId: id0, text: "Swift concurrency uses actors.")
+        let id1 = try await wax.put(Data("Swift task groups enable parallel work.".utf8))
+        try await text.index(frameId: id1, text: "Swift task groups enable parallel work.")
+        try await text.commit()
+
+        let builder = FastRAGContextBuilder()
+        var config = FastRAGConfig(
+            mode: .fast,
+            maxContextTokens: 60,
+            expansionMaxTokens: 24,
+            snippetMaxTokens: 12,
+            maxSnippets: 4,
+            searchTopK: 6,
+            searchMode: .textOnly
+        )
+        config.deterministicNowMs = 1_700_000_000_000
+
+        let session = try await wax.openSession(.readOnly)
+        let viaSessionA = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            session: session,
+            config: config
+        )
+        let viaSessionB = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            session: session,
+            config: config
+        )
+        let viaWax = try await builder.build(
+            query: "Swift concurrency",
+            wax: wax,
+            config: config
+        )
+
+        #expect(viaSessionA == viaSessionB)
+        #expect(viaSessionA == viaWax)
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
+@Test
 func fastRAGSkipsNonUTF8ExpansionCandidates() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -343,4 +394,296 @@ func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
 
         try await wax.close()
     }
+}
+
+@Test
+func queryAwareRerankPrefersIntentAlignedPreviewOverHigherBaseScore() {
+    let results: [SearchResponse.Result] = [
+        .init(
+            frameId: 1,
+            score: 1.00,
+            previewText: "Person01 is allergic to peanuts and avoids foods with peanuts.",
+            sources: [.text]
+        ),
+        .init(
+            frameId: 2,
+            score: 0.85,
+            previewText: "Person01 moved to Seattle in 2021 and works on the platform team.",
+            sources: [.text]
+        ),
+    ]
+    var config = FastRAGConfig()
+    config.enableAnswerFocusedRanking = true
+
+    let reranked = FastRAGContextBuilder.rerankCandidatesForAnswer(
+        results: results,
+        query: "Which city did Person01 move to?",
+        config: config,
+        analyzer: QueryAnalyzer()
+    )
+
+    #expect(reranked.first?.frameId == 2)
+}
+
+@Test
+func deterministicAnswerExtractorPullsCityForLocationQuestion() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Which city did Person01 move to?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 1,
+                score: 0.9,
+                sources: [.text],
+                text: "Person01 moved to Seattle in 2021 and works on the platform team."
+            ),
+        ],
+        totalTokens: 18
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Seattle")
+}
+
+@Test
+func deterministicAnswerExtractorMergesOwnerAndLaunchDateAcrossItems() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "For Atlas-01, who owns deployment readiness and what is the public launch date?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 10,
+                score: 0.8,
+                sources: [.text],
+                text: "In project Atlas-01, Priya owns QA and Noah owns deployment readiness."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 11,
+                score: 0.7,
+                sources: [.text],
+                text: "For project Atlas-01, beta starts in April 2026 and public launch is July 4, 2026."
+            ),
+        ],
+        totalTokens: 34
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Noah and July 4, 2026")
+}
+
+@Test
+func snippetFallbackTriggersForDateIntentWhenPreviewLacksDateLiteral() {
+    let shouldFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-01, public launch details are documented in roadmap notes.",
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
+    )
+    #expect(shouldFallback)
+
+    let shouldNotFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-01, public launch is July 4, 2026.",
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
+    )
+    #expect(!shouldNotFallback)
+}
+
+@Test
+func deterministicAnswerExtractorPrefersMatchingEntityInVectorLikeDateDistractorCase() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 70,
+                score: 1.15,
+                sources: [.vector],
+                text: "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 10,
+                score: 0.72,
+                sources: [.text, .vector],
+                text: "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026."
+            ),
+        ],
+        totalTokens: 40
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "August 13, 2026")
+}
+
+@Test
+func deterministicAnswerExtractorDisambiguatesSameNameUsingProjectAndTimelineCues() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "For Noah on Atlas-10 in 2026, what is the public launch date?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 30,
+                score: 1.20,
+                sources: [.vector],
+                text: "In the 2025 Atlas-10 rollout, Noah owns deployment readiness and public launch is July 9, 2025."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 31,
+                score: 0.72,
+                sources: [.text, .vector],
+                text: "In the 2026 Atlas-10 rollout, Noah owns deployment readiness and public launch is August 13, 2026."
+            ),
+        ],
+        totalTokens: 44
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "August 13, 2026")
+}
+
+@Test
+func deterministicAnswerExtractorSupportsISOAndAbbreviatedLaunchDates() {
+    let extractor = DeterministicAnswerExtractor()
+
+    let isoContext = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 1,
+                score: 0.9,
+                sources: [.text],
+                text: "For project Atlas-10, public launch is 2026-08-13."
+            ),
+        ],
+        totalTokens: 14
+    )
+    let isoAnswer = extractor.extractAnswer(query: isoContext.query, items: isoContext.items)
+    #expect(isoAnswer == "2026-08-13")
+
+    let abbreviatedContext = RAGContext(
+        query: "What is the public launch date for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 2,
+                score: 0.9,
+                sources: [.text],
+                text: "For project Atlas-10, public launch is Aug 13, 2026."
+            ),
+        ],
+        totalTokens: 14
+    )
+    let abbreviatedAnswer = extractor.extractAnswer(query: abbreviatedContext.query, items: abbreviatedContext.items)
+    #expect(abbreviatedAnswer == "Aug 13, 2026")
+}
+
+@Test
+func snippetFallbackRecognizesISOAndAbbreviatedMonthDateLiterals() {
+    let shouldNotFallbackISO = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 2026-08-13.",
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
+    )
+    #expect(!shouldNotFallbackISO)
+
+    let shouldNotFallbackAbbreviated = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is Aug 13, 2026.",
+        intent: [.asksDate],
+        analyzer: QueryAnalyzer()
+    )
+    #expect(!shouldNotFallbackAbbreviated)
+}
+
+@Test
+func queryAnalyzerRecognizesExpandedDeterministicDateFormats() {
+    let analyzer = QueryAnalyzer()
+
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is August 13 2026."))
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 13 Aug 2026."))
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 2026/8/13."))
+
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is August 13 2026.") == Set(["2026-08-13"]))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 13 Aug 2026.") == Set(["2026-08-13"]))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2026/8/13.") == Set(["2026-08-13"]))
+}
+
+@Test
+func snippetFallbackRecognizesDayFirstAndSlashDateLiterals() {
+    let analyzer = QueryAnalyzer()
+
+    let shouldNotFallbackDayFirst = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 13 Aug 2026.",
+        intent: [.asksDate],
+        analyzer: analyzer
+    )
+    #expect(!shouldNotFallbackDayFirst)
+
+    let shouldNotFallbackSlash = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-10, public launch is 2026/8/13.",
+        intent: [.asksDate],
+        analyzer: analyzer
+    )
+    #expect(!shouldNotFallbackSlash)
+}
+
+@Test
+func deterministicAnswerExtractorHandlesGenericOwnershipQueries() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Who owns release readiness for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 42,
+                score: 0.91,
+                sources: [.text],
+                text: "For Atlas-10, Priya owns release readiness and Noah owns QA."
+            ),
+        ],
+        totalTokens: 17
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Priya")
+}
+
+@Test
+func deterministicAnswerExtractorHandlesMultiTokenOwnerNames() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Who owns release readiness for Atlas-10?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 77,
+                score: 0.92,
+                sources: [.text],
+                text: "For Atlas-10, Mary Jane Watson owns release readiness and Noah owns QA."
+            ),
+        ],
+        totalTokens: 19
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Mary Jane Watson")
+}
+
+@Test
+func queryAnalyzerRejectsImpossibleCalendarDates() {
+    let analyzer = QueryAnalyzer()
+
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 2026-02-30."))
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 31 Apr 2026."))
+    #expect(!analyzer.containsDateLiteral("Atlas-10 public launch is 2026-13-01."))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2026-02-30.") == [])
+
+    #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 2028-02-29."))
+    #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2028-02-29.") == Set(["2028-02-29"]))
 }

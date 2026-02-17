@@ -25,17 +25,17 @@ enum VideoRAGTestSupport {
         fileURL: URL? = nil
     ) async throws -> UInt64 {
         var meta = Metadata()
-        meta.entries["video.source"] = (videoID.source == .photos) ? "photos" : "file"
-        meta.entries["video.source_id"] = videoID.id
-        meta.entries["video.capture_ms"] = String(captureTimestampMs)
-        meta.entries["video.duration_ms"] = String(durationMs)
-        meta.entries["video.availability.local"] = "true"
-        meta.entries["video.pipeline.version"] = "test"
+        meta.entries[VideoMetadataKey.source.rawValue] = (videoID.source == .photos) ? "photos" : "file"
+        meta.entries[VideoMetadataKey.sourceID.rawValue] = videoID.id
+        meta.entries[VideoMetadataKey.captureMs.rawValue] = String(captureTimestampMs)
+        meta.entries[VideoMetadataKey.durationMs.rawValue] = String(durationMs)
+        meta.entries[VideoMetadataKey.isLocal.rawValue] = "true"
+        meta.entries[VideoMetadataKey.pipelineVersion.rawValue] = "test"
         if let fileURL {
-            meta.entries["video.file_url"] = fileURL.absoluteString
+            meta.entries[VideoMetadataKey.fileURL.rawValue] = fileURL.absoluteString
         }
 
-        let options = FrameMetaSubset(kind: "video.root", metadata: meta)
+        let options = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: meta)
         return try await session.put(Data(), options: options, compression: .plain, timestampMs: captureTimestampMs)
     }
 
@@ -52,18 +52,18 @@ enum VideoRAGTestSupport {
         transcript: String
     ) async throws -> UInt64 {
         var meta = Metadata()
-        meta.entries["video.source"] = (videoID.source == .photos) ? "photos" : "file"
-        meta.entries["video.source_id"] = videoID.id
-        meta.entries["video.capture_ms"] = String(captureTimestampMs)
-        meta.entries["video.availability.local"] = "true"
-        meta.entries["video.pipeline.version"] = "test"
-        meta.entries["video.segment.index"] = String(segmentIndex)
-        meta.entries["video.segment.count"] = String(segmentCount)
-        meta.entries["video.segment.start_ms"] = String(startMs)
-        meta.entries["video.segment.end_ms"] = String(endMs)
-        meta.entries["video.segment.mid_ms"] = String((startMs + endMs) / 2)
+        meta.entries[VideoMetadataKey.source.rawValue] = (videoID.source == .photos) ? "photos" : "file"
+        meta.entries[VideoMetadataKey.sourceID.rawValue] = videoID.id
+        meta.entries[VideoMetadataKey.captureMs.rawValue] = String(captureTimestampMs)
+        meta.entries[VideoMetadataKey.isLocal.rawValue] = "true"
+        meta.entries[VideoMetadataKey.pipelineVersion.rawValue] = "test"
+        meta.entries[VideoMetadataKey.segmentIndex.rawValue] = String(segmentIndex)
+        meta.entries[VideoMetadataKey.segmentCount.rawValue] = String(segmentCount)
+        meta.entries[VideoMetadataKey.segmentStartMs.rawValue] = String(startMs)
+        meta.entries[VideoMetadataKey.segmentEndMs.rawValue] = String(endMs)
+        meta.entries[VideoMetadataKey.segmentMidMs.rawValue] = String((startMs + endMs) / 2)
 
-        let options = FrameMetaSubset(kind: "video.segment", role: .blob, parentId: rootId, metadata: meta)
+        let options = FrameMetaSubset(kind: VideoFrameKind.segment.rawValue, role: .blob, parentId: rootId, metadata: meta)
         let frameId = try await session.put(
             Data(transcript.utf8),
             options: options,

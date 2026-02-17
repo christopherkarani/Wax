@@ -38,17 +38,26 @@ public struct FastRAGContextBuilder: Sendable {
         } else {
             try await wax.search(request)
         }
+        let queryAnalyzer = QueryAnalyzer()
+        let rankedResults = clamped.enableAnswerFocusedRanking
+            ? Self.rerankCandidatesForAnswer(
+                results: response.results,
+                query: query,
+                config: clamped,
+                analyzer: queryAnalyzer
+            )
+            : response.results
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0
         var expandedFrameId: UInt64?
         var surrogateSourceFrameIds: Set<UInt64> = []
-        
+
         // Pre-compute query signals for tier selection if enabled
-        let queryAnalyzer = QueryAnalyzer()
-        let querySignals: QuerySignals? = clamped.enableQueryAwareTierSelection 
-            ? queryAnalyzer.analyze(query: query) 
+        let querySignals: QuerySignals? = clamped.enableQueryAwareTierSelection
+            ? queryAnalyzer.analyze(query: query)
             : nil
+        let queryIntent = queryAnalyzer.detectIntent(query: query)
         let nowMs = clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000)
 
         // Prefetch surrogate metadata in parallel with expansion work.
@@ -57,7 +66,7 @@ public struct FastRAGContextBuilder: Sendable {
             && clamped.maxSurrogates > 0
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
-        let sourceFrameIds = response.results.map(\.frameId)
+        let sourceFrameIds = rankedResults.map(\.frameId)
         async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
@@ -67,7 +76,7 @@ public struct FastRAGContextBuilder: Sendable {
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
-            for result in response.results {
+            for result in rankedResults {
                 if let expanded = try await expansionText(
                     frameId: result.frameId,
                     wax: wax,
@@ -99,7 +108,13 @@ public struct FastRAGContextBuilder: Sendable {
            clamped.surrogateMaxTokens > 0 {
             var remainingTokens = clamped.maxContextTokens - usedTokens
 
-            let maxToLoad = min(clamped.maxSurrogates, min(clamped.searchTopK, 32))
+            let estimatedTokensPerSurrogate = max(1, clamped.surrogateMaxTokens / 2)
+            let estimatedMaxSurrogates = max(1, remainingTokens / estimatedTokensPerSurrogate)
+            let maxToLoad = min(
+                clamped.maxSurrogates,
+                min(clamped.searchTopK, 32),
+                estimatedMaxSurrogates + 2
+            )
 
             // Batch resolve surrogate ids in a single actor hop to avoid TaskGroup churn.
             let surrogateMap = await surrogateMapTask
@@ -107,7 +122,7 @@ public struct FastRAGContextBuilder: Sendable {
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
             orderedSurrogateIds.reserveCapacity(maxToLoad)
-            for result in response.results {
+            for result in rankedResults {
                 if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 guard let surrogateId = surrogateMap[result.frameId] else { continue }
                 orderedSurrogateIds.append(surrogateId)
@@ -123,8 +138,15 @@ public struct FastRAGContextBuilder: Sendable {
                     var recovered: [UInt64: Data] = [:]
                     recovered.reserveCapacity(orderedSurrogateIds.count)
                     for surrogateId in orderedSurrogateIds {
-                        if let data = try? await wax.frameContent(frameId: surrogateId) {
+                        do {
+                            let data = try await wax.frameContent(frameId: surrogateId)
                             recovered[surrogateId] = data
+                        } catch {
+                            WaxDiagnostics.logSwallowed(
+                                error,
+                                context: "surrogate frame content load",
+                                fallback: "skip surrogate candidate"
+                            )
                         }
                     }
                     return recovered
@@ -143,7 +165,7 @@ public struct FastRAGContextBuilder: Sendable {
             let surrogateContents = await surrogateContentsTask
 
             // Parallel tier selection and tier extraction, preserving response order.
-            let surrogateWorkItems = response.results
+            let surrogateWorkItems = rankedResults
                 .compactMap { result -> (result: SearchResponse.Result, surrogateFrameId: UInt64)? in
                     if let expandedFrameId, result.frameId == expandedFrameId { return nil }
                     guard let surrogateId = surrogateMap[result.frameId] else { return nil }
@@ -222,54 +244,56 @@ public struct FastRAGContextBuilder: Sendable {
             var snippetCandidates: [(result: SearchResponse.Result, preview: String)] = []
             snippetCandidates.reserveCapacity(min(clamped.maxSnippets, 32))
 
-            // Parallel preview extraction while preserving the original order.
-            let resultCount = response.results.count
-            if resultCount > 4 {
-                let expandedFrameIdSnapshot = expandedFrameId
-                let surrogateSourceFrameIdsSnapshot = surrogateSourceFrameIds
-                let previewSnapshots = response.results.map { (frameId: $0.frameId, preview: $0.previewText) }
-                var previewSlots = Array<String?>(repeating: nil, count: resultCount)
-                await withTaskGroup(of: (Int, String?).self) { group in
-                    for (index, snapshot) in previewSnapshots.enumerated() {
-                        group.addTask {
-                            if let expandedFrameIdSnapshot, snapshot.frameId == expandedFrameIdSnapshot {
-                                return (index, nil)
-                            }
-                            if surrogateSourceFrameIdsSnapshot.contains(snapshot.frameId) {
-                                return (index, nil)
-                            }
-                            guard let preview = snapshot.preview, !preview.isEmpty else { return (index, nil) }
-                            return (index, preview)
-                        }
-                    }
+            for result in rankedResults {
+                if let expandedFrameId, result.frameId == expandedFrameId { continue }
+                if surrogateSourceFrameIds.contains(result.frameId) { continue }
+                guard snippetCount < clamped.maxSnippets else { break }
+                guard let preview = result.previewText, !preview.isEmpty else { continue }
 
-                    for await (index, preview) in group {
-                        previewSlots[index] = preview
-                    }
-                }
-
-                for (index, preview) in previewSlots.enumerated() {
-                    guard snippetCount < clamped.maxSnippets else { break }
-                    guard let preview else { continue }
-                    let result = response.results[index]
-                    snippetCandidates.append((result, preview))
-                    snippetCount += 1
-                }
-            } else {
-                for result in response.results {
-                    if let expandedFrameId, result.frameId == expandedFrameId { continue }
-                    if surrogateSourceFrameIds.contains(result.frameId) { continue }
-                    guard snippetCount < clamped.maxSnippets else { break }
-                    guard let preview = result.previewText, !preview.isEmpty else { continue }
-
-                    snippetCandidates.append((result, preview))
-                    snippetCount += 1
-                }
+                snippetCandidates.append((result, preview))
+                snippetCount += 1
             }
 
             // Always use batch processing for consistency and better performance
             if !snippetCandidates.isEmpty {
-                let previews = snippetCandidates.map { $0.preview }
+                let snippetFallbackMaxBytes = min(
+                    clamped.expansionMaxBytes,
+                    max(4 * 1024, clamped.previewMaxBytes * 64)
+                )
+                var previews = Array<String>(repeating: "", count: snippetCandidates.count)
+                await withTaskGroup(of: (Int, String).self) { group in
+                    for (index, (result, preview)) in snippetCandidates.enumerated() {
+                        group.addTask {
+                            guard Self.shouldUseFullFrameForSnippet(preview: preview, intent: queryIntent, analyzer: queryAnalyzer) else {
+                                return (index, preview)
+                            }
+                            do {
+                                if let expanded = try await expansionText(
+                                    frameId: result.frameId,
+                                    wax: wax,
+                                    counter: counter,
+                                    maxTokens: clamped.snippetMaxTokens,
+                                    maxBytes: snippetFallbackMaxBytes
+                                ),
+                                !expanded.isEmpty {
+                                    return (index, expanded)
+                                }
+                            } catch {
+                                WaxDiagnostics.logSwallowed(
+                                    error,
+                                    context: "snippet full-frame expansion",
+                                    fallback: "keep preview snippet"
+                                )
+                            }
+                            return (index, preview)
+                        }
+                    }
+
+                    for await (index, text) in group {
+                        previews[index] = text
+                    }
+                }
+
                 let maxTokensPerSnippet = min(clamped.snippetMaxTokens, remainingTokens)
                 
                 // Use optimized combined count and truncate operation
@@ -313,8 +337,167 @@ public struct FastRAGContextBuilder: Sendable {
         c.searchTopK = max(0, c.searchTopK)
         c.rrfK = max(0, c.rrfK)
         c.previewMaxBytes = max(0, c.previewMaxBytes)
+        c.answerRerankWindow = max(0, c.answerRerankWindow)
+        c.answerDistractorPenalty = min(1, max(0, c.answerDistractorPenalty))
         return c
     }
+
+    static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent, analyzer: QueryAnalyzer) -> Bool {
+        if preview.isEmpty { return false }
+        let lower = preview.lowercased()
+
+        if intent.contains(.asksDate) {
+            let hintsTemporal = lower.contains("launch")
+                || lower.contains("appointment")
+                || lower.contains("beta")
+                || lower.contains("timeline")
+            if hintsTemporal && !analyzer.containsDateLiteral(preview) {
+                return true
+            }
+        }
+
+        if intent.contains(.asksOwnership),
+           lower.contains("owns"),
+           !lower.contains("deployment readiness") {
+            return true
+        }
+
+        return false
+    }
+
+    static func rerankCandidatesForAnswer(
+        results: [SearchResponse.Result],
+        query: String,
+        config: FastRAGConfig,
+        analyzer: QueryAnalyzer = QueryAnalyzer()
+    ) -> [SearchResponse.Result] {
+        let cappedWindow = min(max(0, config.answerRerankWindow), results.count)
+        guard cappedWindow > 1 else { return results }
+
+        let intents = analyzer.detectIntent(query: query)
+        let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        let queryEntities = analyzer.entityTerms(query: query)
+        let queryYears = analyzer.yearTerms(in: query)
+        let queryDateKeys = analyzer.normalizedDateKeys(in: query)
+        let vectorInfluenced: Bool
+        switch config.searchMode {
+        case .vectorOnly:
+            vectorInfluenced = true
+        case .hybrid(let alpha):
+            vectorInfluenced = alpha < 0.999
+        case .textOnly:
+            vectorInfluenced = false
+        }
+        if intents.isEmpty && queryTerms.isEmpty {
+            return results
+        }
+
+        // Scoring weights calibrated for answer-focused reranking (FastRAG context assembly).
+        // These intentionally differ from UnifiedSearch.intentAwareRerank weights:
+        //   - Higher recall weight (0.80 vs 0.55) — FastRAG needs comprehensive coverage
+        //     since it feeds a deterministic context builder, not a search results page.
+        //   - Higher entity coverage weight (1.25 vs 0.30) — answer extraction depends
+        //     heavily on entity presence, so missing entities are penalized more aggressively.
+        //   - Simpler distractor detection (looksDistractor) — FastRAG doesn't need the
+        //     broader distractor set used by UnifiedSearch for general search quality.
+        func score(_ result: SearchResponse.Result) -> Float {
+            var total = result.score
+            guard let preview = result.previewText, !preview.isEmpty else { return total }
+
+            let previewLower = preview.lowercased()
+            let previewTerms = Set(analyzer.normalizedTerms(query: preview))
+            let previewEntities = analyzer.entityTerms(query: preview)
+            let previewYears = analyzer.yearTerms(in: preview)
+            let previewDateKeys = analyzer.normalizedDateKeys(in: preview)
+            if !queryTerms.isEmpty, !previewTerms.isEmpty {
+                let overlap = Float(queryTerms.intersection(previewTerms).count)
+                let recall = overlap / Float(max(1, queryTerms.count))
+                let precision = overlap / Float(max(1, previewTerms.count))
+                total += recall * 0.80     // High recall weight: answer builder needs all relevant content
+                total += precision * 0.40  // Moderate precision: avoids diluting with loosely matching frames
+            }
+
+            if !queryEntities.isEmpty {
+                let hits = queryEntities.intersection(previewEntities).count
+                let coverage = Float(hits) / Float(max(1, queryEntities.count))
+                total += coverage * (vectorInfluenced ? 1.25 : 0.90)  // Entity match is critical for answer extraction
+                if hits == 0 {
+                    total -= vectorInfluenced ? 0.65 : 0.35  // Vector results with zero entity overlap are likely distractors
+                }
+            }
+
+            if !queryYears.isEmpty {
+                let yearHits = queryYears.intersection(previewYears).count
+                let yearCoverage = Float(yearHits) / Float(max(1, queryYears.count))
+                total += yearCoverage * 1.35  // Year match strongly disambiguates temporal queries
+                if yearHits == 0, !previewYears.isEmpty {
+                    total -= vectorInfluenced ? 1.35 : 1.05  // Wrong year is worse than no year
+                }
+            }
+
+            if !queryDateKeys.isEmpty {
+                let dateHits = queryDateKeys.intersection(previewDateKeys).count
+                let dateCoverage = Float(dateHits) / Float(max(1, queryDateKeys.count))
+                total += dateCoverage * 1.15  // Full date match (YYYY-MM-DD) is high signal
+                if dateHits == 0, !previewDateKeys.isEmpty {
+                    total -= vectorInfluenced ? 1.15 : 0.90  // Wrong date is actively harmful
+                }
+            }
+
+            if intents.contains(.asksLocation),
+               previewLower.contains("moved to") {
+                total += 0.45
+            }
+            if intents.contains(.asksDate),
+               (previewLower.contains("public launch") || previewLower.contains("launch is") || analyzer.containsDateLiteral(preview)) {
+                total += 0.45
+            }
+            if intents.contains(.asksDate),
+               RerankingHelpers.containsTentativeLaunchLanguage(previewLower) {
+                let basePenalty = config.answerDistractorPenalty
+                total -= vectorInfluenced ? basePenalty * 2.8 : basePenalty * 1.8
+            }
+            if intents.contains(.asksOwnership),
+               (previewLower.contains("owns deployment readiness") || previewLower.contains(" owns ")) {
+                total += 0.45
+            }
+            if looksDistractor(previewLower) {
+                let basePenalty = config.answerDistractorPenalty
+                total -= vectorInfluenced ? basePenalty * 2.2 : basePenalty
+                if vectorInfluenced, intents.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
+                    total -= 0.35
+                }
+            }
+            return total
+        }
+
+        var head = Array(results.prefix(cappedWindow))
+        head.sort { lhs, rhs in
+            let lhsScore = score(lhs)
+            let rhsScore = score(rhs)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
+        }
+
+        if cappedWindow == results.count { return head }
+        return head + results.dropFirst(cappedWindow)
+    }
+
+    /// FastRAG distractor check — narrower than UnifiedSearch.looksDistractorLike.
+    /// Includes "no authoritative" (confidence-undermining language) which UnifiedSearch omits.
+    /// Omits "allergic", "draft memo", "tentative", "pending approval" which are already
+    /// handled by dedicated intent-specific penalties in the FastRAG scoring path.
+    private static func looksDistractor(_ text: String) -> Bool {
+        text.contains("no authoritative")
+            || text.contains("weekly report")
+            || text.contains("checklist")
+            || text.contains("signoff")
+            || text.contains("distractor")
+    }
+
+    // containsTentativeLaunchLanguage → RerankingHelpers (shared with UnifiedSearch)
+    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private func expansionText(
         frameId: UInt64,

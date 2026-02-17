@@ -69,3 +69,94 @@ import Wax
         await session.close()
     }
 }
+
+@Test func unifiedSession_vectorSearchWorksBeforeAndAfterCommit() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableTextSearch = false
+        config.enableStructuredMemory = false
+        config.enableVectorSearch = true
+        config.vectorDimensions = 2
+        config.vectorEnginePreference = .cpuOnly
+
+        let writer = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let frameA = try await writer.put(
+            Data("alpha".utf8),
+            embedding: [1.0, 0.0],
+            options: FrameMetaSubset(searchText: "alpha")
+        )
+        _ = try await writer.put(
+            Data("beta".utf8),
+            embedding: [0.0, 1.0],
+            options: FrameMetaSubset(searchText: "beta")
+        )
+
+        let beforeCommit = try await writer.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                mode: .vectorOnly,
+                topK: 2
+            )
+        )
+        #expect(beforeCommit.results.first?.frameId == frameA)
+
+        try await writer.commit()
+        await writer.close()
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        let reader = try await reopened.openSession(.readOnly, config: config)
+        let afterCommit = try await reader.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                mode: .vectorOnly,
+                topK: 2
+            )
+        )
+        #expect(afterCommit.results.first?.frameId == frameA)
+
+        await reader.close()
+        try await reopened.close()
+    }
+}
+
+@Test func unifiedSession_putEmbeddingBatchPersistsSearchOrder() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableTextSearch = false
+        config.enableStructuredMemory = false
+        config.enableVectorSearch = true
+        config.vectorDimensions = 2
+        config.vectorEnginePreference = .cpuOnly
+
+        let writer = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let frameIds = try await writer.putBatch(
+            contents: [Data("first".utf8), Data("second".utf8)],
+            embeddings: [[1.0, 0.0], [0.0, 1.0]],
+            options: [FrameMetaSubset(searchText: "first"), FrameMetaSubset(searchText: "second")]
+        )
+        #expect(frameIds.count == 2)
+
+        try await writer.commit()
+        await writer.close()
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        let reader = try await reopened.openSession(.readOnly, config: config)
+        let response = try await reader.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                mode: .vectorOnly,
+                topK: 2
+            )
+        )
+        #expect(response.results.first?.frameId == frameIds[0])
+
+        await reader.close()
+        try await reopened.close()
+    }
+}

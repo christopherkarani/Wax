@@ -322,23 +322,34 @@ public actor TokenCounter {
         guard maxTokens > 0 else {
             return texts.map { _ in (count: 0, truncated: "") }
         }
-        
+
+        // For small batches, sequential processing is faster than task-group setup.
+        guard texts.count > 4 else {
+            return texts.map { text in
+                let tokens = encode(text)
+                if tokens.count <= maxTokens {
+                    return (count: tokens.count, truncated: text)
+                }
+                let sliced = Array(tokens.prefix(maxTokens))
+                return (count: maxTokens, truncated: decode(sliced))
+            }
+        }
+
         let localBackend = backend
-        
-        // Batch encode all texts
-        let allTokens = await encodeBatch(texts)
-        
         var results = [(count: Int, truncated: String)](repeating: (count: 0, truncated: ""), count: texts.count)
 
+        // Single TaskGroup pass: encode and truncate in one child task per input.
         await withTaskGroup(of: (Int, (count: Int, truncated: String)).self) { group in
-            for (index, tokens) in allTokens.enumerated() {
+            for (index, text) in texts.enumerated() {
                 group.addTask {
+                    let tokens = self.encodeNonisolated(text, backend: localBackend)
                     let count = tokens.count
                     if count <= maxTokens {
-                        return (index, (count: count, truncated: texts[index]))
+                        return (index, (count: count, truncated: text))
                     }
                     let sliced = Array(tokens.prefix(maxTokens))
-                    return (index, (count: maxTokens, truncated: self.decodeNonisolated(sliced, backend: localBackend)))
+                    let truncated = self.decodeNonisolated(sliced, backend: localBackend)
+                    return (index, (count: maxTokens, truncated: truncated))
                 }
             }
 

@@ -4,6 +4,7 @@ import Testing
 import Wax
 
 private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)

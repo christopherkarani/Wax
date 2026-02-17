@@ -33,24 +33,24 @@ public actor VideoRAGOrchestrator {
     }
 
     private enum FrameKind {
-        static let root = "video.root"
-        static let segment = "video.segment"
+        static let root = VideoFrameKind.root.rawValue
+        static let segment = VideoFrameKind.segment.rawValue
     }
 
     private enum MetaKey {
-        static let source = "video.source"
-        static let sourceID = "video.source_id"
-        static let fileURL = "video.file_url"
-        static let captureMs = "video.capture_ms"
-        static let durationMs = "video.duration_ms"
-        static let isLocal = "video.availability.local"
-        static let pipelineVersion = "video.pipeline.version"
+        static let source = VideoMetadataKey.source.rawValue
+        static let sourceID = VideoMetadataKey.sourceID.rawValue
+        static let fileURL = VideoMetadataKey.fileURL.rawValue
+        static let captureMs = VideoMetadataKey.captureMs.rawValue
+        static let durationMs = VideoMetadataKey.durationMs.rawValue
+        static let isLocal = VideoMetadataKey.isLocal.rawValue
+        static let pipelineVersion = VideoMetadataKey.pipelineVersion.rawValue
 
-        static let segmentIndex = "video.segment.index"
-        static let segmentCount = "video.segment.count"
-        static let segmentStartMs = "video.segment.start_ms"
-        static let segmentEndMs = "video.segment.end_ms"
-        static let segmentMidMs = "video.segment.mid_ms"
+        static let segmentIndex = VideoMetadataKey.segmentIndex.rawValue
+        static let segmentCount = VideoMetadataKey.segmentCount.rawValue
+        static let segmentStartMs = VideoMetadataKey.segmentStartMs.rawValue
+        static let segmentEndMs = VideoMetadataKey.segmentEndMs.rawValue
+        static let segmentMidMs = VideoMetadataKey.segmentMidMs.rawValue
     }
 
     private struct IndexState: Sendable {
@@ -106,12 +106,13 @@ public actor VideoRAGOrchestrator {
         self.transcriptProvider = transcriptProvider
 
         if config.requireOnDeviceProviders {
-            guard embedder.executionMode == .onDeviceOnly else {
-                throw WaxError.io("VideoRAG requires on-device embedding provider")
+            var checks: [ProviderValidation.ProviderCheck] = [
+                .init(name: "embedding provider", executionMode: embedder.executionMode)
+            ]
+            if let transcriptProvider {
+                checks.append(.init(name: "transcript provider", executionMode: transcriptProvider.executionMode))
             }
-            if let transcriptProvider, transcriptProvider.executionMode != .onDeviceOnly {
-                throw WaxError.io("VideoRAG requires on-device transcript provider")
-            }
+            try ProviderValidation.validateOnDevice(checks, orchestratorName: "VideoRAG")
         }
 
         if config.vectorEnginePreference != .cpuOnly, embedder.normalize == false {
@@ -134,11 +135,7 @@ public actor VideoRAGOrchestrator {
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
 
-        if config.queryEmbeddingCacheCapacity > 0 {
-            self.queryEmbeddingCache = EmbeddingMemoizer(capacity: config.queryEmbeddingCacheCapacity)
-        } else {
-            self.queryEmbeddingCache = nil
-        }
+        self.queryEmbeddingCache = EmbeddingMemoizer.fromConfig(capacity: config.queryEmbeddingCacheCapacity)
 
         try await rebuildIndex()
     }
@@ -691,6 +688,11 @@ public actor VideoRAGOrchestrator {
                 timestampsMs: Array(timestamps[start..<end]),
                 compression: .plain
             )
+            guard batchFrameIds.count == end - start else {
+                throw WaxError.io(
+                    "segment batch write count mismatch: expected \(end - start), got \(batchFrameIds.count)"
+                )
+            }
             allFrameIds.append(contentsOf: batchFrameIds)
         }
 
@@ -949,9 +951,16 @@ public actor VideoRAGOrchestrator {
                 let endMs = updated[itemIndex].segments[segIndex].endMs
                 let midMs = (startMs + endMs) / 2
 
-                if let thumb = try? await keyframeThumbnail(url: url, midMs: midMs) {
+                do {
+                    let thumb = try await keyframeThumbnail(url: url, midMs: midMs)
                     updated[itemIndex].segments[segIndex].thumbnail = thumb
                     remaining -= 1
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "video thumbnail extraction",
+                        fallback: "skip thumbnail for this segment"
+                    )
                 }
             }
         }

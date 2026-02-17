@@ -20,7 +20,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platforms-iOS%2026%20%7C%20macOS%2026-blue.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/license-Apache_2.0-green.svg" alt="License">
 </p>
 
 ---
@@ -104,7 +104,111 @@ Cold Open → First Query: 17ms
 Hybrid Search @ 10K docs: 105ms
 ```
 
+### Core Benchmark Baselines (as of February 17, 2026)
+
+These are reproducible XCTest benchmark baselines captured from the current Wax benchmark harness.
+
+#### Ingest throughput (`testIngestHybridBatchedPerformance`)
+
+| Workload | Time | Throughput |
+|:---|---:|---:|
+| smoke (200 docs) | `0.103s` | `~1941.7 docs/s` |
+| standard (1000 docs) | `0.309s` | `~3236.2 docs/s` |
+| stress (5000 docs) | `2.864s` | `~1745.8 docs/s` |
+| 10k | `7.756s` | `~1289.3 docs/s` |
+
+#### Search latency
+
+| Workload | Time | Throughput |
+|:---|---:|---:|
+| warm CPU smoke | `0.0015s` | `~666.7 ops/s` |
+| warm CPU standard | `0.0033s` | `~303.0 ops/s` |
+| warm CPU stress | `0.0072s` | `~138.9 ops/s` |
+| 10k CPU hybrid iteration | `0.103s` | `~9.7 ops/s` |
+
+#### Recall latency (`testMemoryOrchestratorRecallPerformance`)
+
+| Workload | Time |
+|:---|---:|
+| smoke | `0.103s` |
+| standard | `0.101s` |
+
+Stress recall is currently harness-blocked (`signal 11`) and treated as a known benchmark issue.
+
+#### FastRAG builder
+
+| Mode | Time |
+|:---|---:|
+| fast mode | `0.102s` |
+| dense cached | `0.102s` |
+
+For benchmark commands, profiling traces, and methodology, see:
+- `/Users/chriskarani/CodingProjects/Wax/Tasks/hot-path-specialization-investigation.md`
+
 *No, that's not a typo. GPU vector search really is sub-millisecond.*
+
+---
+
+## WAL Compaction and Storage Health (2026-02)
+
+Wax now includes a WAL/storage health track focused on commit latency tails, long-run file growth, and recovery behavior:
+
+- No-op index compaction guards to avoid unnecessary index rewrites.
+- Single-pass WAL replay with guarded replay snapshot fast path.
+- Proactive WAL-pressure commits for targeted workloads (guarded rollout).
+- Scheduled `rewriteLiveSet` maintenance with dead-payload thresholds, validation, and rollback.
+
+### Measured outcomes
+
+- Repeated unchanged index compaction growth improved from `+61,768,464` bytes over 8 runs (`~7.72MB/run`) to bounded drift (test-gated).
+- Commit latency improved in most matrix workloads in recent runs (examples: `medium_hybrid` p95 `-13.9%`, `large_text_10k` p95 `-8.0%`, `sustained_write_text` p95 `-5.7%`).
+- Reopen/recovery p95 is generally flat-to-improved across the matrix.
+- `sustained_write_hybrid` remains workload-sensitive, so proactive/scheduled maintenance stays guarded by default.
+
+### Safe rollout defaults
+
+- Proactive pressure commits are tuned for targeted workloads and validated with percentile guardrails.
+- Replay snapshot open-path optimization is additive and guarded.
+- Scheduled live-set rewrite is configurable and runs deferred from the `flush()` hot path.
+- Rewrite candidates are automatically validated and rolled back on verification failure.
+
+### Configure scheduled live-set rewrite
+
+```swift
+import Wax
+
+var config = OrchestratorConfig.default
+config.liveSetRewriteSchedule = LiveSetRewriteSchedule(
+    enabled: true,
+    checkEveryFlushes: 32,
+    minDeadPayloadBytes: 64 * 1024 * 1024,
+    minDeadPayloadFraction: 0.25,
+    minimumCompactionGainBytes: 0,
+    minimumIdleMs: 15_000,
+    minIntervalMs: 5 * 60_000,
+    verifyDeep: false
+)
+```
+
+### Reproduce benchmark matrix
+
+```bash
+WAX_BENCHMARK_WAL_COMPACTION=1 \
+WAX_BENCHMARK_WAL_OUTPUT=/tmp/wal-matrix.json \
+swift test --filter WALCompactionBenchmarks.testWALCompactionWorkloadMatrix
+```
+
+```bash
+WAX_BENCHMARK_WAL_GUARDRAILS=1 \
+swift test --filter WALCompactionBenchmarks.testProactivePressureCommitGuardrails
+```
+
+```bash
+WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 \
+swift test --filter WALCompactionBenchmarks.testReplayStateSnapshotGuardrails
+```
+
+See `/Users/chriskarani/CodingProjects/Wax/Tasks/wal-compaction-investigation.md` and `/Users/chriskarani/CodingProjects/Wax/Tasks/wal-compaction-baseline.json` for methodology and full baseline artifacts.
 
 ---
 
@@ -113,7 +217,7 @@ Hybrid Search @ 10K docs: 105ms
 ### 1. Add to Package.swift
 
 ```swift
-.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.1")
+.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.6")
 ```
 
 ### 2. Choose Your Memory Type
