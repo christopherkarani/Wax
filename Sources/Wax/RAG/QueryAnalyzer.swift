@@ -85,6 +85,35 @@ public struct QueryAnalyzer: Sendable {
             .filter { !$0.isEmpty && !Self.stopWords.contains($0) }
     }
 
+    /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
+    public func entityTerms(query: String) -> Set<String> {
+        let raw = query
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard !raw.isEmpty else { return [] }
+
+        var entities: Set<String> = []
+        entities.reserveCapacity(raw.count)
+
+        for token in raw where Self.containsLetters(token) && Self.containsDigits(token) {
+            entities.insert(token)
+        }
+
+        if raw.count > 1 {
+            for index in 0..<(raw.count - 1) {
+                let lhs = raw[index]
+                let rhs = raw[index + 1]
+                if Self.isLettersOnly(lhs), Self.isDigitsOnly(rhs) {
+                    entities.insert(lhs + rhs)
+                }
+            }
+        }
+
+        return entities
+    }
+
     public func detectIntent(query: String) -> QueryIntent {
         let lower = query.lowercased()
         let terms = Set(normalizedTerms(query: query))
@@ -147,4 +176,20 @@ public struct QueryAnalyzer: Sendable {
         "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
         "on", "or", "the", "to", "what", "when", "where", "which", "who", "with"
     ]
+
+    private static func containsLetters(_ token: String) -> Bool {
+        token.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+    }
+
+    private static func containsDigits(_ token: String) -> Bool {
+        token.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+    }
+
+    private static func isLettersOnly(_ token: String) -> Bool {
+        !token.isEmpty && token.unicodeScalars.allSatisfy { CharacterSet.letters.contains($0) }
+    }
+
+    private static func isDigitsOnly(_ token: String) -> Bool {
+        !token.isEmpty && token.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
+    }
 }

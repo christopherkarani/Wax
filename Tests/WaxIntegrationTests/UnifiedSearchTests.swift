@@ -292,3 +292,73 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+@Test func locationQueryPrefersProfileOverHealthDistractor() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let profileID = try await wax.put(
+            Data("Person18 moved to Seattle in 2021 and works on the platform team.".utf8)
+        )
+        try await text.index(frameId: profileID, text: "Person18 moved to Seattle in 2021 and works on the platform team.")
+
+        let healthID = try await wax.put(
+            Data("Person18 is allergic to peanuts and avoids foods with peanuts.".utf8)
+        )
+        try await text.index(frameId: healthID, text: "Person18 is allergic to peanuts and avoids foods with peanuts.")
+
+        let prefID = try await wax.put(
+            Data("Person18 prefers pair programming and async design docs.".utf8)
+        )
+        try await text.index(frameId: prefID, text: "Person18 prefers pair programming and async design docs.")
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "Which city did Person18 move to",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == profileID)
+        #expect(response.results.map(\.frameId).contains(healthID))
+        #expect(response.results.map(\.frameId).contains(prefID))
+
+        try await wax.close()
+    }
+}
+
+@Test func launchQueryPrefersExactEntityTimelineOverOtherEntityTie() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let otherID = try await wax.put(
+            Data("For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026.".utf8)
+        )
+        try await text.index(frameId: otherID, text: "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026.")
+
+        let targetID = try await wax.put(
+            Data("For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026.".utf8)
+        )
+        try await text.index(frameId: targetID, text: "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026.")
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "What is the public launch date for Atlas 10",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == targetID)
+        #expect(response.results.count >= 2)
+
+        try await wax.close()
+    }
+}

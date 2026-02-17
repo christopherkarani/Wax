@@ -22,7 +22,3 @@ public protocol MultimodalEmbeddingProvider: Sendable {
     /// Compute an image embedding in the same space as text embeddings.
     func embed(image: CGImage) async throws -> [Float]
 }
-
-public extension MultimodalEmbeddingProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
-}

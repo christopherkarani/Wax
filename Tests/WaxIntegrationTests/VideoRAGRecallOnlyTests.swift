@@ -3,6 +3,7 @@ import Testing
 @testable import Wax
 
 private struct StubVideoEmbedder: MultimodalEmbeddingProvider {
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = .init(provider: "stub", model: "stub", dimensions: 4, normalized: true)
@@ -226,4 +227,3 @@ func videoRAGRecallIgnoresSegmentsWhoseRootIsSuperseded() async throws {
         #expect(ctx.items.first?.summaryText.contains("NEW") == true)
     }
 }
-

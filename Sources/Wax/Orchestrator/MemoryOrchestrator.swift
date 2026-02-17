@@ -520,6 +520,16 @@ public actor MemoryOrchestrator {
         return embeddings
     }
 
+    #if DEBUG
+    package static func _writeEmbeddingsForTesting(_ embeddings: [[Float]], to url: URL) throws {
+        try writeEmbeddings(embeddings, to: url)
+    }
+
+    package static func _readEmbeddingsForTesting(from url: URL) throws -> [[Float]] {
+        try readEmbeddings(from: url)
+    }
+    #endif
+
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
         switch policy {
         case .never:

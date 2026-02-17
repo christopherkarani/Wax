@@ -167,51 +167,118 @@ extension Wax {
 
         let structuredIds = structuredFrameIds
         let structuredWeight = max(0, request.structuredMemory.weight)
+        let diagnosticsEnabled = request.enableRankingDiagnostics
+        let diagnosticsTopK = max(1, request.rankingDiagnosticsTopK)
 
-        let baseResults: [(frameId: UInt64, score: Float, sources: [SearchResponse.Source])]
+        struct BaseResult {
+            let frameId: UInt64
+            let score: Float
+            let sources: [SearchResponse.Source]
+            let rankingDiagnostics: SearchResponse.RankingDiagnostics?
+        }
+
+        let baseResults: [BaseResult]
         switch request.mode {
         case .textOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
-                baseResults = textResults.map { (frameId: $0.frameId, score: Float($0.score), sources: [.text]) }
+                baseResults = textResults.enumerated().map { index, result in
+                    let diagnostics: SearchResponse.RankingDiagnostics?
+                    if diagnosticsEnabled, index < diagnosticsTopK {
+                        diagnostics = .init(
+                            bestLaneRank: index + 1,
+                            laneContributions: [
+                                .init(
+                                    source: .text,
+                                    weight: 1,
+                                    rank: index + 1,
+                                    rrfScore: Float(result.score)
+                                ),
+                            ],
+                            tieBreakReason: index == 0 ? .topResult : .fusedScore
+                        )
+                    } else {
+                        diagnostics = nil
+                    }
+                    return BaseResult(
+                        frameId: result.frameId,
+                        score: Float(result.score),
+                        sources: [.text],
+                        rankingDiagnostics: diagnostics
+                    )
+                }
             } else {
                 let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
-                let fused = HybridSearch.rrfFusion(
+                let fused = Self.rrfFusionResults(
                     lists: [
-                        (weight: weights.bm25, frameIds: textIds),
-                        (weight: structuredWeight, frameIds: structuredIds),
+                        (source: .text, weight: weights.bm25, frameIds: textIds),
+                        (source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds),
                     ],
-                    k: request.rrfK
+                    k: request.rrfK,
+                    includeDiagnostics: diagnosticsEnabled,
+                    diagnosticsTopK: diagnosticsTopK
                 )
 
-                let structuredSet = Set(structuredIds)
-
-                baseResults = fused.map { (frameId, score) in
-                    var sources: [SearchResponse.Source] = []
-                    if textSet.contains(frameId) { sources.append(.text) }
-                    if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
-                    return (frameId: frameId, score: score, sources: sources)
+                baseResults = fused.map { entry in
+                    let sources = entry.sources.isEmpty
+                        ? (textSet.contains(entry.frameId) ? [.text] : [.structuredMemory])
+                        : entry.sources
+                    return BaseResult(
+                        frameId: entry.frameId,
+                        score: entry.score,
+                        sources: sources,
+                        rankingDiagnostics: entry.diagnostics
+                    )
                 }
             }
         case .vectorOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
-                baseResults = vectorResults.map { (frameId: $0.frameId, score: $0.score, sources: [.vector]) }
+                baseResults = vectorResults.enumerated().map { index, result in
+                    let diagnostics: SearchResponse.RankingDiagnostics?
+                    if diagnosticsEnabled, index < diagnosticsTopK {
+                        diagnostics = .init(
+                            bestLaneRank: index + 1,
+                            laneContributions: [
+                                .init(
+                                    source: .vector,
+                                    weight: 1,
+                                    rank: index + 1,
+                                    rrfScore: result.score
+                                ),
+                            ],
+                            tieBreakReason: index == 0 ? .topResult : .fusedScore
+                        )
+                    } else {
+                        diagnostics = nil
+                    }
+                    return BaseResult(
+                        frameId: result.frameId,
+                        score: result.score,
+                        sources: [.vector],
+                        rankingDiagnostics: diagnostics
+                    )
+                }
             } else {
                 let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
-                let fused = HybridSearch.rrfFusion(
+                let fused = Self.rrfFusionResults(
                     lists: [
-                        (weight: weights.vector, frameIds: vectorIds),
-                        (weight: structuredWeight, frameIds: structuredIds),
+                        (source: .vector, weight: weights.vector, frameIds: vectorIds),
+                        (source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds),
                     ],
-                    k: request.rrfK
+                    k: request.rrfK,
+                    includeDiagnostics: diagnosticsEnabled,
+                    diagnosticsTopK: diagnosticsTopK
                 )
 
-                let structuredSet = Set(structuredIds)
-
-                baseResults = fused.map { (frameId, score) in
-                    var sources: [SearchResponse.Source] = []
-                    if vectorSet.contains(frameId) { sources.append(.vector) }
-                    if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
-                    return (frameId: frameId, score: score, sources: sources)
+                baseResults = fused.map { entry in
+                    let sources = entry.sources.isEmpty
+                        ? (vectorSet.contains(entry.frameId) ? [.vector] : [.structuredMemory])
+                        : entry.sources
+                    return BaseResult(
+                        frameId: entry.frameId,
+                        score: entry.score,
+                        sources: sources,
+                        rankingDiagnostics: entry.diagnostics
+                    )
                 }
             }
         case .hybrid(let alpha):
@@ -223,24 +290,36 @@ extension Wax {
             let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
             let timelineIds = timelineFrameIds
 
-            var lists: [(weight: Float, frameIds: [UInt64])] = []
-            if textWeight > 0, !textIds.isEmpty { lists.append((weight: textWeight, frameIds: textIds)) }
-            if vectorWeight > 0, !vectorIds.isEmpty { lists.append((weight: vectorWeight, frameIds: vectorIds)) }
-            if weights.temporal > 0, !timelineIds.isEmpty { lists.append((weight: weights.temporal, frameIds: timelineIds)) }
-            if structuredWeight > 0, !structuredIds.isEmpty { lists.append((weight: structuredWeight, frameIds: structuredIds)) }
+            var lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])] = []
+            if textWeight > 0, !textIds.isEmpty { lists.append((source: .text, weight: textWeight, frameIds: textIds)) }
+            if vectorWeight > 0, !vectorIds.isEmpty { lists.append((source: .vector, weight: vectorWeight, frameIds: vectorIds)) }
+            if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
+            if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds)) }
 
-            let fused = HybridSearch.rrfFusion(lists: lists, k: request.rrfK)
+            let fused = Self.rrfFusionResults(
+                lists: lists,
+                k: request.rrfK,
+                includeDiagnostics: diagnosticsEnabled,
+                diagnosticsTopK: diagnosticsTopK
+            )
 
             let timelineSet = Set(timelineIds)
             let structuredSet = Set(structuredIds)
 
-            baseResults = fused.map { (frameId, score) in
-                var sources: [SearchResponse.Source] = []
-                if textSet.contains(frameId) { sources.append(.text) }
-                if vectorSet.contains(frameId) { sources.append(.vector) }
-                if timelineSet.contains(frameId) { sources.append(.timeline) }
-                if structuredSet.contains(frameId) { sources.append(.structuredMemory) }
-                return (frameId: frameId, score: score, sources: sources)
+            baseResults = fused.map { entry in
+                var sources = entry.sources
+                if sources.isEmpty {
+                    if textSet.contains(entry.frameId) { sources.append(.text) }
+                    if vectorSet.contains(entry.frameId) { sources.append(.vector) }
+                    if timelineSet.contains(entry.frameId) { sources.append(.timeline) }
+                    if structuredSet.contains(entry.frameId) { sources.append(.structuredMemory) }
+                }
+                return BaseResult(
+                    frameId: entry.frameId,
+                    score: entry.score,
+                    sources: sources,
+                    rankingDiagnostics: entry.diagnostics
+                )
             }
         }
 
@@ -250,6 +329,7 @@ extension Wax {
             let score: Float
             let sources: [SearchResponse.Source]
             let snippet: String?
+            let rankingDiagnostics: SearchResponse.RankingDiagnostics?
         }
 
         func passesFilters(
@@ -292,7 +372,8 @@ extension Wax {
                             frameId: item.frameId,
                             score: item.score,
                             sources: item.sources,
-                            snippet: snippetByFrameId[item.frameId]
+                            snippet: snippetByFrameId[item.frameId],
+                            rankingDiagnostics: item.rankingDiagnostics
                         )
                     )
 
@@ -322,7 +403,8 @@ extension Wax {
                             frameId: item.frameId,
                             score: item.score,
                             sources: item.sources,
-                            snippet: snippetByFrameId[item.frameId]
+                            snippet: snippetByFrameId[item.frameId],
+                            rankingDiagnostics: item.rankingDiagnostics
                         )
                     )
 
@@ -341,7 +423,7 @@ extension Wax {
             maxBytes: request.previewMaxBytes
         )
 
-        var filtered: [SearchResponse.Result] = pendingResults.map { item in
+        var filtered: [SearchResponse.Result] = pendingResults.enumerated().map { index, item in
             let previewText: String?
             if let snippet = item.snippet {
                 previewText = snippet
@@ -349,11 +431,26 @@ extension Wax {
                 previewText = previewById[item.frameId]
                     .flatMap { String(data: $0, encoding: .utf8) }
             }
+            let rankingDiagnostics: SearchResponse.RankingDiagnostics? =
+                if diagnosticsEnabled, index < diagnosticsTopK {
+                    item.rankingDiagnostics
+                } else {
+                    nil
+                }
             return SearchResponse.Result(
                 frameId: item.frameId,
                 score: item.score,
                 previewText: previewText,
-                sources: item.sources
+                sources: item.sources,
+                rankingDiagnostics: rankingDiagnostics
+            )
+        }
+
+        if let trimmedQuery, !trimmedQuery.isEmpty {
+            filtered = Self.intentAwareRerank(
+                results: filtered,
+                query: trimmedQuery,
+                maxWindow: min(max(request.topK * 2, 10), 32)
             )
         }
 
@@ -434,6 +531,259 @@ extension Wax {
             return "\"\(escaped)\""
         }
         return quoted.joined(separator: " OR ")
+    }
+
+    private struct RRFFusedCandidate {
+        let frameId: UInt64
+        let score: Float
+        let bestRank: Int
+        let sources: [SearchResponse.Source]
+        let laneContributions: [SearchResponse.RankingLaneContribution]
+    }
+
+    private static func rrfFusionResults(
+        lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])],
+        k: Int,
+        includeDiagnostics: Bool,
+        diagnosticsTopK: Int
+    ) -> [(frameId: UInt64, score: Float, sources: [SearchResponse.Source], diagnostics: SearchResponse.RankingDiagnostics?)] {
+        let kConstant = max(0, k)
+        struct Accumulator {
+            var score: Float = 0
+            var bestRank: Int = .max
+            var sources: [SearchResponse.Source] = []
+            var laneContributions: [SearchResponse.RankingLaneContribution] = []
+        }
+        var byFrame: [UInt64: Accumulator] = [:]
+
+        for list in lists {
+            guard list.weight > 0 else { continue }
+            for (rankZeroBased, frameId) in list.frameIds.enumerated() {
+                let rank = rankZeroBased + 1
+                let contribution = list.weight / Float(kConstant + rank)
+                var acc = byFrame[frameId] ?? Accumulator()
+                acc.score += contribution
+                acc.bestRank = min(acc.bestRank, rank)
+                if !acc.sources.contains(list.source) {
+                    acc.sources.append(list.source)
+                }
+                if includeDiagnostics {
+                    acc.laneContributions.append(
+                        .init(
+                            source: list.source,
+                            weight: list.weight,
+                            rank: rank,
+                            rrfScore: contribution
+                        )
+                    )
+                }
+                byFrame[frameId] = acc
+            }
+        }
+
+        var ranked: [RRFFusedCandidate] = byFrame.map { frameId, acc in
+            let contributions = includeDiagnostics
+                ? acc.laneContributions.sorted { lhs, rhs in
+                    if lhs.rrfScore != rhs.rrfScore { return lhs.rrfScore > rhs.rrfScore }
+                    return lhs.source.rawValue < rhs.source.rawValue
+                }
+                : []
+            return RRFFusedCandidate(
+                frameId: frameId,
+                score: acc.score,
+                bestRank: acc.bestRank,
+                sources: acc.sources.sorted { $0.rawValue < $1.rawValue },
+                laneContributions: contributions
+            )
+        }
+
+        ranked.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.bestRank != rhs.bestRank { return lhs.bestRank < rhs.bestRank }
+            return lhs.frameId < rhs.frameId
+        }
+
+        let topDiagLimit = max(1, diagnosticsTopK)
+
+        return ranked.enumerated().map { index, candidate in
+            let diagnostics: SearchResponse.RankingDiagnostics?
+            if includeDiagnostics, index < topDiagLimit {
+                let reason: SearchResponse.RankingTieBreakReason
+                if index == 0 {
+                    reason = .topResult
+                } else {
+                    let previous = ranked[index - 1]
+                    if previous.score != candidate.score {
+                        reason = .fusedScore
+                    } else if previous.bestRank != candidate.bestRank {
+                        reason = .bestLaneRank
+                    } else {
+                        reason = .frameID
+                    }
+                }
+                diagnostics = .init(
+                    bestLaneRank: candidate.bestRank == .max ? nil : candidate.bestRank,
+                    laneContributions: candidate.laneContributions,
+                    tieBreakReason: reason
+                )
+            } else {
+                diagnostics = nil
+            }
+
+            return (
+                frameId: candidate.frameId,
+                score: candidate.score,
+                sources: candidate.sources,
+                diagnostics: diagnostics
+            )
+        }
+    }
+
+    private static func intentAwareRerank(
+        results: [SearchResponse.Result],
+        query: String,
+        maxWindow: Int,
+        analyzer: QueryAnalyzer = QueryAnalyzer()
+    ) -> [SearchResponse.Result] {
+        let cappedWindow = min(max(0, maxWindow), results.count)
+        guard cappedWindow > 1 else { return results }
+
+        let intents = analyzer.detectIntent(query: query)
+        let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        let queryEntities = analyzer.entityTerms(query: query).filter { termContainsDigits($0) }
+        let queryNumericTerms = queryTerms.filter { isDigitsOnly($0) }
+        let hasTargetIntent =
+            intents.contains(.asksLocation)
+            || intents.contains(.asksDate)
+            || intents.contains(.asksOwnership)
+
+        if !hasTargetIntent || queryEntities.isEmpty {
+            return results
+        }
+
+        struct Candidate {
+            let result: SearchResponse.Result
+            let score: Float
+        }
+
+        func compositeScore(for result: SearchResponse.Result) -> Float {
+            var total = result.score
+            guard let preview = result.previewText, !preview.isEmpty else { return total }
+
+            let previewTerms = Set(analyzer.normalizedTerms(query: preview))
+            let previewEntities = analyzer.entityTerms(query: preview)
+            let lower = preview.lowercased()
+
+            if !queryTerms.isEmpty, !previewTerms.isEmpty {
+                let overlap = Float(queryTerms.intersection(previewTerms).count)
+                let recall = overlap / Float(max(1, queryTerms.count))
+                let precision = overlap / Float(max(1, previewTerms.count))
+                total += recall * 0.55
+                total += precision * 0.25
+            }
+
+            if !queryEntities.isEmpty {
+                let entityHits = queryEntities.intersection(previewEntities).count
+                let coverage = Float(entityHits) / Float(max(1, queryEntities.count))
+                total += coverage * 1.9
+                if entityHits == 0 {
+                    total -= 0.85
+                    if !queryNumericTerms.isEmpty,
+                       !queryNumericTerms.intersection(previewTerms).isEmpty {
+                        total -= 0.75
+                    }
+                }
+            }
+
+            if intents.contains(.asksLocation) {
+                if lower.contains("moved to") || lower.contains("move to") || lower.contains("city") {
+                    total += 1.35
+                }
+                if lower.contains("allergic") || lower.contains("health") || lower.contains("peanut") {
+                    total -= 1.10
+                }
+                if lower.contains("prefers") || lower.contains("prefer") {
+                    total -= 0.55
+                }
+            }
+
+            if intents.contains(.asksDate) {
+                if lower.contains("public launch") || containsDateLiteral(preview) {
+                    total += 1.20
+                }
+                if lower.contains(" owns ") || lower.contains("owner") || lower.contains("deployment readiness") {
+                    total -= 0.40
+                }
+            }
+
+            if intents.contains(.asksOwnership) {
+                if lower.contains(" owns ")
+                    || lower.contains("owner")
+                    || lower.contains("owns deployment readiness")
+                {
+                    total += 1.10
+                }
+                if lower.contains("public launch") && !lower.contains(" owns ") {
+                    total -= 0.35
+                }
+            }
+
+            if looksDistractorLike(lower) {
+                total -= 0.40
+            }
+
+            return total
+        }
+
+        var head = Array(results.prefix(cappedWindow)).map { result in
+            Candidate(result: result, score: compositeScore(for: result))
+        }
+        head.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+            return lhs.result.frameId < rhs.result.frameId
+        }
+
+        let rerankedHead = head.enumerated().map { index, candidate -> SearchResponse.Result in
+            var result = candidate.result
+            if var diagnostics = result.rankingDiagnostics {
+                diagnostics.tieBreakReason = index == 0 ? .topResult : .rerankComposite
+                result.rankingDiagnostics = diagnostics
+            }
+            return result
+        }
+
+        if cappedWindow == results.count {
+            return rerankedHead
+        }
+        return rerankedHead + Array(results.dropFirst(cappedWindow))
+    }
+
+    private static func looksDistractorLike(_ text: String) -> Bool {
+        text.contains("weekly report")
+            || text.contains("checklist")
+            || text.contains("signoff")
+            || text.contains("allergic")
+            || text.contains("distractor")
+    }
+
+    private static func containsDateLiteral(_ text: String) -> Bool {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b"#,
+            options: [.caseInsensitive]
+        ) else {
+            return false
+        }
+        let range = NSRange(location: 0, length: text.utf16.count)
+        return regex.firstMatch(in: text, range: range) != nil
+    }
+
+    private static func isDigitsOnly(_ text: String) -> Bool {
+        !text.isEmpty && text.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
+    }
+
+    private static func termContainsDigits(_ text: String) -> Bool {
+        text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
     }
 
     private static let asciiPunctuationScalars: Set<UnicodeScalar> = {

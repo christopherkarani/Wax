@@ -43,7 +43,3 @@ public protocol VideoTranscriptProvider: Sendable {
     /// Wax maps chunks to segments using a 250ms overlap threshold.
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk]
 }
-
-public extension VideoTranscriptProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
-}
