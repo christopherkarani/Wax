@@ -445,12 +445,12 @@ public actor Wax {
 
             let walReader = WALRingReader(file: file, walOffset: header.walOffset, walSize: header.walSize)
             let committedSeq = footerSlice.footer.walCommittedSeq
-            let pendingMutations = try walReader.scanPendingMutations(
+            let pendingScan = try walReader.scanPendingMutationsWithState(
                 from: header.walCheckpointPos,
                 committedSeq: committedSeq
             )
-
-            let scanState = try walReader.scanState(from: header.walCheckpointPos)
+            let pendingMutations = pendingScan.pendingMutations
+            let scanState = pendingScan.state
             let lastSequence = max(committedSeq, scanState.lastSequence)
             let effectiveCheckpointPos: UInt64
             let effectivePendingBytes: UInt64
