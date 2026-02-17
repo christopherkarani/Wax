@@ -8,6 +8,7 @@ public protocol MaintenableMemory: Sendable {
     ) async throws -> MaintenanceReport
 
     func compactIndexes(options: MaintenanceOptions) async throws -> MaintenanceReport
+    func rewriteLiveSet(to destinationURL: URL, options: LiveSetRewriteOptions) async throws -> LiveSetRewriteReport
 }
 
 extension MemoryOrchestrator: MaintenableMemory {}
@@ -167,6 +168,123 @@ public extension MemoryOrchestrator {
         return report
     }
 
+    /// Rewrite the current committed store into a new `.mv2s` file.
+    ///
+    /// This is an offline-style deep compaction path that copies committed frame state and
+    /// carries forward committed index bytes. The source file is left unchanged for rollback safety.
+    func rewriteLiveSet(
+        to destinationURL: URL,
+        options: LiveSetRewriteOptions = .init()
+    ) async throws -> LiveSetRewriteReport {
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        try await session.commit()
+
+        let sourceURL = (await wax.fileURL()).standardizedFileURL
+        let destinationURL = destinationURL.standardizedFileURL
+        guard sourceURL != destinationURL else {
+            throw WaxError.io("rewriteLiveSet destination must differ from source")
+        }
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            guard options.overwriteDestination else {
+                throw WaxError.io("rewriteLiveSet destination already exists")
+            }
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        let sourceSizes = try Self.fileSizes(at: sourceURL)
+        let sourceFrames = await wax.frameMetas()
+        let sourceWalSize = (await wax.walStats()).walSize
+        let committedLexManifest = await wax.committedLexIndexManifest()
+        let committedVecManifest = await wax.committedVecIndexManifest()
+        let committedLexBytes = try await wax.readCommittedLexIndexBytes()
+        let committedVecBytes = try await wax.readCommittedVecIndexBytes()
+
+        let rewritten = try await Wax.create(at: destinationURL, walSize: sourceWalSize)
+        var droppedPayloadFrames = 0
+        do {
+            for frame in sourceFrames {
+                let isLiveFrame = frame.status == .active && frame.supersededBy == nil
+                let content: Data
+                let compression: CanonicalEncoding
+                if options.dropNonLivePayloads && !isLiveFrame {
+                    content = Data()
+                    compression = .plain
+                    droppedPayloadFrames += 1
+                } else {
+                    content = try await wax.frameContent(frameId: frame.id)
+                    compression = frame.canonicalEncoding
+                }
+                let subset = Self.subsetForRewrite(from: frame)
+                let rewrittenId = try await rewritten.put(
+                    content,
+                    options: subset,
+                    compression: compression,
+                    timestampMs: frame.timestamp
+                )
+                guard rewrittenId == frame.id else {
+                    throw WaxError.invalidToc(
+                        reason: "rewriteLiveSet frame id mismatch: expected \(frame.id), got \(rewrittenId)"
+                    )
+                }
+            }
+
+            if let manifest = committedLexManifest,
+               let bytes = committedLexBytes {
+                try await rewritten.stageLexIndexForNextCommit(
+                    bytes: bytes,
+                    docCount: manifest.docCount,
+                    version: manifest.version
+                )
+            }
+
+            if let manifest = committedVecManifest,
+               let bytes = committedVecBytes {
+                try await rewritten.stageVecIndexForNextCommit(
+                    bytes: bytes,
+                    vectorCount: manifest.vectorCount,
+                    dimension: manifest.dimension,
+                    similarity: manifest.similarity
+                )
+            }
+
+            try await rewritten.commit()
+            try await rewritten.verify(deep: options.verifyDeep)
+            try await rewritten.close()
+        } catch {
+            try? await rewritten.close()
+            try? fileManager.removeItem(at: destinationURL)
+            throw error
+        }
+
+        let destinationSizes = try Self.fileSizes(at: destinationURL)
+        let frameCount = sourceFrames.count
+        let activeFrameCount = sourceFrames.filter { $0.status == .active && $0.supersededBy == nil }.count
+        let deletedFrameCount = sourceFrames.filter { $0.status == .deleted }.count
+        let supersededFrameCount = sourceFrames.filter { $0.supersededBy != nil }.count
+        let durationMs = Self.durationMs(clock.now - started)
+
+        return LiveSetRewriteReport(
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            frameCount: frameCount,
+            activeFrameCount: activeFrameCount,
+            droppedPayloadFrames: droppedPayloadFrames,
+            deletedFrameCount: deletedFrameCount,
+            supersededFrameCount: supersededFrameCount,
+            copiedLexIndex: committedLexManifest != nil && committedLexBytes != nil,
+            copiedVecIndex: committedVecManifest != nil && committedVecBytes != nil,
+            logicalBytesBefore: sourceSizes.logical,
+            logicalBytesAfter: destinationSizes.logical,
+            allocatedBytesBefore: sourceSizes.allocated,
+            allocatedBytesAfter: destinationSizes.allocated,
+            durationMs: durationMs
+        )
+    }
+
     private func isUpToDateSurrogate(
         surrogateFrameId: UInt64,
         sourceFrame: FrameMeta,
@@ -189,5 +307,40 @@ public extension MemoryOrchestrator {
 
     private func commitSurrogateBatchIfNeeded() async throws {
         try await session.commit()
+    }
+
+    private static func subsetForRewrite(from frame: FrameMeta) -> FrameMetaSubset {
+        FrameMetaSubset(
+            uri: frame.uri,
+            title: frame.title,
+            kind: frame.kind,
+            track: frame.track,
+            tags: frame.tags,
+            labels: frame.labels,
+            contentDates: frame.contentDates,
+            role: frame.role,
+            parentId: frame.parentId,
+            chunkIndex: frame.chunkIndex,
+            chunkCount: frame.chunkCount,
+            chunkManifest: frame.chunkManifest,
+            status: frame.status,
+            supersedes: frame.supersedes,
+            supersededBy: frame.supersededBy,
+            searchText: frame.searchText,
+            metadata: frame.metadata
+        )
+    }
+
+    private static func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey])
+        let logical = UInt64(max(0, values.fileSize ?? 0))
+        let allocatedValue = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0
+        let allocated = UInt64(max(0, allocatedValue))
+        return (logical: logical, allocated: allocated)
+    }
+
+    private static func durationMs(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1_000_000_000_000_000
     }
 }
