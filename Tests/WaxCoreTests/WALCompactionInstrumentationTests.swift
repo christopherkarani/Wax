@@ -1,0 +1,135 @@
+import Foundation
+import Testing
+@testable import WaxCore
+
+@Test func walRingWriterTracksWrapCheckpointAndSentinelCounters() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        try file.truncate(to: 1024)
+
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256)
+        let payload = Data(repeating: 0xAB, count: 20)
+
+        _ = try writer.append(payload: payload)
+        _ = try writer.append(payload: payload)
+        writer.recordCheckpoint()
+        _ = try writer.append(payload: payload)
+        _ = try writer.append(payload: payload)
+
+        #expect(writer.wrapCount == 1)
+        #expect(writer.checkpointCount == 1)
+        #expect(writer.sentinelWriteCount == 4)
+    }
+}
+
+@Test func waxWalStatsExposeCheckpointAndSequenceProgress() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 8 * 1024)
+    _ = try await wax.put(
+        Data("checkpoint-progress".utf8),
+        options: FrameMetaSubset(searchText: "checkpoint-progress")
+    )
+
+    let beforeCommit = await wax.walStats()
+    #expect(beforeCommit.pendingBytes > 0)
+    #expect(beforeCommit.checkpointCount == 0)
+
+    try await wax.commit()
+    let afterCommit = await wax.walStats()
+
+    #expect(afterCommit.pendingBytes == 0)
+    #expect(afterCommit.checkpointCount == 1)
+    #expect(afterCommit.committedSeq > 0)
+    #expect(afterCommit.lastSeq >= afterCommit.committedSeq)
+
+    try await wax.commit()
+    let afterNoOpCommit = await wax.walStats()
+    #expect(afterNoOpCommit.checkpointCount == afterCommit.checkpointCount)
+
+    try await wax.close()
+}
+
+@Test func waxWalStatsTracksCapacityTriggeredAutoCommits() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 2 * 1024)
+    var observedAutoCommit = false
+
+    for index in 0..<256 {
+        let payload = Data(repeating: UInt8(index % 251), count: 128)
+        _ = try await wax.put(
+            payload,
+            options: FrameMetaSubset(searchText: "auto-commit-\(index)")
+        )
+
+        let stats = await wax.walStats()
+        if stats.autoCommitCount > 0 {
+            observedAutoCommit = true
+            #expect(stats.checkpointCount > 0)
+            #expect(stats.committedSeq > 0)
+            break
+        }
+    }
+
+    #expect(observedAutoCommit)
+    let finalStats = await wax.walStats()
+    #expect(finalStats.autoCommitCount > 0)
+    #expect(finalStats.pendingBytes <= finalStats.walSize)
+    #expect(finalStats.lastSeq >= finalStats.committedSeq)
+
+    try await wax.close()
+}
+
+@Test func waxProactiveWalPressureAutoCommitTriggersBeforeCapacityEdge() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(
+        at: url,
+        walSize: 256 * 1024,
+        options: WaxOptions(walProactiveCommitThresholdPercent: 10)
+    )
+
+    for index in 0..<256 {
+        let payload = Data(repeating: UInt8(index % 251), count: 128)
+        _ = try await wax.put(
+            payload,
+            options: FrameMetaSubset(searchText: "pressure-proactive-\(index)")
+        )
+    }
+
+    let stats = await wax.walStats()
+    #expect(stats.autoCommitCount > 0)
+    #expect(stats.checkpointCount > 0)
+
+    try await wax.close()
+}
+
+@Test func waxWalPressureAutoCommitCanBeDisabled() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(
+        at: url,
+        walSize: 256 * 1024,
+        options: WaxOptions(walProactiveCommitThresholdPercent: nil)
+    )
+
+    for index in 0..<256 {
+        let payload = Data(repeating: UInt8(index % 251), count: 128)
+        _ = try await wax.put(
+            payload,
+            options: FrameMetaSubset(searchText: "pressure-disabled-\(index)")
+        )
+    }
+
+    let stats = await wax.walStats()
+    #expect(stats.autoCommitCount == 0)
+    #expect(stats.checkpointCount == 0)
+
+    try await wax.close()
+}
