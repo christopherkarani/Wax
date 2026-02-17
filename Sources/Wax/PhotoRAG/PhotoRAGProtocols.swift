@@ -22,7 +22,7 @@ public struct RecognizedTextBlock: Sendable, Equatable {
 
 /// Provider for on-device optical character recognition.
 ///
-/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
+/// Conforming types must be `Sendable`.
 public protocol OCRProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
@@ -32,18 +32,10 @@ public protocol OCRProvider: Sendable {
 
 /// Provider for on-device image captioning.
 ///
-/// Conforming types must be `Sendable`. The default `executionMode` is `.onDeviceOnly`.
+/// Conforming types must be `Sendable`.
 public protocol CaptionProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
     /// Produce a short, human-readable caption for an image.
     func caption(for image: CGImage) async throws -> String
-}
-
-public extension OCRProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
-}
-
-public extension CaptionProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }

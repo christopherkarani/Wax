@@ -1,5 +1,18 @@
 import Foundation
 
+public struct QueryIntent: OptionSet, Sendable, Equatable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    public static let asksLocation = QueryIntent(rawValue: 1 << 0)
+    public static let asksDate = QueryIntent(rawValue: 1 << 1)
+    public static let asksOwnership = QueryIntent(rawValue: 1 << 2)
+    public static let multiHop = QueryIntent(rawValue: 1 << 3)
+}
+
 /// Query characteristics that influence tier selection.
 public struct QuerySignals: Sendable, Equatable {
     /// Query contains specific entities (names, dates, numbers)
@@ -61,4 +74,77 @@ public struct QueryAnalyzer: Sendable {
             specificityScore: min(1.0, specificity)
         )
     }
+
+    /// Normalize query text into deterministic lexical terms for matching/reranking.
+    public func normalizedTerms(query: String) -> [String] {
+        query
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .map(normalizeToken)
+            .filter { !$0.isEmpty && !Self.stopWords.contains($0) }
+    }
+
+    public func detectIntent(query: String) -> QueryIntent {
+        let lower = query.lowercased()
+        let terms = Set(normalizedTerms(query: query))
+
+        var intent: QueryIntent = []
+        if lower.contains("city")
+            || lower.contains("where")
+            || terms.contains("move")
+            || terms.contains("moved")
+        {
+            intent.insert(.asksLocation)
+        }
+        if lower.contains("date")
+            || lower.contains("when")
+            || lower.contains("launch")
+            || lower.contains("timeline")
+        {
+            intent.insert(.asksDate)
+        }
+        if lower.contains("who")
+            || lower.contains("owner")
+            || lower.contains("owns")
+            || lower.contains("deployment readiness")
+        {
+            intent.insert(.asksOwnership)
+        }
+        let enabledIntentCount =
+            (intent.contains(.asksLocation) ? 1 : 0) +
+            (intent.contains(.asksDate) ? 1 : 0) +
+            (intent.contains(.asksOwnership) ? 1 : 0)
+        if lower.contains(" and ") && enabledIntentCount > 1 {
+            intent.insert(.multiHop)
+        }
+        return intent
+    }
+
+    // MARK: - Private
+
+    private func normalizeToken(_ token: String) -> String {
+        guard token.count > 3 else { return token }
+        if token.hasSuffix("ies"), token.count > 4 {
+            return String(token.dropLast(3)) + "y"
+        }
+        if token.hasSuffix("ing"), token.count > 5 {
+            return String(token.dropLast(3))
+        }
+        if token.hasSuffix("ed"), token.count > 4 {
+            return String(token.dropLast(2))
+        }
+        if token.hasSuffix("es"), token.count > 4 {
+            return String(token.dropLast(2))
+        }
+        if token.hasSuffix("s"), token.count > 4 {
+            return String(token.dropLast())
+        }
+        return token
+    }
+
+    private static let stopWords: Set<String> = [
+        "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
+        "on", "or", "the", "to", "what", "when", "where", "which", "who", "with"
+    ]
 }

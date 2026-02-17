@@ -29,14 +29,23 @@ public actor MemoryOrchestrator {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
         async let tokenizerPrewarm: Bool = { 
-            _ = try? await TokenCounter.preload()
+            do {
+                _ = try await TokenCounter.preload()
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "tokenizer prewarm",
+                    fallback: "cold start on first use"
+                )
+            }
             return true
         }()
 
         if config.requireOnDeviceProviders, let localEmbedder = embedder {
-            guard localEmbedder.executionMode == .onDeviceOnly else {
-                throw WaxError.io("MemoryOrchestrator requires on-device embedding provider")
-            }
+            try ProviderValidation.validateOnDevice(
+                [.init(name: "embedding provider", executionMode: localEmbedder.executionMode)],
+                orchestratorName: "MemoryOrchestrator"
+            )
         }
         
         if FileManager.default.fileExists(atPath: url.path) {
@@ -48,11 +57,10 @@ public actor MemoryOrchestrator {
         self.config = config
         self.ragBuilder = FastRAGContextBuilder()
         self.embedder = embedder
-        if embedder != nil, config.embeddingCacheCapacity > 0 {
-            self.embeddingCache = EmbeddingMemoizer(capacity: config.embeddingCacheCapacity)
-        } else {
-            self.embeddingCache = nil
-        }
+        self.embeddingCache = EmbeddingMemoizer.fromConfig(
+            capacity: config.embeddingCacheCapacity,
+            enabled: embedder != nil
+        )
 
         if config.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")

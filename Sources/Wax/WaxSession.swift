@@ -447,8 +447,15 @@ public actor WaxSession {
         preference: VectorEnginePreference
     ) async throws -> any VectorSearchEngine {
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
-            if let metal = try? await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions) {
+            do {
+                let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
                 return metal
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "metal vector engine load",
+                    fallback: "use CPU vector engine"
+                )
             }
         }
         return try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)

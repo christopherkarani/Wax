@@ -1,0 +1,6047 @@
+{
+  "documents" : [
+    {
+      "id" : "doc_person01_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person01"
+        }
+      ],
+      "text" : "Person01 moved to Seattle in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person01_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "project" : "Atlas-01",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-01"
+        }
+      ],
+      "text" : "For project Atlas-01, beta starts in April 2026 and public launch is July 4, 2026."
+    },
+    {
+      "id" : "doc_person01_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "project" : "Atlas-01",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-01"
+        }
+      ],
+      "text" : "In project Atlas-01, Priya owns QA and Noah owns deployment readiness."
+    },
+    {
+      "id" : "doc_person01_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person01"
+        }
+      ],
+      "text" : "Person01 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person01_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person01"
+        }
+      ],
+      "text" : "Person01 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person01_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person01",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person01 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person02_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person02"
+        }
+      ],
+      "text" : "Person02 moved to Austin in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person02_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "project" : "Atlas-02",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-02"
+        }
+      ],
+      "text" : "For project Atlas-02, beta starts in April 2026 and public launch is August 5, 2026."
+    },
+    {
+      "id" : "doc_person02_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "project" : "Atlas-02",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-02"
+        }
+      ],
+      "text" : "In project Atlas-02, Jordan owns QA and Ivy owns deployment readiness."
+    },
+    {
+      "id" : "doc_person02_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person02"
+        }
+      ],
+      "text" : "Person02 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person02_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person02"
+        }
+      ],
+      "text" : "Person02 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person02_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person02",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person02 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person03_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person03"
+        }
+      ],
+      "text" : "Person03 moved to Boston in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person03_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "project" : "Atlas-03",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-03"
+        }
+      ],
+      "text" : "For project Atlas-03, beta starts in April 2026 and public launch is September 6, 2026."
+    },
+    {
+      "id" : "doc_person03_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "project" : "Atlas-03",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-03"
+        }
+      ],
+      "text" : "In project Atlas-03, Mina owns QA and Luca owns deployment readiness."
+    },
+    {
+      "id" : "doc_person03_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person03"
+        }
+      ],
+      "text" : "Person03 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person03_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person03"
+        }
+      ],
+      "text" : "Person03 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person03_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person03",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person03 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person04_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person04"
+        }
+      ],
+      "text" : "Person04 moved to Denver in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person04_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "project" : "Atlas-04",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-04"
+        }
+      ],
+      "text" : "For project Atlas-04, beta starts in April 2026 and public launch is June 7, 2026."
+    },
+    {
+      "id" : "doc_person04_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "project" : "Atlas-04",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-04"
+        }
+      ],
+      "text" : "In project Atlas-04, Noah owns QA and Elena owns deployment readiness."
+    },
+    {
+      "id" : "doc_person04_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person04"
+        }
+      ],
+      "text" : "Person04 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person04_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person04"
+        }
+      ],
+      "text" : "Person04 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person04_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person04",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person04 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person05_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person05"
+        }
+      ],
+      "text" : "Person05 moved to Chicago in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person05_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "project" : "Atlas-05",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-05"
+        }
+      ],
+      "text" : "For project Atlas-05, beta starts in April 2026 and public launch is July 8, 2026."
+    },
+    {
+      "id" : "doc_person05_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "project" : "Atlas-05",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-05"
+        }
+      ],
+      "text" : "In project Atlas-05, Ivy owns QA and Kai owns deployment readiness."
+    },
+    {
+      "id" : "doc_person05_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person05"
+        }
+      ],
+      "text" : "Person05 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person05_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person05"
+        }
+      ],
+      "text" : "Person05 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person05_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person05",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person05 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person06_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person06"
+        }
+      ],
+      "text" : "Person06 moved to Portland in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person06_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "project" : "Atlas-06",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-06"
+        }
+      ],
+      "text" : "For project Atlas-06, beta starts in April 2026 and public launch is August 9, 2026."
+    },
+    {
+      "id" : "doc_person06_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "project" : "Atlas-06",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-06"
+        }
+      ],
+      "text" : "In project Atlas-06, Luca owns QA and Sora owns deployment readiness."
+    },
+    {
+      "id" : "doc_person06_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person06"
+        }
+      ],
+      "text" : "Person06 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person06_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person06"
+        }
+      ],
+      "text" : "Person06 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person06_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person06",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person06 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person07_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person07"
+        }
+      ],
+      "text" : "Person07 moved to Miami in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person07_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "project" : "Atlas-07",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-07"
+        }
+      ],
+      "text" : "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026."
+    },
+    {
+      "id" : "doc_person07_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "project" : "Atlas-07",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-07"
+        }
+      ],
+      "text" : "In project Atlas-07, Elena owns QA and Nina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person07_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person07"
+        }
+      ],
+      "text" : "Person07 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person07_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person07"
+        }
+      ],
+      "text" : "Person07 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person07_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person07",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person07 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person08_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person08"
+        }
+      ],
+      "text" : "Person08 moved to San Diego in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person08_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "project" : "Atlas-08",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-08"
+        }
+      ],
+      "text" : "For project Atlas-08, beta starts in April 2026 and public launch is June 11, 2026."
+    },
+    {
+      "id" : "doc_person08_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "project" : "Atlas-08",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-08"
+        }
+      ],
+      "text" : "In project Atlas-08, Kai owns QA and Arjun owns deployment readiness."
+    },
+    {
+      "id" : "doc_person08_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person08"
+        }
+      ],
+      "text" : "Person08 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person08_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person08"
+        }
+      ],
+      "text" : "Person08 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person08_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person08",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person08 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person09_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person09"
+        }
+      ],
+      "text" : "Person09 moved to Phoenix in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person09_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "project" : "Atlas-09",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-09"
+        }
+      ],
+      "text" : "For project Atlas-09, beta starts in April 2026 and public launch is July 12, 2026."
+    },
+    {
+      "id" : "doc_person09_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "project" : "Atlas-09",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-09"
+        }
+      ],
+      "text" : "In project Atlas-09, Sora owns QA and Mateo owns deployment readiness."
+    },
+    {
+      "id" : "doc_person09_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person09"
+        }
+      ],
+      "text" : "Person09 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person09_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person09"
+        }
+      ],
+      "text" : "Person09 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person09_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person09",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person09 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person10_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person10"
+        }
+      ],
+      "text" : "Person10 moved to Atlanta in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person10_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "project" : "Atlas-10",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-10"
+        }
+      ],
+      "text" : "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026."
+    },
+    {
+      "id" : "doc_person10_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "project" : "Atlas-10",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-10"
+        }
+      ],
+      "text" : "In project Atlas-10, Nina owns QA and Priya owns deployment readiness."
+    },
+    {
+      "id" : "doc_person10_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person10"
+        }
+      ],
+      "text" : "Person10 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person10_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person10"
+        }
+      ],
+      "text" : "Person10 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person10_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person10",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person10 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person11_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person11"
+        }
+      ],
+      "text" : "Person11 moved to Seattle in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person11_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "project" : "Atlas-11",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-11"
+        }
+      ],
+      "text" : "For project Atlas-11, beta starts in April 2026 and public launch is September 14, 2026."
+    },
+    {
+      "id" : "doc_person11_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "project" : "Atlas-11",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-11"
+        }
+      ],
+      "text" : "In project Atlas-11, Arjun owns QA and Jordan owns deployment readiness."
+    },
+    {
+      "id" : "doc_person11_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person11"
+        }
+      ],
+      "text" : "Person11 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person11_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person11"
+        }
+      ],
+      "text" : "Person11 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person11_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person11",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person11 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person12_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person12"
+        }
+      ],
+      "text" : "Person12 moved to Austin in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person12_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "project" : "Atlas-12",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-12"
+        }
+      ],
+      "text" : "For project Atlas-12, beta starts in April 2026 and public launch is June 15, 2026."
+    },
+    {
+      "id" : "doc_person12_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "project" : "Atlas-12",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-12"
+        }
+      ],
+      "text" : "In project Atlas-12, Mateo owns QA and Mina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person12_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person12"
+        }
+      ],
+      "text" : "Person12 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person12_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person12"
+        }
+      ],
+      "text" : "Person12 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person12_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person12",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person12 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person13_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person13"
+        }
+      ],
+      "text" : "Person13 moved to Boston in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person13_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "project" : "Atlas-13",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-13"
+        }
+      ],
+      "text" : "For project Atlas-13, beta starts in April 2026 and public launch is July 16, 2026."
+    },
+    {
+      "id" : "doc_person13_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "project" : "Atlas-13",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-13"
+        }
+      ],
+      "text" : "In project Atlas-13, Priya owns QA and Noah owns deployment readiness."
+    },
+    {
+      "id" : "doc_person13_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person13"
+        }
+      ],
+      "text" : "Person13 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person13_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person13"
+        }
+      ],
+      "text" : "Person13 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person13_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person13",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person13 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person14_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person14"
+        }
+      ],
+      "text" : "Person14 moved to Denver in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person14_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "project" : "Atlas-14",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-14"
+        }
+      ],
+      "text" : "For project Atlas-14, beta starts in April 2026 and public launch is August 17, 2026."
+    },
+    {
+      "id" : "doc_person14_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "project" : "Atlas-14",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-14"
+        }
+      ],
+      "text" : "In project Atlas-14, Jordan owns QA and Ivy owns deployment readiness."
+    },
+    {
+      "id" : "doc_person14_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person14"
+        }
+      ],
+      "text" : "Person14 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person14_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person14"
+        }
+      ],
+      "text" : "Person14 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person14_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person14",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person14 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person15_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person15"
+        }
+      ],
+      "text" : "Person15 moved to Chicago in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person15_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "project" : "Atlas-15",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-15"
+        }
+      ],
+      "text" : "For project Atlas-15, beta starts in April 2026 and public launch is September 18, 2026."
+    },
+    {
+      "id" : "doc_person15_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "project" : "Atlas-15",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-15"
+        }
+      ],
+      "text" : "In project Atlas-15, Mina owns QA and Luca owns deployment readiness."
+    },
+    {
+      "id" : "doc_person15_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person15"
+        }
+      ],
+      "text" : "Person15 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person15_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person15"
+        }
+      ],
+      "text" : "Person15 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person15_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person15",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person15 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person16_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person16"
+        }
+      ],
+      "text" : "Person16 moved to Portland in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person16_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "project" : "Atlas-16",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-16"
+        }
+      ],
+      "text" : "For project Atlas-16, beta starts in April 2026 and public launch is June 19, 2026."
+    },
+    {
+      "id" : "doc_person16_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "project" : "Atlas-16",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-16"
+        }
+      ],
+      "text" : "In project Atlas-16, Noah owns QA and Elena owns deployment readiness."
+    },
+    {
+      "id" : "doc_person16_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person16"
+        }
+      ],
+      "text" : "Person16 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person16_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person16"
+        }
+      ],
+      "text" : "Person16 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person16_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person16",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person16 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person17_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person17"
+        }
+      ],
+      "text" : "Person17 moved to Miami in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person17_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "project" : "Atlas-17",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-17"
+        }
+      ],
+      "text" : "For project Atlas-17, beta starts in April 2026 and public launch is July 20, 2026."
+    },
+    {
+      "id" : "doc_person17_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "project" : "Atlas-17",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-17"
+        }
+      ],
+      "text" : "In project Atlas-17, Ivy owns QA and Kai owns deployment readiness."
+    },
+    {
+      "id" : "doc_person17_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person17"
+        }
+      ],
+      "text" : "Person17 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person17_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person17"
+        }
+      ],
+      "text" : "Person17 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person17_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person17",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person17 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person18_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person18"
+        }
+      ],
+      "text" : "Person18 moved to San Diego in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person18_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "project" : "Atlas-18",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-18"
+        }
+      ],
+      "text" : "For project Atlas-18, beta starts in April 2026 and public launch is August 21, 2026."
+    },
+    {
+      "id" : "doc_person18_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "project" : "Atlas-18",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-18"
+        }
+      ],
+      "text" : "In project Atlas-18, Luca owns QA and Sora owns deployment readiness."
+    },
+    {
+      "id" : "doc_person18_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person18"
+        }
+      ],
+      "text" : "Person18 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person18_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person18"
+        }
+      ],
+      "text" : "Person18 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person18_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person18",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person18 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person19_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person19"
+        }
+      ],
+      "text" : "Person19 moved to Phoenix in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person19_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "project" : "Atlas-19",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-19"
+        }
+      ],
+      "text" : "For project Atlas-19, beta starts in April 2026 and public launch is September 22, 2026."
+    },
+    {
+      "id" : "doc_person19_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "project" : "Atlas-19",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-19"
+        }
+      ],
+      "text" : "In project Atlas-19, Elena owns QA and Nina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person19_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person19"
+        }
+      ],
+      "text" : "Person19 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person19_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person19"
+        }
+      ],
+      "text" : "Person19 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person19_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person19",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person19 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person20_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person20"
+        }
+      ],
+      "text" : "Person20 moved to Atlanta in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person20_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "project" : "Atlas-20",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-20"
+        }
+      ],
+      "text" : "For project Atlas-20, beta starts in April 2026 and public launch is June 23, 2026."
+    },
+    {
+      "id" : "doc_person20_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "project" : "Atlas-20",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-20"
+        }
+      ],
+      "text" : "In project Atlas-20, Kai owns QA and Arjun owns deployment readiness."
+    },
+    {
+      "id" : "doc_person20_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person20"
+        }
+      ],
+      "text" : "Person20 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person20_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person20"
+        }
+      ],
+      "text" : "Person20 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person20_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person20",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person20 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person21_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person21"
+        }
+      ],
+      "text" : "Person21 moved to Seattle in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person21_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "project" : "Atlas-21",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-21"
+        }
+      ],
+      "text" : "For project Atlas-21, beta starts in April 2026 and public launch is July 24, 2026."
+    },
+    {
+      "id" : "doc_person21_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "project" : "Atlas-21",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-21"
+        }
+      ],
+      "text" : "In project Atlas-21, Sora owns QA and Mateo owns deployment readiness."
+    },
+    {
+      "id" : "doc_person21_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person21"
+        }
+      ],
+      "text" : "Person21 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person21_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person21"
+        }
+      ],
+      "text" : "Person21 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person21_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person21",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person21 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person22_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person22"
+        }
+      ],
+      "text" : "Person22 moved to Austin in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person22_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "project" : "Atlas-22",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-22"
+        }
+      ],
+      "text" : "For project Atlas-22, beta starts in April 2026 and public launch is August 25, 2026."
+    },
+    {
+      "id" : "doc_person22_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "project" : "Atlas-22",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-22"
+        }
+      ],
+      "text" : "In project Atlas-22, Nina owns QA and Priya owns deployment readiness."
+    },
+    {
+      "id" : "doc_person22_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person22"
+        }
+      ],
+      "text" : "Person22 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person22_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person22"
+        }
+      ],
+      "text" : "Person22 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person22_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person22",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person22 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person23_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person23"
+        }
+      ],
+      "text" : "Person23 moved to Boston in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person23_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "project" : "Atlas-23",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-23"
+        }
+      ],
+      "text" : "For project Atlas-23, beta starts in April 2026 and public launch is September 26, 2026."
+    },
+    {
+      "id" : "doc_person23_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "project" : "Atlas-23",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-23"
+        }
+      ],
+      "text" : "In project Atlas-23, Arjun owns QA and Jordan owns deployment readiness."
+    },
+    {
+      "id" : "doc_person23_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person23"
+        }
+      ],
+      "text" : "Person23 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person23_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person23"
+        }
+      ],
+      "text" : "Person23 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person23_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person23",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person23 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person24_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person24"
+        }
+      ],
+      "text" : "Person24 moved to Denver in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person24_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "project" : "Atlas-24",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-24"
+        }
+      ],
+      "text" : "For project Atlas-24, beta starts in April 2026 and public launch is June 3, 2026."
+    },
+    {
+      "id" : "doc_person24_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "project" : "Atlas-24",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-24"
+        }
+      ],
+      "text" : "In project Atlas-24, Mateo owns QA and Mina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person24_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person24"
+        }
+      ],
+      "text" : "Person24 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person24_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person24"
+        }
+      ],
+      "text" : "Person24 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person24_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person24",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person24 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person25_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person25"
+        }
+      ],
+      "text" : "Person25 moved to Chicago in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person25_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "project" : "Atlas-25",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-25"
+        }
+      ],
+      "text" : "For project Atlas-25, beta starts in April 2026 and public launch is July 4, 2026."
+    },
+    {
+      "id" : "doc_person25_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "project" : "Atlas-25",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-25"
+        }
+      ],
+      "text" : "In project Atlas-25, Priya owns QA and Noah owns deployment readiness."
+    },
+    {
+      "id" : "doc_person25_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person25"
+        }
+      ],
+      "text" : "Person25 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person25_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person25"
+        }
+      ],
+      "text" : "Person25 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person25_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person25",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person25 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person26_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person26"
+        }
+      ],
+      "text" : "Person26 moved to Portland in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person26_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "project" : "Atlas-26",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-26"
+        }
+      ],
+      "text" : "For project Atlas-26, beta starts in April 2026 and public launch is August 5, 2026."
+    },
+    {
+      "id" : "doc_person26_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "project" : "Atlas-26",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-26"
+        }
+      ],
+      "text" : "In project Atlas-26, Jordan owns QA and Ivy owns deployment readiness."
+    },
+    {
+      "id" : "doc_person26_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person26"
+        }
+      ],
+      "text" : "Person26 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person26_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person26"
+        }
+      ],
+      "text" : "Person26 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person26_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person26",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person26 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person27_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person27"
+        }
+      ],
+      "text" : "Person27 moved to Miami in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person27_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "project" : "Atlas-27",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-27"
+        }
+      ],
+      "text" : "For project Atlas-27, beta starts in April 2026 and public launch is September 6, 2026."
+    },
+    {
+      "id" : "doc_person27_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "project" : "Atlas-27",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-27"
+        }
+      ],
+      "text" : "In project Atlas-27, Mina owns QA and Luca owns deployment readiness."
+    },
+    {
+      "id" : "doc_person27_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person27"
+        }
+      ],
+      "text" : "Person27 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person27_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person27"
+        }
+      ],
+      "text" : "Person27 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person27_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person27",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person27 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person28_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person28"
+        }
+      ],
+      "text" : "Person28 moved to San Diego in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person28_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "project" : "Atlas-28",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-28"
+        }
+      ],
+      "text" : "For project Atlas-28, beta starts in April 2026 and public launch is June 7, 2026."
+    },
+    {
+      "id" : "doc_person28_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "project" : "Atlas-28",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-28"
+        }
+      ],
+      "text" : "In project Atlas-28, Noah owns QA and Elena owns deployment readiness."
+    },
+    {
+      "id" : "doc_person28_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person28"
+        }
+      ],
+      "text" : "Person28 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person28_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person28"
+        }
+      ],
+      "text" : "Person28 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person28_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person28",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person28 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person29_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person29"
+        }
+      ],
+      "text" : "Person29 moved to Phoenix in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person29_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "project" : "Atlas-29",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-29"
+        }
+      ],
+      "text" : "For project Atlas-29, beta starts in April 2026 and public launch is July 8, 2026."
+    },
+    {
+      "id" : "doc_person29_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "project" : "Atlas-29",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-29"
+        }
+      ],
+      "text" : "In project Atlas-29, Ivy owns QA and Kai owns deployment readiness."
+    },
+    {
+      "id" : "doc_person29_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person29"
+        }
+      ],
+      "text" : "Person29 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person29_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person29"
+        }
+      ],
+      "text" : "Person29 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person29_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person29",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person29 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person30_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person30"
+        }
+      ],
+      "text" : "Person30 moved to Atlanta in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person30_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "project" : "Atlas-30",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-30"
+        }
+      ],
+      "text" : "For project Atlas-30, beta starts in April 2026 and public launch is August 9, 2026."
+    },
+    {
+      "id" : "doc_person30_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "project" : "Atlas-30",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-30"
+        }
+      ],
+      "text" : "In project Atlas-30, Luca owns QA and Sora owns deployment readiness."
+    },
+    {
+      "id" : "doc_person30_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person30"
+        }
+      ],
+      "text" : "Person30 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person30_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person30"
+        }
+      ],
+      "text" : "Person30 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person30_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person30",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person30 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person31_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person31"
+        }
+      ],
+      "text" : "Person31 moved to Seattle in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person31_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "project" : "Atlas-31",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-31"
+        }
+      ],
+      "text" : "For project Atlas-31, beta starts in April 2026 and public launch is September 10, 2026."
+    },
+    {
+      "id" : "doc_person31_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "project" : "Atlas-31",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-31"
+        }
+      ],
+      "text" : "In project Atlas-31, Elena owns QA and Nina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person31_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person31"
+        }
+      ],
+      "text" : "Person31 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person31_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person31"
+        }
+      ],
+      "text" : "Person31 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person31_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person31",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person31 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person32_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person32"
+        }
+      ],
+      "text" : "Person32 moved to Austin in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person32_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "project" : "Atlas-32",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-32"
+        }
+      ],
+      "text" : "For project Atlas-32, beta starts in April 2026 and public launch is June 11, 2026."
+    },
+    {
+      "id" : "doc_person32_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "project" : "Atlas-32",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-32"
+        }
+      ],
+      "text" : "In project Atlas-32, Kai owns QA and Arjun owns deployment readiness."
+    },
+    {
+      "id" : "doc_person32_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person32"
+        }
+      ],
+      "text" : "Person32 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person32_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person32"
+        }
+      ],
+      "text" : "Person32 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person32_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person32",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person32 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person33_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person33"
+        }
+      ],
+      "text" : "Person33 moved to Boston in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person33_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "project" : "Atlas-33",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-33"
+        }
+      ],
+      "text" : "For project Atlas-33, beta starts in April 2026 and public launch is July 12, 2026."
+    },
+    {
+      "id" : "doc_person33_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "project" : "Atlas-33",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-33"
+        }
+      ],
+      "text" : "In project Atlas-33, Sora owns QA and Mateo owns deployment readiness."
+    },
+    {
+      "id" : "doc_person33_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person33"
+        }
+      ],
+      "text" : "Person33 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person33_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person33"
+        }
+      ],
+      "text" : "Person33 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person33_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person33",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person33 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person34_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person34"
+        }
+      ],
+      "text" : "Person34 moved to Denver in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person34_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "project" : "Atlas-34",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-34"
+        }
+      ],
+      "text" : "For project Atlas-34, beta starts in April 2026 and public launch is August 13, 2026."
+    },
+    {
+      "id" : "doc_person34_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "project" : "Atlas-34",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-34"
+        }
+      ],
+      "text" : "In project Atlas-34, Nina owns QA and Priya owns deployment readiness."
+    },
+    {
+      "id" : "doc_person34_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person34"
+        }
+      ],
+      "text" : "Person34 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person34_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person34"
+        }
+      ],
+      "text" : "Person34 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person34_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person34",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person34 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person35_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "source" : "profile",
+        "team" : "data"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person35"
+        }
+      ],
+      "text" : "Person35 moved to Chicago in 2021 and works on the data team."
+    },
+    {
+      "id" : "doc_person35_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "project" : "Atlas-35",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-35"
+        }
+      ],
+      "text" : "For project Atlas-35, beta starts in April 2026 and public launch is September 14, 2026."
+    },
+    {
+      "id" : "doc_person35_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "project" : "Atlas-35",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-35"
+        }
+      ],
+      "text" : "In project Atlas-35, Arjun owns QA and Jordan owns deployment readiness."
+    },
+    {
+      "id" : "doc_person35_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person35"
+        }
+      ],
+      "text" : "Person35 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person35_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person35"
+        }
+      ],
+      "text" : "Person35 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person35_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person35",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person35 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person36_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "source" : "profile",
+        "team" : "ops"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person36"
+        }
+      ],
+      "text" : "Person36 moved to Portland in 2021 and works on the ops team."
+    },
+    {
+      "id" : "doc_person36_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "project" : "Atlas-36",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-36"
+        }
+      ],
+      "text" : "For project Atlas-36, beta starts in April 2026 and public launch is June 15, 2026."
+    },
+    {
+      "id" : "doc_person36_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "project" : "Atlas-36",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-36"
+        }
+      ],
+      "text" : "In project Atlas-36, Mateo owns QA and Mina owns deployment readiness."
+    },
+    {
+      "id" : "doc_person36_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person36"
+        }
+      ],
+      "text" : "Person36 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person36_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person36"
+        }
+      ],
+      "text" : "Person36 is allergic to peanuts and avoids foods that contain peanuts."
+    },
+    {
+      "id" : "doc_person36_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person36",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person36 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person37_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "source" : "profile",
+        "team" : "platform"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person37"
+        }
+      ],
+      "text" : "Person37 moved to Miami in 2021 and works on the platform team."
+    },
+    {
+      "id" : "doc_person37_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "project" : "Atlas-37",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-37"
+        }
+      ],
+      "text" : "For project Atlas-37, beta starts in April 2026 and public launch is July 16, 2026."
+    },
+    {
+      "id" : "doc_person37_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "project" : "Atlas-37",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-37"
+        }
+      ],
+      "text" : "In project Atlas-37, Priya owns QA and Noah owns deployment readiness."
+    },
+    {
+      "id" : "doc_person37_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person37"
+        }
+      ],
+      "text" : "Person37 prefers concise status updates with bullet points and explicit due dates."
+    },
+    {
+      "id" : "doc_person37_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person37"
+        }
+      ],
+      "text" : "Person37 is allergic to shellfish and avoids foods that contain shellfish."
+    },
+    {
+      "id" : "doc_person37_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person37",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person37 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person38_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "source" : "profile",
+        "team" : "mobile"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person38"
+        }
+      ],
+      "text" : "Person38 moved to San Diego in 2021 and works on the mobile team."
+    },
+    {
+      "id" : "doc_person38_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "project" : "Atlas-38",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-38"
+        }
+      ],
+      "text" : "For project Atlas-38, beta starts in April 2026 and public launch is August 17, 2026."
+    },
+    {
+      "id" : "doc_person38_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "project" : "Atlas-38",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-38"
+        }
+      ],
+      "text" : "In project Atlas-38, Jordan owns QA and Ivy owns deployment readiness."
+    },
+    {
+      "id" : "doc_person38_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person38"
+        }
+      ],
+      "text" : "Person38 prefers decision logs with one sentence summaries."
+    },
+    {
+      "id" : "doc_person38_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person38"
+        }
+      ],
+      "text" : "Person38 is allergic to sesame and avoids foods that contain sesame."
+    },
+    {
+      "id" : "doc_person38_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person38",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person38 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person39_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "source" : "profile",
+        "team" : "infra"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person39"
+        }
+      ],
+      "text" : "Person39 moved to Phoenix in 2021 and works on the infra team."
+    },
+    {
+      "id" : "doc_person39_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "project" : "Atlas-39",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-39"
+        }
+      ],
+      "text" : "For project Atlas-39, beta starts in April 2026 and public launch is September 18, 2026."
+    },
+    {
+      "id" : "doc_person39_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "project" : "Atlas-39",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-39"
+        }
+      ],
+      "text" : "In project Atlas-39, Mina owns QA and Luca owns deployment readiness."
+    },
+    {
+      "id" : "doc_person39_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person39"
+        }
+      ],
+      "text" : "Person39 prefers weekly updates grouped by blockers and risks."
+    },
+    {
+      "id" : "doc_person39_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person39"
+        }
+      ],
+      "text" : "Person39 is allergic to walnuts and avoids foods that contain walnuts."
+    },
+    {
+      "id" : "doc_person39_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person39",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person39 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    },
+    {
+      "id" : "doc_person40_profile",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "source" : "profile",
+        "team" : "security"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "profile"
+        },
+        {
+          "key" : "person",
+          "value" : "person40"
+        }
+      ],
+      "text" : "Person40 moved to Atlanta in 2021 and works on the security team."
+    },
+    {
+      "id" : "doc_person40_timeline",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "project" : "Atlas-40",
+        "source" : "roadmap"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "roadmap"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-40"
+        }
+      ],
+      "text" : "For project Atlas-40, beta starts in April 2026 and public launch is June 19, 2026."
+    },
+    {
+      "id" : "doc_person40_owner",
+      "labels" : [
+        "work"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "project" : "Atlas-40",
+        "source" : "notes"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "ownership"
+        },
+        {
+          "key" : "project",
+          "value" : "atlas-40"
+        }
+      ],
+      "text" : "In project Atlas-40, Noah owns QA and Elena owns deployment readiness."
+    },
+    {
+      "id" : "doc_person40_pref",
+      "labels" : [
+        "public"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "source" : "communication"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "preferences"
+        },
+        {
+          "key" : "person",
+          "value" : "person40"
+        }
+      ],
+      "text" : "Person40 prefers milestone updates with owner and due date first."
+    },
+    {
+      "id" : "doc_person40_health",
+      "labels" : [
+        "private"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "source" : "health"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "health"
+        },
+        {
+          "key" : "person",
+          "value" : "person40"
+        }
+      ],
+      "text" : "Person40 is allergic to soy and avoids foods that contain soy."
+    },
+    {
+      "id" : "doc_person40_distractor",
+      "labels" : [
+        "noise"
+      ],
+      "metadata" : {
+        "person" : "Person40",
+        "source" : "distractor"
+      },
+      "tags" : [
+        {
+          "key" : "topic",
+          "value" : "distractor"
+        }
+      ],
+      "text" : "Weekly report for Person40 references deployment notes, launch checklist, and QA signoff but no authoritative dates."
+    }
+  ],
+  "name" : "wax-long-memory-large-v1",
+  "queries" : [
+    {
+      "expected_answer" : "Seattle",
+      "expected_document_ids" : [
+        "doc_person01_profile"
+      ],
+      "id" : "q_person01_city",
+      "text" : "Which city did Person01 move to?"
+    },
+    {
+      "expected_answer" : "July 4, 2026",
+      "expected_document_ids" : [
+        "doc_person01_timeline"
+      ],
+      "id" : "q_person01_launch",
+      "text" : "What is the public launch date for Atlas-01?"
+    },
+    {
+      "expected_answer" : "Noah and July 4, 2026",
+      "expected_document_ids" : [
+        "doc_person01_owner",
+        "doc_person01_timeline"
+      ],
+      "id" : "q_person01_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-01, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Austin",
+      "expected_document_ids" : [
+        "doc_person02_profile"
+      ],
+      "id" : "q_person02_city",
+      "text" : "Which city did Person02 move to?"
+    },
+    {
+      "expected_answer" : "August 5, 2026",
+      "expected_document_ids" : [
+        "doc_person02_timeline"
+      ],
+      "id" : "q_person02_launch",
+      "text" : "What is the public launch date for Atlas-02?"
+    },
+    {
+      "expected_answer" : "Ivy and August 5, 2026",
+      "expected_document_ids" : [
+        "doc_person02_owner",
+        "doc_person02_timeline"
+      ],
+      "id" : "q_person02_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-02, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Boston",
+      "expected_document_ids" : [
+        "doc_person03_profile"
+      ],
+      "id" : "q_person03_city",
+      "text" : "Which city did Person03 move to?"
+    },
+    {
+      "expected_answer" : "September 6, 2026",
+      "expected_document_ids" : [
+        "doc_person03_timeline"
+      ],
+      "id" : "q_person03_launch",
+      "text" : "What is the public launch date for Atlas-03?"
+    },
+    {
+      "expected_answer" : "Luca and September 6, 2026",
+      "expected_document_ids" : [
+        "doc_person03_owner",
+        "doc_person03_timeline"
+      ],
+      "id" : "q_person03_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-03, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Denver",
+      "expected_document_ids" : [
+        "doc_person04_profile"
+      ],
+      "id" : "q_person04_city",
+      "text" : "Which city did Person04 move to?"
+    },
+    {
+      "expected_answer" : "June 7, 2026",
+      "expected_document_ids" : [
+        "doc_person04_timeline"
+      ],
+      "id" : "q_person04_launch",
+      "text" : "What is the public launch date for Atlas-04?"
+    },
+    {
+      "expected_answer" : "Elena and June 7, 2026",
+      "expected_document_ids" : [
+        "doc_person04_owner",
+        "doc_person04_timeline"
+      ],
+      "id" : "q_person04_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-04, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Chicago",
+      "expected_document_ids" : [
+        "doc_person05_profile"
+      ],
+      "id" : "q_person05_city",
+      "text" : "Which city did Person05 move to?"
+    },
+    {
+      "expected_answer" : "July 8, 2026",
+      "expected_document_ids" : [
+        "doc_person05_timeline"
+      ],
+      "id" : "q_person05_launch",
+      "text" : "What is the public launch date for Atlas-05?"
+    },
+    {
+      "expected_answer" : "Kai and July 8, 2026",
+      "expected_document_ids" : [
+        "doc_person05_owner",
+        "doc_person05_timeline"
+      ],
+      "id" : "q_person05_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-05, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Portland",
+      "expected_document_ids" : [
+        "doc_person06_profile"
+      ],
+      "id" : "q_person06_city",
+      "text" : "Which city did Person06 move to?"
+    },
+    {
+      "expected_answer" : "August 9, 2026",
+      "expected_document_ids" : [
+        "doc_person06_timeline"
+      ],
+      "id" : "q_person06_launch",
+      "text" : "What is the public launch date for Atlas-06?"
+    },
+    {
+      "expected_answer" : "Sora and August 9, 2026",
+      "expected_document_ids" : [
+        "doc_person06_owner",
+        "doc_person06_timeline"
+      ],
+      "id" : "q_person06_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-06, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Miami",
+      "expected_document_ids" : [
+        "doc_person07_profile"
+      ],
+      "id" : "q_person07_city",
+      "text" : "Which city did Person07 move to?"
+    },
+    {
+      "expected_answer" : "September 10, 2026",
+      "expected_document_ids" : [
+        "doc_person07_timeline"
+      ],
+      "id" : "q_person07_launch",
+      "text" : "What is the public launch date for Atlas-07?"
+    },
+    {
+      "expected_answer" : "Nina and September 10, 2026",
+      "expected_document_ids" : [
+        "doc_person07_owner",
+        "doc_person07_timeline"
+      ],
+      "id" : "q_person07_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-07, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "San Diego",
+      "expected_document_ids" : [
+        "doc_person08_profile"
+      ],
+      "id" : "q_person08_city",
+      "text" : "Which city did Person08 move to?"
+    },
+    {
+      "expected_answer" : "June 11, 2026",
+      "expected_document_ids" : [
+        "doc_person08_timeline"
+      ],
+      "id" : "q_person08_launch",
+      "text" : "What is the public launch date for Atlas-08?"
+    },
+    {
+      "expected_answer" : "Arjun and June 11, 2026",
+      "expected_document_ids" : [
+        "doc_person08_owner",
+        "doc_person08_timeline"
+      ],
+      "id" : "q_person08_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-08, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Phoenix",
+      "expected_document_ids" : [
+        "doc_person09_profile"
+      ],
+      "id" : "q_person09_city",
+      "text" : "Which city did Person09 move to?"
+    },
+    {
+      "expected_answer" : "July 12, 2026",
+      "expected_document_ids" : [
+        "doc_person09_timeline"
+      ],
+      "id" : "q_person09_launch",
+      "text" : "What is the public launch date for Atlas-09?"
+    },
+    {
+      "expected_answer" : "Mateo and July 12, 2026",
+      "expected_document_ids" : [
+        "doc_person09_owner",
+        "doc_person09_timeline"
+      ],
+      "id" : "q_person09_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-09, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Atlanta",
+      "expected_document_ids" : [
+        "doc_person10_profile"
+      ],
+      "id" : "q_person10_city",
+      "text" : "Which city did Person10 move to?"
+    },
+    {
+      "expected_answer" : "August 13, 2026",
+      "expected_document_ids" : [
+        "doc_person10_timeline"
+      ],
+      "id" : "q_person10_launch",
+      "text" : "What is the public launch date for Atlas-10?"
+    },
+    {
+      "expected_answer" : "Priya and August 13, 2026",
+      "expected_document_ids" : [
+        "doc_person10_owner",
+        "doc_person10_timeline"
+      ],
+      "id" : "q_person10_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-10, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Seattle",
+      "expected_document_ids" : [
+        "doc_person11_profile"
+      ],
+      "id" : "q_person11_city",
+      "text" : "Which city did Person11 move to?"
+    },
+    {
+      "expected_answer" : "September 14, 2026",
+      "expected_document_ids" : [
+        "doc_person11_timeline"
+      ],
+      "id" : "q_person11_launch",
+      "text" : "What is the public launch date for Atlas-11?"
+    },
+    {
+      "expected_answer" : "Jordan and September 14, 2026",
+      "expected_document_ids" : [
+        "doc_person11_owner",
+        "doc_person11_timeline"
+      ],
+      "id" : "q_person11_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-11, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Austin",
+      "expected_document_ids" : [
+        "doc_person12_profile"
+      ],
+      "id" : "q_person12_city",
+      "text" : "Which city did Person12 move to?"
+    },
+    {
+      "expected_answer" : "June 15, 2026",
+      "expected_document_ids" : [
+        "doc_person12_timeline"
+      ],
+      "id" : "q_person12_launch",
+      "text" : "What is the public launch date for Atlas-12?"
+    },
+    {
+      "expected_answer" : "Mina and June 15, 2026",
+      "expected_document_ids" : [
+        "doc_person12_owner",
+        "doc_person12_timeline"
+      ],
+      "id" : "q_person12_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-12, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Boston",
+      "expected_document_ids" : [
+        "doc_person13_profile"
+      ],
+      "id" : "q_person13_city",
+      "text" : "Which city did Person13 move to?"
+    },
+    {
+      "expected_answer" : "July 16, 2026",
+      "expected_document_ids" : [
+        "doc_person13_timeline"
+      ],
+      "id" : "q_person13_launch",
+      "text" : "What is the public launch date for Atlas-13?"
+    },
+    {
+      "expected_answer" : "Noah and July 16, 2026",
+      "expected_document_ids" : [
+        "doc_person13_owner",
+        "doc_person13_timeline"
+      ],
+      "id" : "q_person13_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-13, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Denver",
+      "expected_document_ids" : [
+        "doc_person14_profile"
+      ],
+      "id" : "q_person14_city",
+      "text" : "Which city did Person14 move to?"
+    },
+    {
+      "expected_answer" : "August 17, 2026",
+      "expected_document_ids" : [
+        "doc_person14_timeline"
+      ],
+      "id" : "q_person14_launch",
+      "text" : "What is the public launch date for Atlas-14?"
+    },
+    {
+      "expected_answer" : "Ivy and August 17, 2026",
+      "expected_document_ids" : [
+        "doc_person14_owner",
+        "doc_person14_timeline"
+      ],
+      "id" : "q_person14_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-14, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Chicago",
+      "expected_document_ids" : [
+        "doc_person15_profile"
+      ],
+      "id" : "q_person15_city",
+      "text" : "Which city did Person15 move to?"
+    },
+    {
+      "expected_answer" : "September 18, 2026",
+      "expected_document_ids" : [
+        "doc_person15_timeline"
+      ],
+      "id" : "q_person15_launch",
+      "text" : "What is the public launch date for Atlas-15?"
+    },
+    {
+      "expected_answer" : "Luca and September 18, 2026",
+      "expected_document_ids" : [
+        "doc_person15_owner",
+        "doc_person15_timeline"
+      ],
+      "id" : "q_person15_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-15, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Portland",
+      "expected_document_ids" : [
+        "doc_person16_profile"
+      ],
+      "id" : "q_person16_city",
+      "text" : "Which city did Person16 move to?"
+    },
+    {
+      "expected_answer" : "June 19, 2026",
+      "expected_document_ids" : [
+        "doc_person16_timeline"
+      ],
+      "id" : "q_person16_launch",
+      "text" : "What is the public launch date for Atlas-16?"
+    },
+    {
+      "expected_answer" : "Elena and June 19, 2026",
+      "expected_document_ids" : [
+        "doc_person16_owner",
+        "doc_person16_timeline"
+      ],
+      "id" : "q_person16_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-16, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Miami",
+      "expected_document_ids" : [
+        "doc_person17_profile"
+      ],
+      "id" : "q_person17_city",
+      "text" : "Which city did Person17 move to?"
+    },
+    {
+      "expected_answer" : "July 20, 2026",
+      "expected_document_ids" : [
+        "doc_person17_timeline"
+      ],
+      "id" : "q_person17_launch",
+      "text" : "What is the public launch date for Atlas-17?"
+    },
+    {
+      "expected_answer" : "Kai and July 20, 2026",
+      "expected_document_ids" : [
+        "doc_person17_owner",
+        "doc_person17_timeline"
+      ],
+      "id" : "q_person17_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-17, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "San Diego",
+      "expected_document_ids" : [
+        "doc_person18_profile"
+      ],
+      "id" : "q_person18_city",
+      "text" : "Which city did Person18 move to?"
+    },
+    {
+      "expected_answer" : "August 21, 2026",
+      "expected_document_ids" : [
+        "doc_person18_timeline"
+      ],
+      "id" : "q_person18_launch",
+      "text" : "What is the public launch date for Atlas-18?"
+    },
+    {
+      "expected_answer" : "Sora and August 21, 2026",
+      "expected_document_ids" : [
+        "doc_person18_owner",
+        "doc_person18_timeline"
+      ],
+      "id" : "q_person18_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-18, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Phoenix",
+      "expected_document_ids" : [
+        "doc_person19_profile"
+      ],
+      "id" : "q_person19_city",
+      "text" : "Which city did Person19 move to?"
+    },
+    {
+      "expected_answer" : "September 22, 2026",
+      "expected_document_ids" : [
+        "doc_person19_timeline"
+      ],
+      "id" : "q_person19_launch",
+      "text" : "What is the public launch date for Atlas-19?"
+    },
+    {
+      "expected_answer" : "Nina and September 22, 2026",
+      "expected_document_ids" : [
+        "doc_person19_owner",
+        "doc_person19_timeline"
+      ],
+      "id" : "q_person19_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-19, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Atlanta",
+      "expected_document_ids" : [
+        "doc_person20_profile"
+      ],
+      "id" : "q_person20_city",
+      "text" : "Which city did Person20 move to?"
+    },
+    {
+      "expected_answer" : "June 23, 2026",
+      "expected_document_ids" : [
+        "doc_person20_timeline"
+      ],
+      "id" : "q_person20_launch",
+      "text" : "What is the public launch date for Atlas-20?"
+    },
+    {
+      "expected_answer" : "Arjun and June 23, 2026",
+      "expected_document_ids" : [
+        "doc_person20_owner",
+        "doc_person20_timeline"
+      ],
+      "id" : "q_person20_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-20, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Seattle",
+      "expected_document_ids" : [
+        "doc_person21_profile"
+      ],
+      "id" : "q_person21_city",
+      "text" : "Which city did Person21 move to?"
+    },
+    {
+      "expected_answer" : "July 24, 2026",
+      "expected_document_ids" : [
+        "doc_person21_timeline"
+      ],
+      "id" : "q_person21_launch",
+      "text" : "What is the public launch date for Atlas-21?"
+    },
+    {
+      "expected_answer" : "Mateo and July 24, 2026",
+      "expected_document_ids" : [
+        "doc_person21_owner",
+        "doc_person21_timeline"
+      ],
+      "id" : "q_person21_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-21, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Austin",
+      "expected_document_ids" : [
+        "doc_person22_profile"
+      ],
+      "id" : "q_person22_city",
+      "text" : "Which city did Person22 move to?"
+    },
+    {
+      "expected_answer" : "August 25, 2026",
+      "expected_document_ids" : [
+        "doc_person22_timeline"
+      ],
+      "id" : "q_person22_launch",
+      "text" : "What is the public launch date for Atlas-22?"
+    },
+    {
+      "expected_answer" : "Priya and August 25, 2026",
+      "expected_document_ids" : [
+        "doc_person22_owner",
+        "doc_person22_timeline"
+      ],
+      "id" : "q_person22_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-22, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Boston",
+      "expected_document_ids" : [
+        "doc_person23_profile"
+      ],
+      "id" : "q_person23_city",
+      "text" : "Which city did Person23 move to?"
+    },
+    {
+      "expected_answer" : "September 26, 2026",
+      "expected_document_ids" : [
+        "doc_person23_timeline"
+      ],
+      "id" : "q_person23_launch",
+      "text" : "What is the public launch date for Atlas-23?"
+    },
+    {
+      "expected_answer" : "Jordan and September 26, 2026",
+      "expected_document_ids" : [
+        "doc_person23_owner",
+        "doc_person23_timeline"
+      ],
+      "id" : "q_person23_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-23, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Denver",
+      "expected_document_ids" : [
+        "doc_person24_profile"
+      ],
+      "id" : "q_person24_city",
+      "text" : "Which city did Person24 move to?"
+    },
+    {
+      "expected_answer" : "June 3, 2026",
+      "expected_document_ids" : [
+        "doc_person24_timeline"
+      ],
+      "id" : "q_person24_launch",
+      "text" : "What is the public launch date for Atlas-24?"
+    },
+    {
+      "expected_answer" : "Mina and June 3, 2026",
+      "expected_document_ids" : [
+        "doc_person24_owner",
+        "doc_person24_timeline"
+      ],
+      "id" : "q_person24_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-24, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Chicago",
+      "expected_document_ids" : [
+        "doc_person25_profile"
+      ],
+      "id" : "q_person25_city",
+      "text" : "Which city did Person25 move to?"
+    },
+    {
+      "expected_answer" : "July 4, 2026",
+      "expected_document_ids" : [
+        "doc_person25_timeline"
+      ],
+      "id" : "q_person25_launch",
+      "text" : "What is the public launch date for Atlas-25?"
+    },
+    {
+      "expected_answer" : "Noah and July 4, 2026",
+      "expected_document_ids" : [
+        "doc_person25_owner",
+        "doc_person25_timeline"
+      ],
+      "id" : "q_person25_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-25, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Portland",
+      "expected_document_ids" : [
+        "doc_person26_profile"
+      ],
+      "id" : "q_person26_city",
+      "text" : "Which city did Person26 move to?"
+    },
+    {
+      "expected_answer" : "August 5, 2026",
+      "expected_document_ids" : [
+        "doc_person26_timeline"
+      ],
+      "id" : "q_person26_launch",
+      "text" : "What is the public launch date for Atlas-26?"
+    },
+    {
+      "expected_answer" : "Ivy and August 5, 2026",
+      "expected_document_ids" : [
+        "doc_person26_owner",
+        "doc_person26_timeline"
+      ],
+      "id" : "q_person26_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-26, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Miami",
+      "expected_document_ids" : [
+        "doc_person27_profile"
+      ],
+      "id" : "q_person27_city",
+      "text" : "Which city did Person27 move to?"
+    },
+    {
+      "expected_answer" : "September 6, 2026",
+      "expected_document_ids" : [
+        "doc_person27_timeline"
+      ],
+      "id" : "q_person27_launch",
+      "text" : "What is the public launch date for Atlas-27?"
+    },
+    {
+      "expected_answer" : "Luca and September 6, 2026",
+      "expected_document_ids" : [
+        "doc_person27_owner",
+        "doc_person27_timeline"
+      ],
+      "id" : "q_person27_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-27, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "San Diego",
+      "expected_document_ids" : [
+        "doc_person28_profile"
+      ],
+      "id" : "q_person28_city",
+      "text" : "Which city did Person28 move to?"
+    },
+    {
+      "expected_answer" : "June 7, 2026",
+      "expected_document_ids" : [
+        "doc_person28_timeline"
+      ],
+      "id" : "q_person28_launch",
+      "text" : "What is the public launch date for Atlas-28?"
+    },
+    {
+      "expected_answer" : "Elena and June 7, 2026",
+      "expected_document_ids" : [
+        "doc_person28_owner",
+        "doc_person28_timeline"
+      ],
+      "id" : "q_person28_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-28, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Phoenix",
+      "expected_document_ids" : [
+        "doc_person29_profile"
+      ],
+      "id" : "q_person29_city",
+      "text" : "Which city did Person29 move to?"
+    },
+    {
+      "expected_answer" : "July 8, 2026",
+      "expected_document_ids" : [
+        "doc_person29_timeline"
+      ],
+      "id" : "q_person29_launch",
+      "text" : "What is the public launch date for Atlas-29?"
+    },
+    {
+      "expected_answer" : "Kai and July 8, 2026",
+      "expected_document_ids" : [
+        "doc_person29_owner",
+        "doc_person29_timeline"
+      ],
+      "id" : "q_person29_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-29, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Atlanta",
+      "expected_document_ids" : [
+        "doc_person30_profile"
+      ],
+      "id" : "q_person30_city",
+      "text" : "Which city did Person30 move to?"
+    },
+    {
+      "expected_answer" : "August 9, 2026",
+      "expected_document_ids" : [
+        "doc_person30_timeline"
+      ],
+      "id" : "q_person30_launch",
+      "text" : "What is the public launch date for Atlas-30?"
+    },
+    {
+      "expected_answer" : "Sora and August 9, 2026",
+      "expected_document_ids" : [
+        "doc_person30_owner",
+        "doc_person30_timeline"
+      ],
+      "id" : "q_person30_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-30, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Seattle",
+      "expected_document_ids" : [
+        "doc_person31_profile"
+      ],
+      "id" : "q_person31_city",
+      "text" : "Which city did Person31 move to?"
+    },
+    {
+      "expected_answer" : "September 10, 2026",
+      "expected_document_ids" : [
+        "doc_person31_timeline"
+      ],
+      "id" : "q_person31_launch",
+      "text" : "What is the public launch date for Atlas-31?"
+    },
+    {
+      "expected_answer" : "Nina and September 10, 2026",
+      "expected_document_ids" : [
+        "doc_person31_owner",
+        "doc_person31_timeline"
+      ],
+      "id" : "q_person31_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-31, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Austin",
+      "expected_document_ids" : [
+        "doc_person32_profile"
+      ],
+      "id" : "q_person32_city",
+      "text" : "Which city did Person32 move to?"
+    },
+    {
+      "expected_answer" : "June 11, 2026",
+      "expected_document_ids" : [
+        "doc_person32_timeline"
+      ],
+      "id" : "q_person32_launch",
+      "text" : "What is the public launch date for Atlas-32?"
+    },
+    {
+      "expected_answer" : "Arjun and June 11, 2026",
+      "expected_document_ids" : [
+        "doc_person32_owner",
+        "doc_person32_timeline"
+      ],
+      "id" : "q_person32_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-32, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Boston",
+      "expected_document_ids" : [
+        "doc_person33_profile"
+      ],
+      "id" : "q_person33_city",
+      "text" : "Which city did Person33 move to?"
+    },
+    {
+      "expected_answer" : "July 12, 2026",
+      "expected_document_ids" : [
+        "doc_person33_timeline"
+      ],
+      "id" : "q_person33_launch",
+      "text" : "What is the public launch date for Atlas-33?"
+    },
+    {
+      "expected_answer" : "Mateo and July 12, 2026",
+      "expected_document_ids" : [
+        "doc_person33_owner",
+        "doc_person33_timeline"
+      ],
+      "id" : "q_person33_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-33, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Denver",
+      "expected_document_ids" : [
+        "doc_person34_profile"
+      ],
+      "id" : "q_person34_city",
+      "text" : "Which city did Person34 move to?"
+    },
+    {
+      "expected_answer" : "August 13, 2026",
+      "expected_document_ids" : [
+        "doc_person34_timeline"
+      ],
+      "id" : "q_person34_launch",
+      "text" : "What is the public launch date for Atlas-34?"
+    },
+    {
+      "expected_answer" : "Priya and August 13, 2026",
+      "expected_document_ids" : [
+        "doc_person34_owner",
+        "doc_person34_timeline"
+      ],
+      "id" : "q_person34_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-34, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Chicago",
+      "expected_document_ids" : [
+        "doc_person35_profile"
+      ],
+      "id" : "q_person35_city",
+      "text" : "Which city did Person35 move to?"
+    },
+    {
+      "expected_answer" : "September 14, 2026",
+      "expected_document_ids" : [
+        "doc_person35_timeline"
+      ],
+      "id" : "q_person35_launch",
+      "text" : "What is the public launch date for Atlas-35?"
+    },
+    {
+      "expected_answer" : "Jordan and September 14, 2026",
+      "expected_document_ids" : [
+        "doc_person35_owner",
+        "doc_person35_timeline"
+      ],
+      "id" : "q_person35_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-35, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Portland",
+      "expected_document_ids" : [
+        "doc_person36_profile"
+      ],
+      "id" : "q_person36_city",
+      "text" : "Which city did Person36 move to?"
+    },
+    {
+      "expected_answer" : "June 15, 2026",
+      "expected_document_ids" : [
+        "doc_person36_timeline"
+      ],
+      "id" : "q_person36_launch",
+      "text" : "What is the public launch date for Atlas-36?"
+    },
+    {
+      "expected_answer" : "Mina and June 15, 2026",
+      "expected_document_ids" : [
+        "doc_person36_owner",
+        "doc_person36_timeline"
+      ],
+      "id" : "q_person36_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-36, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Miami",
+      "expected_document_ids" : [
+        "doc_person37_profile"
+      ],
+      "id" : "q_person37_city",
+      "text" : "Which city did Person37 move to?"
+    },
+    {
+      "expected_answer" : "July 16, 2026",
+      "expected_document_ids" : [
+        "doc_person37_timeline"
+      ],
+      "id" : "q_person37_launch",
+      "text" : "What is the public launch date for Atlas-37?"
+    },
+    {
+      "expected_answer" : "Noah and July 16, 2026",
+      "expected_document_ids" : [
+        "doc_person37_owner",
+        "doc_person37_timeline"
+      ],
+      "id" : "q_person37_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-37, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "San Diego",
+      "expected_document_ids" : [
+        "doc_person38_profile"
+      ],
+      "id" : "q_person38_city",
+      "text" : "Which city did Person38 move to?"
+    },
+    {
+      "expected_answer" : "August 17, 2026",
+      "expected_document_ids" : [
+        "doc_person38_timeline"
+      ],
+      "id" : "q_person38_launch",
+      "text" : "What is the public launch date for Atlas-38?"
+    },
+    {
+      "expected_answer" : "Ivy and August 17, 2026",
+      "expected_document_ids" : [
+        "doc_person38_owner",
+        "doc_person38_timeline"
+      ],
+      "id" : "q_person38_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-38, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Phoenix",
+      "expected_document_ids" : [
+        "doc_person39_profile"
+      ],
+      "id" : "q_person39_city",
+      "text" : "Which city did Person39 move to?"
+    },
+    {
+      "expected_answer" : "September 18, 2026",
+      "expected_document_ids" : [
+        "doc_person39_timeline"
+      ],
+      "id" : "q_person39_launch",
+      "text" : "What is the public launch date for Atlas-39?"
+    },
+    {
+      "expected_answer" : "Luca and September 18, 2026",
+      "expected_document_ids" : [
+        "doc_person39_owner",
+        "doc_person39_timeline"
+      ],
+      "id" : "q_person39_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-39, who owns deployment readiness and what is the public launch date?"
+    },
+    {
+      "expected_answer" : "Atlanta",
+      "expected_document_ids" : [
+        "doc_person40_profile"
+      ],
+      "id" : "q_person40_city",
+      "text" : "Which city did Person40 move to?"
+    },
+    {
+      "expected_answer" : "June 19, 2026",
+      "expected_document_ids" : [
+        "doc_person40_timeline"
+      ],
+      "id" : "q_person40_launch",
+      "text" : "What is the public launch date for Atlas-40?"
+    },
+    {
+      "expected_answer" : "Elena and June 19, 2026",
+      "expected_document_ids" : [
+        "doc_person40_owner",
+        "doc_person40_timeline"
+      ],
+      "id" : "q_person40_multihop_owner_and_launch",
+      "required_document_hits" : 2,
+      "text" : "For Atlas-40, who owns deployment readiness and what is the public launch date?"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 import WaxVectorSearch
 
 /// Unified search request.
@@ -16,6 +17,9 @@ public struct SearchRequest: Sendable, Equatable {
 
     public var rrfK: Int
     public var previewMaxBytes: Int
+    /// Threshold for switching between lazy per-frame metadata fetches and batch prefetch.
+    /// Default: 50.
+    public var metadataLoadingThreshold: Int
     public var allowTimelineFallback: Bool
     public var timelineFallbackLimit: Int
 
@@ -32,6 +36,7 @@ public struct SearchRequest: Sendable, Equatable {
         structuredMemory: StructuredMemorySearchOptions = .init(),
         rrfK: Int = 60,
         previewMaxBytes: Int = 512,
+        metadataLoadingThreshold: Int = 50,
         allowTimelineFallback: Bool = false,
         timelineFallbackLimit: Int = 10
     ) {
@@ -47,6 +52,7 @@ public struct SearchRequest: Sendable, Equatable {
         self.structuredMemory = structuredMemory
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
+        self.metadataLoadingThreshold = metadataLoadingThreshold
         self.allowTimelineFallback = allowTimelineFallback
         self.timelineFallbackLimit = timelineFallbackLimit
     }
@@ -98,16 +104,36 @@ public struct FrameFilter: Sendable, Equatable {
     public var includeSuperseded: Bool
     public var includeSurrogates: Bool
     public var frameIds: Set<UInt64>?
+    public var metadataFilter: MetadataFilter?
 
     public init(
         includeDeleted: Bool = false,
         includeSuperseded: Bool = false,
         includeSurrogates: Bool = false,
-        frameIds: Set<UInt64>? = nil
+        frameIds: Set<UInt64>? = nil,
+        metadataFilter: MetadataFilter? = nil
     ) {
         self.includeDeleted = includeDeleted
         self.includeSuperseded = includeSuperseded
         self.includeSurrogates = includeSurrogates
         self.frameIds = frameIds
+        self.metadataFilter = metadataFilter
+    }
+}
+
+/// Metadata predicate applied to candidate frame metadata during unified search.
+public struct MetadataFilter: Sendable, Equatable {
+    public var requiredEntries: [String: String]
+    public var requiredTags: [TagPair]
+    public var requiredLabels: [String]
+
+    public init(
+        requiredEntries: [String: String] = [:],
+        requiredTags: [TagPair] = [],
+        requiredLabels: [String] = []
+    ) {
+        self.requiredEntries = requiredEntries
+        self.requiredTags = requiredTags
+        self.requiredLabels = requiredLabels
     }
 }

@@ -124,6 +124,87 @@ import Wax
     }
 }
 
+@Test func frameFilterMatchesMetadataEntries() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(
+            Data("Project alpha roadmap".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["source": "email", "topic": "alpha"]))
+        )
+        try await text.index(frameId: id0, text: "Project alpha roadmap")
+
+        let id1 = try await wax.put(
+            Data("Project alpha backlog".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["source": "notes", "topic": "alpha"]))
+        )
+        try await text.index(frameId: id1, text: "Project alpha backlog")
+
+        try await text.commit()
+
+        let filter = FrameFilter(
+            metadataFilter: .init(requiredEntries: ["source": "email"])
+        )
+        let request = SearchRequest(
+            query: "alpha",
+            mode: .textOnly,
+            topK: 10,
+            frameFilter: filter
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.map(\.frameId) == [id0])
+
+        try await wax.close()
+    }
+}
+
+@Test func frameFilterMatchesTagsAndLabels() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(
+            Data("Quarterly finance summary".utf8),
+            options: FrameMetaSubset(
+                tags: [TagPair(key: "team", value: "finance"), TagPair(key: "quarter", value: "q1")],
+                labels: ["public", "summary"]
+            )
+        )
+        try await text.index(frameId: id0, text: "Quarterly finance summary")
+
+        let id1 = try await wax.put(
+            Data("Quarterly engineering summary".utf8),
+            options: FrameMetaSubset(
+                tags: [TagPair(key: "team", value: "engineering"), TagPair(key: "quarter", value: "q1")],
+                labels: ["internal", "summary"]
+            )
+        )
+        try await text.index(frameId: id1, text: "Quarterly engineering summary")
+
+        try await text.commit()
+
+        let filter = FrameFilter(
+            metadataFilter: .init(
+                requiredTags: [TagPair(key: "team", value: "finance")],
+                requiredLabels: ["public"]
+            )
+        )
+        let request = SearchRequest(
+            query: "Quarterly summary",
+            mode: .textOnly,
+            topK: 10,
+            frameFilter: filter
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.map(\.frameId) == [id0])
+
+        try await wax.close()
+    }
+}
+
 private struct TestEmbedder2D: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
     let normalize: Bool = true

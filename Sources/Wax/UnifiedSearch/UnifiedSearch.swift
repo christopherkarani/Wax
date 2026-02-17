@@ -174,7 +174,7 @@ extension Wax {
             if structuredIds.isEmpty || structuredWeight <= 0 {
                 baseResults = textResults.map { (frameId: $0.frameId, score: Float($0.score), sources: [.text]) }
             } else {
-                let textIds = textResults.map(\.frameId)
+                let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
                 let fused = HybridSearch.rrfFusion(
                     lists: [
                         (weight: weights.bm25, frameIds: textIds),
@@ -183,7 +183,6 @@ extension Wax {
                     k: request.rrfK
                 )
 
-                let textSet = Set(textIds)
                 let structuredSet = Set(structuredIds)
 
                 baseResults = fused.map { (frameId, score) in
@@ -197,7 +196,7 @@ extension Wax {
             if structuredIds.isEmpty || structuredWeight <= 0 {
                 baseResults = vectorResults.map { (frameId: $0.frameId, score: $0.score, sources: [.vector]) }
             } else {
-                let vectorIds = vectorResults.map(\.frameId)
+                let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
                 let fused = HybridSearch.rrfFusion(
                     lists: [
                         (weight: weights.vector, frameIds: vectorIds),
@@ -206,7 +205,6 @@ extension Wax {
                     k: request.rrfK
                 )
 
-                let vectorSet = Set(vectorIds)
                 let structuredSet = Set(structuredIds)
 
                 baseResults = fused.map { (frameId, score) in
@@ -221,8 +219,8 @@ extension Wax {
             let textWeight = weights.bm25 * clampedAlpha
             let vectorWeight = weights.vector * (1 - clampedAlpha)
 
-            let textIds = textResults.map(\.frameId)
-            let vectorIds = vectorResults.map(\.frameId)
+            let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
+            let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
             let timelineIds = timelineFrameIds
 
             var lists: [(weight: Float, frameIds: [UInt64])] = []
@@ -233,8 +231,6 @@ extension Wax {
 
             let fused = HybridSearch.rrfFusion(lists: lists, k: request.rrfK)
 
-            let textSet = Set(textIds)
-            let vectorSet = Set(vectorIds)
             let timelineSet = Set(timelineIds)
             let structuredSet = Set(structuredIds)
 
@@ -267,6 +263,9 @@ extension Wax {
             if !filter.includeDeleted, meta.status == .deleted { return false }
             if !filter.includeSuperseded, meta.supersededBy != nil { return false }
             if !filter.includeSurrogates, meta.kind == "surrogate" { return false }
+            if let metadataFilter = filter.metadataFilter, !Self.matches(metadataFilter: metadataFilter, meta: meta) {
+                return false
+            }
             return true
         }
 
@@ -277,7 +276,7 @@ extension Wax {
             // Optimization: Use lazy metadata loading for small result sets
             // Dictionary-building overhead dominates for small scales (<50 items)
             // Prefetch is only beneficial for larger result sets
-            let lazyMetadataThreshold = 50
+            let lazyMetadataThreshold = max(1, request.metadataLoadingThreshold)
             
             if baseResults.count >= lazyMetadataThreshold {
                 // Batch prefetch for large result sets
@@ -305,7 +304,17 @@ extension Wax {
                 // Lazy loading for small result sets - avoids dictionary overhead
                 for item in baseResults {
                     if let minScore = request.minScore, item.score < minScore { continue }
-                    guard let meta = try? await frameMetaIncludingPending(frameId: item.frameId) else { continue }
+                    let meta: FrameMeta
+                    do {
+                        meta = try await frameMetaIncludingPending(frameId: item.frameId)
+                    } catch {
+                        WaxDiagnostics.logSwallowed(
+                            error,
+                            context: "unified search frame metadata lookup",
+                            fallback: "skip result without metadata"
+                        )
+                        continue
+                    }
                     guard passesFilters(meta: meta, frameId: item.frameId, score: item.score) else { continue }
 
                     pendingResults.append(
@@ -370,10 +379,20 @@ extension Wax {
         results.reserveCapacity(max(0, request.timelineFallbackLimit))
 
         let frames = await timeline(query)
-        let previewById = (try? await framePreviews(
-            frameIds: frames.map(\.id),
-            maxBytes: request.previewMaxBytes
-        )) ?? [:]
+        let previewById: [UInt64: Data]
+        do {
+            previewById = try await framePreviews(
+                frameIds: frames.map(\.id),
+                maxBytes: request.previewMaxBytes
+            )
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "unified search timeline fallback previews",
+                fallback: "empty preview map"
+            )
+            previewById = [:]
+        }
 
         for (rank, meta) in frames.enumerated() {
             let frameId = meta.id
@@ -508,5 +527,44 @@ extension Wax {
         let expanded = topK > Int.max / 3 ? Int.max : topK * 3
         let capped = min(expanded, 1000)
         return max(topK, capped)
+    }
+
+    private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)
+    where S.Element == UInt64 {
+        var ids: [UInt64] = []
+        var set: Set<UInt64> = []
+        ids.reserveCapacity(frameIDs.underestimatedCount)
+        set.reserveCapacity(frameIDs.underestimatedCount)
+        for frameId in frameIDs {
+            ids.append(frameId)
+            set.insert(frameId)
+        }
+        return (ids, set)
+    }
+
+    private static func matches(metadataFilter: MetadataFilter, meta: FrameMeta) -> Bool {
+        if !metadataFilter.requiredEntries.isEmpty {
+            guard let entries = meta.metadata?.entries else { return false }
+            for (key, value) in metadataFilter.requiredEntries {
+                guard entries[key] == value else { return false }
+            }
+        }
+
+        if !metadataFilter.requiredTags.isEmpty {
+            for required in metadataFilter.requiredTags {
+                let hasTag = meta.tags.contains { tag in
+                    tag.key == required.key && tag.value == required.value
+                }
+                if !hasTag { return false }
+            }
+        }
+
+        if !metadataFilter.requiredLabels.isEmpty {
+            for label in metadataFilter.requiredLabels where !meta.labels.contains(label) {
+                return false
+            }
+        }
+
+        return true
     }
 }

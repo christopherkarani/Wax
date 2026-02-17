@@ -344,3 +344,96 @@ func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
         try await wax.close()
     }
 }
+
+@Test
+func queryAwareRerankPrefersIntentAlignedPreviewOverHigherBaseScore() {
+    let results: [SearchResponse.Result] = [
+        .init(
+            frameId: 1,
+            score: 1.00,
+            previewText: "Person01 is allergic to peanuts and avoids foods with peanuts.",
+            sources: [.text]
+        ),
+        .init(
+            frameId: 2,
+            score: 0.85,
+            previewText: "Person01 moved to Seattle in 2021 and works on the platform team.",
+            sources: [.text]
+        ),
+    ]
+    var config = FastRAGConfig()
+    config.enableAnswerFocusedRanking = true
+
+    let reranked = FastRAGContextBuilder.rerankCandidatesForAnswer(
+        results: results,
+        query: "Which city did Person01 move to?",
+        config: config,
+        analyzer: QueryAnalyzer()
+    )
+
+    #expect(reranked.first?.frameId == 2)
+}
+
+@Test
+func deterministicAnswerExtractorPullsCityForLocationQuestion() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "Which city did Person01 move to?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 1,
+                score: 0.9,
+                sources: [.text],
+                text: "Person01 moved to Seattle in 2021 and works on the platform team."
+            ),
+        ],
+        totalTokens: 18
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Seattle")
+}
+
+@Test
+func deterministicAnswerExtractorMergesOwnerAndLaunchDateAcrossItems() {
+    let extractor = DeterministicAnswerExtractor()
+    let context = RAGContext(
+        query: "For Atlas-01, who owns deployment readiness and what is the public launch date?",
+        items: [
+            .init(
+                kind: .expanded,
+                frameId: 10,
+                score: 0.8,
+                sources: [.text],
+                text: "In project Atlas-01, Priya owns QA and Noah owns deployment readiness."
+            ),
+            .init(
+                kind: .snippet,
+                frameId: 11,
+                score: 0.7,
+                sources: [.text],
+                text: "For project Atlas-01, beta starts in April 2026 and public launch is July 4, 2026."
+            ),
+        ],
+        totalTokens: 34
+    )
+
+    let answer = extractor.extractAnswer(query: context.query, items: context.items)
+    #expect(answer == "Noah and July 4, 2026")
+}
+
+@Test
+func snippetFallbackTriggersForDateIntentWhenPreviewLacksDateLiteral() {
+    let shouldFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-01, public launch details are documented in roadmap notes.",
+        intent: [.asksDate]
+    )
+    #expect(shouldFallback)
+
+    let shouldNotFallback = FastRAGContextBuilder.shouldUseFullFrameForSnippet(
+        preview: "For project Atlas-01, public launch is July 4, 2026.",
+        intent: [.asksDate]
+    )
+    #expect(!shouldNotFallback)
+}
