@@ -39,3 +39,19 @@ public protocol CaptionProvider: Sendable {
     /// Produce a short, human-readable caption for an image.
     func caption(for image: CGImage) async throws -> String
 }
+
+// MARK: - Deprecated Defaults (migration aid)
+
+extension OCRProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your OCRProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+}
+
+extension CaptionProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CaptionProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+}

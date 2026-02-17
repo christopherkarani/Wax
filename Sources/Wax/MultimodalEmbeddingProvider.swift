@@ -22,3 +22,12 @@ public protocol MultimodalEmbeddingProvider: Sendable {
     /// Compute an image embedding in the same space as text embeddings.
     func embed(image: CGImage) async throws -> [Float]
 }
+
+// MARK: - Deprecated Default (migration aid)
+
+extension MultimodalEmbeddingProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+}

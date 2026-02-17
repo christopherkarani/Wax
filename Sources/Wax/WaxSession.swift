@@ -4,6 +4,38 @@ import WaxTextSearch
 import WaxVectorSearch
 
 public actor WaxSession {
+    private enum ConcreteVectorEngine: Sendable {
+        case usearch(USearchVectorEngine)
+        case metal(MetalVectorEngine)
+
+        var erased: any VectorSearchEngine {
+            switch self {
+            case .usearch(let engine):
+                return engine
+            case .metal(let engine):
+                return engine
+            }
+        }
+
+        func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
+            switch self {
+            case .usearch(let engine):
+                try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            case .metal(let engine):
+                try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            }
+        }
+
+        func stageForCommit(into wax: Wax) async throws {
+            switch self {
+            case .usearch(let engine):
+                try await engine.stageForCommit(into: wax)
+            case .metal(let engine):
+                try await engine.stageForCommit(into: wax)
+            }
+        }
+    }
+
     public enum Mode: Sendable, Equatable {
         case readOnly
         case readWrite(WriterPolicy = .wait)
@@ -48,6 +80,7 @@ public actor WaxSession {
 
     private let textEngine: FTS5SearchEngine?
     private let vectorEngine: (any VectorSearchEngine)?
+    private let concreteVectorEngine: ConcreteVectorEngine?
     private var lastPendingEmbeddingSequence: UInt64?
     private var writerLeaseId: UUID?
     private var isClosed = false
@@ -71,18 +104,22 @@ public actor WaxSession {
         if config.enableVectorSearch {
             let dimensions = try await Self.resolveVectorDimensions(for: wax, config: config)
             if let dimensions {
-                self.vectorEngine = try await Self.loadVectorEngine(
+                let loadedVectorEngine = try await Self.loadVectorEngine(
                     wax: wax,
                     metric: config.vectorMetric,
                     dimensions: dimensions,
                     preference: config.vectorEnginePreference
                 )
+                self.concreteVectorEngine = loadedVectorEngine
+                self.vectorEngine = loadedVectorEngine.erased
                 let snapshot = await wax.pendingEmbeddingMutations(since: nil)
                 self.lastPendingEmbeddingSequence = snapshot.latestSequence
             } else {
+                self.concreteVectorEngine = nil
                 self.vectorEngine = nil
             }
         } else {
+            self.concreteVectorEngine = nil
             self.vectorEngine = nil
         }
     }
@@ -355,7 +392,7 @@ public actor WaxSession {
         try ensureWritable()
 
         let localTextEngine = textEngine
-        let localVectorEngine = vectorEngine
+        let localVectorEngine = concreteVectorEngine
         let localWax = wax
         let localConfig = config
 
@@ -414,7 +451,7 @@ public actor WaxSession {
         }
     }
 
-    private func stageVectorForCommit(using engine: some VectorSearchEngine) async throws {
+    private func stageVectorForCommit(using engine: ConcreteVectorEngine) async throws {
         let snapshot = await wax.pendingEmbeddingMutations(since: lastPendingEmbeddingSequence)
         if let latest = snapshot.latestSequence,
            let last = lastPendingEmbeddingSequence,
@@ -422,8 +459,14 @@ public actor WaxSession {
             lastPendingEmbeddingSequence = nil
         }
         if !snapshot.embeddings.isEmpty {
-            let frameIds = snapshot.embeddings.map(\.frameId)
-            let vectors = snapshot.embeddings.map(\.vector)
+            var frameIds: [UInt64] = []
+            var vectors: [[Float]] = []
+            frameIds.reserveCapacity(snapshot.embeddings.count)
+            vectors.reserveCapacity(snapshot.embeddings.count)
+            for embedding in snapshot.embeddings {
+                frameIds.append(embedding.frameId)
+                vectors.append(embedding.vector)
+            }
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         }
         lastPendingEmbeddingSequence = snapshot.latestSequence
@@ -445,11 +488,11 @@ public actor WaxSession {
         metric: VectorMetric,
         dimensions: Int,
         preference: VectorEnginePreference
-    ) async throws -> any VectorSearchEngine {
+    ) async throws -> ConcreteVectorEngine {
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             do {
                 let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
-                return metal
+                return .metal(metal)
             } catch {
                 WaxDiagnostics.logSwallowed(
                     error,
@@ -458,7 +501,8 @@ public actor WaxSession {
                 )
             }
         }
-        return try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        return .usearch(usearch)
     }
 
     private func mergeOptions(

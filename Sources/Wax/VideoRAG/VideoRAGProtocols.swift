@@ -43,3 +43,12 @@ public protocol VideoTranscriptProvider: Sendable {
     /// Wax maps chunks to segments using a 250ms overlap threshold.
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk]
 }
+
+// MARK: - Deprecated Default (migration aid)
+
+extension VideoTranscriptProvider {
+    /// Default removed to enforce explicit execution mode declaration.
+    /// Provide an explicit `executionMode` property on your conformance.
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your VideoTranscriptProvider conformance.")
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+}

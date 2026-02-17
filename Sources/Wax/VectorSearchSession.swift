@@ -3,10 +3,16 @@ import WaxCore
 import WaxVectorSearch
 
 public actor WaxVectorSearchSession {
+    private enum ConcreteVectorEngine: Sendable {
+        case usearch(USearchVectorEngine)
+        case metal(MetalVectorEngine)
+    }
+
     public let wax: Wax
     public let engine: any VectorSearchEngine
     public let metric: VectorMetric
     public let dimensions: Int
+    private let concreteEngine: ConcreteVectorEngine
     private var lastPendingEmbeddingSequence: UInt64?
     private var pendingRemovedFrameIds: Set<UInt64> = []
 
@@ -19,21 +25,31 @@ public actor WaxVectorSearchSession {
         self.wax = wax
         self.metric = metric
         self.dimensions = dimensions
+        let loadedEngine: ConcreteVectorEngine
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             // Try Metal first; if load fails, fall back to CPU without aborting the session.
             do {
                 let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
-                self.engine = metal
+                loadedEngine = .metal(metal)
             } catch {
                 WaxDiagnostics.logSwallowed(
                     error,
                     context: "metal vector engine load",
                     fallback: "use CPU vector engine"
                 )
-                self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+                let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+                loadedEngine = .usearch(usearch)
             }
         } else {
-            self.engine = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+            let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+            loadedEngine = .usearch(usearch)
+        }
+        self.concreteEngine = loadedEngine
+        switch loadedEngine {
+        case .usearch(let engine):
+            self.engine = engine
+        case .metal(let engine):
+            self.engine = engine
         }
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
@@ -41,13 +57,13 @@ public actor WaxVectorSearchSession {
     }
 
     public func add(frameId: UInt64, vector: [Float]) async throws {
-        try await engine.add(frameId: frameId, vector: vector)
+        try await addToEngine(frameId: frameId, vector: vector)
         pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: vector)
     }
 
     public func remove(frameId: UInt64) async throws {
-        try await engine.remove(frameId: frameId)
+        try await removeFromEngine(frameId: frameId)
         pendingRemovedFrameIds.insert(frameId)
     }
 
@@ -56,7 +72,7 @@ public actor WaxVectorSearchSession {
         if metric == .cosine, !query.isEmpty, !VectorMath.isNormalizedL2(query) {
             query = VectorMath.normalizeL2(query)
         }
-        return try await engine.search(vector: query, topK: topK)
+        return try await searchEngine(vector: query, topK: topK)
     }
 
     public func putWithEmbedding(
@@ -84,7 +100,7 @@ public actor WaxVectorSearchSession {
         }
 
         let frameId = try await wax.put(content, options: merged, compression: compression)
-        try await engine.add(frameId: frameId, vector: embedding)
+        try await addToEngine(frameId: frameId, vector: embedding)
         pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
@@ -135,7 +151,7 @@ public actor WaxVectorSearchSession {
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression)
 
         // Batch add to vector engine
-        try await engine.addBatch(frameIds: frameIds, vectors: embeddings)
+        try await addBatchToEngine(frameIds: frameIds, vectors: embeddings)
         for frameId in frameIds {
             pendingRemovedFrameIds.remove(frameId)
         }
@@ -159,18 +175,69 @@ public actor WaxVectorSearchSession {
             lastPendingEmbeddingSequence = nil
         }
         if !snapshot.embeddings.isEmpty {
-            let frameIds = snapshot.embeddings.map(\.frameId)
-            let vectors = snapshot.embeddings.map(\.vector)
-            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            var frameIds: [UInt64] = []
+            var vectors: [[Float]] = []
+            frameIds.reserveCapacity(snapshot.embeddings.count)
+            vectors.reserveCapacity(snapshot.embeddings.count)
+            for embedding in snapshot.embeddings {
+                frameIds.append(embedding.frameId)
+                vectors.append(embedding.vector)
+            }
+            try await addBatchToEngine(frameIds: frameIds, vectors: vectors)
         }
         if !pendingRemovedFrameIds.isEmpty {
             for frameId in pendingRemovedFrameIds {
-                try await engine.remove(frameId: frameId)
+                try await removeFromEngine(frameId: frameId)
             }
         }
         lastPendingEmbeddingSequence = snapshot.latestSequence
-        try await engine.stageForCommit(into: wax)
+        try await stageEngineForCommit()
         pendingRemovedFrameIds.removeAll(keepingCapacity: true)
+    }
+
+    private func addToEngine(frameId: UInt64, vector: [Float]) async throws {
+        switch concreteEngine {
+        case .usearch(let engine):
+            try await engine.add(frameId: frameId, vector: vector)
+        case .metal(let engine):
+            try await engine.add(frameId: frameId, vector: vector)
+        }
+    }
+
+    private func addBatchToEngine(frameIds: [UInt64], vectors: [[Float]]) async throws {
+        switch concreteEngine {
+        case .usearch(let engine):
+            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+        case .metal(let engine):
+            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+        }
+    }
+
+    private func removeFromEngine(frameId: UInt64) async throws {
+        switch concreteEngine {
+        case .usearch(let engine):
+            try await engine.remove(frameId: frameId)
+        case .metal(let engine):
+            try await engine.remove(frameId: frameId)
+        }
+    }
+
+    private func searchEngine(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
+        switch concreteEngine {
+        case .usearch(let engine):
+            return try await engine.search(vector: vector, topK: topK)
+        case .metal(let engine):
+            return try await engine.search(vector: vector, topK: topK)
+        }
+    }
+
+    private func stageEngineForCommit() async throws {
+        switch concreteEngine {
+        case .usearch(let engine):
+            try await engine.stageForCommit(into: wax)
+        case .metal(let engine):
+            try await engine.stageForCommit(into: wax)
+        }
     }
 }
 

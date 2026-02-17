@@ -91,6 +91,26 @@ private func blendedPhotoQuery() -> PhotoQuery {
     )
 }
 
+private func firstAssetIDForPhotoBlendWeight(_ textEmbeddingWeight: Float) async throws -> String {
+    try await TempFiles.withTempFile { url in
+        try await writePhotoBlendFixtures(at: url)
+
+        var config = defaultPhotoSearchConfig()
+        config.textEmbeddingWeight = textEmbeddingWeight
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: BlendAwareEmbedder()
+        )
+        let result = try await orchestrator.recall(blendedPhotoQuery())
+        guard let first = result.items.first else {
+            throw WaxError.io("Expected at least one PhotoRAG result")
+        }
+        return first.assetID
+    }
+}
+
 @Test
 func photoRAGConfigDefaultMatchesExplicitDefaults() {
     #expect(PhotoRAGConfig() == PhotoRAGConfig.default)
@@ -152,33 +172,11 @@ func photoRAGConfigClampsNonFiniteBlendValues() {
 
 @Test
 func photoRAGTextImageBlendWeightChangesOrdering() async throws {
-    try await TempFiles.withTempFile { url in
-        try await writePhotoBlendFixtures(at: url)
+    let textPreferredFirst = try await firstAssetIDForPhotoBlendWeight(1.0)
+    #expect(textPreferredFirst == "photo-text")
 
-        let query = blendedPhotoQuery()
-
-        var textPrefersConfig = defaultPhotoSearchConfig()
-        textPrefersConfig.textEmbeddingWeight = 1.0
-        let textPreferringOrchestrator = try await PhotoRAGOrchestrator(
-            storeURL: url,
-            config: textPrefersConfig,
-            embedder: BlendAwareEmbedder()
-        )
-        let textFirstResult = try await textPreferringOrchestrator.recall(query)
-        #expect(textFirstResult.items.count >= 1)
-        #expect(textFirstResult.items[0].assetID == "photo-text")
-
-        var imagePrefersConfig = defaultPhotoSearchConfig()
-        imagePrefersConfig.textEmbeddingWeight = 0.0
-        let imagePreferringOrchestrator = try await PhotoRAGOrchestrator(
-            storeURL: url,
-            config: imagePrefersConfig,
-            embedder: BlendAwareEmbedder()
-        )
-        let imageFirstResult = try await imagePreferringOrchestrator.recall(query)
-        #expect(imageFirstResult.items.count >= 1)
-        #expect(imageFirstResult.items[0].assetID == "photo-image")
-    }
+    let imagePreferredFirst = try await firstAssetIDForPhotoBlendWeight(0.0)
+    #expect(imagePreferredFirst == "photo-image")
 }
 
 @Test

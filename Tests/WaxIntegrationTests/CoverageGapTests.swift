@@ -530,3 +530,36 @@ func pdfIngestErrorNoExtractableTextDescription() {
     #expect(error.errorDescription?.contains("5") == true)
 }
 #endif
+
+// MARK: - RerankingHelpers
+
+@Test
+func rerankingHelpersDetectsTentativeLaunchLanguage() {
+    let positives = [
+        "tentative launch date is March",
+        "this is a draft proposal",
+        "proposed timeline for beta",
+        "pending approval from stakeholders",
+        "target is Q3 2025",
+        "target date for release",
+        "it could be next month",
+        "current estimate is June",
+    ]
+    for text in positives {
+        #expect(RerankingHelpers.containsTentativeLaunchLanguage(text), "Expected true for: \(text)")
+    }
+}
+
+@Test
+func rerankingHelpersRejectsNonTentativeText() {
+    let negatives = [
+        "public launch is march 15, 2025",
+        "the official release date",
+        "confirmed deployment on friday",
+        "atlas moved to seattle",
+        "person18 owns deployment readiness",
+    ]
+    for text in negatives {
+        #expect(!RerankingHelpers.containsTentativeLaunchLanguage(text), "Expected false for: \(text)")
+    }
+}
