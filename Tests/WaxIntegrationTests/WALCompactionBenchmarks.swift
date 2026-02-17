@@ -1,10 +1,15 @@
 import Foundation
 import XCTest
 @testable import Wax
+import WaxCore
 
 final class WALCompactionBenchmarks: XCTestCase {
     private var isEnabled: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_WAL_COMPACTION"] == "1"
+    }
+
+    private var guardrailsEnabled: Bool {
+        ProcessInfo.processInfo.environment["WAX_BENCHMARK_WAL_GUARDRAILS"] == "1"
     }
 
     override func setUpWithError() throws {
@@ -48,6 +53,60 @@ final class WALCompactionBenchmarks: XCTestCase {
         print("🧪 WAL compaction baseline JSON written to \(config.outputPath)")
 
         XCTAssertEqual(results.count, workloads.count)
+    }
+
+    func testProactivePressureGuardrails() async throws {
+        guard guardrailsEnabled else {
+            throw XCTSkip("Set WAX_BENCHMARK_WAL_GUARDRAILS=1 to run proactive WAL percentile guardrails.")
+        }
+
+        let workload = WALCompactionWorkload(
+            name: "guardrail_sustained_text",
+            mode: .textOnly,
+            totalWrites: 12_000,
+            commitEveryWrites: nil,
+            walSize: 512 * 1024,
+            payloadBytes: 256,
+            vectorDimensions: 0
+        )
+
+        let disabled = try await WALCompactionHarness.run(
+            workload: workload,
+            sampleEveryWrites: 250,
+            reopenIterations: 5,
+            waxOptions: WaxOptions(
+                walProactiveCommitThresholdPercent: nil,
+                walProactiveCommitMaxWalSizeBytes: nil
+            )
+        )
+        let enabled = try await WALCompactionHarness.run(
+            workload: workload,
+            sampleEveryWrites: 250,
+            reopenIterations: 5,
+            waxOptions: WaxOptions()
+        )
+
+        XCTAssertGreaterThan(disabled.autoCommitPutLatencyMs.samples, 0)
+        XCTAssertGreaterThan(enabled.autoCommitPutLatencyMs.samples, 0)
+
+        // Percentile guardrails: avoid large tail regressions while pressure improves.
+        XCTAssertLessThanOrEqual(
+            enabled.putLatencyMs.p95Ms,
+            disabled.putLatencyMs.p95Ms * 1.20 + 2.0
+        )
+        XCTAssertLessThanOrEqual(
+            enabled.commitLatencyMs.p95Ms,
+            disabled.commitLatencyMs.p95Ms * 1.20 + 5.0
+        )
+        XCTAssertLessThanOrEqual(
+            enabled.autoCommitPutLatencyMs.p95Ms,
+            disabled.autoCommitPutLatencyMs.p95Ms * 1.15 + 10.0
+        )
+
+        XCTAssertLessThan(
+            enabled.pressure.pendingBytesP95,
+            disabled.pressure.pendingBytesP95
+        )
     }
 }
 

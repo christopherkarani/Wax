@@ -126,7 +126,11 @@ import Testing
     let wax = try await Wax.create(
         at: url,
         walSize: 256 * 1024,
-        options: WaxOptions(walProactiveCommitThresholdPercent: 10)
+        options: WaxOptions(
+            walProactiveCommitThresholdPercent: 10,
+            walProactiveCommitMaxWalSizeBytes: nil,
+            walProactiveCommitMinPendingBytes: 4 * 1024
+        )
     )
 
     for index in 0..<256 {
@@ -167,4 +171,36 @@ import Testing
     #expect(stats.checkpointCount == 0)
 
     try await wax.close()
+}
+
+@Test func waxDefaultProactiveCommitTargetsSmallWalOnly() async throws {
+    let smallWalURL = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: smallWalURL) }
+    let smallWal = try await Wax.create(at: smallWalURL, walSize: 512 * 1024)
+
+    for index in 0..<3_000 {
+        let payload = Data(repeating: UInt8(index % 251), count: 128)
+        _ = try await smallWal.put(
+            payload,
+            options: FrameMetaSubset(searchText: "default-small-\(index)")
+        )
+    }
+    let smallWalStats = await smallWal.walStats()
+    #expect(smallWalStats.autoCommitCount > 0)
+    try await smallWal.close()
+
+    let largeWalURL = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: largeWalURL) }
+    let largeWal = try await Wax.create(at: largeWalURL, walSize: 8 * 1024 * 1024)
+
+    for index in 0..<3_000 {
+        let payload = Data(repeating: UInt8(index % 251), count: 128)
+        _ = try await largeWal.put(
+            payload,
+            options: FrameMetaSubset(searchText: "default-large-\(index)")
+        )
+    }
+    let largeWalStats = await largeWal.walStats()
+    #expect(largeWalStats.autoCommitCount == 0)
+    try await largeWal.close()
 }
