@@ -262,6 +262,12 @@ extension WaxCLI.MCP {
                 failures.append(error.localizedDescription)
             }
 
+            if !failures.isEmpty {
+                // Dependency checks failed — skip server smoke check since dependencies are absent.
+                // All failures (including skipped smoke check) are reported below.
+                failures.append("Server smoke check skipped (resolve dependency failures above first)")
+            }
+
             if failures.isEmpty {
                 var env = ProcessInfo.processInfo.environment
                 env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"

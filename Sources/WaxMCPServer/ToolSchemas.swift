@@ -150,6 +150,8 @@ enum ToolSchemas {
         required: ["query"]
     )
 
+    // TODO: Replace with proper schemas when Soju photo RAG integration is complete.
+    // These tools are advertised but return isError:true — the empty schema is a placeholder.
     static let waxPhotoIngest: Value = emptyObjectSchema()
     static let waxPhotoRecall: Value = emptyObjectSchema()
 

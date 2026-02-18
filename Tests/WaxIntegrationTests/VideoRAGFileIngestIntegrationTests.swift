@@ -786,10 +786,12 @@ func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
         #expect(abs(ctx.items[0].score - ctx.items[1].score) < 0.001)
         // Both items are present (Set equality) — Invariant #6 compliance.
         #expect(Set(ctx.items.map(\.videoID.id)) == Set([zetaID.id, alphaID.id]))
-        // Tie-break order must be deterministic across repeated identical queries (Invariant #6).
-        // The specific order (alpha vs zeta first) is intentionally not pinned here because it
-        // depends on the underlying store's frame ID assignment order, which is test-environment
-        // dependent. Cross-run consistency is the invariant being tested.
+        // Tie-break order must be deterministic — Invariant #6.
+        // zetaRoot is inserted before alphaRoot so it receives a lower WAL frame ID.
+        // The tie-break sorts ascending by root frame ID, so "zeta" always comes first.
+        // This specific order is pinned to catch regressions in tie-break logic.
+        #expect(ctx.items.map(\.videoID.id) == [zetaID.id, alphaID.id])
+        // Cross-run consistency: identical queries must produce identical ordering.
         #expect(ctx.items.map(\.videoID.id) == ctxRepeat.items.map(\.videoID.id))
     }
 }

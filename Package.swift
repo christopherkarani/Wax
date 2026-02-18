@@ -109,7 +109,13 @@ let package = Package(
                 ),
             ],
             path: "Sources/WaxMCPServer",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                // Inject -D MCPServer so #if MCPServer guards in source files are active
+                // when the MCPServer trait is enabled. Without this define, all MCP-specific
+                // code is dead code even when the MCP dependency is linked.
+                .define("MCPServer", .when(traits: ["MCPServer"])),
+            ]
         ),
         .executableTarget(
             name: "WaxCLI",
