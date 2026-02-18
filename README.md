@@ -6,8 +6,7 @@
 <h1 align="center">Wax</h1>
 
 <p align="center">
-  <strong>The SQLite for AI memory.</strong><br>
-  One file. Full RAG. Zero infrastructure.
+  On-device RAG for Swift. Documents, embeddings, BM25 and HNSW indexes in a single file.
 </p>
 
 <p align="center">
@@ -24,23 +23,6 @@
 </p>
 
 ---
-
-## Semantic Git CLI (Sift)
-
-The terminal git-search CLI now lives in a separate repo:
-
-- `git@github.com:christopherkarani/Sift.git`
-- `https://github.com/christopherkarani/Sift`
-
-Install and usage are documented there, including Homebrew onboarding.
-
-```bash
-brew tap christopherkarani/sift
-brew install sift
-
-wax tui
-wax when did we add notifications feature
-```
 
 ## 30-Second Demo
 
@@ -64,17 +46,15 @@ let context = try await brain.recall(query: "user preferences")
 //   + relevant context, ranked and token-budgeted
 ```
 
-**That's it.** No Docker. No vector DB. No network calls.
+No Docker. No network calls.
 
 ---
 
 ## The Problem
 
-You wanted to add memory to your AI app.
+Adding memory to an iOS or macOS app typically means standing up a vector database, a text search index, and a persistence layer — three services with separate setup, uptime dependencies, and potential data egress.
 
-3 hours later you're still configuring Docker Compose for a vector database that crashes if you look at it wrong, sends your data to who-knows-where, and needs a DevOps team to keep running.
-
-**Wax replaces your entire RAG stack with a file format.**
+Wax stores all of it in a single `.mv2s` file on the user's device.
 
 ```
 Traditional RAG Stack:                     Wax:
@@ -96,11 +76,11 @@ Traditional RAG Stack:                     Wax:
 
 | | |
 |:---|:---|
-| ⚡ **Fast** | 0.84ms vector search @ 10K docs (Metal GPU) |
-| 🛡️ **Durable** | Kill -9 safe, power-loss safe, tested |
-| 🎯 **Deterministic** | Same query = same context, every time |
-| 📦 **Portable** | One `.mv2s` file — move it, backup it, ship it |
-| 🔒 **Private** | 100% on-device. Zero network calls. |
+| **Fast** | 0.84ms vector search @ 10K docs (Metal GPU) |
+| **Durable** | Kill -9 safe, power-loss safe, tested |
+| **Deterministic** | Same query = same context, every time |
+| **Portable** | One `.mv2s` file — move it, backup it, ship it |
+| **Private** | 100% on-device. Zero network calls. |
 
 ---
 
@@ -160,15 +140,13 @@ Stress recall is currently harness-blocked (`signal 11`) and treated as a known 
 | dense cached | `0.102s` |
 
 For benchmark commands, profiling traces, and methodology, see:
-- `/Users/chriskarani/CodingProjects/Wax/Tasks/hot-path-specialization-investigation.md`
-
-*No, that's not a typo. GPU vector search really is sub-millisecond.*
+- `Tasks/hot-path-specialization-investigation.md`
 
 ---
 
 ## WAL Compaction and Storage Health (2026-02)
 
-Wax now includes a WAL/storage health track focused on commit latency tails, long-run file growth, and recovery behavior:
+Wax includes a WAL/storage health track focused on commit latency tails, long-run file growth, and recovery behavior:
 
 - No-op index compaction guards to avoid unnecessary index rewrites.
 - Single-pass WAL replay with guarded replay snapshot fast path.
@@ -225,7 +203,7 @@ WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 \
 swift test --filter WALCompactionBenchmarks.testReplayStateSnapshotGuardrails
 ```
 
-See `/Users/chriskarani/CodingProjects/Wax/Tasks/wal-compaction-investigation.md` and `/Users/chriskarani/CodingProjects/Wax/Tasks/wal-compaction-baseline.json` for methodology and full baseline artifacts.
+See `Tasks/wal-compaction-investigation.md` in the repo for methodology and baseline artifacts.
 
 ---
 
@@ -240,7 +218,7 @@ See `/Users/chriskarani/CodingProjects/Wax/Tasks/wal-compaction-investigation.md
 ### 2. Choose Your Memory Type
 
 <details>
-<summary><b>📝 Text Memory</b> — Documents, notes, conversations</summary>
+<summary><b>Text Memory</b> — Documents, notes, conversations</summary>
 
 ```swift
 import Wax
@@ -259,7 +237,7 @@ for item in context.items {
 </details>
 
 <details>
-<summary><b>📸 Photo Memory</b> — Photo library with OCR + CLIP embeddings</summary>
+<summary><b>Photo Memory</b> — Photo library with OCR + CLIP embeddings</summary>
 
 ```swift
 import Wax
@@ -279,7 +257,7 @@ let ctx = try await photoRAG.recall(.init(text: "Costco receipt"))
 </details>
 
 <details>
-<summary><b>🎬 Video Memory</b> — Video segments with transcripts</summary>
+<summary><b>Video Memory</b> — Video segments with transcripts</summary>
 
 ```swift
 import Wax
@@ -303,16 +281,18 @@ let ctx = try await videoRAG.recall(.init(text: "project timeline discussion"))
 
 ## How It Works
 
-Wax packs everything into a **single `.mv2s` file**:
+Wax packs everything into a single `.mv2s` file — the equivalent of SQLite for AI memory: one file that contains your documents, the search indexes, and enough crash-recovery state to survive a kill signal.
 
-- ✅ Your raw documents
-- ✅ Embeddings (any dimension, any provider)
-- ✅ BM25 full-text search index (FTS5)
-- ✅ HNSW vector index (USearch)
-- ✅ Write-ahead log for crash recovery
-- ✅ Metadata & entity graph
+The file contains:
 
-**The file format is:**
+- Raw documents
+- Embeddings (any dimension, any provider)
+- BM25 full-text search index (FTS5)
+- HNSW vector index (USearch)
+- Write-ahead log for crash recovery
+- Metadata and entity graph
+
+**The file format:**
 - **Append-only** — Fast writes, no fragmentation
 - **Checksum-verified** — Every byte validated
 - **Dual-header** — Atomic updates, never corrupt
@@ -350,37 +330,27 @@ Wax packs everything into a **single `.mv2s` file**:
 
 ---
 
-## Features That Actually Matter
+## Features
 
-**🧠 Query-Adaptive Hybrid Search**
+**Query-Adaptive Hybrid Search**
 
-Wax doesn't just do vector search. It runs multiple lanes in parallel (BM25, vector, temporal, structured evidence) and fuses results based on query type.
+Wax runs multiple search lanes in parallel — BM25, vector, temporal, structured evidence — and fuses results based on query type.
 
-"When was my last dentist appointment?" → boosts temporal + structured  
+"When was my last dentist appointment?" → boosts temporal + structured
 "Explain quantum computing" → boosts vector + BM25
 
-**🎭 Tiered Memory Compression (Surrogates)**
+**Tiered Memory Compression (Surrogates)**
 
-Not all context is equal. Wax generates hierarchical summaries:
+Wax generates hierarchical summaries for each document:
 - `full` — Complete document (for deep dives)
 - `gist` — Key paragraphs (for balanced recall)
 - `micro` — One-liner (for quick context)
 
 At query time, it picks the right tier based on query signals and remaining token budget.
 
-**🎯 Deterministic Token Budgeting**
+**Deterministic Token Budgeting**
 
-Strict `cl100k_base` token counting. No "oops, context window exceeded." No non-deterministic truncation. Reproducible RAG you can test and benchmark.
-
----
-
-## Perfect For
-
-- 🤖 **AI assistants** that remember users across launches
-- 📱 **Offline-first apps** with serious search requirements
-- 🔒 **Privacy-critical products** where data never leaves the device
-- 🧪 **Research tooling** that needs reproducible retrieval
-- 🎮 **Agent workflows** that require durable state
+Strict `cl100k_base` token counting. Same query produces the same context window, every time — reproducible enough to benchmark and regression-test.
 
 ---
 
@@ -407,12 +377,20 @@ WAX_TEST_MINILM=1 swift test
 
 ---
 
-<div align="center">
+## Sift
 
-### Ready to stop shipping databases?
+Sift is a semantic git history search CLI built on Wax. It indexes commit history locally and lets you search with natural language instead of `git log --grep`.
 
-**[⭐ Star Wax on GitHub](https://github.com/christopherkarani/Wax)** • **[📖 Read the Docs](gemini.md)** • **[🐛 Report Issues](../../issues)**
+- Repo: `https://github.com/christopherkarani/Sift`
 
-Built with 🍯 by [Christopher Karani](https://github.com/christopherkarani)
+```bash
+brew tap christopherkarani/sift
+brew install wax
 
-</div>
+wax tui
+wax when did we add notifications feature
+```
+
+---
+
+Built by [Christopher Karani](https://github.com/christopherkarani)
