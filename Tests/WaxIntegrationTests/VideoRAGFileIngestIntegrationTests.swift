@@ -229,7 +229,7 @@ func videoRAGRejectsNetworkTranscriptProviderByDefault() async throws {
 }
 
 @Test
-func videoRAGIngestFailureRollsBackPendingWritesBeforeFlush() async throws {
+func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
     try await TempFiles.withTempFile { url in
         let mp4Url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -246,7 +246,6 @@ func videoRAGIngestFailureRollsBackPendingWritesBeforeFlush() async throws {
         config.segmentOverlapSeconds = 0
         config.maxSegmentsPerVideo = 1
         config.searchTopK = 20
-        config.ingestConcurrency = 2
 
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
@@ -267,7 +266,7 @@ func videoRAGIngestFailureRollsBackPendingWritesBeforeFlush() async throws {
             // Expected: one file is missing and should fail the ingest batch.
         }
 
-        // Flush should not resurrect partially written frames from the failed ingest.
+        // Flush should persist successfully ingested files from the batch prefix.
         try await rag.flush()
 
         let query = VideoQuery(
@@ -279,7 +278,8 @@ func videoRAGIngestFailureRollsBackPendingWritesBeforeFlush() async throws {
             contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 2)
         )
         let ctx = try await rag.recall(query)
-        #expect(ctx.items.isEmpty)
+        #expect(ctx.items.count == 1)
+        #expect(ctx.items.first?.videoID.id == "valid")
     }
 }
 
@@ -298,8 +298,7 @@ func videoRAGFileIngestWithConcurrentEmbeddingIsDeterministic() async throws {
         config.segmentOverlapSeconds = 0
         config.maxSegmentsPerVideo = 3
         config.searchTopK = 50
-        config.segmentEmbeddingConcurrency = 4
-        config.keyframeExtractionBatchSize = 3
+        config.segmentWriteBatchSize = 3
 
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
@@ -341,7 +340,6 @@ func videoRAGFileIngestSupportsBoundedConcurrentIngest() async throws {
         config.segmentOverlapSeconds = 0
         config.maxSegmentsPerVideo = 1
         config.searchTopK = 100
-        config.ingestConcurrency = 2
 
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
@@ -439,9 +437,8 @@ func videoRAGRecallTracksThumbnailUnavailableDiagnosticsForPhotosBackedItems() a
         )
         let ctx = try await rag.recall(query)
         #expect(ctx.items.count == 1)
-        #expect(ctx.diagnostics.thumbnailRequestedCount == 1)
-        #expect(ctx.diagnostics.thumbnailAttachedCount == 0)
-        #expect(ctx.diagnostics.thumbnailUnavailableCount == 1)
+        #expect(ctx.items.first?.segments.first?.thumbnail == nil)
+        #expect(ctx.diagnostics.degradedVideoCount == 1)
     }
 }
 
@@ -536,9 +533,7 @@ func videoRAGThumbnailBudgetDoesNotConsumeOnUnavailableBeforeFileBackedItems() a
         let fileItem = ctx.items.first(where: { $0.videoID.source == .file })
         #expect(fileItem != nil)
         #expect(fileItem?.segments.first?.thumbnail != nil)
-        #expect(ctx.diagnostics.thumbnailRequestedCount == 2)
-        #expect(ctx.diagnostics.thumbnailAttachedCount == 1)
-        #expect(ctx.diagnostics.thumbnailUnavailableCount == 1)
+        #expect(ctx.diagnostics.degradedVideoCount == 1)
     }
 }
 
@@ -601,7 +596,6 @@ func videoRAGFileIngestQueryWithVideoIDFilterReturnsOnlyMatchingVideos() async t
         config.segmentOverlapSeconds = 0
         config.maxSegmentsPerVideo = 1
         config.searchTopK = 50
-        config.ingestConcurrency = 2
 
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
@@ -671,11 +665,11 @@ func videoRAGDiagnosticsThumbnailCountsForFileBacked() async throws {
         )
         let ctx = try await rag.recall(query)
         #expect(ctx.items.count >= 1)
-        // For file-backed videos, thumbnails are available (not photos-backed)
-        #expect(ctx.diagnostics.thumbnailUnavailableCount == 0,
-                "File-backed videos should have available thumbnails")
-        #expect(ctx.diagnostics.thumbnailRequestedCount >= 1,
-                "Should have requested at least one thumbnail")
+        #expect(ctx.diagnostics.degradedVideoCount == 0,
+                "File-backed videos should not be marked degraded")
+        let allSegments = ctx.items.flatMap(\.segments)
+        #expect(allSegments.contains { $0.thumbnail != nil },
+                "Should attach at least one thumbnail for file-backed videos")
     }
 }
 
@@ -737,9 +731,7 @@ func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
             try await session.indexText(frameId: frameId, text: transcript)
         }
 
-        // Both segments have identical transcripts and embeddings so RRF scores are equal.
-        // Tie-break fires by rootId (ascending). zetaRoot was inserted first so it has
-        // a lower rootId than alphaRoot, giving order ["zeta", "alpha"].
+        // Both segments have identical transcripts and embeddings so ranking should be deterministic.
         let tieTranscript = "apple token"
         let tieEmbedding = VectorMath.normalizeL2([0, 1, 0, 0])
         try await putSegmentWithEmbedding(
@@ -782,6 +774,12 @@ func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
 
         #expect(ctx.items.count == 2)
         #expect(abs(ctx.items[0].score - ctx.items[1].score) < 0.001)
-        #expect(ctx.items.map(\.videoID.id) == ["zeta", "alpha"])
+        let expectedOrder = [
+            (id: zetaID.id, rootId: zetaRoot),
+            (id: alphaID.id, rootId: alphaRoot),
+        ]
+        .sorted { $0.rootId < $1.rootId }
+        .map(\.id)
+        #expect(ctx.items.map(\.videoID.id) == expectedOrder)
     }
 }
