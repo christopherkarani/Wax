@@ -26,12 +26,19 @@ let package = Package(
             description: "Includes the built-in MiniLM embedding provider",
             enabledTraits: []
         ),
+        .init(
+            name: "MCPServer",
+            description: "Builds the WaxMCPServer stdio MCP server executable (macOS only)",
+            enabledTraits: ["MiniLMEmbeddings"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.23.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
         .package(url: "https://github.com/DePasqualeOrg/swift-tiktoken.git", from: "0.0.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -82,6 +89,36 @@ let package = Package(
             resources: [.process("RAG/Resources")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
+        .executableTarget(
+            name: "WaxMCPServer",
+            dependencies: [
+                "Wax",
+                .product(
+                    name: "MCP",
+                    package: "swift-sdk",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "ArgumentParser",
+                    package: "swift-argument-parser",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .target(
+                    name: "WaxVectorSearchMiniLM",
+                    condition: .when(traits: ["MiniLMEmbeddings"])
+                ),
+            ],
+            path: "Sources/WaxMCPServer",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .executableTarget(
+            name: "WaxCLI",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/WaxCLI",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
         .testTarget(
             name: "WaxCoreTests",
             dependencies: ["WaxCore"],
@@ -98,6 +135,22 @@ let package = Package(
                 .product(name: "SwiftTiktoken", package: "swift-tiktoken"),
             ],
             resources: [.process("Fixtures")],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "WaxMCPServerTests",
+            dependencies: [
+                "Wax",
+                .target(
+                    name: "WaxMCPServer",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "MCP",
+                    package: "swift-sdk",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
     ]
