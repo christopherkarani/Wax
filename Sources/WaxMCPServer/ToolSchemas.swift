@@ -151,9 +151,12 @@ enum ToolSchemas {
     )
 
     // TODO: Replace with proper schemas when Soju photo RAG integration is complete.
-    // These tools are advertised but return isError:true — the empty schema is a placeholder.
-    static let waxPhotoIngest: Value = emptyObjectSchema()
-    static let waxPhotoRecall: Value = emptyObjectSchema()
+    // These tools are advertised but return isError:true — the stub schema uses
+    // additionalProperties:true so MCP clients that pass arguments (e.g. path, query)
+    // reach the tool handler and get the informative "Requires Soju" error response,
+    // rather than being rejected by schema validation before the tool even runs.
+    static let waxPhotoIngest: Value = stubObjectSchema()
+    static let waxPhotoRecall: Value = stubObjectSchema()
 
     private static func objectSchema(properties: [String: Value], required: [String]) -> Value {
         [
@@ -166,6 +169,20 @@ enum ToolSchemas {
 
     private static func emptyObjectSchema() -> Value {
         objectSchema(properties: [:], required: [])
+    }
+
+    /// A permissive placeholder schema for stub tools that returns `isError:true`.
+    /// Uses `additionalProperties:true` so any client-provided arguments pass
+    /// schema validation and the call reaches the handler (which returns the
+    /// informative "Requires Soju" error), rather than being rejected by the
+    /// client's schema validator before the tool runs.
+    private static func stubObjectSchema() -> Value {
+        [
+            "type": "object",
+            "properties": .object([:]),
+            "required": .array([]),
+            "additionalProperties": true,
+        ]
     }
 }
 #endif

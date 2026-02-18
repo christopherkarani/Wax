@@ -157,7 +157,12 @@ let package = Package(
                     condition: .when(traits: ["MCPServer"])
                 ),
             ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                // Must mirror the WaxMCPServer target so #if MCPServer guards in test
+                // source resolve to true when building with --traits MCPServer.
+                .define("MCPServer", .when(traits: ["MCPServer"])),
+            ]
         ),
     ]
 )

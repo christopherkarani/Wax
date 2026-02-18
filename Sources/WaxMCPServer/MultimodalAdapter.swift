@@ -59,7 +59,7 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
 
             if let observations = classifyRequest.results {
                 labels = observations
-                    .filter { $0.confidence > minimumLabelConfidence }
+                    .filter { $0.confidence > MultimodalAdapter.minimumLabelConfidence }
                     .prefix(5)
                     .map(\.identifier)
             }
