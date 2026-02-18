@@ -102,8 +102,23 @@ public final class MiniLMEmbeddings {
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
     public func encode(sentence: String) async -> [Float]? {
-        guard let embeddings = await encode(batch: [sentence]) else { return nil }
-        return embeddings.first
+        guard let batchInputs = try? tokenizer.buildBatchInputs(
+            sentences: [sentence],
+            sequenceLengthBuckets: Self.sequenceLengthBuckets
+        ), batchInputs.sequenceLength > 0 else { return nil }
+
+        guard let output = try? model.prediction(
+            input_ids: batchInputs.inputIds,
+            attention_mask: batchInputs.attentionMask
+        ) else {
+            return nil
+        }
+
+        return Self.decodeEmbeddings(
+            output.var_554,
+            batchSize: 1,
+            outputDimension: outputDimension
+        )?.first
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.

@@ -4,6 +4,7 @@ import WaxCore
 import WaxVectorSearch
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+import CoreML
 import WaxVectorSearchMiniLM
 #endif
 
@@ -45,16 +46,14 @@ actor RepoStore {
         let embedder: (any EmbeddingProvider)? = try await {
             guard !textOnly else { return nil }
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
-            let e = try MiniLMEmbedder()
-            // Verify embedder works with a test embed before proceeding.
-            do {
-                try await e.prewarm(batchSize: 4)
-            } catch {
-                // Prewarm failure indicates CoreML batch prediction doesn't
-                // work in this execution context. Fall back to text-only search.
-                Self.writeStderr("Warning: MiniLM embedding unavailable (\(error.localizedDescription)). Using text-only search.")
-                return nil
-            }
+            // Some CLI executable contexts are unstable with CoreML batch
+            // prediction APIs. Keep batch size at 1 so MiniLM runs through
+            // the single-prediction path for reliability.
+            let modelConfiguration = MLModelConfiguration()
+            modelConfiguration.computeUnits = .cpuOnly
+            let config = MiniLMEmbedder.Config(batchSize: 1, modelConfiguration: modelConfiguration)
+            let e = try MiniLMEmbedder(config: config)
+            try await e.prewarm(batchSize: 1)
             return e
             #else
             return nil
@@ -200,4 +199,5 @@ actor RepoStore {
         guard let data = (message + "\n").data(using: .utf8) else { return }
         FileHandle.standardError.write(data)
     }
+
 }
