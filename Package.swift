@@ -41,6 +41,7 @@ let package = Package(
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.23.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
         .package(url: "https://github.com/DePasqualeOrg/swift-tiktoken.git", from: "0.0.1"),
+        .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
@@ -153,7 +154,10 @@ let package = Package(
         ),
         .testTarget(
             name: "WaxCoreTests",
-            dependencies: ["WaxCore"],
+            dependencies: [
+                "WaxCore",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
@@ -161,6 +165,7 @@ let package = Package(
             dependencies: [
                 "Wax",
                 "WaxVectorSearchMiniLM",
+                .product(name: "Testing", package: "swift-testing"),
                 .product(name: "USearch", package: "USearch"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
@@ -173,6 +178,7 @@ let package = Package(
             name: "WaxMCPServerTests",
             dependencies: [
                 "Wax",
+                .product(name: "Testing", package: "swift-testing"),
                 .target(
                     name: "WaxMCPServer",
                     condition: .when(traits: ["MCPServer"])
