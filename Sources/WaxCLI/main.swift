@@ -278,7 +278,13 @@ extension WaxCLI.MCP {
                     arguments.append("--no-embedder")
                 }
 
-                let request = #"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"# + "\n"
+                // MCP requires an initialize handshake before any method calls.
+                // Send initialize → initialized notification → tools/list so that
+                // protocol-compliant servers don't reject the smoke-check request.
+                let initRequest = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"wax-doctor","version":"1.0"}}}"# + "\n"
+                let initializedNotification = #"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"# + "\n"
+                let listRequest = #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"# + "\n"
+                let request = initRequest + initializedNotification + listRequest
 
                 do {
                     let output = try ProcessRunner.runCaptured(

@@ -492,7 +492,10 @@ private struct ToolArguments {
             }
             return Int(truncated)
         case .string(let string):
-            return Int(string)
+            guard let parsed = Int(string) else {
+                throw ToolValidationError.invalid("\(key) must be an integer, got '\(string)'")
+            }
+            return parsed
         default:
             throw ToolValidationError.invalid("\(key) must be an integer")
         }
