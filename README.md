@@ -25,6 +25,23 @@
 
 ---
 
+## Semantic Git CLI (Sift)
+
+The terminal git-search CLI now lives in a separate repo:
+
+- `git@github.com:christopherkarani/Sift.git`
+- `https://github.com/christopherkarani/Sift`
+
+Install and usage are documented there, including Homebrew onboarding.
+
+```bash
+brew tap christopherkarani/sift
+brew install sift
+
+wax tui
+wax when did we add notifications feature
+```
+
 ## 30-Second Demo
 
 ```swift

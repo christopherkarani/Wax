@@ -1,0 +1,20 @@
+{
+  "name": "waxmcp",
+  "version": "0.1.0",
+  "description": "npx launcher for the Wax MCP server",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christopherkarani/Wax.git"
+  },
+  "bin": {
+    "waxmcp": "bin/waxmcp.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

@@ -11,6 +11,58 @@ public actor MemoryOrchestrator {
         case always
     }
 
+    /// Direct search mode for raw candidate retrieval.
+    public enum DirectSearchMode: Sendable, Equatable {
+        case text
+        case hybrid(alpha: Float)
+
+        public static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
+    }
+
+    /// Stable search hit DTO for MCP and other raw-search callers.
+    public struct MemorySearchHit: Sendable, Equatable {
+        public var frameId: UInt64
+        public var score: Float
+        public var previewText: String?
+        public var sources: [SearchResponse.Source]
+
+        public init(frameId: UInt64, score: Float, previewText: String?, sources: [SearchResponse.Source]) {
+            self.frameId = frameId
+            self.score = score
+            self.previewText = previewText
+            self.sources = sources
+        }
+    }
+
+    /// Runtime stats DTO exposed to external callers.
+    public struct RuntimeStats: Sendable, Equatable {
+        public var frameCount: UInt64
+        public var pendingFrames: UInt64
+        public var generation: UInt64
+        public var wal: WaxWALStats
+        public var storeURL: URL
+        public var vectorSearchEnabled: Bool
+        public var embedderIdentity: EmbeddingIdentity?
+
+        public init(
+            frameCount: UInt64,
+            pendingFrames: UInt64,
+            generation: UInt64,
+            wal: WaxWALStats,
+            storeURL: URL,
+            vectorSearchEnabled: Bool,
+            embedderIdentity: EmbeddingIdentity?
+        ) {
+            self.frameCount = frameCount
+            self.pendingFrames = pendingFrames
+            self.generation = generation
+            self.wal = wal
+            self.storeURL = storeURL
+            self.vectorSearchEnabled = vectorSearchEnabled
+            self.embedderIdentity = embedderIdentity
+        }
+    }
+
     let wax: Wax
     let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
@@ -435,6 +487,80 @@ public actor MemoryOrchestrator {
         )
     }
 
+    /// Performs direct search without context assembly.
+    ///
+    /// - Parameters:
+    ///   - query: Query text.
+    ///   - mode: Text-only or hybrid retrieval.
+    ///   - topK: Maximum number of hits to return.
+    /// - Returns: Ranked raw hits.
+    public func search(
+        query: String,
+        mode: DirectSearchMode = .default,
+        topK: Int = 10
+    ) async throws -> [MemorySearchHit] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard topK > 0 else { return [] }
+
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+
+        let policy: QueryEmbeddingPolicy = switch mode {
+        case .text:
+            .never
+        case .hybrid:
+            .ifAvailable
+        }
+        let embedding = try await queryEmbedding(for: trimmed, policy: policy)
+
+        let searchMode: SearchMode = switch mode {
+        case .text:
+            .textOnly
+        case .hybrid(let alpha):
+            if embedding == nil {
+                .textOnly
+            } else {
+                .hybrid(alpha: Self.clampHybridAlpha(alpha))
+            }
+        }
+
+        let request = SearchRequest(
+            query: trimmed,
+            embedding: embedding,
+            vectorEnginePreference: preference,
+            mode: searchMode,
+            topK: topK,
+            previewMaxBytes: config.rag.previewMaxBytes
+        )
+        let response = try await session.search(request)
+
+        return response.results.map { result in
+            MemorySearchHit(
+                frameId: result.frameId,
+                score: result.score,
+                previewText: result.previewText,
+                sources: result.sources
+            )
+        }
+    }
+
+    /// Returns lightweight store/runtime stats useful for operators and MCP tools.
+    public func runtimeStats() async -> RuntimeStats {
+        let stats = await wax.stats()
+        let walStats = await wax.walStats()
+        let storeURL = await wax.fileURL()
+
+        return RuntimeStats(
+            frameCount: stats.frameCount,
+            pendingFrames: stats.pendingFrames,
+            generation: stats.generation,
+            wal: walStats,
+            storeURL: storeURL,
+            vectorSearchEnabled: config.enableVectorSearch,
+            embedderIdentity: embedder?.identity
+        )
+    }
+
     // MARK: - Persistence lifecycle
 
     public func flush() async throws {
@@ -506,6 +632,12 @@ public actor MemoryOrchestrator {
     @inline(__always)
     private static func normalizedL2(_ vector: [Float]) -> [Float] {
         VectorMath.normalizeL2(vector)
+    }
+
+    @inline(__always)
+    private static func clampHybridAlpha(_ alpha: Float) -> Float {
+        guard alpha.isFinite else { return 0.5 }
+        return min(1, max(0, alpha))
     }
 
     private static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {

@@ -1,5 +1,5 @@
 {
-  "originHash" : "839ce00d11956bc03ba98099c2e3db2115880211c918ac5a572409d8f663c008",
+  "originHash" : "b618ec0a463528f100ddd0f3a901a825b1f15859de111e57ca38df784125cdd2",
   "pins" : [
     {
       "identity" : "grdb.swift",
@@ -8,6 +8,42 @@
       "state" : {
         "revision" : "2cf6c756e1e5ef6901ebae16576a7e4e4b834622",
         "version" : "6.29.3"
+      }
+    },
+    {
+      "identity" : "noora",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tuist/Noora.git",
+      "state" : {
+        "revision" : "4fa4c9946994f9c5f6634ab49c8460a42c0731a5",
+        "version" : "0.54.2"
+      }
+    },
+    {
+      "identity" : "path",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tuist/path",
+      "state" : {
+        "revision" : "7c74ac435e03a927c3a73134c48b61e60221abcb",
+        "version" : "0.3.8"
+      }
+    },
+    {
+      "identity" : "rainbow",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/onevcat/Rainbow",
+      "state" : {
+        "revision" : "cdf146ae671b2624917648b61c908d1244b98ca1",
+        "version" : "4.2.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
+        "version" : "1.7.0"
       }
     },
     {
@@ -26,6 +62,15 @@
       "state" : {
         "revision" : "e088d534d80dd1875ca3edfd69a16a6c25ab84c4",
         "version" : "0.0.1"
+      }
+    },
+    {
+      "identity" : "swifttui",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/rensbreur/SwiftTUI.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "537133031bc2b2731048d00748c69700e1b48185"
       }
     },
     {

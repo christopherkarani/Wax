@@ -1,0 +1,21 @@
+name: Production Readiness Gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [full, soak-smoke, burn-smoke]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Production Gate
+        run: |
+          bash scripts/quality/production_readiness_gates.sh ${{ matrix.mode }}

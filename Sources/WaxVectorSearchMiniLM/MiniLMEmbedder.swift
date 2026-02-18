@@ -110,9 +110,13 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
             let batchStart = startIndex
             let batchEnd = batchStart + size
             let chunk = Array(texts[batchStart..<batchEnd])
-            let embeddings = try await embedBatchCoreML(texts: chunk)
-            for (offset, vector) in embeddings.enumerated() {
-                results[batchStart + offset] = vector
+            if size == 1 {
+                results[batchStart] = try await embed(chunk[0])
+            } else {
+                let embeddings = try await embedBatchCoreML(texts: chunk)
+                for (offset, vector) in embeddings.enumerated() {
+                    results[batchStart + offset] = vector
+                }
             }
             startIndex = batchEnd
         }
