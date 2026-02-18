@@ -42,12 +42,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_photo_ingest",
-            description: "Photo ingestion entrypoint (Soju redirect in CLI build).",
+            description: "Photo RAG ingest — not available in this build. Requires Soju: waxmcp.dev/soju",
             inputSchema: waxPhotoIngest
         ),
         Tool(
             name: "wax_photo_recall",
-            description: "Photo recall entrypoint (Soju redirect in CLI build).",
+            description: "Photo RAG recall — not available in this build. Requires Soju: waxmcp.dev/soju",
             inputSchema: waxPhotoRecall
         ),
     ]

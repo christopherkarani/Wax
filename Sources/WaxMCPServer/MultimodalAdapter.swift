@@ -49,7 +49,13 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
             textRequest.usesLanguageCorrection = false
 
             let handler = VNImageRequestHandler(cgImage: image, options: [:])
-            try handler.perform([classifyRequest, textRequest])
+            // If Vision fails (e.g. unsupported format), fall through to a
+            // generic description rather than propagating to the caller.
+            do {
+                try handler.perform([classifyRequest, textRequest])
+            } catch {
+                return "image content"
+            }
 
             if let observations = classifyRequest.results {
                 labels = observations

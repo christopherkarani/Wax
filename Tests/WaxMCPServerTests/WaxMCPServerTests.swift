@@ -7,12 +7,19 @@ import MCP
 import Wax
 
 @Test
-func toolsListContainsNineTools() {
-    #expect(ToolSchemas.allTools.count == 9)
+func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
-    #expect(names.count == 9)
     #expect(names.contains("wax_remember"))
+    #expect(names.contains("wax_recall"))
+    #expect(names.contains("wax_search"))
+    #expect(names.contains("wax_flush"))
+    #expect(names.contains("wax_stats"))
+    #expect(names.contains("wax_video_ingest"))
+    #expect(names.contains("wax_video_recall"))
+    #expect(names.contains("wax_photo_ingest"))
     #expect(names.contains("wax_photo_recall"))
+    // Verify no duplicate tool names
+    #expect(names.count == ToolSchemas.allTools.count)
 }
 
 @Test
@@ -131,7 +138,7 @@ func unknownToolReturnsErrorResult() async throws {
 }
 
 @Test
-func photoToolsReturnSojuRedirectWithoutError() async throws {
+func photoToolsReturnSojuRedirectAsError() async throws {
     try await withMemory { memory in
         let ingest = await WaxMCPTools.handleCall(
             params: .init(name: "wax_photo_ingest", arguments: [:]),
@@ -139,7 +146,7 @@ func photoToolsReturnSojuRedirectWithoutError() async throws {
             video: nil,
             photo: nil
         )
-        #expect(ingest.isError != true)
+        #expect(ingest.isError == true)
         #expect(firstText(in: ingest).contains("waxmcp.dev/soju"))
 
         let recall = await WaxMCPTools.handleCall(
@@ -148,13 +155,12 @@ func photoToolsReturnSojuRedirectWithoutError() async throws {
             video: nil,
             photo: nil
         )
-        #expect(recall.isError != true)
+        #expect(recall.isError == true)
         #expect(firstText(in: recall).contains("waxmcp.dev/soju"))
     }
 }
 
 @Test
-@MainActor
 func licenseValidatorRejectsInvalidFormat() {
     do {
         try LicenseValidator.validate(key: "bad-key")
@@ -167,7 +173,6 @@ func licenseValidatorRejectsInvalidFormat() {
 }
 
 @Test
-@MainActor
 func licenseValidatorTrialPassAndExpiration() throws {
     let originalDefaults = LicenseValidator.trialDefaults
     let originalKey = LicenseValidator.firstLaunchKey

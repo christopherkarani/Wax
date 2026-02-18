@@ -502,7 +502,6 @@ public actor MemoryOrchestrator {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard topK > 0 else { return [] }
-        let clampedTopK = topK
 
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
 
@@ -530,7 +529,7 @@ public actor MemoryOrchestrator {
             embedding: embedding,
             vectorEnginePreference: preference,
             mode: searchMode,
-            topK: clampedTopK,
+            topK: topK,
             previewMaxBytes: config.rag.previewMaxBytes
         )
         let response = try await session.search(request)

@@ -295,8 +295,17 @@ extension WaxCLI.MCP {
                     )
                     if output.status != EXIT_SUCCESS {
                         failures.append("Smoke check failed with exit code \(output.status)")
-                    } else if !output.stdout.contains(#""name":"wax_remember""#) {
-                        failures.append("Smoke check response missing wax_remember tool")
+                    } else {
+                        // The server emits one JSON-RPC response per request (newline-delimited).
+                        // id:1 → initialize response, id:2 → tools/list response.
+                        // We check the tools/list response specifically to avoid false positives
+                        // from the initialize response containing the tool name incidentally.
+                        let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: true)
+                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) })
+                        let responseToCheck = toolsListResponse.map(String.init) ?? String(output.stdout)
+                        if !responseToCheck.contains(#""name":"wax_remember""#) {
+                            failures.append("Smoke check response missing wax_remember tool")
+                        }
                     }
                 } catch {
                     failures.append("Smoke check failed: \(error.localizedDescription)")
@@ -361,6 +370,7 @@ private enum ProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
+        // nil inherits the parent process environment; pass an explicit dict to isolate.
         process.environment = environment
 
         if passthrough {

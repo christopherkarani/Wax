@@ -35,9 +35,8 @@ struct WaxMCPServerCommand: ParsableCommand {
     mutating func run() throws {
         let command = self
         Task(priority: .userInitiated) {
-            let mutableCommand = command
             do {
-                try await mutableCommand.runServer()
+                try await command.runServer()
                 Darwin.exit(EXIT_SUCCESS)
             } catch let error as LicenseValidator.ValidationError {
                 writeStderr(error.localizedDescription)
