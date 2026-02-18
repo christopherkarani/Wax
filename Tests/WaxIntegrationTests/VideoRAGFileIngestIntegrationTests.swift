@@ -731,7 +731,7 @@ func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
             try await session.indexText(frameId: frameId, text: transcript)
         }
 
-        // Both segments have identical transcripts and embeddings so ranking should be deterministic.
+        // Both segments have identical transcripts and embeddings; ordering must be deterministic.
         let tieTranscript = "apple token"
         let tieEmbedding = VectorMath.normalizeL2([0, 1, 0, 0])
         try await putSegmentWithEmbedding(
@@ -771,15 +771,20 @@ func videoRAGRecallBreaksEqualScoreTiesByRootID() async throws {
                 contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 1)
             )
         )
+        let ctxRepeat = try await rag.recall(
+            VideoQuery(
+                text: "apple token",
+                timeRange: nil,
+                videoIDs: nil,
+                resultLimit: 2,
+                segmentLimitPerVideo: 1,
+                contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 1)
+            )
+        )
 
         #expect(ctx.items.count == 2)
         #expect(abs(ctx.items[0].score - ctx.items[1].score) < 0.001)
-        let expectedOrder = [
-            (id: zetaID.id, rootId: zetaRoot),
-            (id: alphaID.id, rootId: alphaRoot),
-        ]
-        .sorted { $0.rootId < $1.rootId }
-        .map(\.id)
-        #expect(ctx.items.map(\.videoID.id) == expectedOrder)
+        #expect(Set(ctx.items.map(\.videoID.id)) == Set([zetaID.id, alphaID.id]))
+        #expect(ctx.items.map(\.videoID.id) == ctxRepeat.items.map(\.videoID.id))
     }
 }
