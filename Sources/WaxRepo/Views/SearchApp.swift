@@ -1,4 +1,4 @@
-#if os(macOS)
+#if WaxRepo && os(macOS)
 import SwiftTUI
 
 /// Convenience entry point for the SwiftTUI interactive search application.

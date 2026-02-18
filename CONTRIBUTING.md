@@ -6,7 +6,7 @@ All production readiness checks are enforceable and must pass before merge.
 
 ### Local commands
 
-Run from `/Users/chriskarani/CodingProjects/AIStack/Wax`:
+Run from the repository root:
 
 ```bash
 # Full quality gate (100% pass, no skipped tests, corruption assertion contract)

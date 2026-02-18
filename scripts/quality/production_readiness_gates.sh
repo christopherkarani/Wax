@@ -21,7 +21,7 @@ run_and_capture() {
 
 assert_no_skips() {
   local log_file="$1"
-  if rg -n "(Test skipped|test skipped)" "$log_file" >/dev/null; then
+  if grep -E "(Test skipped|test skipped)" "$log_file" >/dev/null; then
     echo "FAIL: skipped tests detected in $log_file" >&2
     return 1
   fi
@@ -30,7 +30,7 @@ assert_no_skips() {
 assert_full_pass_rate() {
   local log_file="$1"
 
-  if rg -n "Test run with [0-9]+ tests.*failed" "$log_file" >/dev/null; then
+  if grep -E "Test run with [0-9]+ tests.*failed" "$log_file" >/dev/null; then
     echo "FAIL: swift-testing reported failed tests." >&2
     return 1
   fi

@@ -143,7 +143,13 @@ let package = Package(
                         condition: .when(traits: ["MiniLMEmbeddings"])),
             ],
             path: "Sources/WaxRepo",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                // Inject -D WaxRepo so #if WaxRepo guards in source files are active
+                // when the WaxRepo trait is enabled. Without this define, all WaxRepo
+                // command code is dead code even when the trait is linked.
+                .define("WaxRepo", .when(traits: ["WaxRepo"])),
+            ]
         ),
         .testTarget(
             name: "WaxCoreTests",

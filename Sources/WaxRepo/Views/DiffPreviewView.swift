@@ -1,3 +1,4 @@
+#if WaxRepo && os(macOS)
 import SwiftTUI
 
 /// An indexed diff line for unique ForEach identification.
@@ -56,3 +57,4 @@ struct DiffPreviewView: View {
         return .default
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if WaxRepo && os(macOS)
 import SwiftTUI
 
 /// Top bar showing the wax-repo branding and search input.
@@ -24,3 +25,4 @@ struct HeaderView: View {
         }
     }
 }
+#endif

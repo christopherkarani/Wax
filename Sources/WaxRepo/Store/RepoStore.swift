@@ -149,18 +149,14 @@ actor RepoStore {
     }
 
     /// Parses a `CommitSearchResult` from a preview string containing the structured header.
+    ///
+    /// Returns `nil` if the preview lacks the structured header or has an invalid format.
+    /// Callers use `compactMap` to silently filter out unparseable results rather than
+    /// displaying results with empty hash/author/date fields in the TUI.
     private static func parseResult(from preview: String, score: Float) -> CommitSearchResult? {
         guard preview.hasPrefix(headerPrefix) else {
-            // Fallback for content without structured header
-            return CommitSearchResult(
-                hash: "",
-                shortHash: "",
-                author: "",
-                date: "",
-                subject: preview.components(separatedBy: "\n").first ?? preview,
-                score: score,
-                previewText: preview
-            )
+            // No structured header — result cannot be displayed meaningfully.
+            return nil
         }
 
         // Extract header line
@@ -169,15 +165,8 @@ actor RepoStore {
         let parts = headerLine.components(separatedBy: "|")
 
         guard parts.count >= 5 else {
-            return CommitSearchResult(
-                hash: "",
-                shortHash: "",
-                author: "",
-                date: "",
-                subject: preview,
-                score: score,
-                previewText: preview
-            )
+            // Malformed header — filter out rather than showing empty fields.
+            return nil
         }
 
         let remainingText = firstNewline < preview.endIndex

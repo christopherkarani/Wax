@@ -66,13 +66,13 @@ struct IndexCommand: ParsableCommand {
         let modeLabel = sinceHash != nil ? "incremental (since \(sinceHash!.prefix(7)))" : "full"
         print("Indexing \(repoRoot) [\(modeLabel)]...")
 
-        // Parse git log
-        let allCommits = try await GitLogParser.parseLog(
+        // Parse git log. GitLogParser already applies -n when maxCommits > 0,
+        // so the returned array is already bounded to maxCommits elements.
+        let commits = try await GitLogParser.parseLog(
             repoPath: repoRoot,
             maxCount: maxCommits,
             since: sinceHash
         )
-        let commits = maxCommits > 0 ? Array(allCommits.prefix(maxCommits)) : allCommits
 
         guard !commits.isEmpty else {
             print("No new commits to index.")

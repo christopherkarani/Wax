@@ -1,14 +1,14 @@
 import Foundation
-#if os(macOS)
+#if WaxRepo && os(macOS)
 import Combine
 
 /// Async bridge between the Wax-powered RepoStore and the SwiftTUI view layer.
 ///
-/// All `@Published` property mutations happen on the main dispatch queue,
-/// which SwiftTUI's run loop already uses. The class is `@unchecked Sendable`
-/// because SwiftTUI calls `body` from the main queue and all state mutations
-/// are dispatched there.
-final class SearchViewModel: ObservableObject, @unchecked Sendable {
+/// `@MainActor` ensures all `@Published` property mutations happen on the main
+/// dispatch queue, which SwiftTUI's run loop already uses. Callers from async
+/// contexts use `await` to hop to the main actor before mutating state.
+@MainActor
+final class SearchViewModel: ObservableObject {
 
     // MARK: - Published State
 
@@ -39,11 +39,9 @@ final class SearchViewModel: ObservableObject, @unchecked Sendable {
     func updateQuery(_ newQuery: String) async {
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        await MainActor.run {
-            self.query = trimmed
-            self.isSearching = true
-            self.errorMessage = nil
-        }
+        query = trimmed
+        isSearching = true
+        errorMessage = nil
         await executeSearch(trimmed)
     }
 
@@ -85,21 +83,18 @@ final class SearchViewModel: ObservableObject, @unchecked Sendable {
         do {
             let hits = try await store.search(query: trimmed, topK: topK)
             let elapsed = ContinuousClock.now - start
+            // 10^15 attoseconds per millisecond
             let ms = elapsed.components.seconds * 1000
                 + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000)
 
-            await MainActor.run {
-                self.results = hits
-                self.selectedIndex = 0
-                self.selectedDiff = hits.first?.previewText ?? ""
-                self.searchTime = "\(ms)ms"
-                self.isSearching = false
-            }
+            results = hits
+            selectedIndex = 0
+            selectedDiff = hits.first?.previewText ?? ""
+            searchTime = "\(ms)ms"
+            isSearching = false
         } catch {
-            await MainActor.run {
-                self.errorMessage = error.localizedDescription
-                self.isSearching = false
-            }
+            errorMessage = error.localizedDescription
+            isSearching = false
         }
     }
 }

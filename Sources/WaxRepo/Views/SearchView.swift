@@ -1,4 +1,4 @@
-#if os(macOS)
+#if WaxRepo && os(macOS)
 import SwiftTUI
 
 /// Main search view composing the header, commit list, and diff preview.

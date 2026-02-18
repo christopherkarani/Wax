@@ -1,3 +1,4 @@
+#if WaxRepo && os(macOS)
 import SwiftTUI
 
 /// Indexed wrapper for use with SwiftTUI ForEach.
@@ -84,3 +85,4 @@ struct CommitListView: View {
         return String(text.prefix(maxLength - 1)) + "~"
     }
 }
+#endif

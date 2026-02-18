@@ -54,36 +54,41 @@ enum GitLogParser {
     // MARK: - Shell execution
 
     private static func runGit(_ arguments: [String]) async throws -> String {
+        // Move blocking I/O off the Swift cooperative thread pool.
+        // readDataToEndOfFile() and waitUntilExit() both block their calling thread;
+        // running them on a DispatchQueue.global() thread prevents starving async work.
         try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = arguments
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                process.arguments = arguments
 
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = Pipe()
 
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-                return
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                // Read ALL stdout before waitUntilExit to avoid pipe buffer deadlock.
+                // macOS pipes have a 64 KB buffer; large git log output fills it and
+                // blocks the writing process if we wait for exit first.
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+
+                guard process.terminationStatus == 0 else {
+                    let message = String(data: data, encoding: .utf8) ?? "git exited with \(process.terminationStatus)"
+                    continuation.resume(throwing: GitLogError.gitFailed(message))
+                    return
+                }
+
+                let output = String(data: data, encoding: .utf8) ?? ""
+                continuation.resume(returning: output)
             }
-
-            // Read ALL stdout before waitUntilExit to avoid pipe buffer deadlock.
-            // macOS pipes have a 64 KB buffer; large git log output fills it and
-            // blocks the writing process if we wait for exit first.
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-
-            guard process.terminationStatus == 0 else {
-                let message = String(data: data, encoding: .utf8) ?? "git exited with \(process.terminationStatus)"
-                continuation.resume(throwing: GitLogError.gitFailed(message))
-                return
-            }
-
-            let output = String(data: data, encoding: .utf8) ?? ""
-            continuation.resume(returning: output)
         }
     }
 
