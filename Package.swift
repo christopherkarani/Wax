@@ -31,6 +31,11 @@ let package = Package(
             description: "Builds the WaxMCPServer stdio MCP server executable (macOS only)",
             enabledTraits: ["MiniLMEmbeddings"]
         ),
+        .init(
+            name: "WaxRepo",
+            description: "Builds the wax-repo semantic git search TUI (macOS only)",
+            enabledTraits: ["MiniLMEmbeddings"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.23.0"),
@@ -39,6 +44,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+        .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
     ],
     targets: [
         .target(
@@ -123,6 +130,19 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/WaxCLI",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .executableTarget(
+            name: "WaxRepo",
+            dependencies: [
+                "Wax",
+                .product(name: "SwiftTUI", package: "SwiftTUI"),
+                .product(name: "Noora", package: "Noora"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .target(name: "WaxVectorSearchMiniLM",
+                        condition: .when(traits: ["MiniLMEmbeddings"])),
+            ],
+            path: "Sources/WaxRepo",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
