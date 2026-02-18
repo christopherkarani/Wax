@@ -48,10 +48,10 @@ enum WaxMCPTools {
                 return try await videoRecall(arguments: params.arguments, video: video)
             case "wax_photo_ingest":
                 _ = photo
-                return redirectToSoju()
+                return redirectToSojuError()
             case "wax_photo_recall":
                 _ = photo
-                return redirectToSoju()
+                return redirectToSojuError()
             default:
                 return errorResult(
                     message: "Unknown tool '\(params.name)'.",
@@ -314,8 +314,10 @@ enum WaxMCPTools {
         return textResult(lines.joined(separator: "\n"))
     }
 
-    private static func redirectToSoju() -> CallTool.Result {
-        textResult(ToolSchemas.sojuMessage)
+    // Returns isError: true so MCP clients know the tool is not yet functional.
+    // Photo RAG will be implemented via Soju; until then callers must treat this as an error.
+    private static func redirectToSojuError() -> CallTool.Result {
+        errorResult(message: ToolSchemas.sojuMessage, code: "not_implemented")
     }
 
     private static func coerceMetadata(_ metadata: [String: Value]?) throws -> [String: String] {

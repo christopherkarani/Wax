@@ -5,11 +5,29 @@ import Foundation
 import Security
 #endif
 
-@MainActor
+// LicenseValidator is nonisolated — all access to mutable statics goes through `lock`.
+// Do NOT add @MainActor here; the MCP server runs on a non-main executor and calling
+// MainActor.run { } from a dispatchMain() context risks deadlocks.
 enum LicenseValidator {
-    static var trialDefaults: UserDefaults = .standard
-    static var firstLaunchKey = "wax_first_launch"
-    static var keychainEnabled = true
+    private static let lock = NSLock()
+
+    // These are mutated only from tests; production code treats them as constants.
+    static var trialDefaults: UserDefaults {
+        get { lock.withLock { _trialDefaults } }
+        set { lock.withLock { _trialDefaults = newValue } }
+    }
+    static var firstLaunchKey: String {
+        get { lock.withLock { _firstLaunchKey } }
+        set { lock.withLock { _firstLaunchKey = newValue } }
+    }
+    static var keychainEnabled: Bool {
+        get { lock.withLock { _keychainEnabled } }
+        set { lock.withLock { _keychainEnabled = newValue } }
+    }
+
+    private static var _trialDefaults: UserDefaults = .standard
+    private static var _firstLaunchKey = "wax_first_launch"
+    private static var _keychainEnabled = true
 
     private static let keyPattern = #"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"#
     private static let keyRegex = try? NSRegularExpression(pattern: keyPattern)
@@ -57,6 +75,11 @@ enum LicenseValidator {
         try checkTrialPeriod()
     }
 
+    // Validates format only (XXXX-XXXX-XXXX-XXXX with alphanumeric segments).
+    // NOTE: This is intentionally client-side format validation only. It does NOT verify
+    // that the key is an authentic, paid license. Server-side activation (pingActivation)
+    // is a no-op placeholder and will be wired to the licensing backend in a future release.
+    // Any string matching the pattern will currently pass this check.
     static func isValidFormat(_ key: String) -> Bool {
         guard let keyRegex else { return false }
         let range = NSRange(key.startIndex..<key.endIndex, in: key)
@@ -121,6 +144,8 @@ enum LicenseValidator {
         #endif
     }
 
+    // Placeholder for server-side license activation. Currently a no-op.
+    // TODO: Wire to licensing backend before enforcing license gating in production.
     static func pingActivation(key: String) async {
         _ = key
     }

@@ -54,9 +54,8 @@ struct WaxMCPServerCommand: ParsableCommand {
     private func runServer() async throws {
         if licenseValidationEnabled() {
             let resolvedLicense = normalizedLicense()
-            try await MainActor.run {
-                try LicenseValidator.validate(key: resolvedLicense)
-            }
+            // LicenseValidator is nonisolated — call directly, no MainActor hop needed.
+            try LicenseValidator.validate(key: resolvedLicense)
         }
 
         let memoryURL = try resolveStoreURL(storePath)

@@ -14,6 +14,9 @@ import WaxVectorSearch
 /// lightweight labels and OCR text from an image, then embeds that synthesized description
 /// with the base text embedding provider. This is sufficient for caption-style retrieval.
 struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
+    /// Minimum Vision classification confidence to include a label in the image description.
+    private static let minimumLabelConfidence: Float = 0.3
+
     let base: any EmbeddingProvider
 
     var dimensions: Int { base.dimensions }
@@ -50,7 +53,7 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
 
             if let observations = classifyRequest.results {
                 labels = observations
-                    .filter { $0.confidence > 0.3 }
+                    .filter { $0.confidence > minimumLabelConfidence }
                     .prefix(5)
                     .map(\.identifier)
             }

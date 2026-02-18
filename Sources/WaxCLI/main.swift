@@ -186,12 +186,18 @@ extension WaxCLI.MCP {
                 return
             }
 
-            _ = try ProcessRunner.run(
+            // Remove the existing registration before re-adding. Exit code 1 is expected
+            // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
+            // Any other non-zero exit code indicates an unexpected error (e.g. permissions).
+            let removeStatus = try ProcessRunner.run(
                 command: "claude",
                 arguments: removeArguments,
-                passthrough: true,
+                passthrough: false,
                 allowNonZeroExit: true
             )
+            if removeStatus != EXIT_SUCCESS && removeStatus != 1 {
+                fputs("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)\n", stderr)
+            }
 
             let addStatus = try ProcessRunner.run(
                 command: "claude",

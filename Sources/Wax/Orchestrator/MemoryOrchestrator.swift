@@ -501,8 +501,8 @@ public actor MemoryOrchestrator {
     ) async throws -> [MemorySearchHit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        let clampedTopK = max(0, topK)
-        guard clampedTopK > 0 else { return [] }
+        guard topK > 0 else { return [] }
+        let clampedTopK = topK
 
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
 
