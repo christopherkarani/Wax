@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import Foundation
 import XCTest
 @testable import Wax
@@ -834,3 +835,4 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         }
     }
 }
+#endif
