@@ -42,7 +42,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_handoff",
-            description: "Store a cross-session handoff note for later retrieval.",
+            description: "Store a cross-session handoff note for later retrieval. Call wax_flush to persist.",
             inputSchema: waxHandoff
         ),
         Tool(
