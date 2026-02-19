@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import Darwin
 import Foundation
 import XCTest
@@ -223,3 +224,4 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         return UInt64(info.resident_size)
     }
 }
+#endif

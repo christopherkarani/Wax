@@ -1,4 +1,4 @@
-#if canImport(WaxVectorSearchMiniLM)
+#if canImport(WaxVectorSearchMiniLM) && canImport(XCTest)
 import Foundation
 import XCTest
 import WaxVectorSearchMiniLM

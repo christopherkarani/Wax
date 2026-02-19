@@ -38,6 +38,13 @@ The npm launcher is at `npm/waxmcp`.
 npx -y waxmcp@latest mcp serve
 ```
 
+This package includes embedded `WaxCLI` binaries for:
+
+1. `dist/darwin-arm64/WaxCLI`
+2. `dist/darwin-x64/WaxCLI`
+
+For users of the published package, no local Wax build is required.
+
 For local development:
 
 ```bash

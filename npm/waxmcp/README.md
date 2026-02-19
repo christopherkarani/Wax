@@ -8,12 +8,21 @@
 npx -y waxmcp@latest mcp serve
 ```
 
-By default, the launcher tries these commands in order:
+To publish a new version:
+
+```bash
+cd /path/to/Wax/npm/waxmcp
+npm version patch   # or minor/major/1.2.3
+npm publish --access public
+```
+
+By default, the launcher uses this order:
 
 1. `$WAX_CLI_BIN`
-2. `wax`
-3. `WaxCLI`
-4. `./.build/debug/WaxCLI` (current working directory)
+2. Bundled `dist/darwin-arm64/WaxCLI` or `dist/darwin-x64/WaxCLI`
+3. `wax`
+4. `WaxCLI`
+5. `./.build/debug/WaxCLI` (current working directory)
 
 ## Local development
 

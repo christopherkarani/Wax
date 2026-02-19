@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 import Foundation
 @testable import WaxVectorSearch
@@ -121,3 +122,4 @@ final class BufferSerializationBenchmark: XCTestCase {
         XCTAssertGreaterThan(loadSpeedup, 1.0, "Buffer load should be faster than file load")
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 import Foundation
 @testable import Wax
@@ -170,3 +171,4 @@ final class MetalVectorEngineBenchmark: XCTestCase {
         print("   ✅ Lazy GPU sync maintains correctness\n")
     }
 }
+#endif

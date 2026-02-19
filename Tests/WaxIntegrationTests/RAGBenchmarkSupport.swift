@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import Foundation
 import XCTest
 @testable import Wax
@@ -366,3 +367,4 @@ private extension Double {
         String(format: "%.4f", self)
     }
 }
+#endif

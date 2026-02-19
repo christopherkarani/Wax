@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 import SwiftTiktoken
 @testable import Wax
@@ -49,3 +50,4 @@ final class NativeBpeTokenizerTests: XCTestCase {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 import Foundation
 @testable import Wax
@@ -836,3 +837,4 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             .appendingPathExtension("mv2s")
     }
 }
+#endif

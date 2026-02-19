@@ -1,0 +1,98 @@
+name: Release waxmcp npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version bump (patch/minor/major) or semver (for manual release)
+        required: false
+        default: patch
+  push:
+    tags:
+      - "waxmcp-v*"
+
+jobs:
+  build:
+    name: Build WaxCLI (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: macos-13
+            platform: darwin-x64
+          - runs-on: macos-14
+            platform: darwin-arm64
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build WaxCLI
+        run: |
+          set -euo pipefail
+          swift build --product WaxCLI --traits MCPServer --configuration release
+          BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --show-bin-path)"
+          mkdir -p npm/waxmcp/dist/${{ matrix.platform }}
+          cp "$BIN_PATH/WaxCLI" npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waxmcp-${{ matrix.platform }}
+          path: npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          if-no-files-found: error
+
+  publish:
+    name: Publish waxmcp to npm
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'waxmcp-v') }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore darwin-x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: waxmcp-darwin-x64
+          path: npm/waxmcp/dist/darwin-x64
+
+      - name: Restore darwin-arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: waxmcp-darwin-arm64
+          path: npm/waxmcp/dist/darwin-arm64
+
+      - name: Set package version
+        working-directory: npm/waxmcp
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          else
+            VERSION="${GITHUB_REF_NAME#waxmcp-v}"
+            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          fi
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Verify packaged binaries
+        run: |
+          chmod +x npm/waxmcp/dist/darwin-arm64/WaxCLI
+          test -x npm/waxmcp/dist/darwin-arm64/WaxCLI
+          chmod +x npm/waxmcp/dist/darwin-x64/WaxCLI
+          test -x npm/waxmcp/dist/darwin-x64/WaxCLI
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Authenticate to npm
+        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "${HOME}/.npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish package
+        working-directory: npm/waxmcp
+        run: npm publish --access public

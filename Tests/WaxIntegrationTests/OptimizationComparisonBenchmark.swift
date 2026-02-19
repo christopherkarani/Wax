@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 import Foundation
 @testable import Wax
@@ -162,3 +163,4 @@ final class OptimizationComparisonBenchmark: XCTestCase {
         XCTAssertGreaterThan(speedup, 1.0, "Direct actor calls should be faster than per-call Task hops")
     }
 }
+#endif
