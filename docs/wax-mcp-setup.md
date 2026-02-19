@@ -29,6 +29,19 @@ swift run WaxCLI mcp serve
 
 - `WAX_MCP_FEATURE_LICENSE=0` (default): license validation disabled
 - `WAX_MCP_FEATURE_LICENSE=1`: enable `LicenseValidator`
+- `WAX_MCP_FEATURE_STRUCTURED_MEMORY=1` (default): enable graph/entity/fact tools
+- `WAX_MCP_FEATURE_STRUCTURED_MEMORY=0`: disable structured memory graph tools
+- `WAX_MCP_FEATURE_ACCESS_STATS=0` (default): disable access-stat-based scoring persistence
+- `WAX_MCP_FEATURE_ACCESS_STATS=1`: enable access-stat recording + scoring path
+
+## MCP tool highlights
+
+- Session lifecycle: `wax_session_start`, `wax_session_end`
+- Session scoping on reads: `wax_recall` and `wax_search` accept `session_id`
+- Explicit session scoping on writes: `wax_remember` and `wax_handoff` accept `session_id`
+- Handoff continuity: `wax_handoff`, `wax_handoff_latest`
+- Structured memory graph: `wax_entity_upsert`, `wax_fact_assert`, `wax_fact_retract`, `wax_facts_query`, `wax_entity_resolve`
+- Batched graph mutation option: set `commit=false` on graph mutations and call `wax_flush` to commit once
 
 ## npx launcher
 

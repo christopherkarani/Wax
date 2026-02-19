@@ -25,9 +25,9 @@ enum LicenseValidator {
         set { lock.withLock { _keychainEnabled = newValue } }
     }
 
-    private static var _trialDefaults: UserDefaults = .standard
-    private static var _firstLaunchKey = "wax_first_launch"
-    private static var _keychainEnabled = true
+    nonisolated(unsafe) private static var _trialDefaults: UserDefaults = .standard
+    nonisolated(unsafe) private static var _firstLaunchKey = "wax_first_launch"
+    nonisolated(unsafe) private static var _keychainEnabled = true
 
     private static let keyPattern = #"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"#
     private static let keyRegex = try? NSRegularExpression(pattern: keyPattern)
