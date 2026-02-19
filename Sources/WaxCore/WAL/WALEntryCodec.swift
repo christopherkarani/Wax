@@ -46,13 +46,11 @@ public enum WALEntryCodec {
             guard embedding.vector.count <= Constants.maxEmbeddingDimensions else {
                 throw WaxError.encodingError(reason: "embedding dimension exceeds limit")
             }
-            var bytes = Data()
-            bytes.reserveCapacity(embedding.vector.count * 4)
-            for value in embedding.vector {
-                var le = value.bitPattern.littleEndian
-                withUnsafeBytes(of: &le) { bytes.append(contentsOf: $0) }
+            // Bulk copy: safe on little-endian platforms (all Apple targets).
+            let floatBytes = embedding.vector.withUnsafeBufferPointer { buf in
+                Data(buffer: buf)
             }
-            encoder.encodeFixedBytes(bytes)
+            encoder.encodeFixedBytes(floatBytes)
         }
 
         return encoder.data
@@ -116,17 +114,12 @@ public enum WALEntryCodec {
                 let byteCount = dimInt * 4
                 let bytes = try decoder.decodeFixedBytes(count: byteCount)
 
-                var vector: [Float] = []
-                vector.reserveCapacity(Int(dimension))
-                var idx = 0
-                while idx < bytes.count {
-                    let slice = bytes[idx..<(idx + 4)]
-                    var raw: UInt32 = 0
-                    _ = withUnsafeMutableBytes(of: &raw) { dest in
-                        slice.copyBytes(to: dest, count: 4)
+                // Bulk copy: safe on little-endian platforms (all Apple targets).
+                var vector = [Float](repeating: 0, count: dimInt)
+                vector.withUnsafeMutableBufferPointer { floatBuf in
+                    bytes.withUnsafeBytes { src in
+                        UnsafeMutableRawBufferPointer(floatBuf).copyMemory(from: src)
                     }
-                    vector.append(Float(bitPattern: UInt32(littleEndian: raw)))
-                    idx += 4
                 }
 
                 try decoder.finalize()
