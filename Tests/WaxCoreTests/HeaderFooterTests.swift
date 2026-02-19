@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 @testable import WaxCore
@@ -178,7 +177,7 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
 @Test func footerTocHashValidation() throws {
     let tocBody = Data("Sample TOC content".utf8)
     let zero32 = Data(repeating: 0, count: 32)
-    let tocChecksum = Data(SHA256.hash(data: tocBody + zero32))
+    let tocChecksum = SHA256Checksum.digest(tocBody + zero32)
 
     var tocBytes = Data()
     tocBytes.append(tocBody)
@@ -263,7 +262,7 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
     expected.replaceSubrange(72..<104, with: Data(repeating: 0xBB, count: 32))
 
     // header_checksum is SHA256 over the full 4096 bytes with checksum field zeroed.
-    let checksum = Data(SHA256.hash(data: expected))
+    let checksum = SHA256Checksum.digest(expected)
     expected.replaceSubrange(104..<136, with: checksum)
 
     #expect(try header.encodeWithChecksum() == expected)

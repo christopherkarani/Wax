@@ -234,12 +234,12 @@ public actor MemoryOrchestrator {
         if docMeta.entries["session_id"] == nil, let session = currentSessionId {
             docMeta.entries["session_id"] = session.uuidString
         }
+        let effectiveSessionId = docMeta.entries["session_id"]
 
         let chunkCount = chunks.count
         let localSession = session
         let localEmbedder = embedder
         let cache = embeddingCache
-        let sessionId = currentSessionId
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
         let fileManager = FileManager.default
@@ -369,8 +369,8 @@ public actor MemoryOrchestrator {
                 option.searchText = batchChunks[localIdx]
 
                 var chunkMeta = Metadata(metadata)
-                if let sessionId {
-                    chunkMeta.entries["session_id"] = sessionId.uuidString
+                if let effectiveSessionId {
+                    chunkMeta.entries["session_id"] = effectiveSessionId
                 }
                 option.metadata = chunkMeta
                 options.append(option)
@@ -768,6 +768,8 @@ public actor MemoryOrchestrator {
         if config.enableTextSearch {
             try await session.indexText(frameId: frameId, text: text)
         }
+        // Ensure latestHandoff() can observe this frame immediately via committed metadata/content views.
+        try await session.commit()
         return frameId
     }
 
