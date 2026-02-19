@@ -93,7 +93,6 @@ public final class WALRingReader {
         var pendingBytes: UInt64 = 0
         var wrapped = false
         var pendingMutations: [PendingMutation] = []
-        var stopDecodingPendingMutations = false
 
         while true {
             let remaining = walSize - cursor
@@ -157,14 +156,15 @@ public final class WALRingReader {
                 break
             }
 
-            if !stopDecodingPendingMutations, header.sequence > committedSeq {
+            if header.sequence > committedSeq {
                 do {
                     let entry = try WALEntryCodec.decode(payload, offset: cursor)
                     pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
                 } catch {
-                    // Preserve old open behavior: pending mutation scan stops on decode error,
-                    // but writePos/pendingBytes state scan continues to the end.
-                    stopDecodingPendingMutations = true
+                    throw WaxError.walCorruption(
+                        offset: cursor,
+                        reason: "failed to decode pending WAL mutation for sequence \(header.sequence): \(error.localizedDescription)"
+                    )
                 }
             }
 

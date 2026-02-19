@@ -122,6 +122,43 @@ import Wax
     }
 }
 
+@Test func unifiedSession_commitPropagatesMissingVectorIndexError() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableTextSearch = false
+        config.enableStructuredMemory = false
+        config.enableVectorSearch = false
+
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+        let frameId = try await session.put(Data("payload".utf8), options: FrameMetaSubset(searchText: "payload"))
+        try await wax.putEmbedding(frameId: frameId, vector: [1.0, 0.0])
+
+        do {
+            try await session.commit()
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(reason.contains("vector index must be staged before committing embeddings"))
+        }
+
+        await session.close()
+        do {
+            try await wax.close()
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(reason.contains("vector index must be staged before committing embeddings"))
+        }
+    }
+}
+
 @Test func unifiedSession_putEmbeddingBatchPersistsSearchOrder() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

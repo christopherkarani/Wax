@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStatePreservesDecodeFailureBehavior() throws {
+@Test func walPendingScanWithStateThrowsOnPendingDecodeFailure() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -138,9 +138,17 @@ import Testing
         #expect(legacyPending.isEmpty)
         #expect(legacyState.lastSequence == 2)
 
-        let combined = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(combined.pendingMutations == legacyPending)
-        #expect(combined.state == legacyState)
+        do {
+            _ = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .walCorruption(let offset, let reason) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(offset == 0)
+            #expect(reason.contains("failed to decode pending WAL mutation"))
+        }
     }
 }
 

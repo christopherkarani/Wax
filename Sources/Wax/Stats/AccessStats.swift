@@ -31,6 +31,7 @@ public struct FrameAccessStats: Sendable, Equatable, Codable {
 /// Manages access statistics for frame retrieval tracking.
 public actor AccessStatsManager {
     private var stats: [UInt64: FrameAccessStats] = [:]
+    private var dirty = false
     
     public init() {}
     
@@ -43,10 +44,12 @@ public actor AccessStatsManager {
         } else {
             stats[frameId] = FrameAccessStats(frameId: frameId, nowMs: nowMs)
         }
+        dirty = true
     }
     
     /// Record accesses for multiple frames at once.
     public func recordAccesses(frameIds: [UInt64]) {
+        guard !frameIds.isEmpty else { return }
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         for frameId in frameIds {
             if var existing = stats[frameId] {
@@ -56,6 +59,7 @@ public actor AccessStatsManager {
                 stats[frameId] = FrameAccessStats(frameId: frameId, nowMs: nowMs)
             }
         }
+        dirty = true
     }
     
     /// Get stats for a single frame.
@@ -77,17 +81,33 @@ public actor AccessStatsManager {
     
     /// Remove stats for frames that no longer exist.
     public func pruneStats(keepingOnly activeFrameIds: Set<UInt64>) {
+        let before = stats.count
         stats = stats.filter { activeFrameIds.contains($0.key) }
+        if stats.count != before {
+            dirty = true
+        }
     }
     
     /// Export all stats for persistence.
     public func exportStats() -> [FrameAccessStats] {
-        Array(stats.values)
+        Array(stats.values).sorted { $0.frameId < $1.frameId }
+    }
+
+    /// Export all stats only when they have changed since the last persist.
+    public func exportStatsIfDirty() -> [FrameAccessStats]? {
+        guard dirty else { return nil }
+        return exportStats()
+    }
+
+    /// Mark the current in-memory snapshot as persisted.
+    public func markPersisted() {
+        dirty = false
     }
     
     /// Import stats from persistence.
     public func importStats(_ imported: [FrameAccessStats]) {
         stats = Dictionary(uniqueKeysWithValues: imported.map { ($0.frameId, $0) })
+        dirty = false
     }
     
     /// Total number of tracked frames.

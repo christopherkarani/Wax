@@ -18,6 +18,8 @@ public struct FastRAGContextBuilder: Sendable {
         vectorEnginePreference: VectorEnginePreference = .auto,
         wax: Wax,
         session: WaxSession? = nil,
+        frameFilter: FrameFilter? = nil,
+        accessStatsManager: AccessStatsManager? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
         let clamped = clamp(config)
@@ -30,6 +32,7 @@ public struct FastRAGContextBuilder: Sendable {
             vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
             topK: clamped.searchTopK,
+            frameFilter: frameFilter,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
         )
@@ -47,6 +50,11 @@ public struct FastRAGContextBuilder: Sendable {
                 analyzer: queryAnalyzer
             )
             : response.results
+        let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
+            await accessStatsManager.getStats(frameIds: rankedResults.map(\.frameId))
+        } else {
+            [:]
+        }
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0
@@ -58,7 +66,6 @@ public struct FastRAGContextBuilder: Sendable {
             ? queryAnalyzer.analyze(query: query)
             : nil
         let queryIntent = queryAnalyzer.detectIntent(query: query)
-        let nowMs = clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000)
 
         // Prefetch surrogate metadata in parallel with expansion work.
         // This keeps determinism while overlapping Wax actor hops.
@@ -161,6 +168,9 @@ public struct FastRAGContextBuilder: Sendable {
 
             // Get only source frame metas needed for timestamp access.
             let frameMetaMap = await sourceFrameMetasTask
+            let nowMs = clamped.deterministicNowMs
+                ?? frameMetaMap.values.map(\.timestamp).max()
+                ?? Int64(Date().timeIntervalSince1970 * 1000)
 
             let surrogateContents = await surrogateContentsTask
 
@@ -186,7 +196,7 @@ public struct FastRAGContextBuilder: Sendable {
                         let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
                         let context = TierSelectionContext(
                             frameTimestamp: frameTimestamp,
-                            accessStats: nil, // Access stats would be passed in from orchestrator if tracking enabled
+                            accessStats: accessStatsMap[item.result.frameId],
                             querySignals: querySignals,
                             nowMs: nowMs
                         )

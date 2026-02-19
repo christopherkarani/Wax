@@ -420,15 +420,7 @@ public actor WaxSession {
 
     public func commit(compact: Bool = false) async throws {
         try await stage(compact: compact)
-        do {
-            try await wax.commit()
-        } catch let error as WaxError {
-            if case .io(let message) = error,
-               message == "vector index must be staged before committing embeddings" {
-                return
-            }
-            throw error
-        }
+        try await wax.commit()
     }
 
     private func ensureWritable() throws {
