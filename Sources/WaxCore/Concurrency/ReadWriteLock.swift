@@ -8,85 +8,56 @@ import Darwin
 import Glibc
 #endif
 
-/// High-performance reader-writer lock with platform-specific primitives.
+/// High-performance reader-writer lock backed by `pthread_rwlock_t`.
+///
+/// Using `pthread_rwlock_t` on all platforms (Darwin and Linux) gives genuine reader
+/// concurrency — multiple readers can hold the lock simultaneously. The previous Darwin
+/// path used `os_unfair_lock` + a usleep spin which serialised all readers, negating
+/// any concurrency benefit over a plain mutex.
 public final class ReadWriteLock: @unchecked Sendable {
-    #if canImport(os)
-    private var lock = os_unfair_lock()
-    private var readerCount: Int32 = 0
-    #else
     private var rwlock = pthread_rwlock_t()
-    #endif
 
     public init() {
-        #if !canImport(os)
         let result = pthread_rwlock_init(&rwlock, nil)
         precondition(result == 0, "pthread_rwlock_init failed: \(result)")
-        #endif
     }
 
     deinit {
-        #if !canImport(os)
         _ = pthread_rwlock_destroy(&rwlock)
-        #endif
     }
 
     // MARK: - Synchronous API (Hot Path)
 
     @inline(__always)
     public func readLock() {
-        #if canImport(os)
-        os_unfair_lock_lock(&lock)
-        readerCount += 1
-        os_unfair_lock_unlock(&lock)
-        #else
         while true {
             let result = pthread_rwlock_rdlock(&rwlock)
             if result == 0 { return }
             if result == EINTR { continue }
             fatalError("pthread_rwlock_rdlock failed: \(result)")
         }
-        #endif
     }
 
     @inline(__always)
     public func readUnlock() {
-        #if canImport(os)
-        os_unfair_lock_lock(&lock)
-        readerCount -= 1
-        os_unfair_lock_unlock(&lock)
-        #else
         let result = pthread_rwlock_unlock(&rwlock)
         precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
-        #endif
     }
 
     @inline(__always)
     public func writeLock() {
-        #if canImport(os)
-        os_unfair_lock_lock(&lock)
-        while readerCount > 0 {
-            os_unfair_lock_unlock(&lock)
-            usleep(1)
-            os_unfair_lock_lock(&lock)
-        }
-        #else
         while true {
             let result = pthread_rwlock_wrlock(&rwlock)
             if result == 0 { return }
             if result == EINTR { continue }
             fatalError("pthread_rwlock_wrlock failed: \(result)")
         }
-        #endif
     }
 
     @inline(__always)
     public func writeUnlock() {
-        #if canImport(os)
-        os_unfair_lock_unlock(&lock)
-        #else
         let result = pthread_rwlock_unlock(&rwlock)
         precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
-        #endif
     }
 
     @inline(__always)

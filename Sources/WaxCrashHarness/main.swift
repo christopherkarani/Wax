@@ -95,7 +95,7 @@ struct WaxCrashHarness {
             .appendingPathExtension("mv2s")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        try await seedStore(at: url)
+        let seedFrameId = try await seedStore(at: url)
 
         let child = try runChildProcess(storeURL: url, scenario: scenario)
         guard child.reason == .uncaughtSignal, child.status == sigKillStatus else {
@@ -109,13 +109,14 @@ struct WaxCrashHarness {
                 "scenario \(scenario.rawValue) expected frameCount \(scenario.expectedCommittedFramesAfterRecovery), got \(stats.frameCount)"
             )
         }
-        let seed = try await recovered.frameContent(frameId: 0)
+        let seed = try await recovered.frameContent(frameId: seedFrameId)
         guard seed == Data("seed".utf8) else {
             throw HarnessError.invariantFailed("seed frame mismatch after recovery")
         }
 
         if scenario.expectedCommittedFramesAfterRecovery >= 2 {
-            let second = try await recovered.frameContent(frameId: 1)
+            // The child's frame is the next frame allocated after the seed frame.
+            let second = try await recovered.frameContent(frameId: seedFrameId + 1)
             let expected = Data("payload-\(scenario.rawValue)".utf8)
             guard second == expected else {
                 throw HarnessError.invariantFailed("second frame mismatch for \(scenario.rawValue)")
@@ -124,11 +125,14 @@ struct WaxCrashHarness {
         try await recovered.close()
     }
 
-    private static func seedStore(at url: URL) async throws {
+    /// Seeds the store with a single "seed" frame and returns its allocated frame ID.
+    @discardableResult
+    private static func seedStore(at url: URL) async throws -> UInt64 {
         let wax = try await Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
-        _ = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+        let seedFrameId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
         try await wax.commit()
         try await wax.close()
+        return seedFrameId
     }
 
     private static func runChildProcess(storeURL: URL, scenario: CrashScenario) throws -> (status: Int32, reason: Process.TerminationReason) {

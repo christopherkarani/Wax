@@ -2267,6 +2267,10 @@ public actor Wax {
     private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
         let env = ProcessInfo.processInfo.environment
         guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
+        // SIGKILL is delivered asynchronously and may be delayed or masked in sandboxed
+        // environments (containers, test harnesses). The fatalError below is a safety net
+        // for those cases; it should never be reached in normal crash-injection runs but
+        // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }

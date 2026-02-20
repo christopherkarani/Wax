@@ -497,8 +497,13 @@ public final class WALRingWriter {
     }
 
     private func faultAndRestore(_ snapshot: WriterStateSnapshot) {
-        isFaulted = true
         restoreState(snapshot)
+        isFaulted = true
+        // Best-effort: overwrite any partially-written bytes at the restored writePos
+        // with a zeroed sentinel so a subsequent open does not mistake stale on-disk
+        // content (e.g., a sentinel written before the failure) for a valid record.
+        // This is advisory — the open path must still handle corrupt content defensively.
+        try? writeAllCounted(Self.sentinelData, at: walOffset + snapshot.writePos)
     }
 }
 
