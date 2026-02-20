@@ -348,11 +348,12 @@ public final class WALRingReader {
             }
 
             if header.sequence > committedSeq {
-                do {
-                    results.append(try decode(cursor, header, payload))
-                } catch {
-                    break
-                }
+                // Re-throw decode failures: a checksum-validated record that cannot be decoded
+                // indicates structural corruption in the WAL entry format, not a partial write.
+                // Partial writes are caught earlier by the checksum mismatch check (which causes
+                // a `break`), so a decode failure here means a codec invariant violation that
+                // cannot be silently recovered from by skipping mutations.
+                results.append(try decode(cursor, header, payload))
             }
 
             cursor = cursor + UInt64(WALRecord.headerSize) + payloadLen

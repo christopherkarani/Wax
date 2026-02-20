@@ -553,24 +553,12 @@ public actor MemoryOrchestrator {
 
     public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
         let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-        let recallConfig = ragConfigForRecall()
-        if let embedding {
-            let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-            let context = try await ragBuilder.build(
-                query: query,
-                embedding: embedding,
-                vectorEnginePreference: preference,
-                wax: wax,
-                session: session,
-                accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-                config: recallConfig
-            )
-            await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-            return context
-        }
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let recallConfig = ragConfigForRecall()
+        // `build` accepts an optional embedding; pass it directly regardless of whether it resolved.
         let context = try await ragBuilder.build(
             query: query,
+            embedding: embedding,
             vectorEnginePreference: preference,
             wax: wax,
             session: session,
