@@ -121,7 +121,13 @@ struct WaxMCPServerCommand: ParsableCommand {
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )
-        await WaxMCPTools.register(on: server, memory: memory, video: video, photo: photo)
+        await WaxMCPTools.register(
+            on: server,
+            memory: memory,
+            video: video,
+            photo: photo,
+            structuredMemoryEnabled: memoryConfig.enableStructuredMemory
+        )
 
         var runError: Error?
         do {

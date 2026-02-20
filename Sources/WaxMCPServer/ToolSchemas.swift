@@ -4,7 +4,12 @@ import MCP
 enum ToolSchemas {
     static let sojuMessage = "Photo RAG requires Soju. Install at waxmcp.dev/soju"
 
-    static let allTools: [Tool] = [
+    static var allTools: [Tool] {
+        tools(structuredMemoryEnabled: true)
+    }
+
+    static func tools(structuredMemoryEnabled: Bool) -> [Tool] {
+        var tools: [Tool] = [
         Tool(
             name: "wax_remember",
             description: "Store text in Wax memory with optional metadata.",
@@ -50,52 +55,62 @@ enum ToolSchemas {
             description: "Fetch the latest handoff note, optionally scoped by project.",
             inputSchema: waxHandoffLatest
         ),
-        Tool(
-            name: "wax_entity_upsert",
-            description: "Upsert a structured-memory entity by key.",
-            inputSchema: waxEntityUpsert
-        ),
-        Tool(
-            name: "wax_fact_assert",
-            description: "Assert a structured-memory fact.",
-            inputSchema: waxFactAssert
-        ),
-        Tool(
-            name: "wax_fact_retract",
-            description: "Retract a structured-memory fact by id.",
-            inputSchema: waxFactRetract
-        ),
-        Tool(
-            name: "wax_facts_query",
-            description: "Query structured-memory facts.",
-            inputSchema: waxFactsQuery
-        ),
-        Tool(
-            name: "wax_entity_resolve",
-            description: "Resolve entities by alias.",
-            inputSchema: waxEntityResolve
-        ),
-        Tool(
-            name: "wax_video_ingest",
-            description: "Ingest one or more local video files into Video RAG.",
-            inputSchema: waxVideoIngest
-        ),
-        Tool(
-            name: "wax_video_recall",
-            description: "Recall timecoded segments from Video RAG.",
-            inputSchema: waxVideoRecall
-        ),
-        Tool(
-            name: "wax_photo_ingest",
-            description: "Photo RAG ingest — not available in this build. Requires Soju: waxmcp.dev/soju",
-            inputSchema: waxPhotoIngest
-        ),
-        Tool(
-            name: "wax_photo_recall",
-            description: "Photo RAG recall — not available in this build. Requires Soju: waxmcp.dev/soju",
-            inputSchema: waxPhotoRecall
-        ),
-    ]
+        ]
+
+        if structuredMemoryEnabled {
+            tools.append(contentsOf: [
+                Tool(
+                    name: "wax_entity_upsert",
+                    description: "Upsert a structured-memory entity by key.",
+                    inputSchema: waxEntityUpsert
+                ),
+                Tool(
+                    name: "wax_fact_assert",
+                    description: "Assert a structured-memory fact.",
+                    inputSchema: waxFactAssert
+                ),
+                Tool(
+                    name: "wax_fact_retract",
+                    description: "Retract a structured-memory fact by id.",
+                    inputSchema: waxFactRetract
+                ),
+                Tool(
+                    name: "wax_facts_query",
+                    description: "Query structured-memory facts.",
+                    inputSchema: waxFactsQuery
+                ),
+                Tool(
+                    name: "wax_entity_resolve",
+                    description: "Resolve entities by alias.",
+                    inputSchema: waxEntityResolve
+                ),
+            ])
+        }
+
+        tools.append(contentsOf: [
+            Tool(
+                name: "wax_video_ingest",
+                description: "Ingest one or more local video files into Video RAG.",
+                inputSchema: waxVideoIngest
+            ),
+            Tool(
+                name: "wax_video_recall",
+                description: "Recall timecoded segments from Video RAG.",
+                inputSchema: waxVideoRecall
+            ),
+            Tool(
+                name: "wax_photo_ingest",
+                description: "Photo RAG ingest — not available in this build. Requires Soju: waxmcp.dev/soju",
+                inputSchema: waxPhotoIngest
+            ),
+            Tool(
+                name: "wax_photo_recall",
+                description: "Photo RAG recall — not available in this build. Requires Soju: waxmcp.dev/soju",
+                inputSchema: waxPhotoRecall
+            ),
+        ])
+        return tools
+    }
 
     static let waxRemember: Value = objectSchema(
         properties: [

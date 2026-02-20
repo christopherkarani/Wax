@@ -1,4 +1,27 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+@inline(__always)
+private func posixGetPID() -> Int32 {
+    #if canImport(Darwin)
+    Darwin.getpid()
+    #else
+    Glibc.getpid()
+    #endif
+}
+
+@inline(__always)
+private func posixKill(_ pid: Int32, _ signal: Int32) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.kill(pid, signal)
+    #else
+    Glibc.kill(pid, signal)
+    #endif
+}
 
 public struct WaxStats: Equatable, Sendable {
     public var frameCount: UInt64
@@ -70,6 +93,15 @@ public struct PendingEmbeddingSnapshot: Equatable, Sendable {
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
 /// All mutable state is isolated within this actor for thread safety.
 public actor Wax {
+    private enum CrashInjectionCheckpoint: String {
+        case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
+        case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
+        case afterFooterFsyncBeforeHeader = "after_footer_fsync_before_header"
+        case afterHeaderWriteBeforeFinalFsync = "after_header_write_before_final_fsync"
+
+        static let envKey = "WAX_CRASH_INJECT_CHECKPOINT"
+    }
+
     private let url: URL
     private let io: BlockingIOExecutor
     private let opLock = AsyncReadWriteLock()
@@ -1490,9 +1522,18 @@ public actor Wax {
 
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
+        }
+        Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
+
+        try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
+        }
+        Self.maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
+
+        try await io.run {
             try file.fsync()
         }
+        Self.maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
 
         header.footerOffset = footerOffset
         header.fileGeneration = footer.generation
@@ -1504,6 +1545,7 @@ public actor Wax {
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
+        Self.maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
         try await io.run {
             try file.fsync()
             wal.recordCheckpoint()
@@ -2221,6 +2263,17 @@ public actor Wax {
     }
 
     // MARK: - Internal helpers
+
+    private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
+        let env = ProcessInfo.processInfo.environment
+        guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
+        // SIGKILL is delivered asynchronously and may be delayed or masked in sandboxed
+        // environments (containers, test harnesses). The fatalError below is a safety net
+        // for those cases; it should never be reached in normal crash-injection runs but
+        // produces a clear diagnostic if SIGKILL did not terminate the process in time.
+        _ = posixKill(posixGetPID(), SIGKILL)
+        fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
+    }
 
     private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: MV2SHeaderPage.WALReplaySnapshot) async throws {
         var snapshotPage = header

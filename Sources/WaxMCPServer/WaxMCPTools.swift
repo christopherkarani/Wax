@@ -18,10 +18,14 @@ enum WaxMCPTools {
         on server: Server,
         memory: MemoryOrchestrator,
         video: VideoRAGOrchestrator?,
-        photo: PhotoRAGOrchestrator?
+        photo: PhotoRAGOrchestrator?,
+        structuredMemoryEnabled: Bool
     ) async {
         _ = await server.withMethodHandler(ListTools.self) { _ in
-            ListTools.Result(tools: ToolSchemas.allTools, nextCursor: nil)
+            ListTools.Result(
+                tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
+                nextCursor: nil
+            )
         }
 
         _ = await server.withMethodHandler(CallTool.self) { params in

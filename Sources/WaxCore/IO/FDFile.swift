@@ -1,11 +1,144 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+@inline(__always)
+private func posixClose(_ fd: Int32) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.close(fd)
+    #else
+    Glibc.close(fd)
+    #endif
+}
+
+@inline(__always)
+private func posixFsync(_ fd: Int32) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.fsync(fd)
+    #else
+    Glibc.fsync(fd)
+    #endif
+}
+
+@inline(__always)
+private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.open(path, flags)
+    #else
+    Glibc.open(path, flags)
+    #endif
+}
+
+@inline(__always)
+private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32, _ mode: mode_t) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.open(path, flags, mode)
+    #else
+    Glibc.open(path, flags, mode)
+    #endif
+}
+
+enum FDFileReadFault: Sendable, Equatable {
+    case eintr(retries: Int = 1)
+    case eio
+    case shortRead(maxBytes: Int)
+}
+
+enum FDFileWriteFault: Sendable, Equatable {
+    case eintr(retries: Int = 1)
+    case eio
+    case shortWrite(maxBytes: Int)
+}
+
+struct FDFileFaultPlan: Sendable, Equatable {
+    var pread: [FDFileReadFault]
+    var pwrite: [FDFileWriteFault]
+
+    init(
+        pread: [FDFileReadFault] = [],
+        pwrite: [FDFileWriteFault] = []
+    ) {
+        self.pread = pread
+        self.pwrite = pwrite
+    }
+}
 
 /// POSIX file descriptor-backed file with offset-based I/O.
 public final class FDFile {
+    private enum ReadDirective {
+        case none
+        case fail(errno: Int32)
+        case short(maxBytes: Int)
+    }
+
+    private enum WriteDirective {
+        case none
+        case fail(errno: Int32)
+        case short(maxBytes: Int)
+    }
+
+    private final class FaultInjectionState {
+        private let lock = NSLock()
+        private var preadPlan: [FDFileReadFault]
+        private var pwritePlan: [FDFileWriteFault]
+
+        init(plan: FDFileFaultPlan) {
+            self.preadPlan = plan.pread
+            self.pwritePlan = plan.pwrite
+        }
+
+        func nextReadDirective() -> ReadDirective {
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard !preadPlan.isEmpty else { return .none }
+            switch preadPlan[0] {
+            case .eintr(let retries):
+                if retries > 1 {
+                    preadPlan[0] = .eintr(retries: retries - 1)
+                } else {
+                    preadPlan.removeFirst()
+                }
+                return .fail(errno: EINTR)
+            case .eio:
+                preadPlan.removeFirst()
+                return .fail(errno: EIO)
+            case .shortRead(let maxBytes):
+                preadPlan.removeFirst()
+                return .short(maxBytes: max(1, maxBytes))
+            }
+        }
+
+        func nextWriteDirective() -> WriteDirective {
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard !pwritePlan.isEmpty else { return .none }
+            switch pwritePlan[0] {
+            case .eintr(let retries):
+                if retries > 1 {
+                    pwritePlan[0] = .eintr(retries: retries - 1)
+                } else {
+                    pwritePlan.removeFirst()
+                }
+                return .fail(errno: EINTR)
+            case .eio:
+                pwritePlan.removeFirst()
+                return .fail(errno: EIO)
+            case .shortWrite(let maxBytes):
+                pwritePlan.removeFirst()
+                return .short(maxBytes: max(1, maxBytes))
+            }
+        }
+    }
+
     private let fd: Int32
     private let url: URL
     private var isClosed = false
+    private var faultInjectionState: FaultInjectionState?
 
     private init(fd: Int32, url: URL) {
         self.fd = fd
@@ -14,7 +147,7 @@ public final class FDFile {
 
     deinit {
         if !isClosed {
-            _ = Darwin.close(fd)
+            _ = posixClose(fd)
         }
     }
 
@@ -38,6 +171,14 @@ public final class FDFile {
         return FDFile(fd: fd, url: url)
     }
 
+    func installFaultPlan(_ plan: FDFileFaultPlan) {
+        faultInjectionState = FaultInjectionState(plan: plan)
+    }
+
+    func clearFaultPlan() {
+        faultInjectionState = nil
+    }
+
     // MARK: - Read/Write
 
     /// May short read at EOF.
@@ -55,7 +196,7 @@ public final class FDFile {
                 throw WaxError.io("Unable to access read buffer")
             }
             while true {
-                let result = Darwin.pread(fd, base, length, startOffset)
+                let result = preadWithFaults(base: base, length: length, offset: startOffset)
                 if result >= 0 { return result }
                 if errno == EINTR { continue }
                 throw WaxError.io("pread failed: \(stringError())")
@@ -82,7 +223,11 @@ public final class FDFile {
             while totalRead < length {
                 let currentOffset = try checkedOffset(offset, adding: totalRead)
                 let remaining = length - totalRead
-                let result = Darwin.pread(fd, base.advanced(by: totalRead), remaining, currentOffset)
+                let result = preadWithFaults(
+                    base: base.advanced(by: totalRead),
+                    length: remaining,
+                    offset: currentOffset
+                )
                 if result > 0 {
                     totalRead += result
                     continue
@@ -110,7 +255,11 @@ public final class FDFile {
             while totalWritten < data.count {
                 let currentOffset = try checkedOffset(offset, adding: totalWritten)
                 let remaining = data.count - totalWritten
-                let result = Darwin.pwrite(fd, base.advanced(by: totalWritten), remaining, currentOffset)
+                let result = pwriteWithFaults(
+                    base: base.advanced(by: totalWritten),
+                    length: remaining,
+                    offset: currentOffset
+                )
                 if result > 0 {
                     totalWritten += result
                     continue
@@ -131,7 +280,7 @@ public final class FDFile {
         #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
         if fcntl(fd, F_FULLFSYNC, 0) == 0 { return }
         #endif
-        guard Darwin.fsync(fd) == 0 else {
+        guard posixFsync(fd) == 0 else {
             throw WaxError.io("fsync failed: \(stringError())")
         }
     }
@@ -209,7 +358,7 @@ public final class FDFile {
 
     public func close() throws {
         if isClosed { return }
-        let result = Darwin.close(fd)
+        let result = posixClose(fd)
         if result == 0 {
             isClosed = true
             return
@@ -232,9 +381,9 @@ public final class FDFile {
             }
             let descriptor: Int32
             if let mode {
-                descriptor = Darwin.open(path, flags, mode)
+                descriptor = posixOpen(path, flags, mode)
             } else {
-                descriptor = Darwin.open(path, flags)
+                descriptor = posixOpen(path, flags)
             }
             guard descriptor >= 0 else {
                 throw WaxError.io("open failed for \(url.path): \(stringError())")
@@ -265,6 +414,34 @@ public final class FDFile {
             throw WaxError.io("Offset too large: \(total)")
         }
         return off_t(total)
+    }
+
+    private func preadWithFaults(base: UnsafeMutableRawPointer, length: Int, offset: off_t) -> Int {
+        let requestedLength: Int
+        switch faultInjectionState?.nextReadDirective() ?? .none {
+        case .none:
+            requestedLength = length
+        case .fail(let code):
+            errno = code
+            return -1
+        case .short(let maxBytes):
+            requestedLength = min(length, maxBytes)
+        }
+        return pread(fd, base, requestedLength, offset)
+    }
+
+    private func pwriteWithFaults(base: UnsafeRawPointer, length: Int, offset: off_t) -> Int {
+        let requestedLength: Int
+        switch faultInjectionState?.nextWriteDirective() ?? .none {
+        case .none:
+            requestedLength = length
+        case .fail(let code):
+            errno = code
+            return -1
+        case .short(let maxBytes):
+            requestedLength = min(length, maxBytes)
+        }
+        return pwrite(fd, base, requestedLength, offset)
     }
 
     private static func stringError() -> String {

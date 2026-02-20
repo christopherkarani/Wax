@@ -1,4 +1,4 @@
-import CryptoKit
+import Crypto
 import Foundation
 
 /// Simple SHA-256 wrapper used by MV2S codecs.
@@ -23,4 +23,3 @@ public struct SHA256Checksum {
         Data(SHA256.hash(data: data))
     }
 }
-

@@ -1,0 +1,24 @@
+name: WaxCore Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  waxcore-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux codec dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-dev zlib1g-dev
+
+      - name: Build WaxCore target
+        run: swift build --target WaxCore
+
+      - name: Run WaxCore tests
+        run: swift test --filter WaxCoreTests

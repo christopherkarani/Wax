@@ -21,6 +21,7 @@ import AVFoundation
 /// hybrid retrieval to assemble prompt-ready context.
 public actor VideoRAGOrchestrator {
     private static let photosVideoRequestTimeout: Duration = .seconds(10)
+    private static let scoreTieEpsilon: Float = 1e-3
 
     struct VideoSegmentTimeRange: Sendable, Equatable {
         var startMs: Int64
@@ -345,7 +346,10 @@ public actor VideoRAGOrchestrator {
                 )
                 if idx >= 0 {
                     if let existing = entry.segmentsByIndex[idx] {
-                        if seg.score > existing.score {
+                        if seg.score > existing.score + Self.scoreTieEpsilon {
+                            entry.segmentsByIndex[idx] = seg
+                        } else if abs(seg.score - existing.score) <= Self.scoreTieEpsilon,
+                                  seg.frameId < existing.frameId {
                             entry.segmentsByIndex[idx] = seg
                         }
                     } else {
@@ -357,9 +361,30 @@ public actor VideoRAGOrchestrator {
             candidates[rootId] = entry
         }
 
+        func isTimelineOnly(_ candidate: RootCandidate) -> Bool {
+            !candidate.evidence.isEmpty && candidate.evidence.allSatisfy {
+                if case .timeline = $0 { return true }
+                return false
+            }
+        }
+
+        func captureMs(for rootId: UInt64) -> Int64? {
+            guard let rootMeta = rootMetaById[rootId] else { return nil }
+            guard let entries = rootMeta.metadata?.entries else { return nil }
+            return entries[MetaKey.captureMs].flatMap(Int64.init)
+        }
+
         // Deterministic ordering across videos.
         let sorted = candidates.values.sorted { a, b in
-            if a.score != b.score { return a.score > b.score }
+            if isTimelineOnly(a), isTimelineOnly(b) {
+                // Constraint-only timeline fallback should preserve strict temporal ordering.
+                if a.score != b.score { return a.score > b.score }
+                let aCapture = captureMs(for: a.rootId) ?? .min
+                let bCapture = captureMs(for: b.rootId) ?? .min
+                if aCapture != bCapture { return aCapture > bCapture }
+                return a.rootId < b.rootId
+            }
+            if abs(a.score - b.score) > Self.scoreTieEpsilon { return a.score > b.score }
             return a.rootId < b.rootId
         }
 
@@ -382,7 +407,9 @@ public actor VideoRAGOrchestrator {
         for root in picked {
             let segs = root.segmentsByIndex
                 .sorted { a, b in
-                    if a.value.score != b.value.score { return a.value.score > b.value.score }
+                    if abs(a.value.score - b.value.score) > Self.scoreTieEpsilon {
+                        return a.value.score > b.value.score
+                    }
                     return a.key < b.key
                 }
                 .prefix(query.segmentLimitPerVideo)
@@ -405,7 +432,9 @@ public actor VideoRAGOrchestrator {
 
             let segmentCandidates = rootCandidate.segmentsByIndex
                 .sorted { a, b in
-                    if a.value.score != b.value.score { return a.value.score > b.value.score }
+                    if abs(a.value.score - b.value.score) > Self.scoreTieEpsilon {
+                        return a.value.score > b.value.score
+                    }
                     return a.key < b.key
                 }
                 .prefix(query.segmentLimitPerVideo)

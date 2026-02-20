@@ -11,17 +11,29 @@ private func repeatedData(_ seed: Data, count: Int) -> Data {
 
 @Test func lzfseRoundtrip() throws {
     let original = Data(repeating: 0xAA, count: 10_000)
+    #if os(Linux)
+    #expect(throws: WaxError.self) {
+        _ = try PayloadCompressor.compress(original, algorithm: .lzfse)
+    }
+    #else
     let compressed = try PayloadCompressor.compress(original, algorithm: .lzfse)
     let decompressed = try PayloadCompressor.decompress(compressed, algorithm: .lzfse, uncompressedLength: original.count)
     #expect(decompressed == original)
     #expect(compressed.count < original.count)
+    #endif
 }
 
 @Test func lz4Roundtrip() throws {
     let original = repeatedData(Data("Hello, World! ".utf8), count: 1000)
+    #if os(Linux)
+    #expect(throws: WaxError.self) {
+        _ = try PayloadCompressor.compress(original, algorithm: .lz4)
+    }
+    #else
     let compressed = try PayloadCompressor.compress(original, algorithm: .lz4)
     let decompressed = try PayloadCompressor.decompress(compressed, algorithm: .lz4, uncompressedLength: original.count)
     #expect(decompressed == original)
+    #endif
 }
 
 @Test func deflateRoundtrip() throws {
@@ -41,7 +53,10 @@ private func repeatedData(_ seed: Data, count: Int) -> Data {
 
 @Test func smallDataNoHugeExpansion() throws {
     let original = Data([1, 2, 3, 4, 5])
+    #if os(Linux)
+    let compressed = try PayloadCompressor.compress(original, algorithm: .deflate)
+    #else
     let compressed = try PayloadCompressor.compress(original, algorithm: .lzfse)
+    #endif
     #expect(compressed.count < original.count + 128)
 }
-

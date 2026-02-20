@@ -3,7 +3,40 @@ import Foundation
 import Metal
 #endif
 import Testing
-import Wax
+@testable import Wax
+
+private actor DeterministicVectorResultsEngine: VectorSearchEngine {
+    let dimensions: Int
+    private let results: [(frameId: UInt64, score: Float)]
+
+    init(dimensions: Int, results: [(frameId: UInt64, score: Float)]) {
+        self.dimensions = dimensions
+        self.results = results
+    }
+
+    func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
+        _ = vector
+        return Array(results.prefix(topK))
+    }
+
+    func add(frameId: UInt64, vector: [Float]) async throws {
+        _ = frameId
+        _ = vector
+    }
+
+    func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
+        _ = frameIds
+        _ = vectors
+    }
+
+    func remove(frameId: UInt64) async throws {
+        _ = frameId
+    }
+
+    func stageForCommit(into wax: Wax) async throws {
+        _ = wax
+    }
+}
 
 @Test func textOnlySearch() async throws {
     try await TempFiles.withTempFile { url in
@@ -707,6 +740,54 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         } else {
             #expect(Bool(false))
         }
+
+        try await wax.close()
+    }
+}
+
+@Test func hybridRrfTieBreakUsesFrameIDWhenScoreAndBestRankTie() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let query = "what is rrfuniquetoken123"
+
+        let textOnlyID = try await wax.put(Data("text lane candidate".utf8))
+        try await text.index(frameId: textOnlyID, text: query)
+
+        let vectorOnlyID = try await wax.put(Data("vector lane candidate".utf8))
+
+        try await text.commit()
+
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 4,
+            results: [(frameId: vectorOnlyID, score: 1.0)]
+        )
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: query,
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.3),
+                topK: 2,
+                enableRankingDiagnostics: true,
+                rankingDiagnosticsTopK: 2
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.count == 2)
+        #expect(response.results.map(\.frameId) == [textOnlyID, vectorOnlyID])
+        #expect(response.results[0].rankingDiagnostics?.tieBreakReason == .topResult)
+        #expect(response.results[1].rankingDiagnostics?.tieBreakReason == .frameID)
+
+        let firstScore = response.results[0].score
+        let secondScore = response.results[1].score
+        #expect(abs(firstScore - secondScore) == 0)
 
         try await wax.close()
     }

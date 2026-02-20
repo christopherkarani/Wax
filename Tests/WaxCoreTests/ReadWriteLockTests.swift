@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-// MARK: - ReadWriteLock Tests (synchronous, os_unfair_lock based)
+// MARK: - ReadWriteLock Tests (synchronous, platform lock based)
 
 @Test func readWriteLockWithReadLockReturnsValue() {
     let lock = ReadWriteLock()
