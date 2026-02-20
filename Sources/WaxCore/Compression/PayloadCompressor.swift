@@ -151,7 +151,7 @@ private extension PayloadCompressor {
         case .lzfse:
             throw WaxError.io("compression algorithm lzfse is unavailable in this Linux build")
         case .lz4:
-            throw WaxError.io("compression algorithm lz4 is unavailable in this Linux build")
+            return try linuxLZ4Compress(data)
         case .deflate:
             return try linuxDeflateCompress(data)
         }
@@ -168,7 +168,7 @@ private extension PayloadCompressor {
         case .lzfse:
             throw WaxError.io("compression algorithm lzfse is unavailable in this Linux build")
         case .lz4:
-            throw WaxError.io("compression algorithm lz4 is unavailable in this Linux build")
+            return try linuxLZ4Decompress(data, uncompressedLength: uncompressedLength)
         case .deflate:
             return try linuxDeflateDecompress(data, uncompressedLength: uncompressedLength)
         }
@@ -217,6 +217,51 @@ private extension PayloadCompressor {
         }
         guard Int(written) == uncompressedLength else {
             throw WaxError.io("deflate decompressed size mismatch: wrote \(written), expected \(uncompressedLength)")
+        }
+        return Data(dst)
+    }
+
+    static func linuxLZ4Compress(_ data: Data) throws -> Data {
+        let maxCapacity = maxCompressedCapacity(forInputSize: data.count)
+        var dstCapacity = max(64, min(maxCapacity, max(1, data.count)))
+
+        while dstCapacity <= maxCapacity {
+            var dst = [UInt8](repeating: 0, count: dstCapacity)
+            var written: size_t = 0
+            let rc = data.withUnsafeBytes { srcRaw -> Int32 in
+                guard let src = srcRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+                return dst.withUnsafeMutableBytes { dstRaw -> Int32 in
+                    guard let out = dstRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+                    return wax_lz4_compress(src, srcRaw.count, out, dstRaw.count, &written)
+                }
+            }
+
+            if rc == 0, written > 0 {
+                dst.removeSubrange(Int(written)..<dst.count)
+                return Data(dst)
+            }
+
+            // rc == -4 means dst_cap < LZ4_compressBound(src_len); double and retry.
+            if rc != -4 { break }
+            let doubled = dstCapacity &* 2
+            if doubled <= dstCapacity { break }
+            dstCapacity = doubled
+        }
+
+        throw WaxError.io("lz4 compression failed to fit within cap \(maxCapacity) bytes")
+    }
+
+    static func linuxLZ4Decompress(_ data: Data, uncompressedLength: Int) throws -> Data {
+        var dst = [UInt8](repeating: 0, count: uncompressedLength)
+        let rc = data.withUnsafeBytes { srcRaw -> Int32 in
+            guard let src = srcRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+            return dst.withUnsafeMutableBytes { dstRaw -> Int32 in
+                guard let out = dstRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+                return wax_lz4_decompress(src, srcRaw.count, out, dstRaw.count)
+            }
+        }
+        guard rc == 0 else {
+            throw WaxError.io("lz4 decompress failed: \(rc)")
         }
         return Data(dst)
     }

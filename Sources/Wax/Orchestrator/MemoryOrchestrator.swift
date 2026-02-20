@@ -501,25 +501,33 @@ public actor MemoryOrchestrator {
     // MARK: - Recall (Fast RAG)
 
     public func recall(query: String) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
-        let recallConfig = ragConfigForRecall()
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
+        return try await buildRecallContext(query: query, embedding: embedding)
     }
 
     public func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
+        return try await buildRecallContext(query: query, embedding: embedding, frameFilter: frameFilter)
+    }
+
+    public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
+        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    /// Shared recall implementation: builds the RAG context and records frame accesses.
+    /// All public recall() overloads funnel through here so that `ragConfigForRecall()` and
+    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
+    private func buildRecallContext(
+        query: String,
+        embedding: [Float]?,
+        frameFilter: FrameFilter? = nil
+    ) async throws -> RAGContext {
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let recallConfig = ragConfigForRecall()
         let context = try await ragBuilder.build(
             query: query,
@@ -528,52 +536,6 @@ public actor MemoryOrchestrator {
             wax: wax,
             session: session,
             frameFilter: frameFilter,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
-    }
-
-    public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let recallConfig = ragConfigForRecall()
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
-    }
-
-    public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-        let recallConfig = ragConfigForRecall()
-        if let embedding {
-            let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-            let context = try await ragBuilder.build(
-                query: query,
-                embedding: embedding,
-                vectorEnginePreference: preference,
-                wax: wax,
-                session: session,
-                accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-                config: recallConfig
-            )
-            await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-            return context
-        }
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let context = try await ragBuilder.build(
-            query: query,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
