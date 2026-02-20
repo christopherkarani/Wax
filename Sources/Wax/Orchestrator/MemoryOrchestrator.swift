@@ -1170,10 +1170,22 @@ public actor MemoryOrchestrator {
                 metadata: metadata
             )
         )
-        if let previous = accessStatsFrameId, previous != frameId {
-            try await wax.supersede(supersededId: previous, supersedingId: frameId)
-        }
+        let previousFrameId = accessStatsFrameId
+        // Update the tracked frame ID before superseding so that if supersede throws,
+        // the next flush will still attempt to supersede this frame rather than
+        // the pre-supersede frame, preventing orphaned stats frames from accumulating.
         accessStatsFrameId = frameId
+        if let previous = previousFrameId, previous != frameId {
+            do {
+                try await wax.supersede(supersededId: previous, supersedingId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "access stats supersede",
+                    fallback: "previous stats frame may remain active until next flush"
+                )
+            }
+        }
         await accessStatsManager.markPersisted()
     }
 }
