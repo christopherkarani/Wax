@@ -51,7 +51,8 @@ struct WaxMCPServerCommand: ParsableCommand {
     }
 
     private func runServer() async throws {
-        if licenseValidationEnabled() {
+        let licenseEnabled = licenseValidationEnabled()
+        if licenseEnabled {
             let resolvedLicense = normalizedLicense()
             // LicenseValidator is nonisolated — call directly, no MainActor hop needed.
             try LicenseValidator.validate(key: resolvedLicense)
@@ -64,10 +65,26 @@ struct WaxMCPServerCommand: ParsableCommand {
         let embedder = try await buildEmbedder()
 
         var memoryConfig = OrchestratorConfig.default
+        memoryConfig.enableStructuredMemory = featureFlagEnabled(
+            "WAX_MCP_FEATURE_STRUCTURED_MEMORY",
+            default: true
+        )
+        memoryConfig.enableAccessStatsScoring = featureFlagEnabled(
+            "WAX_MCP_FEATURE_ACCESS_STATS",
+            default: false
+        )
         if embedder == nil {
             memoryConfig.enableVectorSearch = false
             memoryConfig.rag.searchMode = .textOnly
         }
+
+        writeStderr(
+            "WaxMCPServer features: " +
+                "structured_memory=\(memoryConfig.enableStructuredMemory) " +
+                "access_stats_scoring=\(memoryConfig.enableAccessStatsScoring) " +
+                "license_validation=\(licenseEnabled) " +
+                "vector_search=\(memoryConfig.enableVectorSearch)"
+        )
 
         let memory = try await MemoryOrchestrator(
             at: memoryURL,
@@ -104,7 +121,13 @@ struct WaxMCPServerCommand: ParsableCommand {
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )
-        await WaxMCPTools.register(on: server, memory: memory, video: video, photo: photo)
+        await WaxMCPTools.register(
+            on: server,
+            memory: memory,
+            video: video,
+            photo: photo,
+            structuredMemoryEnabled: memoryConfig.enableStructuredMemory
+        )
 
         var runError: Error?
         do {
@@ -166,18 +189,24 @@ struct WaxMCPServerCommand: ParsableCommand {
     }
 
     private func licenseValidationEnabled() -> Bool {
+        featureFlagEnabled("WAX_MCP_FEATURE_LICENSE", default: false)
+    }
+
+    private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
         let env = ProcessInfo.processInfo.environment
-        guard let raw = env["WAX_MCP_FEATURE_LICENSE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty
         else {
-            return false
+            return defaultValue
         }
 
         switch raw.lowercased() {
         case "1", "true", "yes", "on":
             return true
-        default:
+        case "0", "false", "no", "off":
             return false
+        default:
+            return defaultValue
         }
     }
 

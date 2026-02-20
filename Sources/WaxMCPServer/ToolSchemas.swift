@@ -4,7 +4,12 @@ import MCP
 enum ToolSchemas {
     static let sojuMessage = "Photo RAG requires Soju. Install at waxmcp.dev/soju"
 
-    static let allTools: [Tool] = [
+    static var allTools: [Tool] {
+        tools(structuredMemoryEnabled: true)
+    }
+
+    static func tools(structuredMemoryEnabled: Bool) -> [Tool] {
+        var tools: [Tool] = [
         Tool(
             name: "wax_remember",
             description: "Store text in Wax memory with optional metadata.",
@@ -31,32 +36,91 @@ enum ToolSchemas {
             inputSchema: waxStats
         ),
         Tool(
-            name: "wax_video_ingest",
-            description: "Ingest one or more local video files into Video RAG.",
-            inputSchema: waxVideoIngest
+            name: "wax_session_start",
+            description: "Start a new scoped memory session and return a session_id.",
+            inputSchema: waxSessionStart
         ),
         Tool(
-            name: "wax_video_recall",
-            description: "Recall timecoded segments from Video RAG.",
-            inputSchema: waxVideoRecall
+            name: "wax_session_end",
+            description: "End the active scoped memory session.",
+            inputSchema: waxSessionEnd
         ),
         Tool(
-            name: "wax_photo_ingest",
-            description: "Photo RAG ingest — not available in this build. Requires Soju: waxmcp.dev/soju",
-            inputSchema: waxPhotoIngest
+            name: "wax_handoff",
+            description: "Store a cross-session handoff note for later retrieval.",
+            inputSchema: waxHandoff
         ),
         Tool(
-            name: "wax_photo_recall",
-            description: "Photo RAG recall — not available in this build. Requires Soju: waxmcp.dev/soju",
-            inputSchema: waxPhotoRecall
+            name: "wax_handoff_latest",
+            description: "Fetch the latest handoff note, optionally scoped by project.",
+            inputSchema: waxHandoffLatest
         ),
-    ]
+        ]
+
+        if structuredMemoryEnabled {
+            tools.append(contentsOf: [
+                Tool(
+                    name: "wax_entity_upsert",
+                    description: "Upsert a structured-memory entity by key.",
+                    inputSchema: waxEntityUpsert
+                ),
+                Tool(
+                    name: "wax_fact_assert",
+                    description: "Assert a structured-memory fact.",
+                    inputSchema: waxFactAssert
+                ),
+                Tool(
+                    name: "wax_fact_retract",
+                    description: "Retract a structured-memory fact by id.",
+                    inputSchema: waxFactRetract
+                ),
+                Tool(
+                    name: "wax_facts_query",
+                    description: "Query structured-memory facts.",
+                    inputSchema: waxFactsQuery
+                ),
+                Tool(
+                    name: "wax_entity_resolve",
+                    description: "Resolve entities by alias.",
+                    inputSchema: waxEntityResolve
+                ),
+            ])
+        }
+
+        tools.append(contentsOf: [
+            Tool(
+                name: "wax_video_ingest",
+                description: "Ingest one or more local video files into Video RAG.",
+                inputSchema: waxVideoIngest
+            ),
+            Tool(
+                name: "wax_video_recall",
+                description: "Recall timecoded segments from Video RAG.",
+                inputSchema: waxVideoRecall
+            ),
+            Tool(
+                name: "wax_photo_ingest",
+                description: "Photo RAG ingest — not available in this build. Requires Soju: waxmcp.dev/soju",
+                inputSchema: waxPhotoIngest
+            ),
+            Tool(
+                name: "wax_photo_recall",
+                description: "Photo RAG recall — not available in this build. Requires Soju: waxmcp.dev/soju",
+                inputSchema: waxPhotoRecall
+            ),
+        ])
+        return tools
+    }
 
     static let waxRemember: Value = objectSchema(
         properties: [
             "content": [
                 "type": "string",
                 "description": "Text content to store in memory.",
+            ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID to scope this write explicitly.",
             ],
             "metadata": [
                 "type": "object",
@@ -79,6 +143,10 @@ enum ToolSchemas {
                 "minimum": 1,
                 "maximum": 100,
             ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID for scoped recall.",
+            ],
         ],
         required: ["query"]
     )
@@ -100,12 +168,200 @@ enum ToolSchemas {
                 "minimum": 1,
                 "maximum": 200,
             ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID for scoped search.",
+            ],
         ],
         required: ["query"]
     )
 
     static let waxFlush: Value = emptyObjectSchema()
     static let waxStats: Value = emptyObjectSchema()
+    static let waxSessionStart: Value = emptyObjectSchema()
+    static let waxSessionEnd: Value = emptyObjectSchema()
+
+    static let waxHandoff: Value = objectSchema(
+        properties: [
+            "content": [
+                "type": "string",
+                "description": "Handoff text for the next session.",
+            ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID to scope this handoff explicitly.",
+            ],
+            "project": [
+                "type": "string",
+                "description": "Optional project scope.",
+            ],
+            "pending_tasks": [
+                "type": "array",
+                "description": "Optional list of pending tasks.",
+                "items": ["type": "string"],
+            ],
+        ],
+        required: ["content"]
+    )
+
+    static let waxHandoffLatest: Value = objectSchema(
+        properties: [
+            "project": [
+                "type": "string",
+                "description": "Optional project scope for lookup.",
+            ],
+        ],
+        required: []
+    )
+
+    static let waxEntityUpsert: Value = objectSchema(
+        properties: [
+            "key": [
+                "type": "string",
+                "description": "Entity key, e.g. namespace:id.",
+            ],
+            "kind": [
+                "type": "string",
+                "description": "Entity kind.",
+            ],
+            "aliases": [
+                "type": "array",
+                "description": "Optional aliases for entity resolution.",
+                "items": ["type": "string"],
+            ],
+            "commit": [
+                "type": "boolean",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+            ],
+        ],
+        required: ["key", "kind"]
+    )
+
+    static let waxFactAssert: Value = objectSchema(
+        properties: [
+            "subject": [
+                "type": "string",
+                "description": "Subject entity key.",
+            ],
+            "predicate": [
+                "type": "string",
+                "description": "Predicate key.",
+            ],
+            "object": [
+                "oneOf": [
+                    ["type": "string"],
+                    ["type": "integer"],
+                    ["type": "number"],
+                    ["type": "boolean"],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "entity": ["type": "string"],
+                        ],
+                        "required": ["entity"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "time_ms": ["type": "integer"],
+                        ],
+                        "required": ["time_ms"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "data_base64": ["type": "string"],
+                        ],
+                        "required": ["data_base64"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": ["type": "string"],
+                            "value": .object([:]),
+                        ],
+                        "required": ["type", "value"],
+                        "additionalProperties": false,
+                    ],
+                ],
+                "description": "Fact object value: primitive or typed object (entity, time_ms, data_base64).",
+            ],
+            "valid_from": [
+                "type": "integer",
+                "description": "Optional valid-from timestamp (ms since epoch).",
+            ],
+            "valid_to": [
+                "type": "integer",
+                "description": "Optional valid-to timestamp (ms since epoch).",
+            ],
+            "commit": [
+                "type": "boolean",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+            ],
+        ],
+        required: ["subject", "predicate", "object"]
+    )
+
+    static let waxFactRetract: Value = objectSchema(
+        properties: [
+            "fact_id": [
+                "type": "integer",
+                "description": "Fact row id to retract.",
+            ],
+            "at_ms": [
+                "type": "integer",
+                "description": "Optional retraction timestamp in ms since epoch.",
+            ],
+            "commit": [
+                "type": "boolean",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+            ],
+        ],
+        required: ["fact_id"]
+    )
+
+    static let waxFactsQuery: Value = objectSchema(
+        properties: [
+            "subject": [
+                "type": "string",
+                "description": "Optional subject entity key.",
+            ],
+            "predicate": [
+                "type": "string",
+                "description": "Optional predicate key.",
+            ],
+            "as_of": [
+                "type": "integer",
+                "description": "Optional query timestamp in ms since epoch.",
+            ],
+            "limit": [
+                "type": "integer",
+                "description": "Maximum facts to return. Default: 20.",
+                "minimum": 1,
+                "maximum": 500,
+            ],
+        ],
+        required: []
+    )
+
+    static let waxEntityResolve: Value = objectSchema(
+        properties: [
+            "alias": [
+                "type": "string",
+                "description": "Alias to resolve.",
+            ],
+            "limit": [
+                "type": "integer",
+                "description": "Maximum matches to return. Default: 10.",
+                "minimum": 1,
+                "maximum": 100,
+            ],
+        ],
+        required: ["alias"]
+    )
 
     static let waxVideoIngest: Value = objectSchema(
         properties: [

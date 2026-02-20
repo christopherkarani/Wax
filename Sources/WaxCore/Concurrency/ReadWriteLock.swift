@@ -1,67 +1,72 @@
 import Foundation
+#if canImport(os)
 import os
+#endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
-/// High-performance reader-writer lock using os_unfair_lock.
-/// Optimized for read-heavy workloads with minimal lock overhead.
+/// High-performance reader-writer lock backed by `pthread_rwlock_t`.
 ///
-/// - Read operations are concurrent and non-blocking when no writer is active
-/// - Write operations are exclusive and block all readers/writers
-/// - Lock acquisition is ~5-10ns vs ~1-2μs for async continuation-based locks
+/// Using `pthread_rwlock_t` on all platforms (Darwin and Linux) gives genuine reader
+/// concurrency — multiple readers can hold the lock simultaneously. The previous Darwin
+/// path used `os_unfair_lock` + a usleep spin which serialised all readers, negating
+/// any concurrency benefit over a plain mutex.
 public final class ReadWriteLock: @unchecked Sendable {
-    private var lock = os_unfair_lock()
-    private var readerCount: Int32 = 0
-    private var writerWaiting: Bool = false
-    
-    public init() {}
-    
+    private var rwlock = pthread_rwlock_t()
+
+    public init() {
+        let result = pthread_rwlock_init(&rwlock, nil)
+        precondition(result == 0, "pthread_rwlock_init failed: \(result)")
+    }
+
+    deinit {
+        _ = pthread_rwlock_destroy(&rwlock)
+    }
+
     // MARK: - Synchronous API (Hot Path)
-    
-    /// Acquire read lock synchronously.
-    /// Multiple readers can hold the lock concurrently.
+
     @inline(__always)
     public func readLock() {
-        os_unfair_lock_lock(&lock)
-        readerCount += 1
-        os_unfair_lock_unlock(&lock)
-    }
-    
-    /// Release read lock.
-    @inline(__always)
-    public func readUnlock() {
-        os_unfair_lock_lock(&lock)
-        readerCount -= 1
-        os_unfair_lock_unlock(&lock)
-    }
-    
-    /// Acquire write lock synchronously.
-    /// Exclusive access - blocks until all readers release.
-    @inline(__always)
-    public func writeLock() {
-        os_unfair_lock_lock(&lock)
-        // Spin until no readers (write starvation possible but acceptable for our workload)
-        while readerCount > 0 {
-            os_unfair_lock_unlock(&lock)
-            // Brief yield to allow readers to complete
-            usleep(1)
-            os_unfair_lock_lock(&lock)
+        while true {
+            let result = pthread_rwlock_rdlock(&rwlock)
+            if result == 0 { return }
+            if result == EINTR { continue }
+            fatalError("pthread_rwlock_rdlock failed: \(result)")
         }
     }
-    
-    /// Release write lock.
+
+    @inline(__always)
+    public func readUnlock() {
+        let result = pthread_rwlock_unlock(&rwlock)
+        precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
+    }
+
+    @inline(__always)
+    public func writeLock() {
+        while true {
+            let result = pthread_rwlock_wrlock(&rwlock)
+            if result == 0 { return }
+            if result == EINTR { continue }
+            fatalError("pthread_rwlock_wrlock failed: \(result)")
+        }
+    }
+
     @inline(__always)
     public func writeUnlock() {
-        os_unfair_lock_unlock(&lock)
+        let result = pthread_rwlock_unlock(&rwlock)
+        precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
     }
-    
-    /// Execute a read operation under the lock.
+
     @inline(__always)
     public func withReadLock<T>(_ body: () throws -> T) rethrows -> T {
         readLock()
         defer { readUnlock() }
         return try body()
     }
-    
-    /// Execute a write operation under the lock.
+
     @inline(__always)
     public func withWriteLock<T>(_ body: () throws -> T) rethrows -> T {
         writeLock()
@@ -70,13 +75,10 @@ public final class ReadWriteLock: @unchecked Sendable {
     }
 }
 
-/// Async-compatible wrapper around ReadWriteLock.
-/// Provides async/await interface while using efficient synchronous locking internally.
 /// Async-compatible ReadWriteLock using continuations.
-/// Safe for use in Swift Concurrency (no blocking waits).
 public actor AsyncReadWriteLock {
     private var readers: Int = 0
-    private var writers: Int = 0 
+    private var writers: Int = 0
     private var writerWaiters: [CheckedContinuation<Void, Never>] = []
     private var readerWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -153,34 +155,63 @@ public actor AsyncReadWriteLock {
     }
 }
 
-/// Simple unfair lock wrapper for hot paths requiring minimal overhead.
-/// Use when you need the absolute fastest lock (~5ns acquisition).
+/// Simple lock wrapper for hot paths requiring minimal overhead.
 public final class UnfairLock: @unchecked Sendable {
-    private var _lock = os_unfair_lock()
-    
-    public init() {}
-    
+    #if canImport(os)
+    private var rawLock = os_unfair_lock()
+    #else
+    private var mutex = pthread_mutex_t()
+    #endif
+
+    public init() {
+        #if !canImport(os)
+        let result = pthread_mutex_init(&mutex, nil)
+        precondition(result == 0, "pthread_mutex_init failed: \(result)")
+        #endif
+    }
+
+    deinit {
+        #if !canImport(os)
+        _ = pthread_mutex_destroy(&mutex)
+        #endif
+    }
+
     @inline(__always)
     public func acquire() {
-        os_unfair_lock_lock(&_lock)
+        #if canImport(os)
+        os_unfair_lock_lock(&rawLock)
+        #else
+        let result = pthread_mutex_lock(&mutex)
+        precondition(result == 0, "pthread_mutex_lock failed: \(result)")
+        #endif
     }
-    
+
     @inline(__always)
     public func release() {
-        os_unfair_lock_unlock(&_lock)
+        #if canImport(os)
+        os_unfair_lock_unlock(&rawLock)
+        #else
+        let result = pthread_mutex_unlock(&mutex)
+        precondition(result == 0, "pthread_mutex_unlock failed: \(result)")
+        #endif
     }
-    
+
     @inline(__always)
     public func withLock<T>(_ body: () throws -> T) rethrows -> T {
-        os_unfair_lock_lock(&_lock)
-        defer { os_unfair_lock_unlock(&_lock) }
+        acquire()
+        defer { release() }
         return try body()
     }
-    
-    /// Try to acquire lock without blocking.
-    /// Returns true if lock was acquired, false otherwise.
+
     @inline(__always)
     public func tryAcquire() -> Bool {
-        os_unfair_lock_trylock(&_lock)
+        #if canImport(os)
+        os_unfair_lock_trylock(&rawLock)
+        #else
+        let result = pthread_mutex_trylock(&mutex)
+        if result == 0 { return true }
+        if result == EBUSY { return false }
+        fatalError("pthread_mutex_trylock failed: \(result)")
+        #endif
     }
 }

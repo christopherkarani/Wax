@@ -11,6 +11,18 @@ private func withWalFile<T>(size: UInt64, _ body: (FDFile) throws -> T) rethrows
     }
 }
 
+private func withReadOnlyWalFile<T>(size: UInt64, _ body: (FDFile) throws -> T) throws -> T {
+    try TempFiles.withTempFile { url in
+        let writable = try FDFile.create(at: url)
+        try writable.truncate(to: size)
+        try writable.close()
+
+        let file = try FDFile.openReadOnly(at: url)
+        defer { try? file.close() }
+        return try body(file)
+    }
+}
+
 @Test func walRingAppendAndScan() throws {
     try withWalFile(size: 1024) { file in
         let writer = WALRingWriter(file: file, walOffset: 0, walSize: 512)
@@ -101,6 +113,74 @@ private func withWalFile<T>(size: UInt64, _ body: (FDFile) throws -> T) rethrows
                 #expect(Bool(false))
                 return
             }
+        }
+    }
+}
+
+@Test func walRingAppendFaultsWriterAndRestoresStateOnWriteFailure() throws {
+    try withReadOnlyWalFile(size: 512) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256)
+
+        do {
+            _ = try writer.append(payload: Data("one".utf8))
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io = error else {
+                #expect(Bool(false))
+                return
+            }
+        }
+
+        #expect(writer.writePos == 0)
+        #expect(writer.pendingBytes == 0)
+        #expect(writer.lastSequence == 0)
+        #expect(writer.wrapCount == 0)
+        #expect(writer.sentinelWriteCount == 0)
+        #expect(writer.writeCallCount == 0)
+
+        do {
+            _ = try writer.append(payload: Data("two".utf8))
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(reason.contains("WAL writer is faulted"))
+        }
+    }
+}
+
+@Test func walRingAppendBatchFaultsWriterAndRestoresStateOnWriteFailure() throws {
+    try withReadOnlyWalFile(size: 1024) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 512)
+
+        do {
+            _ = try writer.appendBatch(payloads: [Data("one".utf8), Data("two".utf8)])
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io = error else {
+                #expect(Bool(false))
+                return
+            }
+        }
+
+        #expect(writer.writePos == 0)
+        #expect(writer.pendingBytes == 0)
+        #expect(writer.lastSequence == 0)
+        #expect(writer.wrapCount == 0)
+        #expect(writer.sentinelWriteCount == 0)
+        #expect(writer.writeCallCount == 0)
+
+        do {
+            _ = try writer.appendBatch(payloads: [Data("three".utf8)])
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(reason.contains("WAL writer is faulted"))
         }
     }
 }

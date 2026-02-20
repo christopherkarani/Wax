@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum LockMode: Sendable {
     case shared
@@ -26,7 +30,7 @@ public final class FileLock {
                 if errno == EINTR { continue }
                 break
             }
-            _ = Darwin.close(fd)
+            _ = close(fd)
         }
     }
 
@@ -36,7 +40,7 @@ public final class FileLock {
             _ = try lock(fd: fd, mode: mode, nonBlocking: false)
             return FileLock(fd: fd, url: url, mode: mode)
         } catch {
-            _ = Darwin.close(fd)
+            _ = close(fd)
             throw error
         }
     }
@@ -48,10 +52,10 @@ public final class FileLock {
             if acquired {
                 return FileLock(fd: fd, url: url, mode: mode)
             }
-            _ = Darwin.close(fd)
+            _ = close(fd)
             return nil
         } catch {
-            _ = Darwin.close(fd)
+            _ = close(fd)
             throw error
         }
     }
@@ -81,7 +85,7 @@ public final class FileLock {
         }
 
         var closeError: WaxError?
-        if Darwin.close(fd) != 0, errno != EINTR {
+        if close(fd) != 0, errno != EINTR {
             closeError = WaxError.io("close failed: \(stringError())")
         }
 
@@ -103,7 +107,7 @@ public final class FileLock {
             case .shared: O_RDONLY
             case .exclusive: O_RDWR
             }
-            let descriptor = Darwin.open(path, flags | O_CLOEXEC)
+            let descriptor = open(path, flags | O_CLOEXEC)
             guard descriptor >= 0 else {
                 throw WaxError.io("open failed for \(url.path): \(stringError())")
             }

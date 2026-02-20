@@ -42,6 +42,8 @@ public actor MemoryOrchestrator {
         public var wal: WaxWALStats
         public var storeURL: URL
         public var vectorSearchEnabled: Bool
+        public var structuredMemoryEnabled: Bool
+        public var accessStatsScoringEnabled: Bool
         public var embedderIdentity: EmbeddingIdentity?
 
         public init(
@@ -51,6 +53,8 @@ public actor MemoryOrchestrator {
             wal: WaxWALStats,
             storeURL: URL,
             vectorSearchEnabled: Bool,
+            structuredMemoryEnabled: Bool,
+            accessStatsScoringEnabled: Bool,
             embedderIdentity: EmbeddingIdentity?
         ) {
             self.frameCount = frameCount
@@ -59,9 +63,57 @@ public actor MemoryOrchestrator {
             self.wal = wal
             self.storeURL = storeURL
             self.vectorSearchEnabled = vectorSearchEnabled
+            self.structuredMemoryEnabled = structuredMemoryEnabled
+            self.accessStatsScoringEnabled = accessStatsScoringEnabled
             self.embedderIdentity = embedderIdentity
         }
     }
+
+    public struct SessionRuntimeStats: Sendable, Equatable {
+        public var active: Bool
+        public var sessionId: UUID?
+        public var sessionFrameCount: Int
+        public var sessionTokenEstimate: Int
+        public var pendingFramesStoreWide: UInt64
+        public var countsIncludePending: Bool
+
+        public init(
+            active: Bool,
+            sessionId: UUID?,
+            sessionFrameCount: Int,
+            sessionTokenEstimate: Int,
+            pendingFramesStoreWide: UInt64,
+            countsIncludePending: Bool
+        ) {
+            self.active = active
+            self.sessionId = sessionId
+            self.sessionFrameCount = sessionFrameCount
+            self.sessionTokenEstimate = sessionTokenEstimate
+            self.pendingFramesStoreWide = pendingFramesStoreWide
+            self.countsIncludePending = countsIncludePending
+        }
+    }
+
+    public struct HandoffRecord: Sendable, Equatable {
+        public var frameId: UInt64
+        public var timestampMs: Int64
+        public var content: String
+        public var project: String?
+        public var pendingTasks: [String]
+
+        public init(frameId: UInt64, timestampMs: Int64, content: String, project: String?, pendingTasks: [String]) {
+            self.frameId = frameId
+            self.timestampMs = timestampMs
+            self.content = content
+            self.project = project
+            self.pendingTasks = pendingTasks
+        }
+    }
+
+    private static let accessStatsFrameKind = "wax.internal.access_stats"
+    private static let accessStatsLabel = "wax.internal"
+    private static let accessStatsMarkerKey = "wax.internal.kind"
+    private static let accessStatsMarkerValue = "access_stats"
 
     let wax: Wax
     let config: OrchestratorConfig
@@ -70,6 +122,8 @@ public actor MemoryOrchestrator {
     let session: WaxSession
     private let embedder: (any EmbeddingProvider)?
     private let embeddingCache: EmbeddingMemoizer?
+    private let accessStatsManager = AccessStatsManager()
+    private var accessStatsFrameId: UInt64?
 
     private var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -128,7 +182,7 @@ public actor MemoryOrchestrator {
         let sessionConfig = WaxSession.Config(
             enableTextSearch: config.enableTextSearch,
             enableVectorSearch: config.enableVectorSearch,
-            enableStructuredMemory: false,
+            enableStructuredMemory: config.enableStructuredMemory,
             vectorEnginePreference: preference,
             vectorMetric: .cosine,
             vectorDimensions: embedder?.dimensions
@@ -137,6 +191,9 @@ public actor MemoryOrchestrator {
         
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
+        if config.enableAccessStatsScoring {
+            try await loadPersistedAccessStatsIfNeeded()
+        }
     }
 
 
@@ -150,6 +207,10 @@ public actor MemoryOrchestrator {
 
     public func endSession() {
         currentSessionId = nil
+    }
+
+    public func activeSessionId() -> UUID? {
+        currentSessionId
     }
 
     // MARK: - Ingestion
@@ -170,15 +231,15 @@ public actor MemoryOrchestrator {
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
         var docMeta = Metadata(metadata)
-        if let session = currentSessionId {
+        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
             docMeta.entries["session_id"] = session.uuidString
         }
+        let effectiveSessionId = docMeta.entries["session_id"]
 
         let chunkCount = chunks.count
         let localSession = session
         let localEmbedder = embedder
         let cache = embeddingCache
-        let sessionId = currentSessionId
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
         let fileManager = FileManager.default
@@ -308,8 +369,8 @@ public actor MemoryOrchestrator {
                 option.searchText = batchChunks[localIdx]
 
                 var chunkMeta = Metadata(metadata)
-                if let sessionId {
-                    chunkMeta.entries["session_id"] = sessionId.uuidString
+                if let effectiveSessionId {
+                    chunkMeta.entries["session_id"] = effectiveSessionId
                 }
                 option.metadata = chunkMeta
                 options.append(option)
@@ -440,51 +501,46 @@ public actor MemoryOrchestrator {
     // MARK: - Recall (Fast RAG)
 
     public func recall(query: String) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
-        return try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            config: config.rag
-        )
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    public func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
+        let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
+        return try await buildRecallContext(query: query, embedding: embedding, frameFilter: frameFilter)
     }
 
     public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        return try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            config: config.rag
-        )
+        return try await buildRecallContext(query: query, embedding: embedding)
     }
 
     public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
         let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-        if let embedding {
-            let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-            return try await ragBuilder.build(
-                query: query,
-                embedding: embedding,
-                vectorEnginePreference: preference,
-                wax: wax,
-                session: session,
-                config: config.rag
-            )
-        }
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    /// Shared recall implementation: builds the RAG context and records frame accesses.
+    /// All public recall() overloads funnel through here so that `ragConfigForRecall()` and
+    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
+    private func buildRecallContext(
+        query: String,
+        embedding: [Float]?,
+        frameFilter: FrameFilter? = nil
+    ) async throws -> RAGContext {
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        return try await ragBuilder.build(
+        let recallConfig = ragConfigForRecall()
+        let context = try await ragBuilder.build(
             query: query,
+            embedding: embedding,
             vectorEnginePreference: preference,
             wax: wax,
             session: session,
-            config: config.rag
+            frameFilter: frameFilter,
+            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
+            config: recallConfig
         )
+        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
+        return context
     }
 
     /// Performs direct search without context assembly.
@@ -497,7 +553,8 @@ public actor MemoryOrchestrator {
     public func search(
         query: String,
         mode: DirectSearchMode = .default,
-        topK: Int = 10
+        topK: Int = 10,
+        frameFilter: FrameFilter? = nil
     ) async throws -> [MemorySearchHit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -530,11 +587,12 @@ public actor MemoryOrchestrator {
             vectorEnginePreference: preference,
             mode: searchMode,
             topK: topK,
+            frameFilter: frameFilter,
             previewMaxBytes: config.rag.previewMaxBytes
         )
         let response = try await session.search(request)
 
-        return response.results.map { result in
+        let hits = response.results.map { result in
             MemorySearchHit(
                 frameId: result.frameId,
                 score: result.score,
@@ -542,6 +600,8 @@ public actor MemoryOrchestrator {
                 sources: result.sources
             )
         }
+        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
+        return hits
     }
 
     /// Returns lightweight store/runtime stats useful for operators and MCP tools.
@@ -557,13 +617,241 @@ public actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
+            structuredMemoryEnabled: config.enableStructuredMemory,
+            accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embedder?.identity
         )
+    }
+
+    public func sessionRuntimeStats() async throws -> SessionRuntimeStats {
+        let pendingFramesStoreWide = await wax.stats().pendingFrames
+        guard let sessionId = currentSessionId else {
+            return SessionRuntimeStats(
+                active: false,
+                sessionId: nil,
+                sessionFrameCount: 0,
+                sessionTokenEstimate: 0,
+                pendingFramesStoreWide: pendingFramesStoreWide,
+                countsIncludePending: false
+            )
+        }
+
+        let metas = await wax.frameMetas()
+        let matching = metas.filter { meta in
+            guard meta.status == .active, meta.supersededBy == nil else { return false }
+            return meta.metadata?.entries["session_id"] == sessionId.uuidString
+        }
+
+        guard !matching.isEmpty else {
+            return SessionRuntimeStats(
+                active: true,
+                sessionId: sessionId,
+                sessionFrameCount: 0,
+                sessionTokenEstimate: 0,
+                pendingFramesStoreWide: pendingFramesStoreWide,
+                countsIncludePending: false
+            )
+        }
+
+        let frameIds = matching.map(\.id)
+        let contentMap = try await wax.frameContents(frameIds: frameIds)
+        let texts: [String] = frameIds.compactMap { frameId in
+            guard let data = contentMap[frameId] else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        let tokenCounter = try await TokenCounter.shared()
+        let tokenCounts = await tokenCounter.countBatch(texts)
+        let totalTokens = tokenCounts.reduce(0, +)
+
+        return SessionRuntimeStats(
+            active: true,
+            sessionId: sessionId,
+            sessionFrameCount: matching.count,
+            sessionTokenEstimate: totalTokens,
+            pendingFramesStoreWide: pendingFramesStoreWide,
+            countsIncludePending: false
+        )
+    }
+
+    private func ragConfigForRecall() -> FastRAGConfig {
+        var recallConfig = config.rag
+        if recallConfig.deterministicNowMs == nil {
+            recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        }
+        return recallConfig
+    }
+
+    public func rememberHandoff(
+        content: String,
+        project: String? = nil,
+        pendingTasks: [String] = [],
+        sessionId: UUID? = nil
+    ) async throws -> UInt64 {
+        let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pending = pendingTasks
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let text: String
+        if pending.isEmpty {
+            text = normalizedContent
+        } else {
+            let items = pending.map { "- \($0)" }.joined(separator: "\n")
+            text = """
+            \(normalizedContent)
+
+            Pending tasks:
+            \(items)
+            """
+        }
+
+        var metadata = Metadata()
+        metadata.entries["kind"] = "handoff"
+        if let project, !project.isEmpty {
+            metadata.entries["project"] = project
+        }
+        if !pending.isEmpty {
+            metadata.entries["pending_tasks"] = pending.joined(separator: "\n")
+        }
+        if let effectiveSessionId = sessionId ?? currentSessionId {
+            metadata.entries["session_id"] = effectiveSessionId.uuidString
+        }
+
+        let frameId = try await session.put(
+            Data(text.utf8),
+            options: FrameMetaSubset(
+                kind: "handoff",
+                labels: ["handoff"],
+                role: .document,
+                searchText: text,
+                metadata: metadata
+            )
+        )
+        if config.enableTextSearch {
+            try await session.indexText(frameId: frameId, text: text)
+        }
+        // Ensure latestHandoff() can observe this frame immediately via committed metadata/content views.
+        try await session.commit()
+        return frameId
+    }
+
+    public func latestHandoff(project: String? = nil) async throws -> HandoffRecord? {
+        let metas = await wax.frameMetas()
+        let filtered = metas.filter { meta in
+            guard meta.status == .active, meta.supersededBy == nil else { return false }
+            let hasHandoffKind = meta.kind == "handoff" || meta.metadata?.entries["kind"] == "handoff"
+            let hasHandoffLabel = meta.labels.contains("handoff")
+            guard hasHandoffKind || hasHandoffLabel else { return false }
+            if let project, !project.isEmpty {
+                return meta.metadata?.entries["project"] == project
+            }
+            return true
+        }
+
+        guard let latest = filtered.max(by: { lhs, rhs in
+            if lhs.timestamp == rhs.timestamp {
+                return lhs.id < rhs.id
+            }
+            return lhs.timestamp < rhs.timestamp
+        }) else {
+            return nil
+        }
+
+        let payload = try await wax.frameContent(frameId: latest.id)
+        guard let content = String(data: payload, encoding: .utf8) else {
+            throw WaxError.decodingError(reason: "handoff payload is not UTF-8")
+        }
+        let metadata = latest.metadata?.entries ?? [:]
+        let pendingTasks = metadata["pending_tasks"]?
+            .split(separator: "\n")
+            .map { String($0) } ?? []
+
+        return HandoffRecord(
+            frameId: latest.id,
+            timestampMs: latest.timestamp,
+            content: content,
+            project: metadata["project"],
+            pendingTasks: pendingTasks
+        )
+    }
+
+    public func upsertEntity(
+        key: EntityKey,
+        kind: String,
+        aliases: [String] = [],
+        commit: Bool = true
+    ) async throws -> EntityRowID {
+        try ensureStructuredMemoryEnabled()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let entityID = try await session.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs)
+        if commit {
+            try await session.commit()
+        }
+        return entityID
+    }
+
+    public func assertFact(
+        subject: EntityKey,
+        predicate: PredicateKey,
+        object: FactValue,
+        validFromMs: Int64? = nil,
+        validToMs: Int64? = nil,
+        evidence: [StructuredEvidence] = [],
+        commit: Bool = true
+    ) async throws -> FactRowID {
+        try ensureStructuredMemoryEnabled()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let valid = StructuredTimeRange(fromMs: validFromMs ?? nowMs, toMs: validToMs)
+        let system = StructuredTimeRange(fromMs: nowMs, toMs: nil)
+        let factID = try await session.assertFact(
+            subject: subject,
+            predicate: predicate,
+            object: object,
+            valid: valid,
+            system: system,
+            evidence: evidence
+        )
+        if commit {
+            try await session.commit()
+        }
+        return factID
+    }
+
+    public func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
+        try ensureStructuredMemoryEnabled()
+        let timestamp = atMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+        try await session.retractFact(factId: factId, atMs: timestamp)
+        if commit {
+            try await session.commit()
+        }
+    }
+
+    public func facts(
+        about subject: EntityKey? = nil,
+        predicate: PredicateKey? = nil,
+        asOfMs: Int64 = Int64.max,
+        limit: Int = 50
+    ) async throws -> StructuredFactsResult {
+        try ensureStructuredMemoryEnabled()
+        return try await session.facts(
+            about: subject,
+            predicate: predicate,
+            asOf: StructuredMemoryAsOf(asOfMs: asOfMs),
+            limit: limit
+        )
+    }
+
+    public func resolveEntities(matchingAlias alias: String, limit: Int = 10) async throws -> [StructuredEntityMatch] {
+        try ensureStructuredMemoryEnabled()
+        return try await session.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
     // MARK: - Persistence lifecycle
 
     public func flush() async throws {
+        if config.enableAccessStatsScoring {
+            try await persistAccessStatsIfNeeded()
+        }
         try await session.commit()
         flushCount &+= 1
         enqueueScheduledLiveSetMaintenance()
@@ -823,5 +1111,69 @@ public actor MemoryOrchestrator {
         }
 
         return out
+    }
+
+    private func ensureStructuredMemoryEnabled() throws {
+        guard config.enableStructuredMemory else {
+            throw WaxError.io("structured memory is disabled")
+        }
+    }
+
+    private func recordAccessesIfEnabled(frameIds: [UInt64]) async {
+        guard config.enableAccessStatsScoring, !frameIds.isEmpty else { return }
+        await accessStatsManager.recordAccesses(frameIds: frameIds)
+    }
+
+    private func loadPersistedAccessStatsIfNeeded() async throws {
+        let metas = await wax.frameMetas()
+        let candidates = metas.filter { meta in
+            guard meta.status == .active, meta.supersededBy == nil, meta.role == .system else { return false }
+            if meta.kind == Self.accessStatsFrameKind {
+                return true
+            }
+            return meta.metadata?.entries[Self.accessStatsMarkerKey] == Self.accessStatsMarkerValue
+        }
+        guard let latest = candidates.max(by: { $0.timestamp < $1.timestamp }) else { return }
+
+        let payload = try await wax.frameContent(frameId: latest.id)
+        do {
+            let imported = try JSONDecoder().decode([FrameAccessStats].self, from: payload)
+            await accessStatsManager.importStats(imported)
+            accessStatsFrameId = latest.id
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "access stats import",
+                fallback: "starting with empty access stats"
+            )
+        }
+    }
+
+    private func persistAccessStatsIfNeeded() async throws {
+        guard let exported = await accessStatsManager.exportStatsIfDirty() else {
+            return
+        }
+        guard !exported.isEmpty else {
+            await accessStatsManager.markPersisted()
+            return
+        }
+        let payload = try JSONEncoder().encode(exported)
+
+        var metadata = Metadata()
+        metadata.entries[Self.accessStatsMarkerKey] = Self.accessStatsMarkerValue
+        let frameId = try await session.put(
+            payload,
+            options: FrameMetaSubset(
+                kind: Self.accessStatsFrameKind,
+                labels: [Self.accessStatsLabel],
+                role: .system,
+                metadata: metadata
+            )
+        )
+        if let previous = accessStatsFrameId, previous != frameId {
+            try await wax.supersede(supersededId: previous, supersedingId: frameId)
+        }
+        accessStatsFrameId = frameId
+        await accessStatsManager.markPersisted()
     }
 }
