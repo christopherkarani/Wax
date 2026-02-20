@@ -234,12 +234,12 @@ public actor MemoryOrchestrator {
         if docMeta.entries["session_id"] == nil, let session = currentSessionId {
             docMeta.entries["session_id"] = session.uuidString
         }
+        let effectiveSessionId = docMeta.entries["session_id"]
 
         let chunkCount = chunks.count
         let localSession = session
         let localEmbedder = embedder
         let cache = embeddingCache
-        let sessionId = currentSessionId
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
         let fileManager = FileManager.default
@@ -369,8 +369,8 @@ public actor MemoryOrchestrator {
                 option.searchText = batchChunks[localIdx]
 
                 var chunkMeta = Metadata(metadata)
-                if let sessionId {
-                    chunkMeta.entries["session_id"] = sessionId.uuidString
+                if let effectiveSessionId {
+                    chunkMeta.entries["session_id"] = effectiveSessionId
                 }
                 option.metadata = chunkMeta
                 options.append(option)
@@ -501,25 +501,33 @@ public actor MemoryOrchestrator {
     // MARK: - Recall (Fast RAG)
 
     public func recall(query: String) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
-        let recallConfig = ragConfigForRecall()
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
+        return try await buildRecallContext(query: query, embedding: embedding)
     }
 
     public func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
+        return try await buildRecallContext(query: query, embedding: embedding, frameFilter: frameFilter)
+    }
+
+    public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
+        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
+        return try await buildRecallContext(query: query, embedding: embedding)
+    }
+
+    /// Shared recall implementation: builds the RAG context and records frame accesses.
+    /// All public recall() overloads funnel through here so that `ragConfigForRecall()` and
+    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
+    private func buildRecallContext(
+        query: String,
+        embedding: [Float]?,
+        frameFilter: FrameFilter? = nil
+    ) async throws -> RAGContext {
+        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let recallConfig = ragConfigForRecall()
         let context = try await ragBuilder.build(
             query: query,
@@ -528,40 +536,6 @@ public actor MemoryOrchestrator {
             wax: wax,
             session: session,
             frameFilter: frameFilter,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
-    }
-
-    public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let recallConfig = ragConfigForRecall()
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
-    }
-
-    public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let recallConfig = ragConfigForRecall()
-        // `build` accepts an optional embedding; pass it directly regardless of whether it resolved.
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
@@ -756,6 +730,8 @@ public actor MemoryOrchestrator {
         if config.enableTextSearch {
             try await session.indexText(frameId: frameId, text: text)
         }
+        // Ensure latestHandoff() can observe this frame immediately via committed metadata/content views.
+        try await session.commit()
         return frameId
     }
 

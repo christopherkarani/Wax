@@ -134,3 +134,69 @@ import Testing
         #expect(content.count > 0)
     }
 }
+
+@Test func readExactlyRetriesInjectedEINTR() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        let payload = Data("eintr-retry".utf8)
+        try file.writeAll(payload, at: 0)
+        file.installFaultPlan(
+            FDFileFaultPlan(
+                pread: [.eintr(retries: 2)],
+                pwrite: []
+            )
+        )
+
+        let decoded = try file.readExactly(length: payload.count, at: 0)
+        #expect(decoded == payload)
+    }
+}
+
+@Test func readExactlyThrowsInjectedEIO() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        try file.writeAll(Data("eio".utf8), at: 0)
+        file.installFaultPlan(
+            FDFileFaultPlan(
+                pread: [.eio],
+                pwrite: []
+            )
+        )
+
+        do {
+            _ = try file.readExactly(length: 3, at: 0)
+            #expect(Bool(false))
+        } catch let error as WaxError {
+            guard case .io = error else {
+                #expect(Bool(false))
+                return
+            }
+        }
+    }
+}
+
+@Test func writeAllHandlesInjectedShortWrite() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        let payload = Data("short-write-path".utf8)
+        file.installFaultPlan(
+            FDFileFaultPlan(
+                pread: [],
+                pwrite: [
+                    .shortWrite(maxBytes: 1),
+                    .shortWrite(maxBytes: 2),
+                ]
+            )
+        )
+
+        try file.writeAll(payload, at: 0)
+        let decoded = try file.readExactly(length: payload.count, at: 0)
+        #expect(decoded == payload)
+    }
+}

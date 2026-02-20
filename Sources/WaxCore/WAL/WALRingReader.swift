@@ -93,6 +93,12 @@ public final class WALRingReader {
         var pendingBytes: UInt64 = 0
         var wrapped = false
         var pendingMutations: [PendingMutation] = []
+        // When a pending-entry decode error occurs we stop collecting pending mutations
+        // but continue advancing the cursor so writePos/pendingBytes remain accurate
+        // for WAL recovery position tracking. This preserves the old open behavior:
+        // a corrupt pending entry does not prevent the state-position scan from reaching
+        // the true end of the ring.
+        var stopDecodingPendingMutations = false
 
         while true {
             let remaining = walSize - cursor
@@ -156,21 +162,16 @@ public final class WALRingReader {
                 break
             }
 
-            if header.sequence > committedSeq {
+            if header.sequence > committedSeq && !stopDecodingPendingMutations {
                 do {
                     let entry = try WALEntryCodec.decode(payload, offset: cursor)
                     pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
                 } catch {
-                    // Hard failure: a checksum-validated record that cannot be decoded indicates
-                    // structural corruption in the WAL entry format, not a partial write.
-                    // Partial writes are caught earlier by the checksum mismatch check (which
-                    // causes a `break`, not a throw), so a decode failure here means a codec
-                    // invariant violation that cannot be recovered from by skipping. Throwing
-                    // surfaces the problem explicitly rather than silently dropping mutations.
-                    throw WaxError.walCorruption(
-                        offset: cursor,
-                        reason: "failed to decode pending WAL mutation for sequence \(header.sequence): \(error.localizedDescription)"
-                    )
+                    // Treat decode failure as corruption for this pending entry: stop collecting
+                    // mutations but continue the state-position scan so writePos/pendingBytes
+                    // remain accurate. A mid-ring corrupt pending entry is non-fatal for
+                    // position tracking.
+                    stopDecodingPendingMutations = true
                 }
             }
 

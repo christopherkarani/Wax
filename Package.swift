@@ -45,13 +45,30 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
         .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
         .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
     ],
     targets: [
         .target(
-            name: "WaxCore",
+            name: "WaxCoreCompressionC",
             dependencies: [],
+            path: "Sources/WaxCoreCompressionC",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedLibrary("lz4", .when(platforms: [.linux])),
+                .linkedLibrary("z", .when(platforms: [.linux])),
+            ]
+        ),
+        .target(
+            name: "WaxCore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+                .target(
+                    name: "WaxCoreCompressionC",
+                    condition: .when(platforms: [.linux])
+                ),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
@@ -131,6 +148,14 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/WaxCLI",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .executableTarget(
+            name: "WaxCrashHarness",
+            dependencies: [
+                "Wax",
+            ],
+            path: "Sources/WaxCrashHarness",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
