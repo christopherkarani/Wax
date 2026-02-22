@@ -60,7 +60,6 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         let memoryURL = try resolveStoreURL(storePath)
         let videoURL = try resolveStoreURL(videoStorePath)
-        let photoURL = try resolveStoreURL(photoStorePath)
 
         let embedder = try await buildEmbedder()
 
@@ -104,15 +103,10 @@ struct WaxMCPServerCommand: ParsableCommand {
             }
         }()
 
-        let photo: PhotoRAGOrchestrator? = await {
-            guard let multimodal else { return nil }
-            do {
-                return try await PhotoRAGOrchestrator(storeURL: photoURL, embedder: multimodal)
-            } catch {
-                writeStderr("Photo RAG disabled: \(error)")
-                return nil
-            }
-        }()
+        // PhotoRAGOrchestrator is not initialized: the photo tools are stubbed
+        // (they unconditionally return "Requires Soju") so constructing the
+        // orchestrator would waste startup time and memory.
+        let photo: PhotoRAGOrchestrator? = nil
 
         let server = Server(
             name: "WaxMCPServer",
@@ -129,6 +123,10 @@ struct WaxMCPServerCommand: ParsableCommand {
             structuredMemoryEnabled: memoryConfig.enableStructuredMemory
         )
 
+        // Install signal handlers so SIGINT/SIGTERM trigger graceful shutdown
+        // instead of immediate process termination (which would skip flush/close).
+        let signalSources = installSignalHandlers(server: server)
+
         var runError: Error?
         do {
             let transport = StdioTransport()
@@ -137,6 +135,9 @@ struct WaxMCPServerCommand: ParsableCommand {
         } catch {
             runError = error
         }
+
+        // Cancel signal sources now that we're shutting down.
+        for source in signalSources { source.cancel() }
 
         await server.stop()
 
@@ -165,14 +166,6 @@ struct WaxMCPServerCommand: ParsableCommand {
                 try await video.flush()
             } catch {
                 writeStderr("Video flush error: \(error)")
-            }
-        }
-
-        if let photo {
-            do {
-                try await photo.flush()
-            } catch {
-                writeStderr("Photo flush error: \(error)")
             }
         }
 
@@ -236,6 +229,21 @@ struct WaxMCPServerCommand: ParsableCommand {
         return nil
         #endif
     }
+}
+
+private func installSignalHandlers(server: Server) -> [DispatchSourceSignal] {
+    var sources: [DispatchSourceSignal] = []
+    for sig in [SIGINT, SIGTERM] {
+        signal(sig, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+        source.setEventHandler {
+            writeStderr("Received signal \(sig), shutting down gracefully…")
+            Task { await server.stop() }
+        }
+        source.resume()
+        sources.append(source)
+    }
+    return sources
 }
 
 private func writeStderr(_ message: String) {

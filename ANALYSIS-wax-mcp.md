@@ -130,62 +130,28 @@ WaxMCPServer
 ## 3. Bugs
 
 ### BUG-1: `recall` ignores the `limit` parameter at the orchestrator level
-**File:** `WaxMCPTools.swift:135-136`
-```swift
-let context = try await memory.recall(query: query, frameFilter: sessionFilter)
-let selected = context.items.prefix(limit)
-```
-The `limit` is not passed to `memory.recall()`. The orchestrator fetches its default number of items, then the MCP layer truncates post-hoc with `prefix(limit)`. If the orchestrator's default is lower than the requested `limit`, the user gets fewer results than expected. If the orchestrator returns a large default, unnecessary work is done for small limits.
+**Status:** DOCUMENTED — `MemoryOrchestrator.recall()` does not accept a `limit` parameter; this is an upstream API limitation. Comment added to explain the post-hoc truncation.
+
+**File:** `WaxMCPTools.swift:135-140`
+The `limit` is not passed to `memory.recall()`. The orchestrator fetches its default number of items, then the MCP layer truncates post-hoc with `prefix(limit)`. If the orchestrator's default is lower than the requested `limit`, the user gets fewer results than expected.
 
 ### BUG-2: Photo tools silently discard the `photo` orchestrator reference
-**File:** `WaxMCPTools.swift:77-81`
-```swift
-case "wax_photo_ingest":
-    _ = photo  // deliberately discarded
-    return redirectToSojuError()
-```
-Even when `PhotoRAGOrchestrator` is successfully initialized (non-nil `photo`), the tools always redirect to Soju. The orchestrator is constructed (main.swift:107-115) but never used. This wastes memory and startup time. The `_ = photo` suppresses the compiler warning but masks the disconnect.
+**Status:** FIXED — `PhotoRAGOrchestrator` is no longer initialized. The photo tools are permanently stubbed ("Requires Soju"), so constructing and initializing the orchestrator at startup wasted memory and time. The `photo` variable is now always `nil`, and `photoURL` resolution and shutdown flush are removed.
 
-### BUG-3: `wax_search` mode validation rejects `"vector"` mode
-**File:** `WaxMCPTools.swift:165-172`
-```swift
-switch modeRaw {
-case "text": mode = .text
-case "hybrid": mode = .hybrid(alpha: 0.5)
-default: throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-}
-```
-The schema's `enum` only declares `["text", "hybrid"]` (ToolSchemas.swift:163), but the underlying `MemoryOrchestrator.DirectSearchMode` likely supports a vector-only mode. When the embedder is disabled, `hybrid` mode silently degrades rather than erroring, which could confuse users about search behavior.
+### ~~BUG-3: `wax_search` mode validation rejects `"vector"` mode~~
+**Status:** NOT A BUG — `MemoryOrchestrator.DirectSearchMode` has only two cases: `.text` and `.hybrid(alpha:)`. There is no `.vector` case in the enum. The schema and handler correctly reflect the available modes. Reclassified as a potential future enhancement (see GAP-7).
 
-### BUG-4: Video/Photo flush not called on video/photo close paths
-**File:** `main.swift:163-177`
-During shutdown, the server flushes `video` and `photo` but **never calls `close()`** on them — only on the memory orchestrator. If VideoRAG/PhotoRAG hold resources (file handles, WAL state), they may leak.
+### ~~BUG-4: Video/Photo flush not called on video/photo close paths~~
+**Status:** NOT A BUG — `VideoRAGOrchestrator` and `PhotoRAGOrchestrator` do **not** have `close()` methods; only `MemoryOrchestrator` does. The existing code correctly calls `flush()` on video (the only cleanup API available). Photo shutdown code was removed as part of BUG-2 fix since photo is no longer initialized.
 
 ### BUG-5: Non-finite double values in `value(from: Double)` silently become `.null`
-**File:** `WaxMCPTools.swift:889-894`
-```swift
-private static func value(from value: Double) -> Value {
-    if value.isFinite { return .double(value) }
-    return .null
-}
-```
-NaN/Infinity scores would silently become `null` in responses without any indication. This affects score reporting in `wax_search` and `wax_video_recall` results.
+**Status:** FIXED — Non-finite doubles (NaN, Infinity, -Infinity) now return `.string(String(value))` instead of `.null`. JSON has no representation for these values, but consumers now see `"nan"`, `"inf"`, or `"-inf"` instead of a silent null.
 
 ### BUG-6: `errorResult` fallback string interpolation could produce malformed JSON
-**File:** `WaxMCPTools.swift:848`
-```swift
-let json = encodeJSON(payload) ?? #"{"code":"\#(code)","message":"\#(message)"}"#
-```
-If `encodeJSON` returns nil (encoding failure), the fallback uses raw string interpolation. If `message` contains unescaped quotes or backslashes, the resulting JSON would be malformed.
+**Status:** FIXED — Added `escapeJSONString(_:)` helper that properly escapes quotes, backslashes, newlines, carriage returns, and tabs. The fallback now uses `escapeJSONString` to produce valid JSON.
 
 ### BUG-7: `wax_remember` uses wrapping arithmetic (`&+`) without overflow guard
-**File:** `WaxMCPTools.swift:111-113`
-```swift
-let totalBefore = before.frameCount &+ before.pendingFrames
-let totalAfter = after.frameCount &+ after.pendingFrames
-let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
-```
-Using `&+` prevents crash on overflow but silently wraps. If frame counts are huge and wrap, `framesAdded` in the response could report incorrect (negative-looking) values.
+**Status:** FIXED — Replaced `&+` with standard `+`. Frame counts are `Int` on 64-bit macOS (2^63 max), making overflow physically impossible. If it somehow occurred, crashing (via `+`) is the correct behavior as it would indicate data corruption.
 
 ---
 
@@ -211,7 +177,7 @@ Tool availability changes dynamically based on `structuredMemoryEnabled` (set at
 Only stdio is supported. Adding HTTP-based transport would enable remote MCP clients, web-based UIs, or multi-client scenarios.
 
 ### GAP-6: Photo RAG is fully implemented but permanently stubbed out
-`PhotoRAGOrchestrator` at `Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift` is a complete 1300+ line implementation with Photos library sync, OCR, captioning, region embeddings, location-based filtering, and pixel attachment. Yet the MCP tools unconditionally return "Requires Soju" errors (`WaxMCPTools.swift:77-81`). The TODO at `ToolSchemas.swift:409` confirms this is intentional but creates confusion — the orchestrator is constructed and initialized at server startup, consuming resources, with no path to use it.
+**Status:** PARTIALLY FIXED — The orchestrator is no longer initialized at startup (see BUG-2 fix), eliminating the wasted resources. The underlying 1300+ line `PhotoRAGOrchestrator` implementation remains available for when Soju integration is complete.
 
 ### GAP-7: No `vector` search mode exposed
 The `wax_search` tool only exposes `text` and `hybrid` modes. A dedicated `vector` mode would be useful when only semantic similarity matters, bypassing text search entirely.
@@ -233,17 +199,7 @@ The alpha blend factor between text and vector search is not user-configurable. 
 `pingActivation()` is a no-op. Any string matching `^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$` will pass. The trial mechanism (14-day via UserDefaults) is trivially bypassable by deleting the `wax_first_launch` key.
 
 ### GAP-10: No signal/SIGINT handling for graceful shutdown
-**File:** `main.swift:35-51`
-```swift
-mutating func run() throws {
-    let command = self
-    Task(priority: .userInitiated) {
-        do { try await command.runServer() ... }
-    }
-    dispatchMain()
-}
-```
-If the process receives SIGINT/SIGTERM, there's no signal handler to trigger graceful shutdown. The server relies on the stdio transport's EOF detection to exit. A hard kill could skip `flush()` and `close()`, risking data loss.
+**Status:** FIXED — Added `installSignalHandlers(server:)` which installs `DispatchSource.makeSignalSource` handlers for SIGINT and SIGTERM. On signal, the handler calls `server.stop()` which causes `waitUntilCompleted()` to return, triggering the existing flush/close shutdown sequence. Signal sources are cancelled after shutdown completes.
 
 ### GAP-11: No test coverage for video tools
 The test file covers memory tools, session management, graph tools, handoff, and license validation, but has **zero tests** for `wax_video_ingest` and `wax_video_recall`. These are hard to test without fixtures, but the gap is notable.
@@ -335,21 +291,25 @@ The launcher resolves the WaxCLI binary through a 5-step fallback chain:
 
 ## 8. Summary of Priority Issues
 
-### High Priority
-1. **BUG-1**: `recall` doesn't pass `limit` to orchestrator — performance waste + incorrect result count
-2. **GAP-6**: PhotoRAG orchestrator initialized but never used — wasted startup resources
-3. **GAP-10**: No signal handling — risk of data loss on hard termination
+### High Priority — All resolved
+1. ~~**BUG-1**: `recall` doesn't pass `limit` to orchestrator~~ — DOCUMENTED (upstream API limitation)
+2. ~~**GAP-6**: PhotoRAG orchestrator initialized but never used~~ — FIXED (no longer initialized)
+3. ~~**GAP-10**: No signal handling~~ — FIXED (SIGINT/SIGTERM handlers added)
 
-### Medium Priority
-4. **BUG-4**: Video/Photo orchestrators not closed on shutdown — resource leak
-5. **BUG-6**: Error fallback can produce malformed JSON
-6. **GAP-3**: No progress notifications for long operations
-7. **GAP-11**: No video tool test coverage
-8. **GAP-9**: License validation is format-only with no-op server activation
+### Medium Priority — Partially resolved
+4. ~~**BUG-4**: Video/Photo orchestrators not closed on shutdown~~ — NOT A BUG (no `close()` API exists)
+5. ~~**BUG-6**: Error fallback can produce malformed JSON~~ — FIXED (proper JSON escaping)
+6. **GAP-3**: No progress notifications for long operations — OPEN
+7. **GAP-11**: No video tool test coverage — OPEN (test plan documented in TEST-PLAN-mcp.md)
+8. **GAP-9**: License validation is format-only with no-op server activation — OPEN
 
-### Low Priority
-9. **BUG-3**: No `vector`-only search mode
-10. **GAP-8**: Hardcoded hybrid alpha
-11. **GAP-1/2**: Missing Resources/Prompts capabilities
-12. **GAP-15**: Static server version
-13. **GAP-5**: stdio-only transport
+### Low Priority — Open
+9. ~~**BUG-3**: No `vector`-only search mode~~ — NOT A BUG (enum has no vector case; reclassified as GAP-7)
+10. **GAP-8**: Hardcoded hybrid alpha — OPEN
+11. **GAP-1/2**: Missing Resources/Prompts capabilities — OPEN
+12. **GAP-15**: Static server version — OPEN
+13. **GAP-5**: stdio-only transport — OPEN
+
+### Additional fixes applied
+- ~~**BUG-5**: Non-finite doubles silently become null~~ — FIXED (returns string representation)
+- ~~**BUG-7**: Wrapping arithmetic in remember handler~~ — FIXED (uses checked `+`)
