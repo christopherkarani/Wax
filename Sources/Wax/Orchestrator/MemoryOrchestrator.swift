@@ -166,32 +166,36 @@ public actor MemoryOrchestrator {
             self.wax = try await Wax.create(at: url)
         }
 
-        self.config = config
+        // Auto-disable vector search when no embedder is provided and no pre-existing
+        // vector index exists. This lets the simple `MemoryOrchestrator(at:)` initializer
+        // work out-of-the-box with text-only search instead of throwing an error.
+        var resolvedConfig = config
+        if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
+            resolvedConfig.enableVectorSearch = false
+        }
+
+        self.config = resolvedConfig
         self.ragBuilder = FastRAGContextBuilder()
         self.embedder = embedder
         self.embeddingCache = EmbeddingMemoizer.fromConfig(
-            capacity: config.embeddingCacheCapacity,
+            capacity: resolvedConfig.embeddingCacheCapacity,
             enabled: embedder != nil
         )
 
-        if config.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
-            throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
-        }
-
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference: VectorEnginePreference = resolvedConfig.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let sessionConfig = WaxSession.Config(
-            enableTextSearch: config.enableTextSearch,
-            enableVectorSearch: config.enableVectorSearch,
-            enableStructuredMemory: config.enableStructuredMemory,
+            enableTextSearch: resolvedConfig.enableTextSearch,
+            enableVectorSearch: resolvedConfig.enableVectorSearch,
+            enableStructuredMemory: resolvedConfig.enableStructuredMemory,
             vectorEnginePreference: preference,
             vectorMetric: .cosine,
             vectorDimensions: embedder?.dimensions
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
-        
+
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
-        if config.enableAccessStatsScoring {
+        if resolvedConfig.enableAccessStatsScoring {
             try await loadPersistedAccessStatsIfNeeded()
         }
     }
