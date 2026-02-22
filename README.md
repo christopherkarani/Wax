@@ -29,7 +29,7 @@
 ```swift
 import Wax
 
-// Create a memory file
+// Create a memory file (text search, works out of the box)
 let brain = try await MemoryOrchestrator(
     at: URL(fileURLWithPath: "brain.mv2s")
 )
@@ -44,6 +44,15 @@ try await brain.remember(
 let context = try await brain.recall(query: "user preferences")
 // → "User prefers dark mode and gets headaches from bright screens"
 //   + relevant context, ranked and token-budgeted
+```
+
+Want hybrid vector + text search? Use the built-in MiniLM embedder:
+
+```swift
+// Hybrid search with on-device embeddings (MiniLM, 384-dim)
+let brain = try await MemoryOrchestrator.openMiniLM(
+    at: URL(fileURLWithPath: "brain.mv2s")
+)
 ```
 
 No Docker. No network calls.
