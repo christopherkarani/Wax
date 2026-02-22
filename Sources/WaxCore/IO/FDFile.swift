@@ -50,6 +50,7 @@ enum FDFileReadFault: Sendable, Equatable {
 enum FDFileWriteFault: Sendable, Equatable {
     case eintr(retries: Int = 1)
     case eio
+    case enospc
     case shortWrite(maxBytes: Int)
 }
 
@@ -128,6 +129,9 @@ public final class FDFile {
             case .eio:
                 pwritePlan.removeFirst()
                 return .fail(errno: EIO)
+            case .enospc:
+                pwritePlan.removeFirst()
+                return .fail(errno: ENOSPC)
             case .shortWrite(let maxBytes):
                 pwritePlan.removeFirst()
                 return .short(maxBytes: max(1, maxBytes))
@@ -154,8 +158,8 @@ public final class FDFile {
     // MARK: - Factory
 
     /// Create a new file (truncates if exists).
-    public static func create(at url: URL) throws -> FDFile {
-        let fd = try openFile(at: url, flags: O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, mode: mode_t(0o644))
+    public static func create(at url: URL, mode: mode_t = mode_t(0o600)) throws -> FDFile {
+        let fd = try openFile(at: url, flags: O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, mode: mode)
         return FDFile(fd: fd, url: url)
     }
 

@@ -114,6 +114,42 @@ private enum SQLiteBlobInspector {
         defer { sqlite3_free(raw) }
         return Data(bytes: raw, count: Int(size))
     }
+
+    static func makeCustomFTS5Blob(
+        statements: [String],
+        applicationID: Int32?,
+        userVersion: Int32?
+    ) throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        if let applicationID {
+            guard sqlite3_exec(db, "PRAGMA application_id = \(applicationID);", nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: PRAGMA application_id")
+            }
+        }
+        if let userVersion {
+            guard sqlite3_exec(db, "PRAGMA user_version = \(userVersion);", nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: PRAGMA user_version")
+            }
+        }
+
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &size, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(size))
+    }
 }
 
 @Test func structuredSchemaCreatesWithIdentityPragmas() async throws {
@@ -155,4 +191,106 @@ private enum SQLiteBlobInspector {
 
     #expect(results.count == 1)
     #expect(results[0].frameId == 0)
+}
+
+@Test func deserializeRejectsUnexpectedApplicationID() async throws {
+    let blob = try SQLiteBlobInspector.makeCustomFTS5Blob(
+        statements: [
+            "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content);",
+            """
+            CREATE TABLE IF NOT EXISTS frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+        ],
+        applicationID: 42,
+        userVersion: 2
+    )
+
+    do {
+        _ = try FTS5SearchEngine.deserialize(from: blob)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("unexpected sqlite application_id"))
+    }
+}
+
+@Test func deserializeRejectsUnsupportedSchemaUserVersion() async throws {
+    let blob = try SQLiteBlobInspector.makeCustomFTS5Blob(
+        statements: [
+            "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content);",
+            """
+            CREATE TABLE IF NOT EXISTS frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+        ],
+        applicationID: 0x5741_5854,
+        userVersion: 99
+    )
+
+    do {
+        _ = try FTS5SearchEngine.deserialize(from: blob)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("unsupported sqlite user_version"))
+    }
+}
+
+@Test func deserializeRejectsMissingFrameMappingTable() async throws {
+    let blob = try SQLiteBlobInspector.makeCustomFTS5Blob(
+        statements: [
+            "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content);",
+        ],
+        applicationID: 0x5741_5854,
+        userVersion: 2
+    )
+
+    do {
+        _ = try FTS5SearchEngine.deserialize(from: blob)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("missing table frame_mapping"))
+    }
+}
+
+@Test func deserializeRejectsNonFTSFramesTable() async throws {
+    let blob = try SQLiteBlobInspector.makeCustomFTS5Blob(
+        statements: [
+            "CREATE TABLE IF NOT EXISTS frames_fts(content TEXT);",
+            """
+            CREATE TABLE IF NOT EXISTS frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+        ],
+        applicationID: 0x5741_5854,
+        userVersion: 2
+    )
+
+    do {
+        _ = try FTS5SearchEngine.deserialize(from: blob)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .io(let message) = error else {
+            Issue.record("Expected WaxError.io, got \(error)")
+            return
+        }
+        #expect(message.contains("frames_fts is not an FTS5 table"))
+    }
 }

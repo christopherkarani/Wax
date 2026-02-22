@@ -125,15 +125,21 @@ public actor WaxSession {
     }
 
     deinit {
+        // Best-effort fallback only. Call `close()` to release writer leases deterministically.
         if let leaseId = writerLeaseId {
             let wax = wax
             Task { await wax.releaseWriterLease(leaseId) }
         }
     }
 
+    /// Releases session-scoped resources.
+    ///
+    /// Always call `close()` when you are done with a session, especially for `.readWrite`
+    /// sessions that hold a writer lease.
     public func close() async {
         guard !isClosed else { return }
         isClosed = true
+        await UnifiedSearchEngineCache.shared.invalidate(for: wax)
         if let leaseId = writerLeaseId {
             writerLeaseId = nil
             await wax.releaseWriterLease(leaseId)
@@ -155,7 +161,14 @@ public actor WaxSession {
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.io("text search is disabled")
         }
-        return try await textEngine.search(query: query, topK: topK)
+        return try await textEngine.searchPlainText(query: query, topK: topK)
+    }
+
+    public func searchTextFTSSyntax(query: String, topK: Int) async throws -> [TextSearchResult] {
+        guard config.enableTextSearch, let textEngine else {
+            throw WaxError.io("text search is disabled")
+        }
+        return try await textEngine.searchFTSSyntax(query: query, topK: topK)
     }
 
     // MARK: - Text Search (write)
@@ -525,5 +538,22 @@ public extension Wax {
         config: WaxSession.Config = .default
     ) async throws -> WaxSession {
         try await WaxSession(wax: self, mode: mode, config: config)
+    }
+
+    /// Opens a session, runs `operation`, and always closes the session before returning.
+    func withSession<T>(
+        _ mode: WaxSession.Mode = .readOnly,
+        config: WaxSession.Config = .default,
+        _ operation: @Sendable (WaxSession) async throws -> T
+    ) async throws -> T {
+        let session = try await openSession(mode, config: config)
+        do {
+            let result = try await operation(session)
+            await session.close()
+            return result
+        } catch {
+            await session.close()
+            throw error
+        }
     }
 }

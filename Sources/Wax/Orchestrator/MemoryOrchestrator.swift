@@ -528,7 +528,7 @@ public actor MemoryOrchestrator {
         frameFilter: FrameFilter? = nil
     ) async throws -> RAGContext {
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let recallConfig = ragConfigForRecall()
+        let recallConfig = try ragConfigForRecall()
         let context = try await ragBuilder.build(
             query: query,
             embedding: embedding,
@@ -673,10 +673,10 @@ public actor MemoryOrchestrator {
         )
     }
 
-    private func ragConfigForRecall() -> FastRAGConfig {
-        var recallConfig = config.rag
-        if recallConfig.deterministicNowMs == nil {
-            recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    private func ragConfigForRecall() throws -> FastRAGConfig {
+        let recallConfig = config.rag
+        if recallConfig.strictDeterministicNow, recallConfig.deterministicNowMs == nil {
+            throw WaxError.io("strictDeterministicNow requires rag.deterministicNowMs to be set")
         }
         return recallConfig
     }
@@ -862,6 +862,7 @@ public actor MemoryOrchestrator {
         if let task = scheduledLiveSetMaintenanceTask {
             await task.value
         }
+        await UnifiedSearchEngineCache.shared.invalidate(for: wax)
         await session.close()
         try await wax.close()
     }

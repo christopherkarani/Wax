@@ -25,7 +25,11 @@ public actor WaxTextSearchSession {
     }
 
     public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
-        try await engine.search(query: query, topK: topK)
+        try await engine.searchPlainText(query: query, topK: topK)
+    }
+
+    public func searchFTSSyntax(query: String, topK: Int) async throws -> [TextSearchResult] {
+        try await engine.searchFTSSyntax(query: query, topK: topK)
     }
 
     public func stageForCommit(compact: Bool = false) async throws {

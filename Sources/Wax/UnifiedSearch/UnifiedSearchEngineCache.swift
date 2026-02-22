@@ -19,75 +19,124 @@ actor UnifiedSearchEngineCache {
         case staged(stamp: UInt64, similarity: VecSimilarity, dimensions: Int, engine: VectorEngineKind)
     }
 
+    enum VectorEngineKind: Hashable, Sendable {
+        case usearch
+        case metal
+    }
+
     struct Stats: Sendable, Equatable {
         var textDeserializations: Int = 0
         var vectorDeserializations: Int = 0
     }
 
+    struct EntryCounts: Sendable, Equatable {
+        var text: Int
+        var vector: Int
+    }
+
+    private struct StoreIdentity: Hashable, Sendable {
+        let canonicalPath: String
+        let generation: UInt64
+    }
+
     private struct CachedText {
         var key: TextSourceKey
         var engine: FTS5SearchEngine
+        var lastAccess: Date
     }
 
     private struct CachedVector {
         var key: VectorSourceKey
         var engine: any VectorSearchEngine
         var lastPendingEmbeddingSequence: UInt64?
+        var lastAccess: Date
     }
 
-    private var textByWax: [ObjectIdentifier: CachedText] = [:]
-    private var vectorByWax: [ObjectIdentifier: CachedVector] = [:]
+    private static let maxEntriesPerTier = 64
+    private static let entryTTLSeconds: TimeInterval = 15 * 60
+
+    private var textByStore: [StoreIdentity: CachedText] = [:]
+    private var vectorByStore: [StoreIdentity: CachedVector] = [:]
+    private var textLRU: [StoreIdentity] = []
+    private var vectorLRU: [StoreIdentity] = []
     private var stats = Stats()
 
-    enum VectorEngineKind: Hashable, Sendable {
-        case usearch
-        case metal
+    func snapshotStats() -> Stats { stats }
+
+    func snapshotEntryCounts() -> EntryCounts {
+        EntryCounts(text: textByStore.count, vector: vectorByStore.count)
     }
 
-    func snapshotStats() -> Stats { stats }
+    func containsEntry(for wax: Wax) async -> Bool {
+        let canonicalPath = await storeCanonicalPath(for: wax)
+        return textByStore.keys.contains(where: { $0.canonicalPath == canonicalPath })
+            || vectorByStore.keys.contains(where: { $0.canonicalPath == canonicalPath })
+    }
 
     func resetStats() {
         stats = Stats()
     }
 
+    func resetForTests() {
+        textByStore.removeAll()
+        vectorByStore.removeAll()
+        textLRU.removeAll()
+        vectorLRU.removeAll()
+        stats = Stats()
+    }
+
+    func invalidate(for wax: Wax) async {
+        let canonicalPath = await storeCanonicalPath(for: wax)
+        invalidate(canonicalPath: canonicalPath)
+    }
+
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
-        let waxId = ObjectIdentifier(wax)
+        let now = Date()
+        expireStaleEntries(now: now)
+        let store = await storeIdentity(for: wax)
 
         if let stamp = await wax.stagedLexIndexStamp() {
             let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
-            if let cached = textByWax[waxId], cached.key == key {
+            if let cached = textByStore[store], cached.key == key {
+                touchTextEntry(for: store, at: now)
                 return cached.engine
             }
             guard let bytes = stagedBytes else {
                 let engine = try FTS5SearchEngine.inMemory()
-                textByWax[waxId] = CachedText(key: .empty, engine: engine)
+                textByStore[store] = CachedText(key: .empty, engine: engine, lastAccess: now)
+                touchTextEntry(for: store, at: now)
                 return engine
             }
             let engine = try FTS5SearchEngine.deserialize(from: bytes)
             stats.textDeserializations += 1
-            textByWax[waxId] = CachedText(key: key, engine: engine)
+            textByStore[store] = CachedText(key: key, engine: engine, lastAccess: now)
+            touchTextEntry(for: store, at: now)
             return engine
         }
 
         if let manifest = await wax.committedLexIndexManifest() {
             let key: TextSourceKey = .committed(checksum: manifest.checksum)
-            if let cached = textByWax[waxId], cached.key == key {
+            if let cached = textByStore[store], cached.key == key {
+                touchTextEntry(for: store, at: now)
                 return cached.engine
             }
             if let bytes = try await wax.readCommittedLexIndexBytes() {
                 let engine = try FTS5SearchEngine.deserialize(from: bytes)
                 stats.textDeserializations += 1
-                textByWax[waxId] = CachedText(key: key, engine: engine)
+                textByStore[store] = CachedText(key: key, engine: engine, lastAccess: now)
+                touchTextEntry(for: store, at: now)
                 return engine
             }
         }
 
-        if let cached = textByWax[waxId], cached.key == .empty {
+        if let cached = textByStore[store], cached.key == .empty {
+            touchTextEntry(for: store, at: now)
             return cached.engine
         }
         let engine = try FTS5SearchEngine.inMemory()
-        textByWax[waxId] = CachedText(key: .empty, engine: engine)
+        textByStore[store] = CachedText(key: .empty, engine: engine, lastAccess: now)
+        touchTextEntry(for: store, at: now)
         return engine
     }
 
@@ -98,15 +147,18 @@ actor UnifiedSearchEngineCache {
     ) async throws -> (any VectorSearchEngine)? {
         guard queryEmbeddingDimensions > 0 else { return nil }
 
-        let waxId = ObjectIdentifier(wax)
+        let now = Date()
+        expireStaleEntries(now: now)
+        let store = await storeIdentity(for: wax)
         let allowMetal = preference != .cpuOnly && MetalVectorEngine.isAvailable
 
         if allowMetal {
             if let metalEngine = try await vectorEngine(
                 for: wax,
-                waxId: waxId,
+                store: store,
                 queryEmbeddingDimensions: queryEmbeddingDimensions,
-                engineKind: .metal
+                engineKind: .metal,
+                now: now
             ) {
                 return metalEngine
             }
@@ -114,17 +166,19 @@ actor UnifiedSearchEngineCache {
 
         return try await vectorEngine(
             for: wax,
-            waxId: waxId,
+            store: store,
             queryEmbeddingDimensions: queryEmbeddingDimensions,
-            engineKind: .usearch
+            engineKind: .usearch,
+            now: now
         )
     }
 
     private func vectorEngine(
         for wax: Wax,
-        waxId: ObjectIdentifier,
+        store: StoreIdentity,
         queryEmbeddingDimensions: Int,
-        engineKind: VectorEngineKind
+        engineKind: VectorEngineKind,
+        now: Date
     ) async throws -> (any VectorSearchEngine)? {
         let engineKindTag = engineKind
         let preferMetal = engineKind == .metal
@@ -159,9 +213,10 @@ actor UnifiedSearchEngineCache {
                 dimensions: Int(manifest.dimension),
                 engine: engineKind
             )
-            if let cached = vectorByWax[waxId], cached.key == key {
-                try await applyPendingEmbeddingsIfNeeded(wax: wax, waxId: waxId, cached: cached)
-                return vectorByWax[waxId]?.engine
+            if let cached = vectorByStore[store], cached.key == key {
+                try await applyPendingEmbeddingsIfNeeded(wax: wax, store: store, cached: cached)
+                touchVectorEntry(for: store, at: now)
+                return vectorByStore[store]?.engine
             }
             do {
                 let engine = try makeEngine(metric, Int(manifest.dimension))
@@ -172,10 +227,12 @@ actor UnifiedSearchEngineCache {
                 let cached = CachedVector(
                     key: key,
                     engine: engine,
-                    lastPendingEmbeddingSequence: nil
+                    lastPendingEmbeddingSequence: nil,
+                    lastAccess: now
                 )
-                vectorByWax[waxId] = cached
-                try await applyPendingEmbeddingsIfNeeded(wax: wax, waxId: waxId, cached: cached)
+                vectorByStore[store] = cached
+                touchVectorEntry(for: store, at: now)
+                try await applyPendingEmbeddingsIfNeeded(wax: wax, store: store, cached: cached)
                 return engine
             } catch {
                 return nil
@@ -191,9 +248,10 @@ actor UnifiedSearchEngineCache {
                 dimensions: Int(staged.dimension),
                 engine: engineKind
             )
-            if let cached = vectorByWax[waxId], cached.key == key {
-                try await applyPendingEmbeddingsIfNeeded(wax: wax, waxId: waxId, cached: cached)
-                return vectorByWax[waxId]?.engine
+            if let cached = vectorByStore[store], cached.key == key {
+                try await applyPendingEmbeddingsIfNeeded(wax: wax, store: store, cached: cached)
+                touchVectorEntry(for: store, at: now)
+                return vectorByStore[store]?.engine
             }
 
             do {
@@ -204,9 +262,11 @@ actor UnifiedSearchEngineCache {
                 let cached = CachedVector(
                     key: key,
                     engine: engine,
-                    lastPendingEmbeddingSequence: pendingSnapshot.latestSequence
+                    lastPendingEmbeddingSequence: pendingSnapshot.latestSequence,
+                    lastAccess: now
                 )
-                vectorByWax[waxId] = cached
+                vectorByStore[store] = cached
+                touchVectorEntry(for: store, at: now)
                 return engine
             } catch {
                 return nil
@@ -220,23 +280,30 @@ actor UnifiedSearchEngineCache {
                 dimensions: queryEmbeddingDimensions,
                 engine: engineKind
             )
-            if let cached = vectorByWax[waxId], cached.key == key {
+            if let cached = vectorByStore[store], cached.key == key {
                 try await applyPendingEmbeddingsIfNeeded(
                     wax: wax,
-                    waxId: waxId,
+                    store: store,
                     cached: cached,
                     pendingSnapshot: pendingSnapshot
                 )
-                return vectorByWax[waxId]?.engine
+                touchVectorEntry(for: store, at: now)
+                return vectorByStore[store]?.engine
             }
 
             do {
                 let engine = try makeEngine(.cosine, queryEmbeddingDimensions)
-                let cached = CachedVector(key: key, engine: engine, lastPendingEmbeddingSequence: nil)
-                vectorByWax[waxId] = cached
+                let cached = CachedVector(
+                    key: key,
+                    engine: engine,
+                    lastPendingEmbeddingSequence: nil,
+                    lastAccess: now
+                )
+                vectorByStore[store] = cached
+                touchVectorEntry(for: store, at: now)
                 try await applyPendingEmbeddingsIfNeeded(
                     wax: wax,
-                    waxId: waxId,
+                    store: store,
                     cached: cached,
                     pendingSnapshot: pendingSnapshot
                 )
@@ -251,11 +318,11 @@ actor UnifiedSearchEngineCache {
 
     private func applyPendingEmbeddingsIfNeeded(
         wax: Wax,
-        waxId: ObjectIdentifier,
+        store: StoreIdentity,
         cached: CachedVector,
         pendingSnapshot: PendingEmbeddingSnapshot? = nil
     ) async throws {
-        guard var current = vectorByWax[waxId], current.key == cached.key else { return }
+        guard var current = vectorByStore[store], current.key == cached.key else { return }
 
         let snapshot: PendingEmbeddingSnapshot
         if let provided = pendingSnapshot {
@@ -279,6 +346,100 @@ actor UnifiedSearchEngineCache {
         }
 
         current.lastPendingEmbeddingSequence = snapshot.latestSequence
-        vectorByWax[waxId] = current
+        current.lastAccess = Date()
+        vectorByStore[store] = current
+        touchVectorEntry(for: store, at: current.lastAccess)
+    }
+
+    private func touchTextEntry(for store: StoreIdentity, at now: Date) {
+        if var cached = textByStore[store] {
+            cached.lastAccess = now
+            textByStore[store] = cached
+        }
+        if let existing = textLRU.firstIndex(of: store) {
+            textLRU.remove(at: existing)
+        }
+        textLRU.append(store)
+
+        while textByStore.count > Self.maxEntriesPerTier,
+              let oldest = textLRU.first {
+            textLRU.removeFirst()
+            textByStore.removeValue(forKey: oldest)
+        }
+    }
+
+    private func touchVectorEntry(for store: StoreIdentity, at now: Date) {
+        if var cached = vectorByStore[store] {
+            cached.lastAccess = now
+            vectorByStore[store] = cached
+        }
+        if let existing = vectorLRU.firstIndex(of: store) {
+            vectorLRU.remove(at: existing)
+        }
+        vectorLRU.append(store)
+
+        while vectorByStore.count > Self.maxEntriesPerTier,
+              let oldest = vectorLRU.first {
+            vectorLRU.removeFirst()
+            vectorByStore.removeValue(forKey: oldest)
+        }
+    }
+
+    private func expireStaleEntries(now: Date) {
+        let cutoff = now.addingTimeInterval(-Self.entryTTLSeconds)
+
+        let staleText = textByStore.compactMap { key, value in
+            value.lastAccess < cutoff ? key : nil
+        }
+        if !staleText.isEmpty {
+            for key in staleText {
+                textByStore.removeValue(forKey: key)
+            }
+            textLRU.removeAll { staleText.contains($0) }
+        }
+
+        let staleVector = vectorByStore.compactMap { key, value in
+            value.lastAccess < cutoff ? key : nil
+        }
+        if !staleVector.isEmpty {
+            for key in staleVector {
+                vectorByStore.removeValue(forKey: key)
+            }
+            vectorLRU.removeAll { staleVector.contains($0) }
+        }
+    }
+
+    private func invalidate(canonicalPath: String) {
+        let textKeysToDrop = textByStore.keys.filter { $0.canonicalPath == canonicalPath }
+        for key in textKeysToDrop {
+            textByStore.removeValue(forKey: key)
+        }
+        textLRU.removeAll { $0.canonicalPath == canonicalPath }
+
+        let vectorKeysToDrop = vectorByStore.keys.filter { $0.canonicalPath == canonicalPath }
+        for key in vectorKeysToDrop {
+            vectorByStore.removeValue(forKey: key)
+        }
+        vectorLRU.removeAll { $0.canonicalPath == canonicalPath }
+    }
+
+    private func storeIdentity(for wax: Wax) async -> StoreIdentity {
+        async let stats = wax.stats()
+        async let fileURL = wax.fileURL()
+        let resolvedStats = await stats
+        let resolvedURL = await fileURL
+        return StoreIdentity(
+            canonicalPath: canonicalPath(for: resolvedURL),
+            generation: resolvedStats.generation
+        )
+    }
+
+    private func storeCanonicalPath(for wax: Wax) async -> String {
+        let fileURL = await wax.fileURL()
+        return canonicalPath(for: fileURL)
+    }
+
+    private func canonicalPath(for url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 }

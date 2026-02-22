@@ -84,7 +84,7 @@ public actor USearchVectorEngine {
             try validate(vector)
             let index = self.index
             let isEmpty = vectorCount == 0
-            let removed: UInt32 = try await io.run {
+            let removed: UInt32 = try await io.runWrite {
                 if isEmpty { return 0 }
                 return try index.remove(key: frameId)
             }
@@ -92,7 +92,7 @@ public actor USearchVectorEngine {
                 try await reserveIfNeeded(for: vectorCount &+ 1)
                 vectorCount &+= 1
             }
-            try await io.run {
+            try await io.runWrite {
                 try index.add(key: frameId, vector: vector)
             }
             dirty = true
@@ -135,7 +135,7 @@ public actor USearchVectorEngine {
             let vectorArray = vectors
 
             // Single I/O block for all operations - minimizes async context switches
-            let addedCount = try await io.run { () throws -> Int in
+            let addedCount = try await io.runWrite { () throws -> Int in
                 var added = 0
                 
                 // Optimized loop - avoid redundant checks when index is empty
@@ -190,7 +190,7 @@ public actor USearchVectorEngine {
         try await withWriteLock {
             guard vectorCount > 0 else { return }
             let index = self.index
-            let removed = try await io.run { try index.remove(key: frameId) }
+            let removed = try await io.runWrite { try index.remove(key: frameId) }
             if removed > 0 {
                 vectorCount = vectorCount == 0 ? 0 : (vectorCount &- 1)
                 dirty = true
@@ -210,6 +210,12 @@ public actor USearchVectorEngine {
             results.reserveCapacity(min(keys.count, distances.count))
             for (key, distance) in zip(keys, distances) {
                 results.append((key, metric.score(fromDistance: distance)))
+            }
+            results.sort { lhs, rhs in
+                if lhs.1 == rhs.1 {
+                    return lhs.0 < rhs.0
+                }
+                return lhs.1 > rhs.1
             }
             return results
         }
@@ -249,11 +255,11 @@ public actor USearchVectorEngine {
                 }
 
                 let index = self.index
-                try await io.run { try VectorSerializer.loadUSearchIndex(index, fromPayload: payload) }
+                try await io.runWrite { try VectorSerializer.loadUSearchIndex(index, fromPayload: payload) }
                 vectorCount = info.vectorCount
                 reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
                 let reserve = reservedCapacity
-                try await io.run { try index.reserve(reserve) }
+                try await io.runWrite { try index.reserve(reserve) }
                 dirty = false
             case .metal(let info, let vectors, let frameIds):
                 guard info.dimension == UInt32(dimensions) else {
@@ -277,13 +283,13 @@ public actor USearchVectorEngine {
                 vectorCount = 0
                 reservedCapacity = max(reservedCapacity, UInt32(min(info.vectorCount, UInt64(UInt32.max))))
                 let reserve = reservedCapacity
-                try await io.run { try index.reserve(reserve) }
+                try await io.runWrite { try index.reserve(reserve) }
 
                 let frameIdArray = frameIds
                 let vectorArray = vectors
                 let dims = dimensions
 
-                try await io.run {
+                try await io.runWrite {
                     var scratch = [Float](repeating: 0, count: dims)
                     try vectorArray.withUnsafeBufferPointer { src in
                         guard let srcBase = src.baseAddress else { return }
@@ -348,7 +354,7 @@ public actor USearchVectorEngine {
         reservedCapacity = max(reservedCapacity, next)
         let index = self.index
         let reserve = reservedCapacity
-        try await io.run { try index.reserve(reserve) }
+        try await io.runWrite { try index.reserve(reserve) }
     }
 }
 

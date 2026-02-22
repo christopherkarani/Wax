@@ -83,6 +83,56 @@ public actor VideoRAGOrchestrator {
         return plans.map { VideoSegmentTimeRange(startMs: $0.startMs, endMs: $0.endMs) }
     }
 
+    static func _dedupeIDsForTesting(_ ids: [String]) -> [String] {
+        dedupeIDs(ids)
+    }
+
+    static func _dedupeFilesForTesting(_ files: [VideoFile]) -> [VideoFile] {
+        dedupeFiles(files)
+    }
+
+    static func _toWaxTimeRangeForTesting(_ range: ClosedRange<Date>?) -> TimeRange? {
+        toWaxTimeRange(range)
+    }
+
+    static func _mapTranscriptForTesting(
+        chunks: [VideoTranscriptChunk],
+        segmentRanges: [VideoSegmentTimeRange],
+        maxBytes: Int
+    ) -> [Int: String] {
+        let count = segmentRanges.count
+        let segments = segmentRanges.enumerated().map { index, range in
+            SegmentPlan(
+                startMs: range.startMs,
+                endMs: range.endMs,
+                midMs: (range.startMs + range.endMs) / 2,
+                index: index,
+                count: count
+            )
+        }
+        return mapTranscript(chunks: chunks, segments: segments, maxBytes: maxBytes)
+    }
+
+    static func _cappedUTF8ForTesting(_ text: String, maxBytes: Int) -> String {
+        cappedUTF8(text, maxBytes: maxBytes)
+    }
+
+    static func _firstLinesForTesting(_ text: String, maxLines: Int) -> String {
+        firstLines(text, maxLines: maxLines)
+    }
+
+    static func _buildSummaryTextForTesting(
+        rootMeta: FrameMeta,
+        segments: [VideoSegmentHit],
+        maxLinesPerSegment: Int
+    ) -> String {
+        buildSummaryText(rootMeta: rootMeta, segments: segments, maxLinesPerSegment: maxLinesPerSegment)
+    }
+
+    static func _formatMMSSForTesting(_ ms: Int64) -> String {
+        formatMMSS(ms)
+    }
+
     /// The underlying Wax store for frame storage and indexing.
     public let wax: Wax
     /// The active Wax session for reads and writes.

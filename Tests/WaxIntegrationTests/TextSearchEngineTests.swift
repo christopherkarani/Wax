@@ -95,6 +95,36 @@ private enum SQLiteBlobInspector {
     #expect(results[0].snippet?.isEmpty == false)
 }
 
+@Test func plainTextSearchTreatsOperatorTokensAsPlainText() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.indexBatch(
+        frameIds: [0, 1, 2],
+        texts: [
+            "alpha beta",
+            "alpha",
+            "beta",
+        ]
+    )
+
+    let results = try await engine.search(query: "alpha OR beta", topK: 10)
+    #expect(results.map(\.frameId) == [0])
+}
+
+@Test func ftsSyntaxSearchAllowsExplicitBooleanOperators() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.indexBatch(
+        frameIds: [0, 1, 2],
+        texts: [
+            "alpha beta",
+            "alpha",
+            "beta",
+        ]
+    )
+
+    let results = try await engine.searchFTSSyntax(query: "alpha OR beta", topK: 10)
+    #expect(Set(results.map(\.frameId)) == Set([0, 1, 2]))
+}
+
 @Test func indexBatchFlushesBeforeSearch() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.indexBatch(
@@ -267,5 +297,32 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [frameId])
     try await reopened.close()
 
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func enableTextSearchSessionSupportsBatchRemoveAndFTSSyntax() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let wax = try await Wax.create(at: fileURL)
+    let frameA = try await wax.put(Data("payload-a".utf8), options: FrameMetaSubset(searchText: "alpha beta"))
+    let frameB = try await wax.put(Data("payload-b".utf8), options: FrameMetaSubset(searchText: "alpha gamma"))
+
+    let session = try await wax.enableTextSearch()
+    try await session.indexBatch(
+        frameIds: [frameA, frameB],
+        texts: ["alpha beta", "alpha gamma"]
+    )
+
+    let syntaxHits = try await session.searchFTSSyntax(query: "alpha OR beta", topK: 10)
+    #expect(Set(syntaxHits.map(\.frameId)) == Set([frameA, frameB]))
+
+    try await session.remove(frameId: frameA)
+    let betaHits = try await session.search(query: "beta", topK: 10)
+    #expect(betaHits.allSatisfy { $0.frameId != frameA })
+
+    try await wax.close()
     try FileManager.default.removeItem(at: tempDir)
 }

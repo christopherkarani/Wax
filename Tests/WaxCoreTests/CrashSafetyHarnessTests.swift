@@ -14,6 +14,22 @@ final class CrashSafetyHarnessTests: XCTestCase {
         }
     }
 
+    func testCrashSafetyHarnessMinimalScenarioAlwaysOn() throws {
+        do {
+            _ = try harnessBinaryURL()
+        } catch HarnessResolutionError.notFound(let candidates) {
+            let attempted = candidates.map(\.path).joined(separator: "\n")
+            throw XCTSkip("WaxCrashHarness binary not found for minimal scenario:\n\(attempted)")
+        }
+
+        let result = try runHarnessScenario("header")
+        XCTAssertEqual(
+            result.status,
+            0,
+            "Minimal harness failed for scenario header\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)"
+        )
+    }
+
     func testCrashSafetyHarnessScenarios() throws {
         guard ProcessInfo.processInfo.environment["WAX_RUN_CRASH_HARNESS"] == "1" else {
             throw XCTSkip("Set WAX_RUN_CRASH_HARNESS=1 to run crash-safety harness scenarios.")

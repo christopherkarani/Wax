@@ -47,6 +47,7 @@ public enum Constants {
 
     public static let maxStringBytes: Int = 16 * 1024 * 1024
     public static let maxBlobBytes: Int = 256 * 1024 * 1024
+    public static let maxFramePayloadBytes: UInt64 = UInt64(maxBlobBytes)
     public static let maxArrayCount: Int = 10_000_000
     public static let maxEmbeddingDimensions: Int = 1_000_000
 

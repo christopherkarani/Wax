@@ -372,3 +372,84 @@ import Testing
         try await reopened.close()
     }
 }
+
+@Test func replaySnapshotWriteDoesNotMutateActiveHeaderPageInPlace() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    func readHeaderPages(
+        at fileURL: URL
+    ) throws -> (pageA: Data, pageB: Data, selected: (page: MV2SHeaderPage, pageIndex: Int)) {
+        let file = try FDFile.open(at: fileURL)
+        defer { try? file.close() }
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            throw WaxError.invalidHeader(reason: "no valid header pages")
+        }
+        return (pageA, pageB, selected)
+    }
+
+    let options = WaxOptions(walReplayStateSnapshotEnabled: true)
+    let wax = try await Wax.create(at: url, options: options)
+    _ = try await wax.put(Data("v1".utf8), options: FrameMetaSubset(searchText: "v1"))
+    try await wax.commit()
+
+    let before = try readHeaderPages(at: url)
+    let activeIndexBeforeSecondCommit = before.selected.pageIndex
+    let activeHeaderBeforeSecondCommit = before.selected.page
+
+    _ = try await wax.put(Data("v2".utf8), options: FrameMetaSubset(searchText: "v2"))
+    try await wax.commit()
+    try await wax.close()
+
+    let after = try readHeaderPages(at: url)
+    let oldPageDataAfterSecondCommit = activeIndexBeforeSecondCommit == 0 ? after.pageA : after.pageB
+    let oldHeaderAfterSecondCommit = try MV2SHeaderPage.decodeWithChecksumValidation(from: oldPageDataAfterSecondCommit)
+
+    // Old header page remains a stale commit pointer; only replay snapshot metadata is refreshed.
+    #expect(oldHeaderAfterSecondCommit.fileGeneration == activeHeaderBeforeSecondCommit.fileGeneration)
+    #expect(oldHeaderAfterSecondCommit.footerOffset == activeHeaderBeforeSecondCommit.footerOffset)
+    #expect(oldHeaderAfterSecondCommit.walCommittedSeq == activeHeaderBeforeSecondCommit.walCommittedSeq)
+    #expect(oldHeaderAfterSecondCommit.headerPageGeneration == activeHeaderBeforeSecondCommit.headerPageGeneration)
+    #expect(oldHeaderAfterSecondCommit.tocChecksum == activeHeaderBeforeSecondCommit.tocChecksum)
+
+    let latestGeneration = after.selected.page.fileGeneration
+    #expect(oldHeaderAfterSecondCommit.walReplaySnapshot?.fileGeneration == latestGeneration)
+}
+
+@Test func commitFailsWithInjectedENOSPCThenSucceedsAfterFaultClear() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("disk-full-pending".utf8), options: FrameMetaSubset(searchText: "disk full"))
+
+    await wax._installFileFaultPlanForTests(
+        FDFileFaultPlan(
+            pread: [],
+            pwrite: [.enospc]
+        )
+    )
+
+    do {
+        try await wax.commit()
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .io(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("pwrite failed"))
+    }
+
+    await wax._clearFileFaultPlanForTests()
+    try await wax.commit()
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    let stats = await reopened.stats()
+    #expect(stats.frameCount == 1)
+    #expect(stats.pendingFrames == 0)
+    try await reopened.close()
+}

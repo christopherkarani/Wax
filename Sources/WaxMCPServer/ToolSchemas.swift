@@ -406,8 +406,8 @@ enum ToolSchemas {
         required: ["query"]
     )
 
-    // TODO: Replace with proper schemas when Soju photo RAG integration is complete.
-    // These tools are advertised but return isError:true — the stub schema uses
+    // These tools are advertised but return isError:true in the open build.
+    // The stub schema uses
     // additionalProperties:true so MCP clients that pass arguments (e.g. path, query)
     // reach the tool handler and get the informative "Requires Soju" error response,
     // rather than being rejected by schema validation before the tool even runs.

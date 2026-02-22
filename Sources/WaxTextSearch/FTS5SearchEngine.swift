@@ -10,6 +10,8 @@ public actor FTS5SearchEngine {
     /// Tuned to collapse typical ingestion loops into a handful of transactions.
     private static let flushThreshold = 2_048
     private static let structuredFlushThreshold = 512
+    private static let plainTextTokenLimit = 24
+    private static let ftsOperatorTokens: Set<String> = ["and", "or", "not", "near"]
     private let dbQueue: DatabaseQueue
     private let io: BlockingIOExecutor
     private let backingStoreDirectory: URL?
@@ -126,11 +128,27 @@ public actor FTS5SearchEngine {
         try await flushPendingOpsIfThresholdExceeded()
     }
 
-    public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
+    public func searchPlainText(query: String, topK: Int) async throws -> [TextSearchResult] {
+        try await flushPendingOpsIfNeeded()
+        guard let matchQuery = Self.plainTextMatchQuery(from: query) else { return [] }
+        let limit = Self.clampTopK(topK)
+        return try await searchMatchQuery(matchQuery: matchQuery, limit: limit)
+    }
+
+    public func searchFTSSyntax(query: String, topK: Int) async throws -> [TextSearchResult] {
         try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         let limit = Self.clampTopK(topK)
+        return try await searchMatchQuery(matchQuery: trimmed, limit: limit)
+    }
+
+    /// Safe default text search. Treats `query` as plain text, not raw FTS syntax.
+    public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
+        try await searchPlainText(query: query, topK: topK)
+    }
+
+    private func searchMatchQuery(matchQuery: String, limit: Int) async throws -> [TextSearchResult] {
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.read { db in
@@ -144,7 +162,7 @@ public actor FTS5SearchEngine {
                     ORDER BY rank ASC, m.frame_id ASC
                     LIMIT ?
                     """
-                let rows = try Row.fetchAll(db, sql: sql, arguments: [trimmed, limit])
+                let rows = try Row.fetchAll(db, sql: sql, arguments: [matchQuery, limit])
                 return rows.compactMap { row in
                     guard let frameIdValue: Int64 = row["frame_id"], frameIdValue >= 0 else { return nil }
                     let rank: Double = row["rank"] ?? 0
@@ -486,7 +504,7 @@ public actor FTS5SearchEngine {
     public func serialize(compact: Bool = false) async throws -> Data {
         try await flushPendingOpsIfNeeded()
         let dbQueue = self.dbQueue
-        return try await io.run {
+        return try await io.runWrite {
             try dbQueue.writeWithoutTransaction { db in
                 if compact {
                     let freelistCount = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
@@ -552,7 +570,7 @@ public actor FTS5SearchEngine {
         let keys = pendingKeys
         let dbQueue = self.dbQueue
 
-        let (addedCount, removedCount) = try await io.run { () throws -> (added: Int, removed: Int) in
+        let (addedCount, removedCount) = try await io.runWrite { () throws -> (added: Int, removed: Int) in
             var added = 0
             var removed = 0
 
@@ -629,7 +647,7 @@ public actor FTS5SearchEngine {
         let ops = pendingStructuredOps
         let dbQueue = self.dbQueue
 
-        try await io.run {
+        try await io.runWrite {
             try dbQueue.write { db in
                 let selectEntityStmt = try db.makeStatement(sql: """
                     SELECT entity_id, kind FROM sm_entity WHERE key = ?
@@ -974,6 +992,51 @@ public actor FTS5SearchEngine {
         if topK < 1 { return 1 }
         if topK > maxResults { return maxResults }
         return topK
+    }
+
+    private static func plainTextMatchQuery(from query: String) -> String? {
+        let tokens = normalizedPlainTextTokens(
+            from: query,
+            maxTokens: plainTextTokenLimit
+        )
+        guard !tokens.isEmpty else { return nil }
+        return tokens.joined(separator: " ")
+    }
+
+    private static func normalizedPlainTextTokens(
+        from query: String,
+        maxTokens: Int
+    ) -> [String] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var tokens: [String] = []
+        tokens.reserveCapacity(min(maxTokens, 8))
+        var current = String.UnicodeScalarView()
+
+        for scalar in trimmed.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.append(scalar)
+                continue
+            }
+
+            guard !current.isEmpty else { continue }
+            let token = String(current).lowercased()
+            if !token.isEmpty, !ftsOperatorTokens.contains(token) {
+                tokens.append(token)
+                if tokens.count == maxTokens { break }
+            }
+            current.removeAll(keepingCapacity: true)
+        }
+
+        if tokens.count < maxTokens, !current.isEmpty {
+            let token = String(current).lowercased()
+            if !token.isEmpty, !ftsOperatorTokens.contains(token) {
+                tokens.append(token)
+            }
+        }
+
+        return tokens
     }
 
     private static func toInt64(_ value: UInt64) throws -> Int64 {

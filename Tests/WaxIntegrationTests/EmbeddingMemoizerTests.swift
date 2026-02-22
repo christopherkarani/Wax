@@ -401,3 +401,37 @@ import Testing
 
     #expect(hash1 != hash2)
 }
+
+// MARK: - EmbeddingMemoizer.fromConfig factory
+
+@Test func memoizerFromConfigReturnsNilWhenDisabled() {
+    let cache = EmbeddingMemoizer.fromConfig(capacity: 10, enabled: false)
+    #expect(cache == nil)
+}
+
+@Test func memoizerFromConfigReturnsNilWhenCapacityIsZero() {
+    let cache = EmbeddingMemoizer.fromConfig(capacity: 0, enabled: true)
+    #expect(cache == nil)
+}
+
+@Test func memoizerFromConfigReturnsNilWhenCapacityIsNegative() {
+    let cache = EmbeddingMemoizer.fromConfig(capacity: -5, enabled: true)
+    #expect(cache == nil)
+}
+
+@Test func memoizerFromConfigReturnsCacheWhenEnabledAndPositiveCapacity() async {
+    let cache = EmbeddingMemoizer.fromConfig(capacity: 4, enabled: true)
+    #expect(cache != nil)
+    // The returned cache must work correctly.
+    await cache!.set(1, value: [1.0, 2.0])
+    let got = await cache!.get(1)
+    #expect(got == [1.0, 2.0])
+}
+
+@Test func memoizerFromConfigDefaultEnabledArgument() async {
+    // enabled defaults to true; capacity > 0 must return a live cache.
+    let cache = EmbeddingMemoizer.fromConfig(capacity: 2)
+    #expect(cache != nil)
+    await cache!.set(99, value: [9.9])
+    #expect(await cache!.get(99) == [9.9])
+}

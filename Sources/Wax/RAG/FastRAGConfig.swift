@@ -120,6 +120,10 @@ public struct FastRAGConfig: Sendable, Equatable {
     /// When nil, Wax uses wall clock time.
     public var deterministicNowMs: Int64? = nil
 
+    /// When true, recall requires `deterministicNowMs` to be explicitly configured.
+    /// This disables wall-clock fallback for strict reproducibility requirements.
+    public var strictDeterministicNow: Bool = false
+
     public init(
         mode: Mode = .fast,
         maxContextTokens: Int = 1_500,
@@ -138,7 +142,8 @@ public struct FastRAGConfig: Sendable, Equatable {
         answerDistractorPenalty: Float = 0.30,
         tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced,
         enableQueryAwareTierSelection: Bool = true,
-        deterministicNowMs: Int64? = nil
+        deterministicNowMs: Int64? = nil,
+        strictDeterministicNow: Bool = false
     ) {
         self.mode = mode
         self.maxContextTokens = maxContextTokens
@@ -158,5 +163,6 @@ public struct FastRAGConfig: Sendable, Equatable {
         self.tierSelectionPolicy = tierSelectionPolicy
         self.enableQueryAwareTierSelection = enableQueryAwareTierSelection
         self.deterministicNowMs = deterministicNowMs
+        self.strictDeterministicNow = strictDeterministicNow
     }
 }

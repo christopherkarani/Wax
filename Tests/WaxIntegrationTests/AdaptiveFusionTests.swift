@@ -21,3 +21,13 @@ import Wax
     #expect(abs(weights.bm25 - weights.vector) <= 0.1)
 }
 
+@Test func customAdaptiveFusionFallsBackWhenQueryTypeMissing() {
+    let config = AdaptiveFusionConfig(
+        weights: [
+            .factual: FusionWeights(bm25: 0.9, vector: 0.1, temporal: 0),
+        ]
+    )
+
+    let missingTypeWeights = config.weights(for: .semantic)
+    #expect(missingTypeWeights == FusionWeights(bm25: 0.5, vector: 0.5))
+}

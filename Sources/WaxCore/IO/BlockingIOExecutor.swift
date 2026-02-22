@@ -15,7 +15,7 @@ public final class BlockingIOExecutor: @unchecked Sendable {
 
     /// Execute a read operation concurrently.
     /// Multiple reads can execute in parallel.
-    public func run<T>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
+    public func runRead<T>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
@@ -28,12 +28,26 @@ public final class BlockingIOExecutor: @unchecked Sendable {
     }
 
     /// Execute a non-throwing read operation concurrently.
-    public func run<T>(_ work: @Sendable @escaping () -> T) async -> T {
+    public func runRead<T>(_ work: @Sendable @escaping () -> T) async -> T {
         await withCheckedContinuation { continuation in
             queue.async {
                 continuation.resume(returning: work())
             }
         }
+    }
+
+    /// Backwards-compatible alias for read operations.
+    ///
+    /// Use `runRead` for reads and `runWrite` for writes.
+    public func run<T>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
+        try await runRead(work)
+    }
+
+    /// Backwards-compatible alias for read operations.
+    ///
+    /// Use `runRead` for reads and `runWrite` for writes.
+    public func run<T>(_ work: @Sendable @escaping () -> T) async -> T {
+        await runRead(work)
     }
     
     /// Execute a write operation with exclusive access.

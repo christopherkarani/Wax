@@ -13,12 +13,19 @@
 import Foundation
 import Metal
 import WaxCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public actor MetalVectorEngine {
     private static let maxResults = 10_000
     private static let initialReserve: UInt32 = 64
     private static let maxThreadsPerThreadgroup = 256
     private static let gpuTopKThreshold = 1_000
+    private static let maxTransientPoolEntries = 8
+    private static let transientOversizeFactor = 2
     
     /// Threshold for switching to SIMD8 kernel (optimal for MiniLM 384-dim vectors)
     private static let simd8DimensionThreshold = 384
@@ -43,6 +50,8 @@ public actor MetalVectorEngine {
     struct BufferPoolStats: Sendable {
         var transientAllocations: Int
         var reuseCount: Int
+        var pooledBuffers: Int
+        var maxPooledCapacity: Int
     }
 
     private let metric: VectorMetric
@@ -53,6 +62,7 @@ public actor MetalVectorEngine {
     // Zero-Copy: 'vectors' array removed. Primary storage is `vectorsBuffer`.
     
     private var frameIds: [UInt64]
+    private var frameIdToIndex: [UInt64: Int]
     private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
 
@@ -113,11 +123,27 @@ public actor MetalVectorEngine {
     }
 
     private func releaseTransientBuffers(_ buffers: TransientBuffers) {
+        let boundedVectorCount = min(vectorCount, UInt64(Int.max))
+        let vectorCountInt = Int(boundedVectorCount)
+        let (scaledCapacity, overflowed) = vectorCountInt.multipliedReportingOverflow(
+            by: Self.transientOversizeFactor
+        )
+        let retentionCap = max(
+            Int(Self.initialReserve),
+            overflowed ? Int.max : scaledCapacity
+        )
+        guard buffers.capacity <= retentionCap else { return }
+        guard transientBufferPool.count < Self.maxTransientPoolEntries else { return }
         transientBufferPool.append(buffers)
     }
 
     func debugBufferPoolStats() -> BufferPoolStats {
-        BufferPoolStats(transientAllocations: transientAllocations, reuseCount: transientReuseCount)
+        BufferPoolStats(
+            transientAllocations: transientAllocations,
+            reuseCount: transientReuseCount,
+            pooledBuffers: transientBufferPool.count,
+            maxPooledCapacity: transientBufferPool.map(\.capacity).max() ?? 0
+        )
     }
     
     private let device: MTLDevice
@@ -220,6 +246,7 @@ public actor MetalVectorEngine {
         self.vectorCount = 0
         self.reservedCapacity = Self.initialReserve
         self.frameIds = []
+        self.frameIdToIndex = [:]
         self.dirty = false
 
         let initialCapacity = Int(Self.initialReserve) * dimensions * MemoryLayout<Float>.stride
@@ -331,7 +358,7 @@ public actor MetalVectorEngine {
         try await withWriteLock {
             try validate(vector)
 
-            if let existingIndex = frameIds.firstIndex(of: frameId) {
+            if let existingIndex = frameIdToIndex[frameId] {
                 // Determine offset in shared buffer
                 let offset = existingIndex * dimensions
                 let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
@@ -349,6 +376,7 @@ public actor MetalVectorEngine {
                 }
                 
                 frameIds.append(frameId)
+                frameIdToIndex[frameId] = offset / dimensions
                 vectorCount += 1
             }
 
@@ -382,7 +410,7 @@ public actor MetalVectorEngine {
             let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
 
             for (frameId, vector) in zip(frameIds, vectors) {
-                if let existingIndex = self.frameIds.firstIndex(of: frameId) {
+                if let existingIndex = frameIdToIndex[frameId] {
                     let offset = existingIndex * dimensions
                     for dim in 0..<dimensions {
                         basePtr[offset + dim] = vector[dim]
@@ -393,6 +421,7 @@ public actor MetalVectorEngine {
                         basePtr[offset + dim] = vector[dim]
                     }
                     self.frameIds.append(frameId)
+                    frameIdToIndex[frameId] = Int(vectorCount)
                     vectorCount += 1
                 }
             }
@@ -423,7 +452,7 @@ public actor MetalVectorEngine {
     public func remove(frameId: UInt64) async throws {
         await withWriteLock {
             guard vectorCount > 0 else { return }
-            guard let index = frameIds.firstIndex(of: frameId) else { return }
+            guard let index = frameIdToIndex.removeValue(forKey: frameId) else { return }
 
             // To efficiently remove, we need to shift all subsequent vectors.
             // memmove is efficient for this.
@@ -433,11 +462,21 @@ public actor MetalVectorEngine {
                 let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
                 let dst = basePtr.advanced(by: index * dimensions)
                 let src = basePtr.advanced(by: (index + 1) * dimensions)
-                // Overlap exists, move is required
-                dst.moveUpdate(from: src, count: countAfter * dimensions)
+                let elementCount = countAfter * dimensions
+                let byteCount = elementCount * MemoryLayout<Float>.stride
+                _ = memmove(
+                    UnsafeMutableRawPointer(dst),
+                    UnsafeRawPointer(src),
+                    byteCount
+                )
             }
             
             frameIds.remove(at: index)
+            if index < frameIds.count {
+                for shiftedIndex in index..<frameIds.count {
+                    frameIdToIndex[frameIds[shiftedIndex]] = shiftedIndex
+                }
+            }
             vectorCount -= 1
             dirty = true
         }
@@ -608,6 +647,7 @@ public actor MetalVectorEngine {
                     let entry = resultsPtr[i]
                     results.append((entry.frameId, entry.score))
                 }
+                Self.normalizeResultOrdering(&results)
                 return results
             }
 
@@ -622,6 +662,7 @@ public actor MetalVectorEngine {
                 results.append((frameIds[index], score))
             }
 
+            Self.normalizeResultOrdering(&results)
             return results
         }
     }
@@ -677,6 +718,15 @@ public actor MetalVectorEngine {
         // Heap contains k smallest distances unordered; sort ascending
         heap.sort { $0.0 < $1.0 }
         return heap.map { ($0.1, $0.0) }
+    }
+
+    private static func normalizeResultOrdering(_ results: inout [(UInt64, Float)]) {
+        results.sort { lhs, rhs in
+            if lhs.1 == rhs.1 {
+                return lhs.0 < rhs.0
+            }
+            return lhs.1 > rhs.1
+        }
     }
 
     public func serialize() async throws -> Data {
@@ -809,6 +859,14 @@ public actor MetalVectorEngine {
             frameIds = Array(data[offset..<offset+Int(frameIdLength)].withUnsafeBytes {
                 Array($0.bindMemory(to: UInt64.self))
             })
+            frameIdToIndex.removeAll(keepingCapacity: true)
+            frameIdToIndex.reserveCapacity(frameIds.count)
+            for (index, frameId) in frameIds.enumerated() {
+                frameIdToIndex[frameId] = index
+            }
+            guard frameIdToIndex.count == frameIds.count else {
+                throw WaxError.invalidToc(reason: "duplicate frameId entries in Metal segment")
+            }
 
             dirty = false
         }

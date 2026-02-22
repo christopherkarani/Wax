@@ -47,6 +47,11 @@ private enum CrashScenario: String, CaseIterable {
     }
 }
 
+private enum RequestedWork {
+    case crashScenarios([CrashScenario])
+    case holdExclusiveLock(path: String, holdSeconds: UInt32)
+}
+
 @main
 struct WaxCrashHarness {
     private static let sigKillStatus: Int32 = 9
@@ -64,15 +69,51 @@ struct WaxCrashHarness {
             }
 
             let args = CommandLine.arguments
-            let requested = try parseRequestedScenarios(args: args)
-            for scenario in requested {
-                try await runScenario(scenario)
-                print("PASS \(scenario.rawValue)")
+            let requested = try parseRequestedWork(args: args)
+            switch requested {
+            case .crashScenarios(let scenarios):
+                for scenario in scenarios {
+                    try await runScenario(scenario)
+                    print("PASS \(scenario.rawValue)")
+                }
+            case .holdExclusiveLock(let path, let holdSeconds):
+                try runLockHolder(path: path, holdSeconds: holdSeconds)
+                print("PASS lock-holder")
             }
         } catch {
             fputs("FAIL \(error)\n", stderr)
             Foundation.exit(1)
         }
+    }
+
+    private static func parseRequestedWork(args: [String]) throws -> RequestedWork {
+        if let lockIndex = args.firstIndex(of: "--lock-hold") {
+            let valueIndex = args.index(after: lockIndex)
+            guard valueIndex < args.endIndex else {
+                throw HarnessError.invalidArgument("--lock-hold requires a path")
+            }
+            let path = args[valueIndex]
+            guard !path.isEmpty else {
+                throw HarnessError.invalidArgument("--lock-hold path must not be empty")
+            }
+
+            let holdSeconds: UInt32
+            if let secondsIndex = args.firstIndex(of: "--hold-seconds") {
+                let secondsValueIndex = args.index(after: secondsIndex)
+                guard secondsValueIndex < args.endIndex else {
+                    throw HarnessError.invalidArgument("--hold-seconds requires a value")
+                }
+                guard let parsed = UInt32(args[secondsValueIndex]) else {
+                    throw HarnessError.invalidArgument("--hold-seconds must be an unsigned integer")
+                }
+                holdSeconds = parsed
+            } else {
+                holdSeconds = 5
+            }
+            return .holdExclusiveLock(path: path, holdSeconds: holdSeconds)
+        }
+
+        return .crashScenarios(try parseRequestedScenarios(args: args))
     }
 
     private static func parseRequestedScenarios(args: [String]) throws -> [CrashScenario] {
@@ -87,6 +128,16 @@ struct WaxCrashHarness {
             return [scenario]
         }
         return CrashScenario.allCases
+    }
+
+    private static func runLockHolder(path: String, holdSeconds: UInt32) throws {
+        let url = URL(fileURLWithPath: path)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        let lock = try FileLock.acquire(at: url, mode: .exclusive)
+        Thread.sleep(forTimeInterval: TimeInterval(holdSeconds))
+        try lock.release()
     }
 
     private static func runScenario(_ scenario: CrashScenario) async throws {

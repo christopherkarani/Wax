@@ -31,6 +31,8 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     public struct Config {
         public var batchSize: Int
+        /// Optional Core ML configuration override.
+        /// Use this to tune model execution characteristics such as `computeUnits`.
         public var modelConfiguration: MLModelConfiguration?
 
         public init(batchSize: Int = 256, modelConfiguration: MLModelConfiguration? = nil) {
@@ -81,8 +83,6 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         let aneAvailable = isUsingANE()
         logger.info("MiniLMEmbedder initialized with computeUnits: \(units.rawValue, privacy: .public)")
         logger.info("ANE configured: \(aneAvailable ? "Yes" : "No", privacy: .public)")
-
-        // TODO: Expose MLModelConfiguration knobs (e.g. low-precision accumulation) for more tuning.
     }
 
     public func embed(_ text: String) async throws -> [Float] {

@@ -7,6 +7,16 @@ private enum FrameMetaValidation {
         canonicalLength: UInt64?,
         storedChecksum: Data?
     ) throws {
+        if payloadLength > Constants.maxFramePayloadBytes {
+            throw WaxError.invalidToc(
+                reason: "payload_length \(payloadLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+            )
+        }
+        if let canonicalLength, canonicalLength > Constants.maxFramePayloadBytes {
+            throw WaxError.invalidToc(
+                reason: "canonical_length \(canonicalLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+            )
+        }
         if canonicalEncoding != .plain, canonicalLength == nil {
             throw WaxError.invalidToc(reason: "missing canonical_length for compressed payload")
         }

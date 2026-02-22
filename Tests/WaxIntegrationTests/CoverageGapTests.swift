@@ -31,6 +31,42 @@ private struct NetworkCaptionProvider: CaptionProvider {
     func caption(for image: CGImage) async throws -> String { "caption" }
 }
 
+private struct LegacyOCRProvider: OCRProvider {
+    func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
+        _ = image
+        return []
+    }
+}
+
+private struct LegacyCaptionProvider: CaptionProvider {
+    func caption(for image: CGImage) async throws -> String {
+        _ = image
+        return "caption"
+    }
+}
+
+private struct LegacyTranscriptProvider: VideoTranscriptProvider {
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        return []
+    }
+}
+
+@available(*, deprecated)
+private func legacyExecutionMode(of provider: any OCRProvider) -> ProviderExecutionMode {
+    provider.executionMode
+}
+
+@available(*, deprecated)
+private func legacyExecutionMode(of provider: any CaptionProvider) -> ProviderExecutionMode {
+    provider.executionMode
+}
+
+@available(*, deprecated)
+private func legacyExecutionMode(of provider: any VideoTranscriptProvider) -> ProviderExecutionMode {
+    provider.executionMode
+}
+
 // MARK: - PhotoRAG init validation
 
 @Test
@@ -94,6 +130,46 @@ func videoRAGRejectsNetworkEmbedderByDefault() async throws {
             #expect(message.contains("on-device embedding provider"))
         }
     }
+}
+
+@Test
+func recognizedTextBlockInitializerAndLegacyExecutionModes() {
+    let block = RecognizedTextBlock(
+        text: "hello",
+        bbox: PhotoNormalizedRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4),
+        confidence: 0.9,
+        language: "en"
+    )
+    #expect(block.text == "hello")
+    #expect(block.bbox == PhotoNormalizedRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4))
+    #expect(block.confidence == 0.9)
+    #expect(block.language == "en")
+
+    let ocr = LegacyOCRProvider()
+    let caption = LegacyCaptionProvider()
+    let transcript = LegacyTranscriptProvider()
+
+    #expect(legacyExecutionMode(of: ocr) == .onDeviceOnly)
+    #expect(legacyExecutionMode(of: caption) == .onDeviceOnly)
+    #expect(legacyExecutionMode(of: transcript) == .onDeviceOnly)
+}
+
+@Test
+func videoTranscriptTypesStoreFields() {
+    let fileURL = URL(fileURLWithPath: "/tmp/video.mov")
+    let request = VideoTranscriptRequest(
+        videoID: VideoID(source: .file, id: "demo"),
+        localFileURL: fileURL,
+        durationMs: 42_000
+    )
+    #expect(request.videoID == VideoID(source: .file, id: "demo"))
+    #expect(request.localFileURL.path == fileURL.path)
+    #expect(request.durationMs == 42_000)
+
+    let chunk = VideoTranscriptChunk(startMs: 100, endMs: 250, text: "hello world")
+    #expect(chunk.startMs == 100)
+    #expect(chunk.endMs == 250)
+    #expect(chunk.text == "hello world")
 }
 
 // MARK: - PhotoRAG delete

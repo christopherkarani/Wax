@@ -5,7 +5,7 @@ import Testing
     let _ = Wax.self
 }
 
-@Test func errorTypesExist() {
+@Test func errorTypesExist() throws {
     let error: WaxError = .invalidHeader(reason: "test")
     #expect(error.localizedDescription.isEmpty == false)
 }

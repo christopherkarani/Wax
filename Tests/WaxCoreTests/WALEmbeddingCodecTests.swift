@@ -75,3 +75,244 @@ import Testing
     let decoded = try WALEntryCodec.decode(encoded, offset: 0)
     #expect(decoded == .supersedeFrame(original))
 }
+
+@Test func putFrameEncodingRejectsOversizedPayloadLengths() throws {
+    let checksum = Data(repeating: 0xAB, count: 32)
+    let oversizedPayload = PutFrame(
+        frameId: 1,
+        timestampMs: 1,
+        options: FrameMetaSubset(),
+        payloadOffset: 0,
+        payloadLength: Constants.maxFramePayloadBytes + 1,
+        canonicalEncoding: .plain,
+        canonicalLength: 1,
+        canonicalChecksum: checksum,
+        storedChecksum: checksum
+    )
+
+    do {
+        _ = try WALEntryCodec.encode(.putFrame(oversizedPayload))
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("payload_length"))
+    }
+}
+
+@Test func putFrameDecodingRejectsOversizedCanonicalLength() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(WALEntryCodec.OpCode.putFrame.rawValue)
+    encoder.encode(UInt64(1))
+    encoder.encode(Int64(1))
+    var options = FrameMetaSubset()
+    try options.encode(to: &encoder)
+    encoder.encode(UInt64(0))
+    encoder.encode(UInt64(1))
+    encoder.encode(CanonicalEncoding.lzfse.rawValue)
+    encoder.encode(Constants.maxFramePayloadBytes + 1)
+    encoder.encodeFixedBytes(Data(repeating: 0x01, count: 32))
+    encoder.encodeFixedBytes(Data(repeating: 0x02, count: 32))
+
+    do {
+        _ = try WALEntryCodec.decode(encoder.data, offset: 0)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .walCorruption(_, let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("canonical_length"))
+    }
+}
+
+@Test func putFrameEncodingRejectsOversizedCanonicalLength() throws {
+    let checksum = Data(repeating: 0xCD, count: 32)
+    let oversized = PutFrame(
+        frameId: 1,
+        timestampMs: 1,
+        options: FrameMetaSubset(),
+        payloadOffset: 0,
+        payloadLength: 1,
+        canonicalEncoding: .plain,
+        canonicalLength: Constants.maxFramePayloadBytes + 1,
+        canonicalChecksum: checksum,
+        storedChecksum: checksum
+    )
+
+    do {
+        _ = try WALEntryCodec.encode(.putFrame(oversized))
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("canonical_length"))
+    }
+}
+
+@Test func putFrameEncodingRejectsInvalidChecksumLengths() throws {
+    let validChecksum = Data(repeating: 0xAB, count: 32)
+
+    do {
+        _ = try WALEntryCodec.encode(
+            .putFrame(
+                PutFrame(
+                    frameId: 1,
+                    timestampMs: 1,
+                    options: FrameMetaSubset(),
+                    payloadOffset: 0,
+                    payloadLength: 1,
+                    canonicalEncoding: .plain,
+                    canonicalLength: 1,
+                    canonicalChecksum: Data(repeating: 0x01, count: 31),
+                    storedChecksum: validChecksum
+                )
+            )
+        )
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("canonical_checksum"))
+    }
+
+    do {
+        _ = try WALEntryCodec.encode(
+            .putFrame(
+                PutFrame(
+                    frameId: 1,
+                    timestampMs: 1,
+                    options: FrameMetaSubset(),
+                    payloadOffset: 0,
+                    payloadLength: 1,
+                    canonicalEncoding: .plain,
+                    canonicalLength: 1,
+                    canonicalChecksum: validChecksum,
+                    storedChecksum: Data(repeating: 0x02, count: 31)
+                )
+            )
+        )
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("stored_checksum"))
+    }
+}
+
+@Test func putEmbeddingEncodingRejectsDimensionMismatchAndLimitOverflow() throws {
+    do {
+        _ = try WALEntryCodec.encode(
+            .putEmbedding(PutEmbedding(frameId: 1, dimension: 2, vector: [1]))
+        )
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("dimension mismatch"))
+    }
+
+    do {
+        let tooMany = [Float](repeating: 0, count: Constants.maxEmbeddingDimensions + 1)
+        _ = try WALEntryCodec.encode(
+            .putEmbedding(
+                PutEmbedding(
+                    frameId: 1,
+                    dimension: UInt32(tooMany.count),
+                    vector: tooMany
+                )
+            )
+        )
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .encodingError(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("exceeds limit"))
+    }
+}
+
+@Test func decodeRejectsUnknownOpcodeAsWalCorruption() throws {
+    do {
+        _ = try WALEntryCodec.decode(Data([0xFF]), offset: 77)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .walCorruption(let offset, let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(offset == 77)
+        #expect(reason.contains("unknown opcode"))
+    }
+}
+
+@Test func decodeRejectsInvalidCanonicalEncodingAsWalCorruption() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(WALEntryCodec.OpCode.putFrame.rawValue)
+    encoder.encode(UInt64(9))
+    encoder.encode(Int64(10))
+    var options = FrameMetaSubset()
+    try options.encode(to: &encoder)
+    encoder.encode(UInt64(0))
+    encoder.encode(UInt64(1))
+    encoder.encode(UInt8(255))
+    encoder.encode(UInt64(1))
+    encoder.encodeFixedBytes(Data(repeating: 0xAA, count: 32))
+    encoder.encodeFixedBytes(Data(repeating: 0xBB, count: 32))
+
+    do {
+        _ = try WALEntryCodec.decode(encoder.data, offset: 5)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .walCorruption(let offset, let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(offset == 5)
+        #expect(reason.contains("invalid canonical_encoding"))
+    }
+}
+
+@Test func decodeRejectsTooLargeEmbeddingDimensionAsWalCorruption() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(WALEntryCodec.OpCode.putEmbedding.rawValue)
+    encoder.encode(UInt64(1))
+    encoder.encode(UInt32(Constants.maxEmbeddingDimensions + 1))
+
+    do {
+        _ = try WALEntryCodec.decode(encoder.data, offset: 11)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .walCorruption(let offset, let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(offset == 11)
+        #expect(reason.contains("embedding dimension exceeds limit"))
+    }
+}
+
+@Test func decodeWrapsTruncatedPayloadAsWalCorruption() throws {
+    let truncated = Data([WALEntryCodec.OpCode.deleteFrame.rawValue])
+    do {
+        _ = try WALEntryCodec.decode(truncated, offset: 123)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .walCorruption(let offset, _) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(offset == 123)
+    }
+}

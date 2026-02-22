@@ -66,6 +66,39 @@ func tokenChunkingStreamMatchesEagerChunks() async throws {
     #expect(streamed == eager)
 }
 
+@Test
+func tokenChunkingShortTextReturnsSingleChunk() async {
+    let text = "short deterministic text"
+    let strategy = ChunkingStrategy.tokenCount(targetTokens: 64, overlapTokens: 8)
+    let chunks = await TextChunker.chunk(text: text, strategy: strategy)
+    #expect(chunks == [text])
+}
+
+@Test
+func tokenChunkingClampsInvalidTargetAndOverlap() async throws {
+    let text = "deterministic chunking boundary case ".repeating(times: 30)
+    let clamped = await TextChunker.chunk(
+        text: text,
+        strategy: .tokenCount(targetTokens: 0, overlapTokens: -5)
+    )
+    let explicit = await TextChunker.chunk(
+        text: text,
+        strategy: .tokenCount(targetTokens: 1, overlapTokens: 0)
+    )
+    #expect(clamped == explicit)
+}
+
+@Test
+func tokenChunkingStreamShortTextYieldsOriginalOnly() async {
+    let text = "stream me once"
+    let strategy = ChunkingStrategy.tokenCount(targetTokens: 100, overlapTokens: 0)
+    var streamed: [String] = []
+    for await chunk in TextChunker.stream(text: text, strategy: strategy) {
+        streamed.append(chunk)
+    }
+    #expect(streamed == [text])
+}
+
 private extension String {
     func repeating(times: Int) -> String {
         guard times > 1 else { return self }

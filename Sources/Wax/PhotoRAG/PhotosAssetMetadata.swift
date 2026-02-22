@@ -154,6 +154,19 @@ enum PhotosAssetMetadata {
     }
     #endif
 
+    // Internal test hooks to exercise parser behavior deterministically without Photos access.
+    static func _extractEXIFForTesting(from data: Data?) -> EXIF {
+        extractEXIF(from: data)
+    }
+
+    static func _parseKeywordsForTesting(_ value: Any?) -> [String] {
+        parseKeywords(value)
+    }
+
+    static func _parseEXIFDateTimeMsForTesting(_ value: String) -> Int64? {
+        parseEXIFDateTimeMs(value)
+    }
+
     private static func extractEXIF(from data: Data?) -> EXIF {
         guard let data else { return EXIF() }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return EXIF() }

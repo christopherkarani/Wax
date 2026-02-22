@@ -169,9 +169,9 @@ public struct FastRAGContextBuilder: Sendable {
             // Get only source frame metas needed for timestamp access.
             let frameMetaMap = await sourceFrameMetasTask
             // nowMs resolution order:
-            // 1. deterministicNowMs if explicitly set (always the case when called via MemoryOrchestrator.recall)
-            // 2. max frame timestamp — provides a stable, deterministic "now" for direct callers
-            //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
+            // 1. deterministicNowMs if explicitly set
+            // 2. max frame timestamp — provides a stable, deterministic "now" for callers
+            //    that have not set deterministicNowMs. Note: this may understate
             //    recency for stores where all frames are old relative to wall clock.
             // 3. Wall clock — final fallback for empty frame sets.
             let nowMs = clamped.deterministicNowMs

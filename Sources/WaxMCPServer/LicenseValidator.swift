@@ -1,5 +1,8 @@
 #if MCPServer
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 #if canImport(Security)
 import Security
@@ -34,6 +37,8 @@ enum LicenseValidator {
     private static let trialDuration: TimeInterval = 14 * 24 * 60 * 60
     private static let keychainService = "com.wax.mcpserver"
     private static let keychainAccount = "license_key"
+    private static let activationEndpointEnvKey = "WAX_LICENSE_ACTIVATION_URL"
+    private static let activationRequestTimeout: TimeInterval = 2
 
     enum ValidationError: LocalizedError, Equatable {
         case invalidLicenseKey
@@ -78,7 +83,7 @@ enum LicenseValidator {
     // Validates format only (XXXX-XXXX-XXXX-XXXX with alphanumeric segments).
     // NOTE: This is intentionally client-side format validation only. It does NOT verify
     // that the key is an authentic, paid license. Server-side activation (pingActivation)
-    // is a no-op placeholder and will be wired to the licensing backend in a future release.
+    // is best-effort and only runs when WAX_LICENSE_ACTIVATION_URL is configured.
     // Any string matching the pattern will currently pass this check.
     static func isValidFormat(_ key: String) -> Bool {
         guard let keyRegex else { return false }
@@ -144,10 +149,22 @@ enum LicenseValidator {
         #endif
     }
 
-    // Placeholder for server-side license activation. Currently a no-op.
-    // TODO: Wire to licensing backend before enforcing license gating in production.
     static func pingActivation(key: String) async {
-        _ = key
+        guard let endpoint = activationEndpointURL() else { return }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = activationRequestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(
+            withJSONObject: [
+                "license_key": key,
+                "source": "wax_mcp",
+            ],
+            options: []
+        )
+
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     private static func normalizedKey(from raw: String?) -> String? {
@@ -155,6 +172,15 @@ enum LicenseValidator {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return trimmed.uppercased()
+    }
+
+    private static func activationEndpointURL() -> URL? {
+        let raw = ProcessInfo.processInfo.environment[activationEndpointEnvKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw, !raw.isEmpty else { return nil }
+        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased() else { return nil }
+        guard scheme == "https" || scheme == "http" else { return nil }
+        return url
     }
 }
 #endif

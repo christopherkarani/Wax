@@ -81,6 +81,83 @@ public actor PhotoRAGOrchestrator {
         var locationBins: [LocationBin: Set<UInt64>] = [:]
     }
 
+    struct ProposedRegionForTesting: Sendable, Equatable {
+        var bbox: PhotoNormalizedRect
+        var type: String
+    }
+
+    static func _evidenceForTesting(result: SearchResponse.Result, meta: FrameMeta) -> PhotoRAGItem.Evidence? {
+        evidence(from: result, meta: meta)
+    }
+
+    static func _toWaxTimeRangeForTesting(_ range: ClosedRange<Date>?) -> TimeRange? {
+        toWaxTimeRange(range)
+    }
+
+    static func _buildSummaryTextForTesting(
+        root: FrameMeta?,
+        caption: String?,
+        ocrSummary: String?,
+        tags: String?,
+        query: PhotoQuery,
+        maxOCRLines: Int
+    ) -> String {
+        buildSummaryText(
+            root: root,
+            caption: caption,
+            ocrSummary: ocrSummary,
+            tags: tags,
+            query: query,
+            maxOCRLines: maxOCRLines
+        )
+    }
+
+    static func _buildOCRSummaryForTesting(_ blocks: [RecognizedTextBlock], maxLines: Int) -> String {
+        buildOCRSummary(blocks, maxLines: maxLines)
+    }
+
+    static func _weakCaptionForTesting(metadata: PhotosAssetMetadata.Record, ocrBlocks: [RecognizedTextBlock]) -> String {
+        weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
+    }
+
+    static func _buildPhotoTagsForTesting(from metadata: PhotosAssetMetadata.Record, captionText: String?) -> String? {
+        buildPhotoTags(from: metadata, captionText: captionText)
+    }
+
+    static func _baseMetadataForTesting(
+        assetID: String,
+        captureMs: Int64?,
+        pipelineVersion: String,
+        isLocal: Bool,
+        location: PhotosAssetMetadata.Location?,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        exif: PhotosAssetMetadata.EXIF
+    ) -> Metadata {
+        baseMetadata(
+            assetID: assetID,
+            captureMs: captureMs,
+            pipelineVersion: pipelineVersion,
+            isLocal: isLocal,
+            location: location,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            exif: exif
+        )
+    }
+
+    static func _proposeRegionsForTesting(from ocr: [RecognizedTextBlock], maxRegions: Int) -> [ProposedRegionForTesting] {
+        proposeRegions(from: ocr, maxRegions: maxRegions).map {
+            ProposedRegionForTesting(bbox: $0.bbox, type: $0.type)
+        }
+    }
+
+    static func _writeBBoxForTesting(rect: PhotoNormalizedRect) -> Metadata {
+        var meta = Metadata()
+        writeBBox(into: &meta, rect: rect)
+        return meta
+    }
+
     /// The underlying Wax store for frame storage and indexing.
     public let wax: Wax
     /// The active Wax session for reads and writes.

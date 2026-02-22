@@ -183,7 +183,9 @@ let package = Package(
                 "WaxCore",
                 .product(name: "Testing", package: "swift-testing"),
             ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
         ),
         .testTarget(
             name: "WaxIntegrationTests",
@@ -197,7 +199,9 @@ let package = Package(
                 .product(name: "SwiftTiktoken", package: "swift-tiktoken"),
             ],
             resources: [.process("Fixtures")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
         ),
         .testTarget(
             name: "WaxMCPServerTests",

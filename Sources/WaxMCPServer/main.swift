@@ -26,6 +26,9 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("photo-store-path"), help: "Path to the Wax photo store (.mv2s)")
     var photoStorePath = "~/.wax/photo.mv2s"
 
+    @Option(name: .customLong("safe-root"), help: "Safe root for all Wax MCP store paths")
+    var safeRoot = "~/.wax"
+
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
 
@@ -58,9 +61,10 @@ struct WaxMCPServerCommand: ParsableCommand {
             try LicenseValidator.validate(key: resolvedLicense)
         }
 
-        let memoryURL = try resolveStoreURL(storePath)
-        let videoURL = try resolveStoreURL(videoStorePath)
-        let photoURL = try resolveStoreURL(photoStorePath)
+        let safeRootURL = try StorePathResolver.resolveSafeRootURL(safeRoot)
+        let memoryURL = try StorePathResolver.resolveStoreURL(storePath, safeRoot: safeRootURL)
+        let videoURL = try StorePathResolver.resolveStoreURL(videoStorePath, safeRoot: safeRootURL)
+        let photoURL = try StorePathResolver.resolveStoreURL(photoStorePath, safeRoot: safeRootURL)
 
         let embedder = try await buildEmbedder()
 
@@ -193,10 +197,11 @@ struct WaxMCPServerCommand: ParsableCommand {
     }
 
     private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty
-        else {
+        Self.parseFeatureFlag(ProcessInfo.processInfo.environment[key], default: defaultValue)
+    }
+
+    private static func parseFeatureFlag(_ rawValue: String?, default defaultValue: Bool) -> Bool {
+        guard let raw = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return defaultValue
         }
 
@@ -210,17 +215,8 @@ struct WaxMCPServerCommand: ParsableCommand {
         }
     }
 
-    private func resolveStoreURL(_ rawPath: String) throws -> URL {
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw MCP.MCPError.invalidParams("Store path cannot be empty")
-        }
-
-        let url = URL(fileURLWithPath: trimmed).standardizedFileURL
-        let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-        return url
+    static func _parseFeatureFlagForTesting(_ rawValue: String?, default defaultValue: Bool) -> Bool {
+        parseFeatureFlag(rawValue, default: defaultValue)
     }
 
     private func buildEmbedder() async throws -> (any EmbeddingProvider)? {
@@ -235,6 +231,70 @@ struct WaxMCPServerCommand: ParsableCommand {
         #else
         return nil
         #endif
+    }
+}
+
+enum StorePathResolver {
+    static func resolveSafeRootURL(_ rawPath: String) throws -> URL {
+        let expanded = (rawPath as NSString).expandingTildeInPath
+        let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MCP.MCPError.invalidParams("Safe root cannot be empty")
+        }
+
+        let rawURL = URL(fileURLWithPath: trimmed)
+        let canonical = rawURL.standardizedFileURL.resolvingSymlinksInPath().standardizedFileURL
+        try FileManager.default.createDirectory(at: canonical, withIntermediateDirectories: true, attributes: nil)
+        return canonical
+    }
+
+    static func resolveStoreURL(_ rawPath: String, safeRoot: URL) throws -> URL {
+        let expanded = (rawPath as NSString).expandingTildeInPath
+        let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MCP.MCPError.invalidParams("Store path cannot be empty")
+        }
+
+        let candidate: URL
+        if trimmed.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: trimmed)
+        } else {
+            candidate = safeRoot.appendingPathComponent(trimmed)
+        }
+
+        let standardized = candidate.standardizedFileURL
+        let standardizedParent = standardized.deletingLastPathComponent()
+        let canonicalParent = standardizedParent
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+
+        guard isContained(canonicalParent, in: safeRoot) else {
+            throw MCP.MCPError.invalidParams("Store path escapes safe root: \(trimmed)")
+        }
+
+        try FileManager.default.createDirectory(
+            at: canonicalParent,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        let finalURL = canonicalParent
+            .appendingPathComponent(standardized.lastPathComponent)
+            .standardizedFileURL
+        let resolvedFinal = finalURL.resolvingSymlinksInPath().standardizedFileURL
+
+        guard isContained(resolvedFinal, in: safeRoot) else {
+            throw MCP.MCPError.invalidParams("Store path resolves outside safe root: \(trimmed)")
+        }
+
+        return finalURL
+    }
+
+    private static func isContained(_ candidate: URL, in safeRoot: URL) -> Bool {
+        let rootPath = safeRoot.standardizedFileURL.resolvingSymlinksInPath().path
+        let childPath = candidate.standardizedFileURL.resolvingSymlinksInPath().path
+        if childPath == rootPath { return true }
+        return childPath.hasPrefix(rootPath + "/")
     }
 }
 

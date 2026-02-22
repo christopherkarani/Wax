@@ -123,17 +123,17 @@ extension Wax {
             }
 
             do {
-                let base = try await textEngine.search(query: primaryQuery, topK: candidateLimit)
+                let base = try await textEngine.searchFTSSyntax(query: primaryQuery, topK: candidateLimit)
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
                     return Array(base.prefix(candidateLimit))
                 }
-                let fallback = try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
+                let fallback = try await textEngine.searchFTSSyntax(query: fallbackQuery, topK: candidateLimit)
                 return merged(base: base, fallback: fallback, limit: candidateLimit)
             } catch {
                 guard let fallbackQuery else {
                     throw error
                 }
-                return try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
+                return try await textEngine.searchFTSSyntax(query: fallbackQuery, topK: candidateLimit)
             }
         }()
 

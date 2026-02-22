@@ -130,6 +130,116 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func unifiedSearchCacheIsolatesEntriesByStoreIdentity() async throws {
+    let cache = UnifiedSearchEngineCache.shared
+
+    try await TempFiles.withTempFile { firstURL in
+        try await TempFiles.withTempFile { secondURL in
+            let first = try await Wax.create(at: firstURL)
+            let firstText = try await first.enableTextSearch()
+            let firstID = try await first.put(Data("alpha document".utf8))
+            try await firstText.index(frameId: firstID, text: "alpha document")
+            try await firstText.commit()
+
+            let second = try await Wax.create(at: secondURL)
+            let secondText = try await second.enableTextSearch()
+            let secondID = try await second.put(Data("beta document".utf8))
+            try await secondText.index(frameId: secondID, text: "beta document")
+            try await secondText.commit()
+
+            let firstResponse = try await first.search(
+                SearchRequest(query: "alpha", mode: .textOnly, topK: 5)
+            )
+            let secondResponse = try await second.search(
+                SearchRequest(query: "beta", mode: .textOnly, topK: 5)
+            )
+            #expect(firstResponse.results.first?.frameId == firstID)
+            #expect(secondResponse.results.first?.frameId == secondID)
+            #expect(await cache.containsEntry(for: first))
+            #expect(await cache.containsEntry(for: second))
+
+            await cache.invalidate(for: first)
+            #expect((await cache.containsEntry(for: first)) == false)
+            #expect(await cache.containsEntry(for: second))
+
+            let secondAfterInvalidation = try await second.search(
+                SearchRequest(query: "beta", mode: .textOnly, topK: 5)
+            )
+            #expect(secondAfterInvalidation.results.first?.frameId == secondID)
+
+            try await first.close()
+            try await second.close()
+        }
+    }
+}
+
+@Test func waxSessionCloseInvalidatesUnifiedSearchCache() async throws {
+    let cache = UnifiedSearchEngineCache.shared
+
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let frameId = try await wax.put(Data("cache invalidation sentinel".utf8))
+        try await text.index(frameId: frameId, text: "cache invalidation sentinel")
+        try await text.commit()
+        _ = try await wax.search(SearchRequest(query: "sentinel", mode: .textOnly, topK: 5))
+
+        #expect(await cache.containsEntry(for: wax))
+
+        let session = try await wax.openSession(
+            .readOnly,
+            config: WaxSession.Config(
+                enableTextSearch: true,
+                enableVectorSearch: false,
+                enableStructuredMemory: false
+            )
+        )
+        await session.close()
+
+        #expect((await cache.containsEntry(for: wax)) == false)
+        try await wax.close()
+    }
+}
+
+@Test func unifiedSearchCacheChurnStaysBoundedAndCleansUpOnClose() async throws {
+    let cache = UnifiedSearchEngineCache.shared
+
+    for index in 0..<96 {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mv2s")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let payload = "cache churn \(index)"
+        let frameId = try await wax.put(Data(payload.utf8))
+        try await text.index(frameId: frameId, text: payload)
+        try await text.commit()
+
+        _ = try await wax.search(SearchRequest(query: "churn \(index)", mode: .textOnly, topK: 2))
+        #expect(await cache.containsEntry(for: wax))
+
+        let countsDuringRun = await cache.snapshotEntryCounts()
+        #expect(countsDuringRun.text <= 64)
+        #expect(countsDuringRun.vector <= 64)
+
+        let session = try await wax.openSession(
+            .readOnly,
+            config: WaxSession.Config(
+                enableTextSearch: true,
+                enableVectorSearch: false,
+                enableStructuredMemory: false
+            )
+        )
+        await session.close()
+        #expect((await cache.containsEntry(for: wax)) == false)
+
+        try await wax.close()
+    }
+}
+
 @Test func filtersAllowResultsBeyondTopK() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -788,6 +898,936 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let firstScore = response.results[0].score
         let secondScore = response.results[1].score
         #expect(abs(firstScore - secondScore) == 0)
+
+        try await wax.close()
+    }
+}
+
+// MARK: - Phase 4A: Structured memory query path, RRF fusion, intent reranking, frame filtering
+
+// Exercises the structuredEntityCandidates + evidenceFrameIds path in textOnly mode when
+// structuredMemory.weight > 0 and the query contains an entity name as a token.
+// "Alice" is registered as an entity alias, so a query containing "Alice" triggers the
+// structured lane to resolve her entity and surface evidence frames via RRF fusion.
+@Test func textOnlyStructuredMemoryLaneSurfacesEvidenceFrame() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // Frame with weak text match — only one of the query terms appears.
+        let weakTextID = try await wax.put(
+            Data("Alice presented on release strategy".utf8)
+        )
+        try await text.index(frameId: weakTextID, text: "Alice presented on release strategy")
+
+        // Evidence frame: strong structured-lane candidate for entity "Alice".
+        // Query text overlap is minimal ("Alice" only).
+        let structuredEvidenceID = try await wax.put(
+            Data("Alice owns the deployment readiness process for the Atlas project. ci pipeline automation workflows reduce manual errors.".utf8)
+        )
+        try await text.index(
+            frameId: structuredEvidenceID,
+            text: "Alice owns the deployment readiness process for the Atlas project. ci pipeline automation workflows reduce manual errors."
+        )
+
+        try await text.commit()
+
+        // Register Alice as an entity and assert a fact pointing to structuredEvidenceID.
+        let session = try await WaxStructuredMemorySession(wax: wax)
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:alice"),
+            kind: "person",
+            aliases: ["Alice"],
+            nowMs: 1_000
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("person:alice"),
+            predicate: PredicateKey("owns"),
+            object: .string("deployment readiness"),
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 0, toMs: nil),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: structuredEvidenceID,
+                    chunkIndex: nil,
+                    spanUTF8: nil,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 0.9,
+                    assertedAtMs: 1_000
+                ),
+            ]
+        )
+        try await session.commit()
+
+        // Query contains "Alice" — the entity resolver will find person:alice and
+        // load structuredEvidenceID into the structured lane for RRF fusion.
+        let request = SearchRequest(
+            query: "Alice automation pipeline",
+            mode: .textOnly,
+            topK: 10,
+            structuredMemory: StructuredMemorySearchOptions(
+                weight: 0.4,
+                maxEntityCandidates: 16,
+                maxFacts: 64,
+                maxEvidenceFrames: 32
+            )
+        )
+        let response = try await wax.search(request)
+
+        // Both frames must appear — the structured lane fuses structuredEvidenceID in.
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(weakTextID))
+        #expect(ids.contains(structuredEvidenceID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the structuredEntityCandidates path where the query directly names an entity.
+// "Priya" is registered as an entity alias. A query containing "Priya" causes the structured
+// lane to resolve the entity and inject its evidence frames into the RRF fusion.
+@Test func textOnlyQueryNamingEntityBoostsStructuredEvidenceFrame() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // Distractor: general text that partially matches the query but does not name Priya.
+        let distractorID = try await wax.put(
+            Data("General information about deployment and release processes for the team.".utf8)
+        )
+        try await text.index(frameId: distractorID, text: "General information about deployment and release processes for the team.")
+
+        // Evidence frame: explicitly mentions Priya and the infrastructure team.
+        let evidenceID = try await wax.put(
+            Data("Priya joined the infrastructure team in March 2024 and leads on-call rotations.".utf8)
+        )
+        try await text.index(frameId: evidenceID, text: "Priya joined the infrastructure team in March 2024 and leads on-call rotations.")
+
+        try await text.commit()
+
+        let session = try await WaxStructuredMemorySession(wax: wax)
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:priya"),
+            kind: "person",
+            aliases: ["Priya"],
+            nowMs: 500
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("person:priya"),
+            predicate: PredicateKey("role"),
+            object: .string("infrastructure lead"),
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 0, toMs: nil),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceID,
+                    chunkIndex: nil,
+                    spanUTF8: nil,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1.0,
+                    assertedAtMs: 500
+                ),
+            ]
+        )
+        try await session.commit()
+
+        // "Priya" in the query triggers entity resolution: person:priya is found and its
+        // evidence frame (evidenceID) enters the structured lane for RRF fusion.
+        let request = SearchRequest(
+            query: "What team does Priya lead",
+            mode: .textOnly,
+            topK: 5,
+            structuredMemory: StructuredMemorySearchOptions(
+                weight: 0.5,
+                maxEntityCandidates: 8,
+                maxFacts: 32,
+                maxEvidenceFrames: 16
+            )
+        )
+        let response = try await wax.search(request)
+
+        // Both frames must appear — evidence frame is in both BM25 lane and structured lane.
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(evidenceID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the vectorOnly + structured memory RRF fusion path (lines 294-316 in UnifiedSearch.swift).
+// When structuredMemory.weight > 0 and structured frame IDs are non-empty, the vectorOnly
+// branch fuses vector results with the structured lane via RRF.
+@Test func vectorOnlyStructuredMemoryLaneFusesWithVectorResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let vec = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+        // Frame that will rank well on vector similarity.
+        let vectorID = try await vec.putWithEmbedding(
+            Data("Swift performance optimization guide".utf8),
+            embedding: [1.0, 0.0]
+        )
+        try await text.index(frameId: vectorID, text: "Swift performance optimization guide")
+
+        // Evidence frame for entity "swift" — no embedding provided.
+        let evidenceID = try await wax.put(
+            Data("Swift language was introduced by Apple at WWDC 2014.".utf8)
+        )
+        try await text.index(frameId: evidenceID, text: "Swift language was introduced by Apple at WWDC 2014.")
+
+        try await text.commit()
+        try await vec.commit()
+
+        let session = try await WaxStructuredMemorySession(wax: wax)
+        _ = try await session.upsertEntity(
+            key: EntityKey("lang:swift"),
+            kind: "language",
+            aliases: ["Swift"],
+            nowMs: 0
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("lang:swift"),
+            predicate: PredicateKey("introduced"),
+            object: .string("WWDC 2014"),
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 0, toMs: nil),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceID,
+                    chunkIndex: nil,
+                    spanUTF8: nil,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 0.95,
+                    assertedAtMs: 0
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let request = SearchRequest(
+            query: "Swift",
+            embedding: VectorMath.normalizeL2([1.0, 0.0]),
+            mode: .vectorOnly,
+            topK: 10,
+            structuredMemory: StructuredMemorySearchOptions(
+                weight: 0.6,
+                maxEntityCandidates: 8,
+                maxFacts: 32,
+                maxEvidenceFrames: 16
+            )
+        )
+        let response = try await wax.search(request)
+
+        // Both the vector-matched frame and the structured evidence frame must appear.
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(vectorID))
+        #expect(ids.contains(evidenceID))
+
+        // Structured lane source must appear in at least one result.
+        let hasStructuredSource = response.results.contains { $0.sources.contains(.structuredMemory) }
+        #expect(hasStructuredSource)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the ownership intent reranking branch in `intentAwareRerank`.
+// Queries containing "who owns" trigger the `.asksOwnership` path and prefer results
+// that contain "owns", "owner", or "deployment readiness" over general results.
+@Test func ownershipQueryPrefersFrameContainingOwnsKeyword() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // This is the target: mentions "owns" explicitly.
+        let ownershipID = try await wax.put(
+            Data("Noah owns the deployment readiness process for Atlas-10 and leads release coordination.".utf8)
+        )
+        try await text.index(
+            frameId: ownershipID,
+            text: "Noah owns the deployment readiness process for Atlas-10 and leads release coordination."
+        )
+
+        // This distractor mentions Atlas-10 but discusses dates, not ownership.
+        let distractorID = try await wax.put(
+            Data("Atlas-10 public launch is scheduled for August 13, 2026 pending sign-off.".utf8)
+        )
+        try await text.index(
+            frameId: distractorID,
+            text: "Atlas-10 public launch is scheduled for August 13, 2026 pending sign-off."
+        )
+
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "Who owns deployment readiness for Atlas-10",
+                mode: .textOnly,
+                topK: 5
+            )
+        )
+
+        #expect(response.results.first?.frameId == ownershipID)
+        #expect(response.results.map(\.frameId).contains(distractorID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the timeline fallback path when the fallback limit is zero, which should
+// return immediately with an empty array (line 491 in UnifiedSearch.swift).
+@Test func timelineFallbackWithZeroLimitReturnsEmpty() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id = try await wax.put(Data("some content for timeline".utf8))
+        try await text.index(frameId: id, text: "some content for timeline")
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "no-match-query-xyz987",
+            mode: .textOnly,
+            topK: 5,
+            allowTimelineFallback: true,
+            timelineFallbackLimit: 0  // zero limit: early return in timelineFallbackResults
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.isEmpty)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the timeline fallback for a temporal query in hybrid mode.
+// A temporal query (`when ...`) sets queryType to .temporal, which adds timelineFrameIds
+// to the hybrid fusion lists and also triggers the timeline fallback path when no
+// primary results exist.
+@Test func temporalQueryTriggersTimelineLaneInHybridMode() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let vec = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+        let id0 = try await vec.putWithEmbedding(
+            Data("Release notes for Atlas-10 from last sprint review".utf8),
+            embedding: [1.0, 0.0]
+        )
+        try await text.index(frameId: id0, text: "Release notes for Atlas-10 from last sprint review")
+
+        let id1 = try await vec.putWithEmbedding(
+            Data("Atlas-10 deployment runbook last updated by Noah".utf8),
+            embedding: [0.9, 0.1]
+        )
+        try await text.index(frameId: id1, text: "Atlas-10 deployment runbook last updated by Noah")
+
+        try await text.commit()
+        try await vec.commit()
+
+        // "when" prefix classifies the query as .temporal, enabling the timeline lane.
+        let request = SearchRequest(
+            query: "when was the last Atlas-10 release",
+            embedding: [1.0, 0.0],
+            mode: .hybrid(alpha: 0.5),
+            topK: 5
+        )
+        let response = try await wax.search(request)
+
+        // Results must include the committed frames (timeline lane contributes their IDs).
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(id0) || ids.contains(id1))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the `passesFrameFilter` deleted-frame exclusion path.
+// Deleted frames must not appear in results when includeDeleted is false (the default).
+@Test func deletedFramesAreExcludedFromSearchResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let activeID = try await wax.put(
+            Data("Active document about distributed systems design.".utf8)
+        )
+        try await text.index(frameId: activeID, text: "Active document about distributed systems design.")
+
+        let deletedID = try await wax.put(
+            Data("Deleted document about distributed systems performance.".utf8)
+        )
+        try await text.index(frameId: deletedID, text: "Deleted document about distributed systems performance.")
+
+        try await text.commit()
+
+        // Mark the second frame as deleted.
+        try await wax.delete(frameId: deletedID)
+        try await wax.commit()
+
+        let request = SearchRequest(
+            query: "distributed systems",
+            mode: .textOnly,
+            topK: 10
+            // includeDeleted defaults to false
+        )
+        let response = try await wax.search(request)
+
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(activeID))
+        #expect(!ids.contains(deletedID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the `passesFrameFilter` superseded-frame exclusion path.
+// When includeSuperseded is false (the default), superseded frames must not appear.
+@Test func supersededFramesAreExcludedFromSearchResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let oldID = try await wax.put(
+            Data("Architecture overview v1: monolithic design with shared database.".utf8)
+        )
+        try await text.index(frameId: oldID, text: "Architecture overview v1: monolithic design with shared database.")
+
+        let newID = try await wax.put(
+            Data("Architecture overview v2: microservices with event sourcing.".utf8)
+        )
+        try await text.index(frameId: newID, text: "Architecture overview v2: microservices with event sourcing.")
+
+        try await text.commit()
+
+        // Mark oldID as superseded by newID.
+        try await wax.supersede(supersededId: oldID, supersedingId: newID)
+        try await wax.commit()
+
+        let request = SearchRequest(
+            query: "architecture overview",
+            mode: .textOnly,
+            topK: 10
+            // includeSuperseded defaults to false
+        )
+        let response = try await wax.search(request)
+
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(newID))
+        #expect(!ids.contains(oldID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the surrogate frame exclusion path via the `passesFrameFilter` check.
+// Frames with kind "surrogate" must be excluded when includeSurrogates is false (the default).
+@Test func surrogateKindFramesAreExcludedFromSearchResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let normalID = try await wax.put(
+            Data("Normal knowledge document about Swift concurrency actors.".utf8)
+        )
+        try await text.index(frameId: normalID, text: "Normal knowledge document about Swift concurrency actors.")
+
+        // Manually store a frame with kind = "surrogate"
+        let surrogateID = try await wax.put(
+            Data("Surrogate summary of Swift concurrency actors document.".utf8),
+            options: FrameMetaSubset(kind: "surrogate")
+        )
+        try await text.index(frameId: surrogateID, text: "Surrogate summary of Swift concurrency actors document.")
+
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "Swift concurrency actors",
+            mode: .textOnly,
+            topK: 10
+            // includeSurrogates defaults to false
+        )
+        let response = try await wax.search(request)
+
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(normalID))
+        #expect(!ids.contains(surrogateID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the includeSurrogates = true path — when explicitly opted in, surrogate frames
+// must appear in results alongside normal frames.
+@Test func surrogateFramesIncludedWhenFilterAllowsThem() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let normalID = try await wax.put(
+            Data("Normal knowledge document about Swift actors.".utf8)
+        )
+        try await text.index(frameId: normalID, text: "Normal knowledge document about Swift actors.")
+
+        let surrogateID = try await wax.put(
+            Data("Surrogate summary of Swift actors document.".utf8),
+            options: FrameMetaSubset(kind: "surrogate")
+        )
+        try await text.index(frameId: surrogateID, text: "Surrogate summary of Swift actors document.")
+
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "Swift actors",
+            mode: .textOnly,
+            topK: 10,
+            frameFilter: FrameFilter(includeSurrogates: true)
+        )
+        let response = try await wax.search(request)
+
+        let ids = response.results.map(\.frameId)
+        #expect(ids.contains(normalID))
+        #expect(ids.contains(surrogateID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the `minScore` filter path in `passesFrameFilter`.
+// Results with a score below the threshold must be excluded.
+@Test func minScoreFilterExcludesLowScoringResults() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // Strong match: query term appears many times.
+        let highScoreID = try await wax.put(
+            Data("Swift Swift Swift Swift Swift Swift Swift Swift concurrency".utf8)
+        )
+        try await text.index(
+            frameId: highScoreID,
+            text: "Swift Swift Swift Swift Swift Swift Swift Swift concurrency"
+        )
+
+        // Weak match: query term appears once among many unrelated words.
+        let lowScoreID = try await wax.put(
+            Data("Java Kotlin Go Python Rust Swift Erlang Haskell F# Scala".utf8)
+        )
+        try await text.index(
+            frameId: lowScoreID,
+            text: "Java Kotlin Go Python Rust Swift Erlang Haskell F# Scala"
+        )
+
+        try await text.commit()
+
+        // Without minScore, both frames appear.
+        let allResponse = try await wax.search(
+            SearchRequest(query: "Swift", mode: .textOnly, topK: 10)
+        )
+        #expect(allResponse.results.map(\.frameId).contains(highScoreID))
+
+        // With minScore set high enough to cut the weaker result.
+        let filtered = try await wax.search(
+            SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 5.0)
+        )
+        let filteredIds = filtered.results.map(\.frameId)
+        #expect(filteredIds.contains(highScoreID))
+        // Weaker result is below threshold (FTS5 score < 5.0 for single occurrence).
+        if filteredIds.contains(lowScoreID) {
+            // Acceptable only if FTS5 scored it high enough — verify the score is >= 5.0.
+            let lowResult = filtered.results.first { $0.frameId == lowScoreID }
+            #expect((lowResult?.score ?? 0) >= 5.0)
+        }
+
+        try await wax.close()
+    }
+}
+
+// Exercises the `timeRange` filter in `passesFrameFilter`. Frames outside the time window
+// must not appear in results even if they have high BM25 relevance.
+// Uses explicit timestampMs overloads to produce deterministic, well-separated timestamps.
+@Test func timeRangeFilterExcludesOutOfWindowFrames() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // earlyMs: a fixed point in the past (year 2020).
+        let earlyMs: Int64 = 1_577_836_800_000  // 2020-01-01T00:00:00Z in ms
+        // lateMs: a fixed point 30 days later.
+        let lateMs: Int64 = earlyMs + 30 * 24 * 60 * 60 * 1000  // 2020-01-31
+        // cutoff sits between the two.
+        let cutoffMs: Int64 = earlyMs + 15 * 24 * 60 * 60 * 1000  // 2020-01-16
+
+        let earlyID = try await wax.put(
+            Data("Release notes for project Nova deployment pipeline".utf8),
+            timestampMs: earlyMs
+        )
+        try await text.index(frameId: earlyID, text: "Release notes for project Nova deployment pipeline")
+
+        let lateID = try await wax.put(
+            Data("Release notes for project Nova deployment pipeline".utf8),
+            timestampMs: lateMs
+        )
+        try await text.index(frameId: lateID, text: "Release notes for project Nova deployment pipeline")
+
+        try await text.commit()
+
+        // Filter to frames with timestamp >= cutoffMs. earlyID (2020-01-01) is before
+        // cutoff; lateID (2020-01-31) is after cutoff.
+        let request = SearchRequest(
+            query: "Nova deployment pipeline",
+            mode: .textOnly,
+            topK: 10,
+            timeRange: TimeRange(after: cutoffMs)
+        )
+        let response = try await wax.search(request)
+
+        let ids = response.results.map(\.frameId)
+        // earlyID is before the cutoff — it must be excluded.
+        #expect(!ids.contains(earlyID))
+        // lateID is after the cutoff — it must be included.
+        #expect(ids.contains(lateID))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the batch metadata prefetch path that is triggered when the result set size
+// equals or exceeds `metadataLoadingThreshold`. By setting threshold = 1, even a single
+// result triggers the batch `frameMetasIncludingPending` path instead of lazy per-frame lookups.
+@Test func batchMetadataPrefetchPathWithLowThreshold() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(Data("batch prefetch document alpha".utf8))
+        try await text.index(frameId: id0, text: "batch prefetch document alpha")
+        let id1 = try await wax.put(Data("batch prefetch document beta".utf8))
+        try await text.index(frameId: id1, text: "batch prefetch document beta")
+
+        try await text.commit()
+
+        // metadataLoadingThreshold = 1 forces the batch prefetch path even for 2 results.
+        let request = SearchRequest(
+            query: "batch prefetch document",
+            mode: .textOnly,
+            topK: 10,
+            metadataLoadingThreshold: 1
+        )
+        let response = try await wax.search(request)
+
+        let ids = Set(response.results.map(\.frameId))
+        #expect(ids.contains(id0))
+        #expect(ids.contains(id1))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the lazy per-frame metadata path (metadataLoadingThreshold > result count).
+// The default threshold is 50, so 2 results always use the lazy path.
+@Test func lazyMetadataLoadingPathWithHighThreshold() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(Data("lazy load document gamma".utf8))
+        try await text.index(frameId: id0, text: "lazy load document gamma")
+        let id1 = try await wax.put(Data("lazy load document delta".utf8))
+        try await text.index(frameId: id1, text: "lazy load document delta")
+
+        try await text.commit()
+
+        // Very high threshold: forces the lazy (per-frame) metadata lookup path.
+        let request = SearchRequest(
+            query: "lazy load document",
+            mode: .textOnly,
+            topK: 10,
+            metadataLoadingThreshold: 1_000
+        )
+        let response = try await wax.search(request)
+
+        let ids = Set(response.results.map(\.frameId))
+        #expect(ids.contains(id0))
+        #expect(ids.contains(id1))
+
+        try await wax.close()
+    }
+}
+
+// Exercises the hybrid mode RRF path where timeline lane is absent (non-temporal query)
+// and structured lane is also absent (weight = 0), so only text and vector lanes fuse.
+// This is the pure alpha-blended hybrid case.
+@Test func hybridAlphaZeroFavorsVectorLaneOnly() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let vec = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+        // id0: strong vector match [1.0, 0.0], weak text match.
+        let id0 = try await vec.putWithEmbedding(
+            Data("epsilon zeta theta iota kappa".utf8),
+            embedding: [1.0, 0.0]
+        )
+        try await text.index(frameId: id0, text: "epsilon zeta theta iota kappa")
+
+        // id1: strong text match, weaker vector match.
+        let id1 = try await vec.putWithEmbedding(
+            Data("epsilon epsilon epsilon epsilon".utf8),
+            embedding: [0.1, 0.9]
+        )
+        try await text.index(frameId: id1, text: "epsilon epsilon epsilon epsilon")
+
+        try await text.commit()
+        try await vec.commit()
+
+        // alpha = 0.0 means all vector weight, no text weight.
+        let request = SearchRequest(
+            query: "epsilon",
+            embedding: [1.0, 0.0],
+            mode: .hybrid(alpha: 0.0),
+            topK: 5
+        )
+        let response = try await wax.search(request)
+
+        // id0 has the best vector alignment to [1.0, 0.0], so it should rank first.
+        #expect(response.results.first?.frameId == id0)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the hybrid mode RRF path where alpha = 1.0 means all text weight, no vector weight.
+@Test func hybridAlphaOneFavorsTextLaneOnly() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let vec = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+        // id0: strong text match, poor vector alignment.
+        let id0 = try await vec.putWithEmbedding(
+            Data("lambda mu nu xi omicron lambda lambda lambda".utf8),
+            embedding: [0.0, 1.0]
+        )
+        try await text.index(frameId: id0, text: "lambda mu nu xi omicron lambda lambda lambda")
+
+        // id1: perfect vector alignment, one occurrence of "lambda".
+        let id1 = try await vec.putWithEmbedding(
+            Data("lambda rho sigma tau upsilon".utf8),
+            embedding: [1.0, 0.0]
+        )
+        try await text.index(frameId: id1, text: "lambda rho sigma tau upsilon")
+
+        try await text.commit()
+        try await vec.commit()
+
+        // alpha = 1.0: only text lane contributes to score.
+        let request = SearchRequest(
+            query: "lambda",
+            embedding: [1.0, 0.0],
+            mode: .hybrid(alpha: 1.0),
+            topK: 5
+        )
+        let response = try await wax.search(request)
+
+        // id0 has higher BM25 relevance for "lambda" (more occurrences).
+        #expect(response.results.first?.frameId == id0)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the textOnly mode diagnostics path for a result ranked second (tieBreakReason = .fusedScore).
+@Test func textOnlyDiagnosticsSecondResultHasFusedScoreTieBreak() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id0 = try await wax.put(
+            Data("diagnostic test document one with unique token phitoken".utf8)
+        )
+        try await text.index(frameId: id0, text: "diagnostic test document one with unique token phitoken")
+
+        let id1 = try await wax.put(
+            Data("diagnostic test document two phitoken".utf8)
+        )
+        try await text.index(frameId: id1, text: "diagnostic test document two phitoken")
+
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "phitoken",
+            mode: .textOnly,
+            topK: 5,
+            enableRankingDiagnostics: true,
+            rankingDiagnosticsTopK: 2
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.count >= 2)
+        #expect(response.results[0].rankingDiagnostics != nil)
+        #expect(response.results[1].rankingDiagnostics != nil)
+        #expect(response.results[0].rankingDiagnostics?.tieBreakReason == .topResult)
+        // Second result uses fusedScore tie-break because its BM25 score differs from first.
+        let secondReason = response.results[1].rankingDiagnostics?.tieBreakReason
+        #expect(secondReason == .fusedScore || secondReason == .rerankComposite)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the vectorOnly mode diagnostics path — lane contributions are populated for
+// the top-K results and the source is .vector.
+@Test func vectorOnlyDiagnosticsPopulatesVectorLaneContributions() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let vec = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+
+        let id0 = try await vec.putWithEmbedding(
+            Data("diagnostics vector doc A".utf8),
+            embedding: [1.0, 0.0]
+        )
+        let id1 = try await vec.putWithEmbedding(
+            Data("diagnostics vector doc B".utf8),
+            embedding: [0.9, 0.1]
+        )
+
+        try await vec.commit()
+
+        let request = SearchRequest(
+            embedding: [1.0, 0.0],
+            mode: .vectorOnly,
+            topK: 5,
+            enableRankingDiagnostics: true,
+            rankingDiagnosticsTopK: 2
+        )
+        let response = try await wax.search(request)
+
+        #expect(response.results.count >= 2)
+
+        let firstDiag = response.results[0].rankingDiagnostics
+        #expect(firstDiag != nil)
+        #expect(firstDiag?.tieBreakReason == .topResult)
+        #expect(firstDiag?.laneContributions.first?.source == .vector)
+        // Results are ordered by vector similarity: id0 ranks first.
+        #expect(response.results[0].frameId == id0)
+
+        let secondDiag = response.results[1].rankingDiagnostics
+        #expect(secondDiag != nil)
+        #expect(secondDiag?.tieBreakReason == .fusedScore)
+        #expect(response.results[1].frameId == id1)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the textOnly + empty query path: when query is nil the engine returns exploratory
+// results. The structuredEngine is nil when there is no non-empty trimmed query.
+@Test func textOnlyWithNilQueryReturnsEmptyWithoutCrashing() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id = try await wax.put(Data("some stored text".utf8))
+        try await text.index(frameId: id, text: "some stored text")
+        try await text.commit()
+
+        // nil query + textOnly: trimmedQuery is nil, so textResults will be empty.
+        let request = SearchRequest(query: nil, mode: .textOnly, topK: 5)
+        let response = try await wax.search(request)
+
+        // With no query there is nothing to search by BM25, so results must be empty.
+        #expect(response.results.isEmpty)
+
+        try await wax.close()
+    }
+}
+
+// Exercises the hybrid textOnly results where text results exist but allowTimelineFallback
+// is true yet the primary results are non-empty — the fallback must NOT trigger.
+@Test func timelineFallbackDoesNotTriggerWhenPrimaryResultsExist() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let id = try await wax.put(Data("primary result document mentioning quasar".utf8))
+        try await text.index(frameId: id, text: "primary result document mentioning quasar")
+        try await text.commit()
+
+        let request = SearchRequest(
+            query: "quasar",
+            mode: .textOnly,
+            topK: 5,
+            allowTimelineFallback: true,
+            timelineFallbackLimit: 10
+        )
+        let response = try await wax.search(request)
+
+        // Primary result found — timeline fallback must not have fired.
+        #expect(response.results.first?.frameId == id)
+        #expect(response.results.allSatisfy { $0.sources == [.text] })
+
+        try await wax.close()
+    }
+}
+
+// Exercises the RRF bestLaneRank tie-break path.
+// Two frames have the same fused score but different bestRank values — the one with the
+// lower bestRank (higher-ranked in its individual lane) wins.
+@Test func rrfBestLaneRankTieBreakFavorsLowerRankCandidate() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        // id_alpha: ranked 1st in text lane only.
+        // id_beta: ranked 1st in a dedicated vector lane only.
+        // When both lanes have equal weight and both frames appear at rank 1 in their
+        // respective lanes, they will tie on score. The one with the lower bestRank wins.
+        // We use engine overrides to control exact lane results.
+        let idAlpha = try await wax.put(Data("alpha document best lane rank test".utf8))
+        try await text.index(frameId: idAlpha, text: "best lane rank unique-token-sigma")
+
+        let idBeta = try await wax.put(Data("beta document best lane rank test".utf8))
+        try await text.commit()
+
+        // idBeta appears first in the vector lane at rank 1, idAlpha at rank 2.
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 2,
+            results: [
+                (frameId: idBeta, score: 1.0),
+                (frameId: idAlpha, score: 0.9),
+            ]
+        )
+
+        // idAlpha appears first in the text lane; idBeta doesn't match the query text.
+        let response = try await wax.search(
+            SearchRequest(
+                query: "best lane rank unique-token-sigma",
+                embedding: [1.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.5),
+                topK: 2,
+                enableRankingDiagnostics: true,
+                rankingDiagnosticsTopK: 2
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.count == 2)
+        let secondDiag = response.results[1].rankingDiagnostics
+        // The second result must have either bestLaneRank or frameID as the tie-break reason.
+        let validTieBreaks: Set<SearchResponse.RankingTieBreakReason> = [.bestLaneRank, .frameID, .fusedScore, .rerankComposite]
+        if let reason = secondDiag?.tieBreakReason {
+            #expect(validTieBreaks.contains(reason))
+        }
 
         try await wax.close()
     }

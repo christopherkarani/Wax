@@ -303,7 +303,17 @@ public actor Wax {
         try await commitLocked()
         walAutoCommitCount &+= 1
         guard wal.canAppendBatch(payloadSizes: payloadSizes) else {
-            let requested = UInt64(payloadSizes.reduce(0, +))
+            var requested: UInt64 = 0
+            for payloadSize in payloadSizes {
+                guard payloadSize >= 0 else {
+                    throw WaxError.io("WAL payload size must be non-negative")
+                }
+                let (next, overflowed) = requested.addingReportingOverflow(UInt64(payloadSize))
+                if overflowed {
+                    throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+                }
+                requested = next
+            }
             throw WaxError.capacityExceeded(limit: wal.walSize, requested: requested)
         }
     }
@@ -405,7 +415,7 @@ public actor Wax {
         }
 
         let io = BlockingIOExecutor(label: options.ioQueueLabel, qos: options.ioQueueQos)
-        let created = try await io.run { () throws -> (
+        let created = try await io.runWrite { () throws -> (
             file: FDFile,
             lock: FileLock,
             header: MV2SHeaderPage,
@@ -532,7 +542,7 @@ public actor Wax {
     /// - the highest `payloadOffset + payloadLength` referenced by the pending WAL (to preserve uncommitted puts).
     public static func open(at url: URL, repair: Bool, options: WaxOptions = .init()) async throws -> Wax {
         let io = BlockingIOExecutor(label: options.ioQueueLabel, qos: options.ioQueueQos)
-        let opened = try await io.run { () throws -> (
+        let opened = try await io.runWrite { () throws -> (
             file: FDFile,
             lock: FileLock,
             header: MV2SHeaderPage,
@@ -751,6 +761,17 @@ public actor Wax {
         Int64(Date().timeIntervalSince1970 * 1000)
     }
 
+    private func checkedFramePayloadLength(_ byteCount: Int, field: String) throws -> UInt64 {
+        guard byteCount >= 0 else {
+            throw WaxError.io("\(field) payload length must be non-negative")
+        }
+        let length = UInt64(byteCount)
+        guard length <= Constants.maxFramePayloadBytes else {
+            throw WaxError.capacityExceeded(limit: Constants.maxFramePayloadBytes, requested: length)
+        }
+        return length
+    }
+
     private func putLocked(
         _ content: Data,
         options: FrameMetaSubset,
@@ -764,6 +785,7 @@ public actor Wax {
         }
         let frameId = committedCount + UInt64(pendingPutCount)
 
+        let canonicalLength = try checkedFramePayloadLength(content.count, field: "canonical")
         let canonicalChecksum = SHA256Checksum.digest(content)
 
         var storedBytes = content
@@ -782,6 +804,7 @@ public actor Wax {
         }
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
+        let storedLength = try checkedFramePayloadLength(storedBytes.count, field: "stored")
 
         let payloadOffset = dataEnd
         let entry = WALEntry.putFrame(
@@ -790,9 +813,9 @@ public actor Wax {
                 timestampMs: timestampMs ?? currentTimestampMs(),
                 options: options,
                 payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
+                payloadLength: storedLength,
                 canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
+                canonicalLength: canonicalLength,
                 canonicalChecksum: canonicalChecksum,
                 storedChecksum: storedChecksum
             )
@@ -802,12 +825,16 @@ public actor Wax {
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
-        let seq = try await io.run {
+        let seq = try await io.runWrite {
             try file.writeAll(bytesToStore, at: payloadOffset)
             return try wal.append(payload: payload)
         }
 
-        dataEnd += UInt64(storedBytes.count)
+        let (nextDataEnd, overflowed) = dataEnd.addingReportingOverflow(storedLength)
+        if overflowed {
+            throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+        }
+        dataEnd = nextDataEnd
         pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
         dirty = true
         return frameId
@@ -851,17 +878,19 @@ public actor Wax {
         // Pre-compute all frame data outside I/O
         struct PreparedFrame {
             let storedBytes: Data
+            let storedLength: UInt64
             let putFrame: PutFrame
         }
 
         var prepared: [PreparedFrame] = []
         prepared.reserveCapacity(contents.count)
-        var totalPayloadSize = 0
+        var totalPayloadSize: UInt64 = 0
         var walPayloadSizes: [Int] = []
         walPayloadSizes.reserveCapacity(contents.count)
 
         for (index, content) in contents.enumerated() {
             let frameId = baseFrameId + UInt64(index)
+            let canonicalLength = try checkedFramePayloadLength(content.count, field: "canonical")
             let canonicalChecksum = SHA256Checksum.digest(content)
 
             var storedBytes = content
@@ -880,6 +909,7 @@ public actor Wax {
             }
 
             let storedChecksum = SHA256Checksum.digest(storedBytes)
+            let storedLength = try checkedFramePayloadLength(storedBytes.count, field: "stored")
             let timestampMsForFrame = timestampsMs?[index] ?? defaultTimestampMs
 
             let putFrame = PutFrame(
@@ -887,9 +917,9 @@ public actor Wax {
                 timestampMs: timestampMsForFrame,
                 options: options[index],
                 payloadOffset: 0,
-                payloadLength: UInt64(storedBytes.count),
+                payloadLength: storedLength,
                 canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
+                canonicalLength: canonicalLength,
                 canonicalChecksum: canonicalChecksum,
                 storedChecksum: storedChecksum
             )
@@ -897,10 +927,15 @@ public actor Wax {
 
             prepared.append(PreparedFrame(
                 storedBytes: storedBytes,
+                storedLength: storedLength,
                 putFrame: putFrame
             ))
             walPayloadSizes.append(walPayloadSize)
-            totalPayloadSize += storedBytes.count
+            let (nextPayloadSize, overflowed) = totalPayloadSize.addingReportingOverflow(storedLength)
+            if overflowed {
+                throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+            }
+            totalPayloadSize = nextPayloadSize
         }
 
         func appendSequentially() async throws -> [UInt64] {
@@ -918,11 +953,15 @@ public actor Wax {
 
                 let payloadOffset = putFrame.payloadOffset
                 let storedBytes = frame.storedBytes
-                let seq = try await io.run {
+                let seq = try await io.runWrite {
                     try file.writeAll(storedBytes, at: payloadOffset)
                     return try wal.append(payload: walPayload)
                 }
-                dataEnd += UInt64(frame.storedBytes.count)
+                let (nextDataEnd, overflowed) = dataEnd.addingReportingOverflow(frame.storedLength)
+                if overflowed {
+                    throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+                }
+                dataEnd = nextDataEnd
                 pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
                 frameIds.append(putFrame.frameId)
             }
@@ -934,7 +973,7 @@ public actor Wax {
         // fall back to per-entry appends (allows mid-batch commits).
         do {
             try await ensureWalCapacityLocked(payloadSizes: walPayloadSizes)
-        } catch let WaxError.capacityExceeded(_, _) {
+        } catch WaxError.capacityExceeded(_, _) {
             return try await appendSequentially()
         }
 
@@ -957,15 +996,27 @@ public actor Wax {
             let walPayload = try WALEntryCodec.encode(entry)
             walPayloadsArray.append(walPayload)
             entries.append(entry)
-            currentOffset += UInt64(frame.storedBytes.count)
+            let (nextOffset, overflowed) = currentOffset.addingReportingOverflow(frame.storedLength)
+            if overflowed {
+                throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+            }
+            currentOffset = nextOffset
         }
 
         // Single mapped write for payloads
         let payloadLength = totalPayloadSize
         if payloadLength > 0 {
-            try await io.run {
-                try file.ensureSize(atLeast: startOffset + UInt64(payloadLength))
-                let region = try file.mapWritable(length: payloadLength, at: startOffset)
+            guard payloadLength <= UInt64(Int.max) else {
+                throw WaxError.capacityExceeded(limit: UInt64(Int.max), requested: payloadLength)
+            }
+            let payloadLengthInt = Int(payloadLength)
+            let (requiredSize, overflowed) = startOffset.addingReportingOverflow(payloadLength)
+            if overflowed {
+                throw WaxError.capacityExceeded(limit: UInt64.max, requested: UInt64.max)
+            }
+            try await io.runWrite {
+                try file.ensureSize(atLeast: requiredSize)
+                let region = try file.mapWritable(length: payloadLengthInt, at: startOffset)
                 defer { region.close() }
 
                 var cursor = 0
@@ -984,7 +1035,7 @@ public actor Wax {
 
         // Batch append WAL entries
         let walPayloads = walPayloadsArray
-        let sequences = try await io.run {
+        let sequences = try await io.runWrite {
             try wal.appendBatch(payloads: walPayloads)
         }
 
@@ -1109,7 +1160,7 @@ public actor Wax {
             let wal = self.wal
             let walPayloadsArray = walPayloads  // Copy to let binding
 
-            let sequences = try await io.run {
+            let sequences = try await io.runWrite {
                 try wal.appendBatch(payloads: walPayloadsArray)
             }
 
@@ -1158,7 +1209,7 @@ public actor Wax {
             let payload = try WALEntryCodec.encode(entry)
             try await ensureWalCapacityLocked(payloadSize: payload.count)
             let wal = self.wal
-            let seq = try await io.run {
+            let seq = try await io.runWrite {
                 try wal.append(payload: payload)
             }
             pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
@@ -1192,7 +1243,7 @@ public actor Wax {
             let payload = try WALEntryCodec.encode(entry)
             try await ensureWalCapacityLocked(payloadSize: payload.count)
             let wal = self.wal
-            let seq = try await io.run {
+            let seq = try await io.runWrite {
                 try wal.append(payload: payload)
             }
             pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
@@ -1229,7 +1280,7 @@ public actor Wax {
             let payload = try WALEntryCodec.encode(entry)
             try await ensureWalCapacityLocked(payloadSize: payload.count)
             let wal = self.wal
-            let seq = try await io.run {
+            let seq = try await io.runWrite {
                 try wal.append(payload: payload)
             }
             pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
@@ -1412,9 +1463,11 @@ public actor Wax {
             }
         }
 
-        let appliedWalSeq = try applyPendingMutationsIntoTOC()
+        var committedTOC = toc
+        let appliedWalSeq = try applyPendingMutationsIntoTOC(into: &committedTOC)
 
         let file = self.file
+        var nextDataEnd = dataEnd
         if let staged = stagedLexIndex {
             let byteCount = staged.bytes.count
             guard byteCount <= Constants.maxBlobBytes else {
@@ -1423,22 +1476,22 @@ public actor Wax {
                     requested: UInt64(byteCount)
                 )
             }
-            let lexOffset = dataEnd
-            try await io.run {
+            let lexOffset = nextDataEnd
+            try await io.runWrite {
                 try file.writeAll(staged.bytes, at: lexOffset)
             }
             let lexLength = UInt64(byteCount)
-            dataEnd += lexLength
+            nextDataEnd += lexLength
 
             let checksum = SHA256Checksum.digest(staged.bytes)
-            toc.indexes.lex = LexIndexManifest(
+            committedTOC.indexes.lex = LexIndexManifest(
                 docCount: staged.docCount,
                 bytesOffset: lexOffset,
                 bytesLength: lexLength,
                 checksum: checksum,
                 version: staged.version
             )
-            let segmentId = nextSegmentId()
+            let segmentId = nextSegmentId(in: committedTOC)
             let entry = SegmentCatalogEntry(
                 segmentId: segmentId,
                 bytesOffset: lexOffset,
@@ -1447,7 +1500,7 @@ public actor Wax {
                 compression: .none,
                 kind: .lex
             )
-            toc.segmentCatalog.entries.append(entry)
+            committedTOC.segmentCatalog.entries.append(entry)
         }
 
         if let staged = stagedVecIndex {
@@ -1459,15 +1512,15 @@ public actor Wax {
                 )
             }
 
-            let vecOffset = dataEnd
-            try await io.run {
+            let vecOffset = nextDataEnd
+            try await io.runWrite {
                 try file.writeAll(staged.bytes, at: vecOffset)
             }
             let vecLength = UInt64(byteCount)
-            dataEnd += vecLength
+            nextDataEnd += vecLength
 
             let checksum = SHA256Checksum.digest(staged.bytes)
-            toc.indexes.vec = VecIndexManifest(
+            committedTOC.indexes.vec = VecIndexManifest(
                 vectorCount: staged.vectorCount,
                 dimension: staged.dimension,
                 bytesOffset: vecOffset,
@@ -1475,7 +1528,7 @@ public actor Wax {
                 checksum: checksum,
                 similarity: staged.similarity
             )
-            let segmentId = nextSegmentId()
+            let segmentId = nextSegmentId(in: committedTOC)
             let entry = SegmentCatalogEntry(
                 segmentId: segmentId,
                 bytesOffset: vecOffset,
@@ -1484,15 +1537,16 @@ public actor Wax {
                 compression: .none,
                 kind: .vec
             )
-            toc.segmentCatalog.entries.append(entry)
+            committedTOC.segmentCatalog.entries.append(entry)
         }
 
-        let tocBytes = try toc.encode()
+        let tocBytes = try committedTOC.encode()
         let tocChecksum = tocBytes.suffix(32)
-        toc.tocChecksum = Data(tocChecksum)
+        committedTOC.tocChecksum = Data(tocChecksum)
 
-        let tocOffset = dataEnd
+        let tocOffset = nextDataEnd
         let footerOffset = tocOffset + UInt64(tocBytes.count)
+        let previousHeaderPage = header
         let footer = MV2SFooter(
             tocLen: UInt64(tocBytes.count),
             tocHash: Data(tocChecksum),
@@ -1517,20 +1571,20 @@ public actor Wax {
         )
 
         if walReplayStateSnapshotEnabled {
-            try await persistReplaySnapshotOnSelectedHeaderPage(replaySnapshot)
+            try await persistReplaySnapshotOnInactiveHeaderPage(replaySnapshot)
         }
 
-        try await io.run {
+        try await io.runWrite {
             try file.writeAll(tocBytes, at: tocOffset)
         }
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
 
-        try await io.run {
+        try await io.runWrite {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }
         Self.maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
 
-        try await io.run {
+        try await io.runWrite {
             try file.fsync()
         }
         Self.maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
@@ -1546,11 +1600,18 @@ public actor Wax {
 
         try await writeHeaderPage(header)
         Self.maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
-        try await io.run {
+        if walReplayStateSnapshotEnabled {
+            try await mirrorReplaySnapshotOnInactiveHeaderPage(
+                replaySnapshot,
+                template: previousHeaderPage
+            )
+        }
+        try await io.runWrite {
             try file.fsync()
             wal.recordCheckpoint()
         }
 
+        toc = committedTOC
         pendingMutations.removeAll()
         stagedLexIndex = nil
         stagedVecIndex = nil
@@ -1818,6 +1879,9 @@ public actor Wax {
         guard let canonicalLength = frame.canonicalLength else {
             throw WaxError.invalidToc(reason: "missing canonical_length for frame \(frame.id)")
         }
+        guard canonicalLength <= Constants.maxFramePayloadBytes else {
+            throw WaxError.io("canonical payload exceeds maxFramePayloadBytes: \(canonicalLength)")
+        }
         guard canonicalLength <= UInt64(Int.max) else {
             throw WaxError.io("canonical payload too large: \(canonicalLength)")
         }
@@ -1839,6 +1903,9 @@ public actor Wax {
 
     private func readStoredPayloadFromMeta(_ frame: FrameMeta) async throws -> Data {
         if frame.payloadLength == 0 { return Data() }
+        guard frame.payloadLength <= Constants.maxFramePayloadBytes else {
+            throw WaxError.io("payload exceeds maxFramePayloadBytes: \(frame.payloadLength)")
+        }
         guard frame.payloadLength <= UInt64(Int.max) else {
             throw WaxError.io("payload too large: \(frame.payloadLength)")
         }
@@ -2180,8 +2247,14 @@ public actor Wax {
                     guard let canonicalLength = frame.canonicalLength else {
                         throw WaxError.invalidToc(reason: "frame \(frame.id) missing canonical_length")
                     }
+                    guard canonicalLength <= Constants.maxFramePayloadBytes else {
+                        throw WaxError.io("canonical payload exceeds maxFramePayloadBytes: \(canonicalLength)")
+                    }
                     guard canonicalLength <= UInt64(Int.max) else {
                         throw WaxError.io("canonical payload too large: \(canonicalLength)")
+                    }
+                    guard frame.payloadLength <= Constants.maxFramePayloadBytes else {
+                        throw WaxError.io("payload exceeds maxFramePayloadBytes: \(frame.payloadLength)")
                     }
                     guard frame.payloadLength <= UInt64(Int.max) else {
                         throw WaxError.io("payload too large: \(frame.payloadLength)")
@@ -2244,7 +2317,7 @@ public actor Wax {
             let lock = self.lock
             var closeError: Error?
             do {
-                try await io.run {
+                try await io.runWrite {
                     try file.close()
                     try lock.release()
                 }
@@ -2262,6 +2335,20 @@ public actor Wax {
         }
     }
 
+    // MARK: - Testing Hooks
+
+    func _installFileFaultPlanForTests(_ plan: FDFileFaultPlan) async {
+        await withWriteLock {
+            file.installFaultPlan(plan)
+        }
+    }
+
+    func _clearFileFaultPlanForTests() async {
+        await withWriteLock {
+            file.clearFaultPlan()
+        }
+    }
+
     // MARK: - Internal helpers
 
     private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
@@ -2275,13 +2362,30 @@ public actor Wax {
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
 
-    private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: MV2SHeaderPage.WALReplaySnapshot) async throws {
+    private func persistReplaySnapshotOnInactiveHeaderPage(_ snapshot: MV2SHeaderPage.WALReplaySnapshot) async throws {
+        let nextIndex = selectedHeaderPageIndex == 0 ? 1 : 0
         var snapshotPage = header
+        snapshotPage.headerPageGeneration &+= 1
         snapshotPage.walReplaySnapshot = snapshot
-        let offset = UInt64(selectedHeaderPageIndex) * Constants.headerPageSize
+        let offset = UInt64(nextIndex) * Constants.headerPageSize
         let file = self.file
         let encoded = try snapshotPage.encodeWithChecksum()
-        try await io.run {
+        try await io.runWrite {
+            try file.writeAll(encoded, at: offset)
+        }
+    }
+
+    private func mirrorReplaySnapshotOnInactiveHeaderPage(
+        _ snapshot: MV2SHeaderPage.WALReplaySnapshot,
+        template: MV2SHeaderPage
+    ) async throws {
+        let inactiveIndex = selectedHeaderPageIndex == 0 ? 1 : 0
+        var snapshotPage = template
+        snapshotPage.walReplaySnapshot = snapshot
+        let offset = UInt64(inactiveIndex) * Constants.headerPageSize
+        let file = self.file
+        let encoded = try snapshotPage.encodeWithChecksum()
+        try await io.runWrite {
             try file.writeAll(encoded, at: offset)
         }
     }
@@ -2290,13 +2394,13 @@ public actor Wax {
         let nextIndex = selectedHeaderPageIndex == 0 ? 1 : 0
         let offset = UInt64(nextIndex) * Constants.headerPageSize
         let file = self.file
-        try await io.run {
+        try await io.runWrite {
             try file.writeAll(try page.encodeWithChecksum(), at: offset)
         }
         selectedHeaderPageIndex = nextIndex
     }
 
-    private func applyPendingMutationsIntoTOC() throws -> UInt64 {
+    private func applyPendingMutationsIntoTOC(into toc: inout MV2STOC) throws -> UInt64 {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
@@ -2409,7 +2513,7 @@ public actor Wax {
         var pendingEmbeddingMaxSequence: UInt64?
     }
 
-    private func nextSegmentId() -> UInt64 {
+    private func nextSegmentId(in toc: MV2STOC) -> UInt64 {
         if let maxId = toc.segmentCatalog.entries.map({ $0.segmentId }).max() {
             return maxId &+ 1
         }

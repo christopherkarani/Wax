@@ -400,8 +400,8 @@ enum WaxMCPTools {
         if let predicateRaw {
             try validatePredicateKey(predicateRaw, field: "predicate")
         }
-        let subject = subjectRaw.map(EntityKey.init)
-        let predicate = predicateRaw.map(PredicateKey.init)
+        let subject = subjectRaw.map { EntityKey($0) }
+        let predicate = predicateRaw.map { PredicateKey($0) }
         let asOf = try args.optionalInt64("as_of") ?? Int64.max
         let limit = try args.optionalInt("limit") ?? 20
         guard limit > 0, limit <= maxGraphLimit else {
@@ -831,9 +831,11 @@ enum WaxMCPTools {
             content: [
                 .text(json),
                 .resource(
-                    uri: "wax://tool/result",
-                    mimeType: "application/json",
-                    text: json
+                    resource: .text(
+                        json,
+                        uri: "wax://tool/result",
+                        mimeType: "application/json"
+                    )
                 ),
             ],
             isError: false
@@ -850,9 +852,11 @@ enum WaxMCPTools {
             content: [
                 .text(message),
                 .resource(
-                    uri: "wax://errors/\(code)",
-                    mimeType: "application/json",
-                    text: json
+                    resource: .text(
+                        json,
+                        uri: "wax://errors/\(code)",
+                        mimeType: "application/json"
+                    )
                 ),
             ],
             isError: true

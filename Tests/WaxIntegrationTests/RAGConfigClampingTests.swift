@@ -224,6 +224,11 @@ func videoRAGConfigClampsNonFiniteHybridAlpha() {
         hybridAlpha: -Float.infinity
     )
     #expect(infConfig.hybridAlpha == 0.0)
+
+    let posInfConfig = VideoRAGConfig(
+        hybridAlpha: Float.infinity
+    )
+    #expect(posInfConfig.hybridAlpha == 1.0)
 }
 
 @Test

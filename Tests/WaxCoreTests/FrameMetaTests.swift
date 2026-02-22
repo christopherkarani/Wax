@@ -185,3 +185,47 @@ private func encodeFrameMetaBytes(
         }
     }
 }
+
+@Test func frameMetaRejectsOversizedPayloadLength() throws {
+    let bytes = try encodeFrameMetaBytes(
+        payloadLength: Constants.maxFramePayloadBytes + 1,
+        canonicalEncoding: 0,
+        canonicalLength: nil,
+        storedChecksum: Data(repeating: 0xBB, count: 32),
+        role: 0,
+        status: 0
+    )
+
+    do {
+        var decoder = try BinaryDecoder(data: bytes)
+        _ = try FrameMeta.decode(from: &decoder)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .invalidToc(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("payload_length"))
+    }
+}
+
+@Test func frameMetaRejectsOversizedCanonicalLength() throws {
+    let bytes = try encodeFrameMetaBytes(
+        payloadLength: 64,
+        canonicalEncoding: 1,
+        canonicalLength: Constants.maxFramePayloadBytes + 1,
+        storedChecksum: Data(repeating: 0xBB, count: 32)
+    )
+
+    do {
+        var decoder = try BinaryDecoder(data: bytes)
+        _ = try FrameMeta.decode(from: &decoder)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .invalidToc(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("canonical_length"))
+    }
+}

@@ -12,6 +12,16 @@ public enum WALEntryCodec {
         var encoder = BinaryEncoder()
         switch entry {
         case .putFrame(let put):
+            guard put.payloadLength <= Constants.maxFramePayloadBytes else {
+                throw WaxError.encodingError(
+                    reason: "payload_length \(put.payloadLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+                )
+            }
+            guard put.canonicalLength <= Constants.maxFramePayloadBytes else {
+                throw WaxError.encodingError(
+                    reason: "canonical_length \(put.canonicalLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+                )
+            }
             encoder.encode(OpCode.putFrame.rawValue)
             encoder.encode(put.frameId)
             encoder.encode(put.timestampMs)
@@ -76,6 +86,18 @@ public enum WALEntryCodec {
                     throw WaxError.walCorruption(offset: offset, reason: "invalid canonical_encoding \(canonicalEncodingRaw)")
                 }
                 let canonicalLength = try decoder.decode(UInt64.self)
+                guard payloadLength <= Constants.maxFramePayloadBytes else {
+                    throw WaxError.walCorruption(
+                        offset: offset,
+                        reason: "payload_length \(payloadLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+                    )
+                }
+                guard canonicalLength <= Constants.maxFramePayloadBytes else {
+                    throw WaxError.walCorruption(
+                        offset: offset,
+                        reason: "canonical_length \(canonicalLength) exceeds limit \(Constants.maxFramePayloadBytes)"
+                    )
+                }
                 let canonicalChecksum = try decoder.decodeFixedBytes(count: WALRecord.checksumSize)
                 let storedChecksum = try decoder.decodeFixedBytes(count: WALRecord.checksumSize)
                 try decoder.finalize()
