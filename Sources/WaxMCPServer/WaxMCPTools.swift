@@ -108,8 +108,8 @@ enum WaxMCPTools {
         try await memory.remember(content, metadata: metadata)
         let after = await memory.runtimeStats()
 
-        let totalBefore = before.frameCount &+ before.pendingFrames
-        let totalAfter = after.frameCount &+ after.pendingFrames
+        let totalBefore = before.frameCount + before.pendingFrames
+        let totalAfter = after.frameCount + after.pendingFrames
         let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
 
         return jsonResult([
@@ -132,6 +132,10 @@ enum WaxMCPTools {
         }
         let sessionFilter = try parseSessionFrameFilter(args)
 
+        // NOTE: MemoryOrchestrator.recall() does not accept a limit parameter.
+        // The orchestrator returns its own default item count, and we truncate
+        // post-hoc. If the orchestrator's default is lower than the requested
+        // limit, the user may receive fewer items than expected.
         let context = try await memory.recall(query: query, frameFilter: sessionFilter)
         let selected = context.items.prefix(limit)
         var lines: [String] = []
@@ -845,7 +849,7 @@ enum WaxMCPTools {
             "code": value(from: code),
             "message": value(from: message),
         ]
-        let json = encodeJSON(payload) ?? #"{"code":"\#(code)","message":"\#(message)"}"#
+        let json = encodeJSON(payload) ?? "{\"code\":\(escapeJSONString(code)),\"message\":\(escapeJSONString(message))}"
         return CallTool.Result(
             content: [
                 .text(message),
@@ -866,6 +870,24 @@ enum WaxMCPTools {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Wraps a string in double-quotes with proper JSON escaping.
+    /// Used as a fallback when `encodeJSON` fails.
+    private static func escapeJSONString(_ value: String) -> String {
+        var result = "\""
+        for char in value {
+            switch char {
+            case "\"": result += "\\\""
+            case "\\": result += "\\\\"
+            case "\n": result += "\\n"
+            case "\r": result += "\\r"
+            case "\t": result += "\\t"
+            default: result.append(char)
+            }
+        }
+        result += "\""
+        return result
     }
 
     private static func value(from value: UInt64) -> Value {
@@ -890,7 +912,9 @@ enum WaxMCPTools {
         if value.isFinite {
             return .double(value)
         }
-        return .null
+        // JSON has no representation for NaN/Infinity; return a descriptive
+        // string so consumers can see the original value instead of a silent null.
+        return .string(String(value))
     }
 
     private static func value(from value: String) -> Value {
