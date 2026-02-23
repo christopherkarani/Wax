@@ -69,7 +69,7 @@ Wax packages all of it into one self-contained file:
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "1.0.0")
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: ".1.7")
 ]
 ```
 
