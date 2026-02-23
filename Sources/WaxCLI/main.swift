@@ -37,12 +37,6 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.mv2s"
 
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
-
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
 
@@ -56,8 +50,6 @@ extension WaxCLI.MCP {
             let resolvedServer = try Pathing.resolvePath(serverPath)
             var arguments = [
                 "--store-path", Pathing.expandPath(storePath),
-                "--video-store-path", Pathing.expandPath(videoStorePath),
-                "--photo-store-path", Pathing.expandPath(photoStorePath),
             ]
             if noEmbedder {
                 arguments.append("--no-embedder")
@@ -100,12 +92,6 @@ extension WaxCLI.MCP {
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.mv2s"
-
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -168,8 +154,6 @@ extension WaxCLI.MCP {
                 "mcp", "serve",
                 "--server-path", resolvedServer,
                 "--store-path", Pathing.expandPath(storePath),
-                "--video-store-path", Pathing.expandPath(videoStorePath),
-                "--photo-store-path", Pathing.expandPath(photoStorePath),
             ])
             if noEmbedder {
                 addArguments.append("--no-embedder")
@@ -227,12 +211,6 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.mv2s"
 
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
-
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
 
@@ -277,8 +255,6 @@ extension WaxCLI.MCP {
 
                 var arguments = [
                     "--store-path", Pathing.expandPath(storePath),
-                    "--video-store-path", Pathing.expandPath(videoStorePath),
-                    "--photo-store-path", Pathing.expandPath(photoStorePath),
                 ]
                 if noEmbedder {
                     arguments.append("--no-embedder")
@@ -504,7 +480,7 @@ private func ensureToolExists(_ tool: String) throws {
     }
 }
 
-private struct CLIError: LocalizedError {
+struct CLIError: LocalizedError {
     let message: String
 
     init(_ message: String) {
