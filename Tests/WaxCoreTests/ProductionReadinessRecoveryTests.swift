@@ -23,7 +23,7 @@ func abruptTerminationMidWriteRecoversPendingPutFrame() async throws {
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -102,7 +102,7 @@ func walReplayAppliesDeleteAndPutInSequence() async throws {
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -212,7 +212,7 @@ func abruptTerminationMidCompactionRecoversFromPreviousValidFooter() async throw
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -261,7 +261,7 @@ func corruptedTocVersionFailsFastWithExplicitInvalidTocError() async throws {
     withUnsafeBytes(of: &tocVersion) { bytes in
         corruptedToc.replaceSubrange(0..<8, with: bytes)
     }
-    let checksum = MV2STOC.computeChecksum(for: corruptedToc)
+    let checksum = WaxTOC.computeChecksum(for: corruptedToc)
     corruptedToc.replaceSubrange((corruptedToc.count - 32)..<corruptedToc.count, with: checksum)
 
     var corruptedFooter = footerSlice.footer

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MV2SHeaderPage: Equatable, Sendable {
+public struct WaxHeaderPage: Equatable, Sendable {
     public static let size: Int = Int(Constants.headerPageSize)
     public static let magic: Data = Constants.magic
 
@@ -161,7 +161,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         return page
     }
 
-    public static func decodeWithChecksumValidation(from data: Data) throws -> MV2SHeaderPage {
+    public static func decodeWithChecksumValidation(from data: Data) throws -> WaxHeaderPage {
         let page = try decodeUnchecked(from: data)
 
         let stored = data.subdata(in: Self.headerChecksumOffset..<(Self.headerChecksumOffset + Self.headerChecksumCount))
@@ -175,7 +175,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
         return validated
     }
 
-    public static func decodeUnchecked(from data: Data) throws -> MV2SHeaderPage {
+    public static func decodeUnchecked(from data: Data) throws -> WaxHeaderPage {
         guard data.count == Self.size else {
             throw WaxError.invalidHeader(reason: "header page must be \(Self.size) bytes (got \(data.count))")
         }
@@ -279,7 +279,7 @@ public struct MV2SHeaderPage: Equatable, Sendable {
             throw WaxError.invalidHeader(reason: "footer_offset must be >= wal_offset + wal_size")
         }
 
-        return MV2SHeaderPage(
+        return WaxHeaderPage(
             formatVersion: formatVersion,
             specMajor: specMajor,
             specMinor: specMinor,
@@ -306,9 +306,9 @@ public struct MV2SHeaderPage: Equatable, Sendable {
     ///
     /// Selection:
     /// - If both are valid, choose the one with higher `header_page_generation` (tie-breaker: page A).
-    public static func selectValidPage(pageA: Data, pageB: Data) -> (page: MV2SHeaderPage, pageIndex: Int)? {
-        let a = try? MV2SHeaderPage.decodeWithChecksumValidation(from: pageA)
-        let b = try? MV2SHeaderPage.decodeWithChecksumValidation(from: pageB)
+    public static func selectValidPage(pageA: Data, pageB: Data) -> (page: WaxHeaderPage, pageIndex: Int)? {
+        let a = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageA)
+        let b = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageB)
 
         switch (a, b) {
         case (nil, nil):

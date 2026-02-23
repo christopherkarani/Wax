@@ -30,14 +30,14 @@ struct WaxDemoMultiFooter {
         let tocOffset1 = walOffset + walSize
         let footerOffset1 = tocOffset1 + UInt64(tocBytes1.count)
 
-        let footer1 = MV2SFooter(
+        let footer1 = WaxFooter(
             tocLen: UInt64(tocBytes1.count),
             tocHash: tocChecksum1,
             generation: 1,
             walCommittedSeq: 1
         )
 
-        let header = MV2SHeaderPage(
+        let header = WaxHeaderPage(
             headerPageGeneration: 1,
             fileGeneration: 1,
             footerOffset: footerOffset1,
@@ -61,10 +61,10 @@ struct WaxDemoMultiFooter {
         let tocBytes2 = buildTocBytes(body: tocBody2)
         let tocChecksum2 = Data(tocBytes2.suffix(32))
 
-        let tocOffset2 = footerOffset1 + UInt64(MV2SFooter.size) + 64
+        let tocOffset2 = footerOffset1 + UInt64(WaxFooter.size) + 64
         let footerOffset2 = tocOffset2 + UInt64(tocBytes2.count)
 
-        let footer2 = MV2SFooter(
+        let footer2 = WaxFooter(
             tocLen: UInt64(tocBytes2.count),
             tocHash: tocChecksum2,
             generation: 2,

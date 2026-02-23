@@ -16,7 +16,7 @@ import Testing
 
     let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
     let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-    let selected = try #require(MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+    let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
     let header = selected.page
 
     let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)

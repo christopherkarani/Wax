@@ -30,14 +30,14 @@ struct WaxDemoCorruptTOC {
         let tocOffset = walOffset + walSize
         let footerOffset = tocOffset + UInt64(tocBytes.count)
 
-        let footer = MV2SFooter(
+        let footer = WaxFooter(
             tocLen: UInt64(tocBytes.count),
             tocHash: tocChecksum,
             generation: 1,
             walCommittedSeq: 1
         )
 
-        let header = MV2SHeaderPage(
+        let header = WaxHeaderPage(
             headerPageGeneration: 1,
             fileGeneration: 1,
             footerOffset: footerOffset,

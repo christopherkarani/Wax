@@ -10,7 +10,7 @@ import Testing
     let walOffset = Constants.walOffset
     let dataStart = walOffset + walSize
 
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.frames = [
         FrameMeta(
             id: 0,
@@ -29,7 +29,7 @@ import Testing
 
     let tocOffset = dataStart
     let footerOffset = tocOffset + UInt64(tocBytes.count)
-    let footer = MV2SFooter(
+    let footer = WaxFooter(
         tocLen: UInt64(tocBytes.count),
         tocHash: tocChecksum,
         generation: 0,
@@ -43,7 +43,7 @@ import Testing
     try file.writeAll(try footer.encode(), at: footerOffset)
     try file.fsync()
 
-    let headerA = MV2SHeaderPage(
+    let headerA = WaxHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 0,
         footerOffset: footerOffset,
@@ -82,7 +82,7 @@ import Testing
     let walOffset = Constants.walOffset
     let dataStart = walOffset + walSize
 
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.indexes.lex = LexIndexManifest(
         docCount: 0,
         bytesOffset: dataStart,
@@ -97,7 +97,7 @@ import Testing
 
     let tocOffset = dataStart
     let footerOffset = tocOffset + UInt64(tocBytes.count)
-    let footer = MV2SFooter(
+    let footer = WaxFooter(
         tocLen: UInt64(tocBytes.count),
         tocHash: tocChecksum,
         generation: 0,
@@ -111,7 +111,7 @@ import Testing
     try file.writeAll(try footer.encode(), at: footerOffset)
     try file.fsync()
 
-    let headerA = MV2SHeaderPage(
+    let headerA = WaxHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 0,
         footerOffset: footerOffset,
