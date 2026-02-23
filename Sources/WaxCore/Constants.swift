@@ -1,14 +1,14 @@
 import Foundation
 
-/// Constants matching `MV2S_SPEC.md` (MV2S v1.0).
+/// Constants matching `WAX_SPEC.md` (Wax v1.0).
 public enum Constants {
     // MARK: - Magic Bytes
 
-    /// Header magic: "MV2S" (4 bytes)
-    public static let magic = Data([0x4D, 0x56, 0x32, 0x53])
+    /// Header magic: "WAX1" (4 bytes)
+    public static let magic = Data([0x57, 0x41, 0x58, 0x31])
 
-    /// Footer magic: "MV2SFOOT" (8 bytes)
-    public static let footerMagic = Data([0x4D, 0x56, 0x32, 0x53, 0x46, 0x4F, 0x4F, 0x54])
+    /// Footer magic: "WAX1FOOT" (8 bytes)
+    public static let footerMagic = Data([0x57, 0x41, 0x58, 0x31, 0x46, 0x4F, 0x4F, 0x54])
 
     // MARK: - Version
 
@@ -32,7 +32,7 @@ public enum Constants {
     /// Footer size: 64 bytes (v1 footer includes `wal_committed_seq`)
     public static let footerSize: UInt64 = 64
 
-    /// WAL record header size: 48 bytes (fixed for MV2S v1).
+    /// WAL record header size: 48 bytes (fixed for Wax v1).
     public static let walRecordHeaderSize: UInt64 = 48
 
     // MARK: - File Layout (v1 defaults)
