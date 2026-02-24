@@ -222,12 +222,16 @@ private func writeStderr(_ message: String) {
 
 WaxMCPServerCommand.main()
 #else
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 let message = "WaxMCPServer requires the MCPServer trait. Build with --traits MCPServer.\n"
 if let data = message.data(using: .utf8) {
     FileHandle.standardError.write(data)
 }
-Darwin.exit(EXIT_FAILURE)
+exit(EXIT_FAILURE)
 #endif

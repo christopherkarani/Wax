@@ -1,5 +1,9 @@
 import ArgumentParser
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Dispatch
 
 protocol AsyncParsableCommand: ParsableCommand, Sendable {
@@ -12,10 +16,10 @@ extension AsyncParsableCommand {
         Task(priority: .userInitiated) {
             do {
                 try await command.runAsync()
-                Darwin.exit(EXIT_SUCCESS)
+                exit(EXIT_SUCCESS)
             } catch {
                 writeStderr("Error: \(error.localizedDescription)")
-                Darwin.exit(EXIT_FAILURE)
+                exit(EXIT_FAILURE)
             }
         }
         dispatchMain()
