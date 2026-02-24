@@ -181,7 +181,7 @@ Issues and PRs are welcome. If you're building something with Wax, open a Discus
 
 ## License
 
-MIT © [Christopher Karani](https://github.com/christopherkarani)
+Apache 2.0 © [Christopher Karani](https://github.com/christopherkarani)
 
 ---
 
