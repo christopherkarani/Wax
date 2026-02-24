@@ -46,7 +46,7 @@ private func usage() -> String {
       swift run WaxDemo [--keep] [--corrupt-header-b] [--append-corrupt-footer]
 
     Flags:
-      --keep                 Keep the generated .mv2s file (prints its path)
+      --keep                 Keep the generated .wax file (prints its path)
       --corrupt-header-b     Corrupt header page B to prove A/B selection behavior
       --append-corrupt-footer Append a trailing corrupt footer to prove scanner finds prior valid one
     """
@@ -62,7 +62,7 @@ struct WaxDemoMain {
     private static func run(options: DemoOptions) throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-demo-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
 
         defer {
             if !options.keepFile {

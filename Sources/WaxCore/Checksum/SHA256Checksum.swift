@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 
-/// Simple SHA-256 wrapper used by MV2S codecs.
+/// Simple SHA-256 wrapper used by Wax codecs.
 public struct SHA256Checksum {
     private var hasher: SHA256 = .init()
 

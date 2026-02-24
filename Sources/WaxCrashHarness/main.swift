@@ -92,7 +92,7 @@ struct WaxCrashHarness {
     private static func runScenario(_ scenario: CrashScenario) async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-crash-harness-\(scenario.rawValue)-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
         defer { try? FileManager.default.removeItem(at: url) }
 
         let seedFrameId = try await seedStore(at: url)

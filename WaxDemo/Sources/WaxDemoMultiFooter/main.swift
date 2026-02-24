@@ -6,7 +6,7 @@ struct WaxDemoMultiFooter {
     static func main() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-demo-multi-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
 
         defer { try? FileManager.default.removeItem(at: url) }
 

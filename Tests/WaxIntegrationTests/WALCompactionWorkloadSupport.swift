@@ -312,7 +312,7 @@ enum WALCompactionHarness {
     ) async throws -> WALCompactionWorkloadResult {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wal-compaction-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
         defer { try? FileManager.default.removeItem(at: url) }
 
         let clock = ContinuousClock()

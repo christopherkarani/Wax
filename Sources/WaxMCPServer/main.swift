@@ -17,14 +17,8 @@ struct WaxMCPServerCommand: ParsableCommand {
         abstract: "Stdio MCP server exposing Wax memory and multimodal RAG tools."
     )
 
-    @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.mv2s)")
-    var storePath = "~/.wax/memory.mv2s"
-
-    @Option(name: .customLong("video-store-path"), help: "Path to the Wax video store (.mv2s)")
-    var videoStorePath = "~/.wax/video.mv2s"
-
-    @Option(name: .customLong("photo-store-path"), help: "Path to the Wax photo store (.mv2s)")
-    var photoStorePath = "~/.wax/photo.mv2s"
+    @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.wax)")
+    var storePath = "~/.wax/memory.wax"
 
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
@@ -59,7 +53,6 @@ struct WaxMCPServerCommand: ParsableCommand {
         }
 
         let memoryURL = try resolveStoreURL(storePath)
-        let videoURL = try resolveStoreURL(videoStorePath)
 
         let embedder = try await buildEmbedder()
 
@@ -91,26 +84,12 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedder: embedder
         )
 
-        let multimodal = embedder.map(MultimodalAdapter.init(base:))
-
-        let video: VideoRAGOrchestrator? = await {
-            guard let multimodal else { return nil }
-            do {
-                return try await VideoRAGOrchestrator(storeURL: videoURL, embedder: multimodal)
-            } catch {
-                writeStderr("Video RAG disabled: \(error)")
-                return nil
-            }
-        }()
-
-        // PhotoRAGOrchestrator is not initialized: the photo tools are stubbed
-        // (they unconditionally return "Requires Soju") so constructing the
-        // orchestrator would waste startup time and memory.
-        let photo: PhotoRAGOrchestrator? = nil
-
+        // SYNC: keep this version in sync with npm/waxmcp/package.json "version"
+        let serverVersion = "0.1.2"
+        writeStderr("WaxMCPServer v\(serverVersion) starting")
         let server = Server(
             name: "WaxMCPServer",
-            version: "0.1.0",
+            version: serverVersion,
             instructions: "Use these tools to store, search, and recall Wax memory.",
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
@@ -118,8 +97,6 @@ struct WaxMCPServerCommand: ParsableCommand {
         await WaxMCPTools.register(
             on: server,
             memory: memory,
-            video: video,
-            photo: photo,
             structuredMemoryEnabled: memoryConfig.enableStructuredMemory
         )
 
@@ -158,14 +135,6 @@ struct WaxMCPServerCommand: ParsableCommand {
                 runError = error
             } else {
                 writeStderr("Memory close error: \(error)")
-            }
-        }
-
-        if let video {
-            do {
-                try await video.flush()
-            } catch {
-                writeStderr("Video flush error: \(error)")
             }
         }
 

@@ -6,7 +6,21 @@ struct WaxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax",
         abstract: "Wax developer CLI",
-        subcommands: [MCP.self]
+        subcommands: [
+            RememberCommand.self,
+            RecallCommand.self,
+            SearchCommand.self,
+            StatsCommand.self,
+            FlushCommand.self,
+            HandoffCommand.self,
+            HandoffLatestCommand.self,
+            EntityUpsertCommand.self,
+            EntityResolveCommand.self,
+            FactAssertCommand.self,
+            FactRetractCommand.self,
+            FactsQueryCommand.self,
+            MCP.self,
+        ]
     )
 }
 
@@ -35,7 +49,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -91,7 +105,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -209,7 +223,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?

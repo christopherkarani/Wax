@@ -90,37 +90,58 @@ public actor WaxSession {
         self.mode = mode
         self.config = config
 
+        var acquiredWriterLeaseId: UUID?
         if case .readWrite(let policy) = mode {
             let lease = try await wax.acquireWriterLease(policy: Self.mapWriterPolicy(policy))
-            self.writerLeaseId = lease
+            acquiredWriterLeaseId = lease
         }
+        self.writerLeaseId = acquiredWriterLeaseId
 
-        if config.enableTextSearch || config.enableStructuredMemory {
-            self.textEngine = try await FTS5SearchEngine.load(from: wax)
-        } else {
-            self.textEngine = nil
-        }
-
-        if config.enableVectorSearch {
-            let dimensions = try await Self.resolveVectorDimensions(for: wax, config: config)
-            if let dimensions {
-                let loadedVectorEngine = try await Self.loadVectorEngine(
-                    wax: wax,
-                    metric: config.vectorMetric,
-                    dimensions: dimensions,
-                    preference: config.vectorEnginePreference
-                )
-                self.concreteVectorEngine = loadedVectorEngine
-                self.vectorEngine = loadedVectorEngine.erased
-                let snapshot = await wax.pendingEmbeddingMutations(since: nil)
-                self.lastPendingEmbeddingSequence = snapshot.latestSequence
+        do {
+            let resolvedTextEngine: FTS5SearchEngine? = if config.enableTextSearch || config.enableStructuredMemory {
+                try await FTS5SearchEngine.load(from: wax)
             } else {
-                self.concreteVectorEngine = nil
-                self.vectorEngine = nil
+                nil
             }
-        } else {
-            self.concreteVectorEngine = nil
-            self.vectorEngine = nil
+
+            let resolvedConcreteVectorEngine: ConcreteVectorEngine?
+            let resolvedVectorEngine: (any VectorSearchEngine)?
+            let resolvedLastPendingEmbeddingSequence: UInt64?
+
+            if config.enableVectorSearch {
+                let dimensions = try await Self.resolveVectorDimensions(for: wax, config: config)
+                if let dimensions {
+                    let loadedVectorEngine = try await Self.loadVectorEngine(
+                        wax: wax,
+                        metric: config.vectorMetric,
+                        dimensions: dimensions,
+                        preference: config.vectorEnginePreference
+                    )
+                    resolvedConcreteVectorEngine = loadedVectorEngine
+                    resolvedVectorEngine = loadedVectorEngine.erased
+                    let snapshot = await wax.pendingEmbeddingMutations(since: nil)
+                    resolvedLastPendingEmbeddingSequence = snapshot.latestSequence
+                } else {
+                    resolvedConcreteVectorEngine = nil
+                    resolvedVectorEngine = nil
+                    resolvedLastPendingEmbeddingSequence = nil
+                }
+            } else {
+                resolvedConcreteVectorEngine = nil
+                resolvedVectorEngine = nil
+                resolvedLastPendingEmbeddingSequence = nil
+            }
+
+            self.textEngine = resolvedTextEngine
+            self.concreteVectorEngine = resolvedConcreteVectorEngine
+            self.vectorEngine = resolvedVectorEngine
+            self.lastPendingEmbeddingSequence = resolvedLastPendingEmbeddingSequence
+        } catch {
+            if let leaseId = acquiredWriterLeaseId {
+                await wax.releaseWriterLease(leaseId)
+                self.writerLeaseId = nil
+            }
+            throw error
         }
     }
 

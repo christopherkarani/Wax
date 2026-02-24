@@ -1,7 +1,7 @@
 import ArgumentParser
 
 struct StoreOptions: ParsableArguments {
-    @Option(name: .customLong("store-path"), help: "Path to Wax memory store (.mv2s)")
+    @Option(name: .customLong("store-path"), help: "Path to Wax memory store (.wax)")
     var storePath: String = StoreSession.defaultStorePath
 
     @Flag(name: .customLong("no-embedder"), help: "Disable MiniLM embedder (text-only search)")

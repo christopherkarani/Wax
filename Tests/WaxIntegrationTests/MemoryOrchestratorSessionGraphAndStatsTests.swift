@@ -86,5 +86,5 @@ func accessStatsPersistAsSystemFrameWhenEnabled() async throws {
 private func temporaryStoreURL(prefix: String) -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
-        .appendingPathExtension("mv2s")
+        .appendingPathExtension("wax")
 }

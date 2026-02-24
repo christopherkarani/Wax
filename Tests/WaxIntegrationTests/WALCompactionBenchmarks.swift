@@ -121,9 +121,9 @@ final class WALCompactionBenchmarks: XCTestCase {
 
         let baseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wal-replay-snapshot-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
-        let disabledURL = baseURL.deletingPathExtension().appendingPathExtension("disabled.mv2s")
-        let enabledURL = baseURL.deletingPathExtension().appendingPathExtension("enabled.mv2s")
+            .appendingPathExtension("wax")
+        let disabledURL = baseURL.deletingPathExtension().appendingPathExtension("disabled.wax")
+        let enabledURL = baseURL.deletingPathExtension().appendingPathExtension("enabled.wax")
         defer {
             try? FileManager.default.removeItem(at: baseURL)
             try? FileManager.default.removeItem(at: disabledURL)

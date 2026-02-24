@@ -51,7 +51,7 @@ import WaxVectorSearch
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let session = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
     _ = try await session.putWithEmbedding(Data("First".utf8), embedding: [1.0, 0.0])
@@ -81,7 +81,7 @@ import WaxVectorSearch
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let session = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
 
@@ -106,7 +106,7 @@ import WaxVectorSearch
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let session = try await wax.enableVectorSearch(metric: .cosine, dimensions: 2, preference: .metalPreferred)
 
@@ -130,12 +130,12 @@ import WaxVectorSearch
     try await wax.close()
 }
 
-@Test func mv2sVecIndexPersistsAndReopens() async throws {
+@Test func waxVecIndexPersistsAndReopens() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let session = try await wax.enableVectorSearch(dimensions: 4)
 
@@ -169,7 +169,7 @@ import WaxVectorSearch
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let frameId = try await wax.put(Data("payload".utf8))
     try await wax.putEmbedding(frameId: frameId, vector: [1.0, 0.0, 0.0, 0.0])
@@ -199,7 +199,7 @@ import WaxVectorSearch
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     do {
         let wax = try await Wax.create(at: fileURL)
         let session = try await wax.enableVectorSearch(dimensions: 4)
@@ -224,7 +224,7 @@ import WaxVectorSearch
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let frameId = try await wax.put(Data("payload".utf8))
     try await wax.putEmbedding(frameId: frameId, vector: [1.0, 0.0, 0.0, 0.0])
@@ -255,7 +255,7 @@ import WaxVectorSearch
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
 
     let frame0 = try await wax.put(Data("first".utf8))
@@ -298,7 +298,7 @@ import WaxVectorSearch
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     do {
         let wax = try await Wax.create(at: fileURL)
         let session = try await wax.enableVectorSearch(dimensions: 4)

@@ -6,7 +6,7 @@ import WaxVectorSearchMiniLM
 #endif
 
 enum StoreSession {
-    static let defaultStorePath = "~/.wax/memory.mv2s"
+    static let defaultStorePath = "~/.wax/memory.wax"
 
     static func resolveURL(_ rawPath: String) throws -> URL {
         let expanded = (rawPath as NSString).expandingTildeInPath

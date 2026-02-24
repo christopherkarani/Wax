@@ -163,7 +163,7 @@ func walReplayAppliesDeleteAndPutInSequence() async throws {
 }
 
 @Test
-func truncatedMv2sFailsFastWithExplicitFooterError() async throws {
+func truncatedWaxFailsFastWithExplicitFooterError() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
@@ -184,7 +184,7 @@ func truncatedMv2sFailsFastWithExplicitFooterError() async throws {
 
     do {
         _ = try await Wax.open(at: url)
-        Issue.record("Expected open to fail for truncated .mv2s")
+        Issue.record("Expected open to fail for truncated .wax")
     } catch let error as WaxError {
         guard case .invalidFooter(let reason) = error else {
             Issue.record("Expected WaxError.invalidFooter, got \(error)")

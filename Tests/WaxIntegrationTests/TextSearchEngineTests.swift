@@ -194,7 +194,7 @@ private enum SQLiteBlobInspector {
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
 
     do {
@@ -208,12 +208,12 @@ private enum SQLiteBlobInspector {
     try FileManager.default.removeItem(at: tempDir)
 }
 
-@Test func mv2sLexIndexPersistsWithoutSidecars() async throws {
+@Test func waxLexIndexPersistsWithoutSidecars() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let payload = Data("payload".utf8)
     let frameId = try await wax.put(payload, options: FrameMetaSubset(searchText: "hello from wax"))
@@ -251,7 +251,7 @@ private enum SQLiteBlobInspector {
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
     let payload = Data("payload".utf8)
     let frameId = try await wax.put(payload, options: FrameMetaSubset(searchText: "hello from wax"))

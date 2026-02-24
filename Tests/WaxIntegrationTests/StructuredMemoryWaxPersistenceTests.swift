@@ -7,7 +7,7 @@ import Wax
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-    let fileURL = tempDir.appendingPathComponent("sample.mv2s")
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
 
     let session = try await wax.structuredMemory()

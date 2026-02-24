@@ -36,7 +36,7 @@ actor RepoStore {
     /// without needing cross-module access to internal Wax frame metadata.
     private static let headerPrefix = "COMMIT:"
 
-    /// Creates a `RepoStore` backed by a `.mv2s` file at the given URL.
+    /// Creates a `RepoStore` backed by a `.wax` file at the given URL.
     ///
     /// Uses MiniLM for embeddings when the `MiniLMEmbeddings` trait is active
     /// and `textOnly` is false. Falls back to text-only search otherwise.

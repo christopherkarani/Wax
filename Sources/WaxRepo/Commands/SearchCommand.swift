@@ -41,7 +41,7 @@ struct SearchCommand: ParsableCommand {
         let repoRoot = try resolveRepoRoot(repoPath)
         let storePath = URL(fileURLWithPath: repoRoot)
             .appendingPathComponent(".wax-repo")
-            .appendingPathComponent("store.mv2s")
+            .appendingPathComponent("store.wax")
 
         guard FileManager.default.fileExists(atPath: storePath.path) else {
             writeStderr("No index found. Run 'wax-repo index' first.")

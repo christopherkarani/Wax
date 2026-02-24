@@ -88,7 +88,7 @@ public struct PendingEmbeddingSnapshot: Equatable, Sendable {
     }
 }
 
-/// Primary handle for interacting with a `.mv2s` memory file.
+/// Primary handle for interacting with a `.wax` memory file.
 ///
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
 /// All mutable state is isolated within this actor for thread safety.
@@ -394,7 +394,7 @@ public actor Wax {
         max(1, minPendingBytes)
     }
 
-    /// Create a new, empty `.mv2s` file.
+    /// Create a new, empty `.wax` file.
     public static func create(
         at url: URL,
         walSize: UInt64 = Constants.defaultWalSize,
@@ -516,7 +516,7 @@ public actor Wax {
         )
     }
 
-    /// Open an existing `.mv2s` file.
+    /// Open an existing `.wax` file.
     ///
     /// By default, Wax will repair trailing bytes beyond the last valid footer while preserving any
     /// uncommitted payload bytes referenced by the pending WAL.
@@ -524,7 +524,7 @@ public actor Wax {
         try await open(at: url, repair: true, options: options)
     }
 
-    /// Open an existing `.mv2s` file, optionally repairing trailing bytes past the last valid footer.
+    /// Open an existing `.wax` file, optionally repairing trailing bytes past the last valid footer.
     ///
     /// If `repair` is true and the file contains bytes beyond the last valid footer, the file is truncated to the
     /// smallest safe end offset:
