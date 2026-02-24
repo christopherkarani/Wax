@@ -297,7 +297,7 @@ extension WaxCLI.MCP {
                         // We check the tools/list response specifically to avoid false positives
                         // from the initialize response containing the tool name incidentally.
                         let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: true)
-                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) })
+                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) || $0.contains(#""id": 2"#) })
                         let responseToCheck = toolsListResponse.map(String.init) ?? String(output.stdout)
                         if !responseToCheck.contains(#""name":"wax_remember""#) {
                             failures.append("Smoke check response missing wax_remember tool")

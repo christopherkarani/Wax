@@ -124,9 +124,10 @@ enum WaxMCPTools {
         let context = try await memory.recall(query: query, frameFilter: sessionFilter)
         let selected = context.items.prefix(limit)
         var lines: [String] = []
-        lines.reserveCapacity(selected.count + 2)
+        lines.reserveCapacity(selected.count + 3)
         lines.append("Query: \(context.query)")
         lines.append("Total tokens: \(context.totalTokens)")
+        lines.append("Results: \(selected.count) of \(limit) requested (orchestrator returned \(context.items.count))")
 
         for (index, item) in selected.enumerated() {
             lines.append(
@@ -745,7 +746,13 @@ enum WaxMCPTools {
             case "\n": result += "\\n"
             case "\r": result += "\\r"
             case "\t": result += "\\t"
-            default: result.append(char)
+            default:
+                let scalar = char.unicodeScalars.first!
+                if scalar.value < 0x20 {
+                    result += String(format: "\\u%04x", scalar.value)
+                } else {
+                    result.append(char)
+                }
             }
         }
         result += "\""

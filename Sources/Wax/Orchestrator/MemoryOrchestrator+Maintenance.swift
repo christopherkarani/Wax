@@ -153,19 +153,15 @@ public extension MemoryOrchestrator {
 
         try await commitSurrogateBatchIfNeeded()
 
-        let _ = start.duration(to: ContinuousClock.now)
         return report
     }
 
     func compactIndexes(options: MaintenanceOptions = .init()) async throws -> MaintenanceReport {
-        let start = ContinuousClock.now
-
         var report = MaintenanceReport()
         report.scannedFrames = Int((await wax.stats()).frameCount)
 
         try await session.commit(compact: true)
 
-        let _ = start.duration(to: ContinuousClock.now)
         return report
     }
 

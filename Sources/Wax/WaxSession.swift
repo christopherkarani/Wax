@@ -166,7 +166,7 @@ public actor WaxSession {
     public func search(_ request: SearchRequest) async throws -> SearchResponse {
         let overrides = UnifiedSearchEngineOverrides(
             textEngine: textEngine,
-            vectorEngine: nil,
+            vectorEngine: vectorEngine,
             structuredEngine: textEngine
         )
         return try await wax.search(request, engineOverrides: overrides)

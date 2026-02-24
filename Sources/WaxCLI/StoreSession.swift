@@ -28,7 +28,10 @@ enum StoreSession {
                 let e = try MiniLMEmbedder()
                 try? await e.prewarm(batchSize: 1)
                 return e
-            } catch { return nil }
+            } catch {
+                fputs("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.\n", stderr)
+                return nil
+            }
             #else
             return nil
             #endif

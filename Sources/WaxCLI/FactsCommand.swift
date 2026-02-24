@@ -171,10 +171,13 @@ struct FactsQueryCommand: AsyncParsableCommand {
 
 // MARK: - CLI value parsing helpers
 
-/// Parse a CLI string into a FactValue: try Int64 first, then Bool, then String.
+/// Parse a CLI string into a FactValue: try Int64 first, then Double, then Bool, then String.
 private func parseObjectValue(_ raw: String) -> FactValue {
     if let intValue = Int64(raw) {
         return .int(intValue)
+    }
+    if let doubleValue = Double(raw), raw.contains(".") {
+        return .double(doubleValue)
     }
     switch raw.lowercased() {
     case "true":
