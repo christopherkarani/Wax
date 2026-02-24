@@ -16,7 +16,7 @@ let orchestrator = try await MemoryOrchestrator(
 )
 ```
 
-The orchestrator creates a new `.mv2s` file if one doesn't exist at the URL, or opens an existing one with automatic crash recovery.
+The orchestrator creates a new `.wax` file if one doesn't exist at the URL, or opens an existing one with automatic crash recovery.
 
 ## Ingestion Pipeline
 
@@ -24,7 +24,7 @@ When you call ``MemoryOrchestrator/remember(_:metadata:)``, the orchestrator:
 
 1. **Chunks** the text using the configured chunking strategy (default: token-count with 400 tokens and 40-token overlap)
 2. **Embeds** each chunk using the embedding provider (if provided), batching through `BatchEmbeddingProvider` when available
-3. **Writes** each chunk as a frame to the `.mv2s` file
+3. **Writes** each chunk as a frame to the `.wax` file
 4. **Indexes** each chunk's text in the FTS5 full-text search engine
 5. **Adds** each chunk's embedding to the vector search engine
 6. **Commits** all changes atomically

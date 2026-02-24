@@ -118,7 +118,7 @@ This separates the async actor world from blocking POSIX I/O, preventing actor t
 
 ## Cross-Process Safety
 
-For multi-process access to the same `.mv2s` file, ``FileLock`` provides advisory locking:
+For multi-process access to the same `.wax` file, ``FileLock`` provides advisory locking:
 
 - Multiple processes can hold **shared locks** for concurrent reads
 - A process requesting an **exclusive lock** for writes blocks until all shared locks are released

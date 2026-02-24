@@ -34,15 +34,15 @@ import WaxVectorSearchMiniLM
 // Create the on-device embedding provider
 let embedder = try MiniLMEmbedder()
 
-// Initialize the orchestrator (creates or opens the .mv2s file)
+// Initialize the orchestrator (creates or opens the .wax file)
 let orchestrator = try await MemoryOrchestrator(
-    at: URL(filePath: "memory.mv2s"),
+    at: URL(filePath: "memory.wax"),
     config: .init(),
     embedder: embedder
 )
 ```
 
-The orchestrator creates a new `.mv2s` file if one doesn't exist, or opens and recovers an existing one.
+The orchestrator creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.
 
 ## Remember Content
 
@@ -57,7 +57,7 @@ Behind the scenes, Wax:
 1. Chunks the text according to the configured ``ChunkingStrategy``
 2. Embeds each chunk using the provided embedding provider
 3. Indexes the text for BM25 full-text search
-4. Writes frames and embeddings to the `.mv2s` file
+4. Writes frames and embeddings to the `.wax` file
 5. Commits the changes
 
 ## Recall Context

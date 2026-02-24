@@ -1,10 +1,10 @@
-# The MV2S File Format
+# The Wax File Format
 
-Understand the binary layout of `.mv2s` files: dual headers, WAL ring buffer, TOC, and footer.
+Understand the binary layout of `.wax` files: dual headers, WAL ring buffer, TOC, and footer.
 
 ## Overview
 
-The MV2S (Memory V2 Store) format is a self-contained binary file designed for crash-safe, concurrent access. Every `.mv2s` file follows this layout:
+The Wax format is a self-contained binary file designed for crash-safe, concurrent access. Every `.wax` file follows this layout:
 
 ```
 Offset          Region              Size
@@ -23,8 +23,8 @@ The format uses two magic values for identification:
 
 | Magic | Bytes | Location |
 |-------|-------|----------|
-| `MV2S` | `0x4D 0x56 0x32 0x5B` | Header page offset 0 |
-| `MV2SFOOT` | 8 bytes | Footer offset 0 |
+| `WAX1` | `0x57 0x41 0x58 0x31` | Header page offset 0 |
+| `WAX1FOOT` | 8 bytes | Footer offset 0 |
 
 The current spec version is **v1.0** (major=1, minor=0, packed as UInt16).
 
@@ -34,7 +34,7 @@ Two identical header pages at offsets 0 and 4 KiB provide crash-safe metadata up
 
 | Offset | Type | Field |
 |--------|------|-------|
-| 0–3 | UInt32 | Magic (`MV2S`) |
+| 0–3 | UInt32 | Magic (`WAX1`) |
 | 4–5 | UInt16 | Format version |
 | 6–7 | UInt8 x 2 | Spec major/minor |
 | 8–15 | UInt64 | Header page generation |
@@ -77,7 +77,7 @@ A fixed 64-byte footer at the end of the file:
 
 | Offset | Type | Field |
 |--------|------|-------|
-| 0–7 | 8 bytes | Magic (`MV2SFOOT`) |
+| 0–7 | 8 bytes | Magic (`WAX1FOOT`) |
 | 8–15 | UInt64 | TOC length |
 | 16–47 | 32 bytes | TOC hash (SHA-256) |
 | 48–55 | UInt64 | Generation |

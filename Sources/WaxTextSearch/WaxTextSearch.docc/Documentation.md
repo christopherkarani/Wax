@@ -11,7 +11,7 @@ The primary entry point is the ``FTS5SearchEngine`` actor, which manages:
 - **Full-text indexing** of frame content with automatic batching (flush threshold: 2,048 documents)
 - **BM25 search** with relevance-ranked results and contextual snippets
 - **Structured memory** storage and querying for entities, facts, and evidence
-- **Serialization** to/from SQLite blobs for persistence in `.mv2s` files
+- **Serialization** to/from SQLite blobs for persistence in `.wax` files
 
 ```swift
 // Create an in-memory search engine

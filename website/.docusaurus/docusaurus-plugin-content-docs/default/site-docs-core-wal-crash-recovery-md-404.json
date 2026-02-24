@@ -1,0 +1,29 @@
+{
+  "id": "core/wal-crash-recovery",
+  "title": "WAL & Crash Recovery",
+  "description": "How the write-ahead log ring buffer ensures durability and enables crash recovery.",
+  "source": "@site/docs/core/wal-crash-recovery.md",
+  "sourceDirName": "core",
+  "slug": "/core/wal-crash-recovery",
+  "permalink": "/docs/core/wal-crash-recovery",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/core/wal-crash-recovery.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 3,
+  "frontMatter": {
+    "sidebar_position": 3,
+    "title": "WAL & Crash Recovery",
+    "sidebar_label": "WAL & Crash Recovery"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "File Format",
+    "permalink": "/docs/core/file-format"
+  },
+  "next": {
+    "title": "Structured Memory",
+    "permalink": "/docs/core/structured-memory"
+  }
+}

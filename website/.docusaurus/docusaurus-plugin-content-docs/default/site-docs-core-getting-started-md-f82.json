@@ -1,0 +1,29 @@
+{
+  "id": "core/getting-started",
+  "title": "WaxCore Getting Started",
+  "description": "Create, open, and interact with .mv2s memory files using the Wax actor.",
+  "source": "@site/docs/core/getting-started.md",
+  "sourceDirName": "core",
+  "slug": "/core/getting-started",
+  "permalink": "/docs/core/getting-started",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/core/getting-started.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "sidebar_position": 1,
+    "title": "WaxCore Getting Started",
+    "sidebar_label": "Getting Started"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Video RAG",
+    "permalink": "/docs/media/video-rag"
+  },
+  "next": {
+    "title": "File Format",
+    "permalink": "/docs/core/file-format"
+  }
+}

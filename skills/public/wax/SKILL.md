@@ -1,6 +1,6 @@
 ---
 name: wax
-description: Comprehensive guidance for the Wax on-device memory/RAG framework. Use when integrating MemoryOrchestrator, VideoRAGOrchestrator, Wax/WaxSession, embedding providers, hybrid search, maintenance, or when evaluating Wax constraints like offline-only, single-file .mv2s persistence and deterministic retrieval.
+description: Comprehensive guidance for the Wax on-device memory/RAG framework. Use when integrating MemoryOrchestrator, VideoRAGOrchestrator, Wax/WaxSession, embedding providers, hybrid search, maintenance, or when evaluating Wax constraints like offline-only, single-file .wax persistence and deterministic retrieval.
 ---
 
 # Wax
@@ -15,7 +15,7 @@ Use this skill to design and implement correct Wax-based on-device RAG flows in 
 4. Import `Wax` to get re-exported core/search/vector APIs.
 
 ## Core Workflow
-1. Choose a `.mv2s` store URL.
+1. Choose a `.wax` store URL.
 2. Configure `OrchestratorConfig` (disable vector search if no embedder).
 3. Provide an `EmbeddingProvider` when vector search is enabled.
 4. Call `remember(...)` to ingest and `recall(...)` to build `RAGContext`.
@@ -23,7 +23,7 @@ Use this skill to design and implement correct Wax-based on-device RAG flows in 
 
 ## Safety & Constraints
 - Keep Wax offline-only; no network calls are made. See `references/constraints.md`.
-- Treat the `.mv2s` file as the single source of truth (data + indexes + WAL).
+- Treat the `.wax` file as the single source of truth (data + indexes + WAL).
 - Provide an embedder when vector search is enabled and no vector index exists.
 - Use `QueryEmbeddingPolicy` deliberately; `.always` throws if vector search is disabled or no embedder is configured.
 - For Video RAG, supply transcripts; Wax does not transcribe in v1.
@@ -43,7 +43,7 @@ import Wax
 func demoTextOnly() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-memory")
-        .appendingPathExtension("mv2s")
+        .appendingPathExtension("wax")
 
     var config = OrchestratorConfig.default
     config.enableVectorSearch = false
@@ -80,7 +80,7 @@ actor MyEmbedder: EmbeddingProvider {
 func demoVector() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-vector")
-        .appendingPathExtension("mv2s")
+        .appendingPathExtension("wax")
 
     var config = OrchestratorConfig.default
     config.enableVectorSearch = true
@@ -124,7 +124,7 @@ struct MyTranscriptProvider: VideoTranscriptProvider {
 func demoVideo() async throws {
     let storeURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-video")
-        .appendingPathExtension("mv2s")
+        .appendingPathExtension("wax")
 
     let rag = try await VideoRAGOrchestrator(
         storeURL: storeURL,

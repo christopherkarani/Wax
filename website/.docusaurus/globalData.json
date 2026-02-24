@@ -1,0 +1,113 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/docs",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "architecture",
+              "path": "/docs/architecture",
+              "sidebar": "docs"
+            },
+            {
+              "id": "core/concurrency-model",
+              "path": "/docs/core/concurrency-model",
+              "sidebar": "docs"
+            },
+            {
+              "id": "core/file-format",
+              "path": "/docs/core/file-format",
+              "sidebar": "docs"
+            },
+            {
+              "id": "core/getting-started",
+              "path": "/docs/core/getting-started",
+              "sidebar": "docs"
+            },
+            {
+              "id": "core/structured-memory",
+              "path": "/docs/core/structured-memory",
+              "sidebar": "docs"
+            },
+            {
+              "id": "core/wal-crash-recovery",
+              "path": "/docs/core/wal-crash-recovery",
+              "sidebar": "docs"
+            },
+            {
+              "id": "intro",
+              "path": "/docs/intro",
+              "sidebar": "docs"
+            },
+            {
+              "id": "media/photo-rag",
+              "path": "/docs/media/photo-rag",
+              "sidebar": "docs"
+            },
+            {
+              "id": "media/video-rag",
+              "path": "/docs/media/video-rag",
+              "sidebar": "docs"
+            },
+            {
+              "id": "mini-lm/mini-lm-embedder",
+              "path": "/docs/mini-lm/mini-lm-embedder",
+              "sidebar": "docs"
+            },
+            {
+              "id": "orchestrator/memory-orchestrator",
+              "path": "/docs/orchestrator/memory-orchestrator",
+              "sidebar": "docs"
+            },
+            {
+              "id": "orchestrator/rag-pipeline",
+              "path": "/docs/orchestrator/rag-pipeline",
+              "sidebar": "docs"
+            },
+            {
+              "id": "orchestrator/session-management",
+              "path": "/docs/orchestrator/session-management",
+              "sidebar": "docs"
+            },
+            {
+              "id": "orchestrator/unified-search",
+              "path": "/docs/orchestrator/unified-search",
+              "sidebar": "docs"
+            },
+            {
+              "id": "text-search/text-search-engine",
+              "path": "/docs/text-search/text-search-engine",
+              "sidebar": "docs"
+            },
+            {
+              "id": "vector-search/embedding-providers",
+              "path": "/docs/vector-search/embedding-providers",
+              "sidebar": "docs"
+            },
+            {
+              "id": "vector-search/vector-search-engines",
+              "path": "/docs/vector-search/vector-search-engines",
+              "sidebar": "docs"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docs": {
+              "link": {
+                "path": "/docs/intro",
+                "label": "intro"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

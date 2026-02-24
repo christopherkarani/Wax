@@ -1,0 +1,90 @@
+{
+  "/docs-699": {
+    "__comp": "5e95c892",
+    "__context": {
+      "plugin": "aba21aa0"
+    }
+  },
+  "/docs-bdb": {
+    "__comp": "a7bd4aaa",
+    "__props": "0058b4c6"
+  },
+  "/docs-390": {
+    "__comp": "a94703ab"
+  },
+  "/docs/architecture-38d": {
+    "__comp": "17896441",
+    "content": "5281b7a2"
+  },
+  "/docs/core/concurrency-model-ff3": {
+    "__comp": "17896441",
+    "content": "72f1ad06"
+  },
+  "/docs/core/file-format-4d1": {
+    "__comp": "17896441",
+    "content": "e1d774a0"
+  },
+  "/docs/core/getting-started-628": {
+    "__comp": "17896441",
+    "content": "f82e7deb"
+  },
+  "/docs/core/structured-memory-48c": {
+    "__comp": "17896441",
+    "content": "8e754b48"
+  },
+  "/docs/core/wal-crash-recovery-718": {
+    "__comp": "17896441",
+    "content": "4049fa33"
+  },
+  "/docs/intro-a6e": {
+    "__comp": "17896441",
+    "content": "0e384e19"
+  },
+  "/docs/media/photo-rag-acd": {
+    "__comp": "17896441",
+    "content": "63618d8d"
+  },
+  "/docs/media/video-rag-ebf": {
+    "__comp": "17896441",
+    "content": "aeaf485d"
+  },
+  "/docs/mini-lm/mini-lm-embedder-ea3": {
+    "__comp": "17896441",
+    "content": "57775a35"
+  },
+  "/docs/orchestrator/memory-orchestrator-b5e": {
+    "__comp": "17896441",
+    "content": "d8aac908"
+  },
+  "/docs/orchestrator/rag-pipeline-66a": {
+    "__comp": "17896441",
+    "content": "053f4730"
+  },
+  "/docs/orchestrator/session-management-f49": {
+    "__comp": "17896441",
+    "content": "c8010c94"
+  },
+  "/docs/orchestrator/unified-search-996": {
+    "__comp": "17896441",
+    "content": "ba168a16"
+  },
+  "/docs/text-search/text-search-engine-d34": {
+    "__comp": "17896441",
+    "content": "37758ac9"
+  },
+  "/docs/vector-search/embedding-providers-5b4": {
+    "__comp": "17896441",
+    "content": "0ac2ecaf"
+  },
+  "/docs/vector-search/vector-search-engines-728": {
+    "__comp": "17896441",
+    "content": "441377a7"
+  },
+  "/-2e1": {
+    "__comp": "c4f5d8e4",
+    "__context": {
+      "plugin": "a7456010"
+    },
+    "config": "5e9f5e1a"
+  }
+}

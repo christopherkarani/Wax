@@ -1,0 +1,29 @@
+{
+  "id": "orchestrator/rag-pipeline",
+  "title": "RAG Pipeline",
+  "description": "Understand the token-budget-aware context assembly with surrogate tiers and intent-aware reranking.",
+  "source": "@site/docs/orchestrator/rag-pipeline.md",
+  "sourceDirName": "orchestrator",
+  "slug": "/orchestrator/rag-pipeline",
+  "permalink": "/docs/orchestrator/rag-pipeline",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/orchestrator/rag-pipeline.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "sidebar_position": 2,
+    "title": "RAG Pipeline",
+    "sidebar_label": "RAG Pipeline"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Memory Orchestrator",
+    "permalink": "/docs/orchestrator/memory-orchestrator"
+  },
+  "next": {
+    "title": "Unified Search",
+    "permalink": "/docs/orchestrator/unified-search"
+  }
+}

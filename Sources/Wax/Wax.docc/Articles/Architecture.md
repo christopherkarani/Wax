@@ -29,7 +29,7 @@ Wax is organized as a stack of Swift Package Manager library targets. Each layer
           │                         │
      ┌────▼─────────────────────────▼────┐
      │             WaxCore               │  Persistence, WAL, Binary Codec,
-     │  Wax actor, .mv2s format, Locks   │  Structured Memory types
+     │  Wax actor, .wax format, Locks   │  Structured Memory types
      └───────────────────────────────────┘
 ```
 
@@ -118,7 +118,7 @@ Multiple read-only sessions can operate simultaneously. Only one read-write sess
 
 ## Persistence Model
 
-All data flows through the `.mv2s` file:
+All data flows through the `.wax` file:
 
 1. **Frame payloads** are written to the WAL first (crash-safe)
 2. **Text indexes** are serialized as SQLite blobs stored in the TOC's segment catalog

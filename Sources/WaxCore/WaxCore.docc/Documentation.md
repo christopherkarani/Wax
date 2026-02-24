@@ -4,7 +4,7 @@ The foundational persistence layer for Wax: a crash-safe binary file format with
 
 ## Overview
 
-WaxCore defines the `.mv2s` file format and provides the low-level primitives that every other Wax module builds upon. It handles:
+WaxCore defines the `.wax` file format and provides the low-level primitives that every other Wax module builds upon. It handles:
 
 - **Binary persistence** via a custom codec with dual-header mirroring and SHA-256 checksums
 - **Write-ahead logging (WAL)** using a ring buffer for crash recovery and atomic commits
@@ -12,7 +12,7 @@ WaxCore defines the `.mv2s` file format and provides the low-level primitives th
 - **Structured memory** through an entity-fact-predicate graph with temporal (bitemporal) queries
 - **Concurrency** with actor isolation, async reader-writer locks, file locks, and a blocking I/O executor
 
-The primary entry point is the ``Wax`` actor, which manages a single `.mv2s` file and exposes APIs for reading and writing frames, managing writer leases, and committing changes.
+The primary entry point is the ``Wax`` actor, which manages a single `.wax` file and exposes APIs for reading and writing frames, managing writer leases, and committing changes.
 
 ```swift
 // Create a new memory store

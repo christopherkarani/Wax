@@ -1,19 +1,19 @@
 # Getting Started with WaxCore
 
-Create, open, and interact with `.mv2s` memory files using the Wax actor.
+Create, open, and interact with `.wax` memory files using the Wax actor.
 
 ## Overview
 
-WaxCore is the persistence foundation for all Wax modules. Every operation — text indexing, vector search, structured memory — ultimately stores data as **frames** inside a `.mv2s` file managed by the ``Wax`` actor.
+WaxCore is the persistence foundation for all Wax modules. Every operation — text indexing, vector search, structured memory — ultimately stores data as **frames** inside a `.wax` file managed by the ``Wax`` actor.
 
 ## Creating a Store
 
-Use ``Wax/create(at:walSize:options:)`` to create a new `.mv2s` file:
+Use ``Wax/create(at:walSize:options:)`` to create a new `.wax` file:
 
 ```swift
 import WaxCore
 
-let url = URL(filePath: "/path/to/memory.mv2s")
+let url = URL(filePath: "/path/to/memory.wax")
 let store = try await Wax.create(at: url)
 ```
 

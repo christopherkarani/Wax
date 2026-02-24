@@ -11,7 +11,8 @@ if [[ ! -f "$TARGET_FILE" ]]; then
   exit 1
 fi
 
-corruption_tests="$(rg -n "@Test.*(corrupt|truncat)" "$TARGET_FILE" | wc -l | tr -d ' ')"
+corruption_matches="$(rg -n "func .*?(corrupt|truncat)" "$TARGET_FILE" || true)"
+corruption_tests="$(printf '%s\n' "$corruption_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
 if [[ "${corruption_tests:-0}" -lt 2 ]]; then
   echo "FAIL: expected at least 2 corruption/truncation tests in $TARGET_FILE" >&2
   exit 1

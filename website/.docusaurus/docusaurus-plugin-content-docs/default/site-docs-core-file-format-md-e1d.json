@@ -1,0 +1,29 @@
+{
+  "id": "core/file-format",
+  "title": "MV2S File Format",
+  "description": "Understand the binary layout of .mv2s files: dual headers, WAL ring buffer, TOC, and footer.",
+  "source": "@site/docs/core/file-format.md",
+  "sourceDirName": "core",
+  "slug": "/core/file-format",
+  "permalink": "/docs/core/file-format",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/core/file-format.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "sidebar_position": 2,
+    "title": "MV2S File Format",
+    "sidebar_label": "File Format"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Getting Started",
+    "permalink": "/docs/core/getting-started"
+  },
+  "next": {
+    "title": "WAL & Crash Recovery",
+    "permalink": "/docs/core/wal-crash-recovery"
+  }
+}

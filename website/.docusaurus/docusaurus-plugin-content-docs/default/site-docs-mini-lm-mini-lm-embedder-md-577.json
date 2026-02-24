@@ -1,0 +1,25 @@
+{
+  "id": "mini-lm/mini-lm-embedder",
+  "title": "MiniLM Embedder",
+  "description": "Set up, configure, and optimize the on-device MiniLM embedding provider.",
+  "source": "@site/docs/mini-lm/mini-lm-embedder.md",
+  "sourceDirName": "mini-lm",
+  "slug": "/mini-lm/mini-lm-embedder",
+  "permalink": "/docs/mini-lm/mini-lm-embedder",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/mini-lm/mini-lm-embedder.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "sidebar_position": 1,
+    "title": "MiniLM Embedder",
+    "sidebar_label": "MiniLM Embedder"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Embedding Providers",
+    "permalink": "/docs/vector-search/embedding-providers"
+  }
+}

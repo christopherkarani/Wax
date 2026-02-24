@@ -1,0 +1,29 @@
+{
+  "id": "orchestrator/unified-search",
+  "title": "Unified Search",
+  "description": "Fuse BM25, vector, structured memory, and timeline results with reciprocal rank fusion.",
+  "source": "@site/docs/orchestrator/unified-search.md",
+  "sourceDirName": "orchestrator",
+  "slug": "/orchestrator/unified-search",
+  "permalink": "/docs/orchestrator/unified-search",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/orchestrator/unified-search.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 3,
+  "frontMatter": {
+    "sidebar_position": 3,
+    "title": "Unified Search",
+    "sidebar_label": "Unified Search"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "RAG Pipeline",
+    "permalink": "/docs/orchestrator/rag-pipeline"
+  },
+  "next": {
+    "title": "Session Management",
+    "permalink": "/docs/orchestrator/session-management"
+  }
+}

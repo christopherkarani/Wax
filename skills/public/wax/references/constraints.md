@@ -2,7 +2,7 @@
 
 ## Offline-Only and Single-File Persistence
 - Wax is on-device and makes no network calls. Source: `README.md`.
-- A single `.mv2s` file stores data, indexes, metadata, and WAL. Source: `README.md`.
+- A single `.wax` file stores data, indexes, metadata, and WAL. Source: `README.md`.
 - Wax is not a cloud sync service. Source: `README.md`.
 
 ## Vector Search and Embeddings

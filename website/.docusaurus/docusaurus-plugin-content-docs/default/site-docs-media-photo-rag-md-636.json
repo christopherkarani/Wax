@@ -1,0 +1,29 @@
+{
+  "id": "media/photo-rag",
+  "title": "Photo RAG",
+  "description": "Build a semantic search layer over photo libraries with OCR, captions, and CLIP embeddings.",
+  "source": "@site/docs/media/photo-rag.md",
+  "sourceDirName": "media",
+  "slug": "/media/photo-rag",
+  "permalink": "/docs/media/photo-rag",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/christopherkarani/Wax/tree/main/website/docs/media/photo-rag.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "sidebar_position": 1,
+    "title": "Photo RAG",
+    "sidebar_label": "Photo RAG"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Session Management",
+    "permalink": "/docs/orchestrator/session-management"
+  },
+  "next": {
+    "title": "Video RAG",
+    "permalink": "/docs/media/video-rag"
+  }
+}

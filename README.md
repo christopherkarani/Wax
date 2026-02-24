@@ -31,7 +31,7 @@ import Wax
 
 // Create a memory file (text search, works out of the box)
 let brain = try await MemoryOrchestrator(
-    at: URL(fileURLWithPath: "brain.mv2s")
+    at: URL(fileURLWithPath: "brain.wax")
 )
 
 // Remember something
@@ -51,7 +51,7 @@ Want hybrid vector + text search? Use the built-in MiniLM embedder:
 ```swift
 // Hybrid search with on-device embeddings (MiniLM, 384-dim)
 let brain = try await MemoryOrchestrator.openMiniLM(
-    at: URL(fileURLWithPath: "brain.mv2s")
+    at: URL(fileURLWithPath: "brain.wax")
 )
 ```
 
@@ -63,7 +63,7 @@ No Docker. No network calls.
 
 Adding memory to an iOS or macOS app typically means standing up a vector database, a text search index, and a persistence layer — three services with separate setup, uptime dependencies, and potential data egress.
 
-Wax stores all of it in a single `.mv2s` file on the user's device.
+Wax stores all of it in a single `.wax` file on the user's device.
 
 ```
 Traditional RAG Stack:                     Wax:
@@ -72,7 +72,7 @@ Traditional RAG Stack:                     Wax:
 ├─────────────┤                           ├─────────────┤
 │  ChromaDB   │                           │             │
 │  PostgreSQL │        vs.                │   brain.    │
-│  Redis      │                           │    mv2s     │
+│  Redis      │                           │    wax      │
 │  Elasticsearch│                         │             │
 │  Docker     │                           │             │
 └─────────────┘                           └─────────────┘
@@ -88,7 +88,7 @@ Traditional RAG Stack:                     Wax:
 | **Fast** | 0.84ms vector search @ 10K docs (Metal GPU) |
 | **Durable** | Kill -9 safe, power-loss safe, tested |
 | **Deterministic** | Same query = same context, every time |
-| **Portable** | One `.mv2s` file — move it, backup it, ship it |
+| **Portable** | One `.wax` file — move it, backup it, ship it |
 | **Private** | 100% on-device. Zero network calls. |
 
 ---
@@ -290,7 +290,7 @@ let ctx = try await videoRAG.recall(.init(text: "project timeline discussion"))
 
 ## How It Works
 
-Wax packs everything into a single `.mv2s` file — the equivalent of SQLite for AI memory: one file that contains your documents, the search indexes, and enough crash-recovery state to survive a kill signal.
+Wax packs everything into a single `.wax` file — the equivalent of SQLite for AI memory: one file that contains your documents, the search indexes, and enough crash-recovery state to survive a kill signal.
 
 The file contains:
 
