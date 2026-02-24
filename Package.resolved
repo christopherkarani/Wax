@@ -173,15 +173,6 @@
       }
     },
     {
-      "identity" : "swift-tiktoken",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/DePasqualeOrg/swift-tiktoken.git",
-      "state" : {
-        "revision" : "e088d534d80dd1875ca3edfd69a16a6c25ab84c4",
-        "version" : "0.0.1"
-      }
-    },
-    {
       "identity" : "swifttui",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rensbreur/SwiftTUI.git",

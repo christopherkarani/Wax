@@ -2,7 +2,6 @@ import Testing
 import USearch
 import GRDB
 import Logging
-import SwiftTiktoken
 
 @Test func usearchInitializes() throws {
     let index = try USearchIndex.make(
@@ -24,8 +23,4 @@ import SwiftTiktoken
 @Test func swiftLogInitializes() {
     let logger = Logger(label: "com.wax.swift.test")
     logger.info("swift-log initialized")
-}
-
-@Test func tiktokenSwiftLoadsTypeInfo() {
-    #expect(String(describing: CoreBPE.self).contains("CoreBPE"))
 }

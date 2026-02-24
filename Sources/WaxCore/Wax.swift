@@ -934,7 +934,7 @@ public actor Wax {
         // fall back to per-entry appends (allows mid-batch commits).
         do {
             try await ensureWalCapacityLocked(payloadSizes: walPayloadSizes)
-        } catch let WaxError.capacityExceeded(_, _) {
+        } catch WaxError.capacityExceeded {
             return try await appendSequentially()
         }
 
