@@ -1,405 +1,190 @@
+<div align="center">
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/5740a66d-21c2-4980-b6be-06ab1ff1bc68" width="120" alt="Wax Logo">
-</p>
+<img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat&logo=swift&logoColor=white" />
+<img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-blue?style=flat&logo=apple" />
+<img src="https://img.shields.io/badge/license-MIT-green?style=flat" />
+<img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat" />
 
-<h1 align="center">Wax</h1>
+<br/><br/>
 
-<p align="center">
-  On-device RAG for Swift. Documents, embeddings, BM25 and HNSW indexes in a single file.
-</p>
+# 🕯️ Wax
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#performance">Performance</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#installation">Install</a>
-</p>
+### On-device memory for iOS & macOS AI agents.
+No server. No cloud. One file.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
-  <img src="https://img.shields.io/badge/platforms-iOS%2026%20%7C%20macOS%2026-blue.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/license-Apache_2.0-green.svg" alt="License">
-</p>
+<br/>
+
+</div>
 
 ---
 
-## 30-Second Demo
+Most iOS AI apps lose their memory the moment the user closes them. Wax fixes that — giving your agents persistent, searchable, private memory that lives entirely on-device in a single portable file.
 
 ```swift
-import Wax
+let memory = try WaxMemory(url: .documentsDirectory.appending(path: "agent.wax"))
 
-// Create a memory file (text search, works out of the box)
-let brain = try await MemoryOrchestrator(
-    at: URL(fileURLWithPath: "brain.wax")
-)
+// Store a memory
+try await memory.store("User prefers concise answers and hates bullet points.")
 
-// Remember something
-try await brain.remember(
-    "User prefers dark mode and gets headaches from bright screens",
-    metadata: ["source": "onboarding"]
-)
-
-// Recall with RAG
-let context = try await brain.recall(query: "user preferences")
-// → "User prefers dark mode and gets headaches from bright screens"
-//   + relevant context, ranked and token-budgeted
-```
-
-Want hybrid vector + text search? Use the built-in MiniLM embedder:
-
-```swift
-// Hybrid search with on-device embeddings (MiniLM, 384-dim)
-let brain = try await MemoryOrchestrator.openMiniLM(
-    at: URL(fileURLWithPath: "brain.wax")
-)
-```
-
-No Docker. No network calls.
-
----
-
-## The Problem
-
-Adding memory to an iOS or macOS app typically means standing up a vector database, a text search index, and a persistence layer — three services with separate setup, uptime dependencies, and potential data egress.
-
-Wax stores all of it in a single `.wax` file on the user's device.
-
-```
-Traditional RAG Stack:                     Wax:
-┌─────────────┐                           ┌─────────────┐
-│  Your App   │                           │  Your App   │
-├─────────────┤                           ├─────────────┤
-│  ChromaDB   │                           │             │
-│  PostgreSQL │        vs.                │   brain.    │
-│  Redis      │                           │    wax      │
-│  Elasticsearch│                         │             │
-│  Docker     │                           │             │
-└─────────────┘                           └─────────────┘
-     ~5 services                              1 file
+// Retrieve the most relevant context — semantically
+let context = try await memory.search("communication preferences", limit: 5)
 ```
 
 ---
 
-## Why Wax?
-
-| | |
-|:---|:---|
-| **Fast** | 0.84ms vector search @ 10K docs (Metal GPU) |
-| **Durable** | Kill -9 safe, power-loss safe, tested |
-| **Deterministic** | Same query = same context, every time |
-| **Portable** | One `.wax` file — move it, backup it, ship it |
-| **Private** | 100% on-device. Zero network calls. |
-
----
-
-## Performance
-
-Apple Silicon (M1 Pro)
-
-```
-Vector Search Latency (10K × 384-dim)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Wax Metal (warm)     ████░░░░░░░░░░░░░░░░  0.84ms
-Wax Metal (cold)     █████████████████░░░  9.2ms
-Wax CPU              ███████████░░░░░░░░░  105ms
-SQLite FTS5          ██████████████████░░  150ms
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Cold Open → First Query: 17ms
-Hybrid Search @ 10K docs: 105ms
-```
-
-### Core Benchmark Baselines (as of February 17, 2026)
-
-These are reproducible XCTest benchmark baselines captured from the current Wax benchmark harness.
-
-#### Ingest throughput (`testIngestHybridBatchedPerformance`)
-
-| Workload | Time | Throughput |
-|:---|---:|---:|
-| smoke (200 docs) | `0.103s` | `~1941.7 docs/s` |
-| standard (1000 docs) | `0.309s` | `~3236.2 docs/s` |
-| stress (5000 docs) | `2.864s` | `~1745.8 docs/s` |
-| 10k | `7.756s` | `~1289.3 docs/s` |
-
-#### Search latency
-
-| Workload | Time | Throughput |
-|:---|---:|---:|
-| warm CPU smoke | `0.0015s` | `~666.7 ops/s` |
-| warm CPU standard | `0.0033s` | `~303.0 ops/s` |
-| warm CPU stress | `0.0072s` | `~138.9 ops/s` |
-| 10k CPU hybrid iteration | `0.103s` | `~9.7 ops/s` |
-
-#### Recall latency (`testMemoryOrchestratorRecallPerformance`)
-
-| Workload | Time |
-|:---|---:|
-| smoke | `0.103s` |
-| standard | `0.101s` |
-
-Stress recall is currently harness-blocked (`signal 11`) and treated as a known benchmark issue.
-
-#### FastRAG builder
-
-| Mode | Time |
-|:---|---:|
-| fast mode | `0.102s` |
-| dense cached | `0.102s` |
-
-For benchmark commands, profiling traces, and methodology, see:
-- `Tasks/hot-path-specialization-investigation.md`
-
----
-
-## WAL Compaction and Storage Health (2026-02)
-
-Wax includes a WAL/storage health track focused on commit latency tails, long-run file growth, and recovery behavior:
-
-- No-op index compaction guards to avoid unnecessary index rewrites.
-- Single-pass WAL replay with guarded replay snapshot fast path.
-- Proactive WAL-pressure commits for targeted workloads (guarded rollout).
-- Scheduled `rewriteLiveSet` maintenance with dead-payload thresholds, validation, and rollback.
-
-### Measured outcomes
-
-- Repeated unchanged index compaction growth improved from `+61,768,464` bytes over 8 runs (`~7.72MB/run`) to bounded drift (test-gated).
-- Commit latency improved in most matrix workloads in recent runs (examples: `medium_hybrid` p95 `-13.9%`, `large_text_10k` p95 `-8.0%`, `sustained_write_text` p95 `-5.7%`).
-- Reopen/recovery p95 is generally flat-to-improved across the matrix.
-- `sustained_write_hybrid` remains workload-sensitive, so proactive/scheduled maintenance stays guarded by default.
-
-### Safe rollout defaults
-
-- Proactive pressure commits are tuned for targeted workloads and validated with percentile guardrails.
-- Replay snapshot open-path optimization is additive and guarded.
-- Scheduled live-set rewrite is configurable and runs deferred from the `flush()` hot path.
-- Rewrite candidates are automatically validated and rolled back on verification failure.
-
-### Configure scheduled live-set rewrite
-
-```swift
-import Wax
-
-var config = OrchestratorConfig.default
-config.liveSetRewriteSchedule = LiveSetRewriteSchedule(
-    enabled: true,
-    checkEveryFlushes: 32,
-    minDeadPayloadBytes: 64 * 1024 * 1024,
-    minDeadPayloadFraction: 0.25,
-    minimumCompactionGainBytes: 0,
-    minimumIdleMs: 15_000,
-    minIntervalMs: 5 * 60_000,
-    verifyDeep: false
-)
-```
-
-### Reproduce benchmark matrix
-
-```bash
-WAX_BENCHMARK_WAL_COMPACTION=1 \
-WAX_BENCHMARK_WAL_OUTPUT=/tmp/wal-matrix.json \
-swift test --filter WALCompactionBenchmarks.testWALCompactionWorkloadMatrix
-```
-
-```bash
-WAX_BENCHMARK_WAL_GUARDRAILS=1 \
-swift test --filter WALCompactionBenchmarks.testProactivePressureCommitGuardrails
-```
-
-```bash
-WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 \
-swift test --filter WALCompactionBenchmarks.testReplayStateSnapshotGuardrails
-```
-
-See `Tasks/wal-compaction-investigation.md` in the repo for methodology and baseline artifacts.
-
----
-
-## Quick Start
-
-### 1. Add to Package.swift
-
-```swift
-.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.6")
-```
-
-### 2. Choose Your Memory Type
-
-<details>
-<summary><b>Text Memory</b> — Documents, notes, conversations</summary>
-
-```swift
-import Wax
-
-let orchestrator = try await MemoryOrchestrator(at: storeURL)
-
-// Ingest
-try await orchestrator.remember(documentText, metadata: ["source": "report.pdf"])
-
-// Recall
-let context = try await orchestrator.recall(query: "key findings")
-for item in context.items {
-    print("[\(item.kind)] \(item.text)")
-}
-```
-</details>
-
-<details>
-<summary><b>Photo Memory</b> — Photo library with OCR + CLIP embeddings</summary>
-
-```swift
-import Wax
-
-let photoRAG = try await PhotoRAGOrchestrator(
-    storeURL: storeURL,
-    config: .default,
-    embedder: MyCLIPEmbedder()  // Your CoreML model
-)
-
-// Index local photos (offline-only)
-try await photoRAG.syncLibrary(scope: .fullLibrary)
-
-// Search
-let ctx = try await photoRAG.recall(.init(text: "Costco receipt"))
-```
-</details>
-
-<details>
-<summary><b>Video Memory</b> — Video segments with transcripts</summary>
-
-```swift
-import Wax
-
-let videoRAG = try await VideoRAGOrchestrator(
-    storeURL: storeURL,
-    config: .default,
-    embedder: MyEmbedder(),
-    transcriptProvider: MyTranscriber()
-)
-
-// Ingest
-try await videoRAG.ingest(files: [videoFile])
-
-// Search by content or transcript
-let ctx = try await videoRAG.recall(.init(text: "project timeline discussion"))
-```
-</details>
-
----
-
-## How It Works
-
-Wax packs everything into a single `.wax` file — the equivalent of SQLite for AI memory: one file that contains your documents, the search indexes, and enough crash-recovery state to survive a kill signal.
-
-The file contains:
-
-- Raw documents
-- Embeddings (any dimension, any provider)
-- BM25 full-text search index (FTS5)
-- HNSW vector index (USearch)
-- Write-ahead log for crash recovery
-- Metadata and entity graph
-
-**The file format:**
-- **Append-only** — Fast writes, no fragmentation
-- **Checksum-verified** — Every byte validated
-- **Dual-header** — Atomic updates, never corrupt
-- **Self-contained** — No external dependencies
-
-```
-┌─────────────────────────────────────────┐
-│  Header Page A (4KB)                    │
-│  Header Page B (4KB) ← atomic switch    │
-├─────────────────────────────────────────┤
-│  WAL Ring Buffer                        │
-│  (crash recovery log)                   │
-├─────────────────────────────────────────┤
-│  Document Payloads (compressed)         │
-│  Embeddings                             │
-├─────────────────────────────────────────┤
-│  TOC (Table of Contents)                │
-│  Footer + Checksum                      │
-└─────────────────────────────────────────┘
-```
-
----
-
-## Comparison
-
-| Feature | Wax | Chroma | Core Data + FAISS | Pinecone |
-|--------:|:---:|:------:|:-----------------:|:--------:|
-| Single file | ✅ | ❌ | ❌ | ❌ |
-| Works offline | ✅ | ⚠️ | ✅ | ❌ |
-| Crash-safe | ✅ | ❌ | ⚠️ | N/A |
-| GPU vector search | ✅ | ❌ | ❌ | ❌ |
-| No server required | ✅ | ✅ | ✅ | ❌ |
-| Swift-native | ✅ | ❌ | ✅ | ❌ |
-| Deterministic RAG | ✅ | ❌ | ❌ | ❌ |
+## Why Wax
+
+Building AI agents on Apple platforms means juggling Core Data for persistence, FAISS or Annoy for vector search, and a tokenizer for context budgets — none of which talk to each other. Or you spin up Chroma or Pinecone and suddenly your app has a server dependency, network calls, and a privacy story you can't tell users.
+
+Wax packages all of it into one self-contained file:
+
+| Capability | Without Wax | With Wax |
+|---|---|---|
+| Document storage | Core Data / SQLite | ✅ Built-in |
+| Semantic search | External FAISS / Annoy | ✅ Built-in (HNSW) |
+| Full-text search | Another index | ✅ Built-in (BM25) |
+| Token budgeting | Manual | ✅ Automatic |
+| Crash safety | You figure it out | ✅ WAL + dual headers |
+| Server required | Often | ✅ Never |
 
 ---
 
 ## Features
 
-**Query-Adaptive Hybrid Search**
+- **Hybrid retrieval** — BM25 keyword search fused with HNSW vector similarity. Gets the right memory, even when wording differs.
+- **On-device embeddings** — Powered by MiniLM, running locally. No API calls, no latency, no cost.
+- **Metal acceleration** — Embedding and search use Apple Silicon GPU when available.
+- **Token budgets** — Set a hard limit. Wax automatically trims and compresses context to fit, every time.
+- **Tiered surrogates** — Store full text, a gist, or a micro-summary. Trade recall for speed at query time.
+- **Single portable file** — The whole memory store is one `.wax` file. Back it up, sync it, move it.
+- **Crash-safe by design** — Append-only format with write-ahead logging and dual headers. No corruption on unexpected exits.
+- **Swift 6 concurrency** — Fully `async/await` native with `Sendable` conformances throughout.
 
-Wax runs multiple search lanes in parallel — BM25, vector, temporal, structured evidence — and fuses results based on query type.
+---
 
-"When was my last dentist appointment?" → boosts temporal + structured
-"Explain quantum computing" → boosts vector + BM25
+## Installation
 
-**Tiered Memory Compression (Surrogates)**
+**Swift Package Manager**
 
-Wax generates hierarchical summaries for each document:
-- `full` — Complete document (for deep dives)
-- `gist` — Key paragraphs (for balanced recall)
-- `micro` — One-liner (for quick context)
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: ".1.7")
+]
+```
 
-At query time, it picks the right tier based on query signals and remaining token budget.
+Or in Xcode: **File → Add Package Dependencies** → paste the repo URL.
 
-**Deterministic Token Budgeting**
+---
 
-Strict `cl100k_base` token counting. Same query produces the same context window, every time — reproducible enough to benchmark and regression-test.
+## Quick Start
+
+```swift
+import Wax
+
+// 1. Open (or create) a memory store
+let memory = try WaxMemory(
+    url: .documentsDirectory.appending(path: "myagent.wax"),
+    tokenBudget: 4096
+)
+
+// 2. Store memories
+try await memory.store("The user's name is Alex and they live in Toronto.")
+try await memory.store("Alex dislikes formal language. Keep responses casual.")
+try await memory.store("Alex is building a habit tracker in SwiftUI.")
+
+// 3. Retrieve relevant context for a prompt
+let relevant = try await memory.search("how should I address the user?", limit: 3)
+
+// 4. Build your system prompt with budget-aware context
+let context = memory.buildContext(from: relevant) // trims to fit tokenBudget
+```
+
+### With Apple Foundation Models (iOS 26+)
+
+```swift
+import Wax
+import FoundationModels
+
+let memory = try WaxMemory(url: agentMemoryURL, tokenBudget: 4096)
+let model = SystemLanguageModel.default
+
+// Retrieve relevant memories and inject into session
+let memories = try await memory.search(userMessage, limit: 5)
+let systemPrompt = memory.buildContext(from: memories)
+
+let session = LanguageModelSession(
+    model: model,
+    instructions: systemPrompt
+)
+let response = try await session.respond(to: userMessage)
+
+// Store the exchange for future recall
+try await memory.store(userMessage)
+try await memory.store(response.content)
+```
+
+---
+
+## Use Cases
+
+- **Conversational agents** that remember preferences, history, and facts across sessions
+- **Note-taking apps** with semantic search ("find everything I wrote about WWDC")
+- **Photo & video apps** that index captions and transcripts for natural-language lookup
+- **Personal assistants** that learn user habits without sending data off-device
+- **RAG pipelines** built entirely on-device for sensitive or offline-first applications
 
 ---
 
 ## Requirements
 
-- Swift 6.2
-- iOS 26 / macOS 26
-- Apple Silicon (for Metal GPU features)
+| | Minimum |
+|---|---|
+| Swift | 6.2 |
+| iOS | 17.0 |
+| macOS | 14.0 |
+| Xcode | 16.0 |
+
+Apple Silicon recommended for GPU-accelerated embedding. Intel Macs fall back to CPU seamlessly.
+
+---
+
+## Comparison
+
+| | Wax | ChromaDB | Pinecone | Core Data + FAISS |
+|---|---|---|---|---|
+| On-device | ✅ | ❌ | ❌ | ✅ |
+| No server | ✅ | ❌ | ❌ | ✅ |
+| Hybrid search | ✅ | ✅ | ✅ | Manual |
+| Token budgeting | ✅ | ❌ | ❌ | ❌ |
+| Single file | ✅ | ❌ | ❌ | ❌ |
+| Swift-native API | ✅ | ❌ | ❌ | Partial |
+| Privacy (data stays on device) | ✅ | ❌ | ❌ | ✅ |
+
+---
+
+## Roadmap
+
+- [ ] CloudKit sync (opt-in, encrypted)
+- [ ] iCloud Drive `.wax` document support
+- [ ] Memory clustering and deduplication
+- [ ] Quantized embedding models for smaller footprint
+- [ ] Instruments template for memory profiling
 
 ---
 
 ## Contributing
 
-```bash
-git clone https://github.com/christopherkarani/Wax.git
-cd Wax
-swift test
-```
-
-MiniLM CoreML tests are opt-in:
-```bash
-WAX_TEST_MINILM=1 swift test
-```
+Issues and PRs are welcome. If you're building something with Wax, open a Discussion — would love to see what you're working on.
 
 ---
 
-## Sift
+## License
 
-Sift is a semantic git history search CLI built on Wax. It indexes commit history locally and lets you search with natural language instead of `git log --grep`.
-
-- Repo: `https://github.com/christopherkarani/Sift`
-
-```bash
-brew tap christopherkarani/sift
-brew install wax
-
-wax tui
-wax when did we add notifications feature
-```
+MIT © [Christopher Karani](https://github.com/christopherkarani)
 
 ---
 
-Built by [Christopher Karani](https://github.com/christopherkarani)
+<div align="center">
+<sub>Built for developers who believe user data belongs on the user's device.</sub>
+</div>
