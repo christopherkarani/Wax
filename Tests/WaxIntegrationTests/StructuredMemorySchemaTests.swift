@@ -1,7 +1,12 @@
 import Foundation
-import SQLite3
 import Testing
 import Wax
+
+// SQLite3 C API tests are only compiled where the system SQLite3 module is
+// available (macOS/iOS). On Linux the CI only runs WaxCoreTests, so these
+// tests are excluded at compile time rather than at runtime.
+#if canImport(SQLite3)
+import SQLite3
 
 private enum SQLiteBlobInspector {
     static func int32Pragma(_ pragma: String, fromSerialized data: Data) throws -> Int32 {
@@ -156,3 +161,5 @@ private enum SQLiteBlobInspector {
     #expect(results.count == 1)
     #expect(results[0].frameId == 0)
 }
+
+#endif // canImport(SQLite3)

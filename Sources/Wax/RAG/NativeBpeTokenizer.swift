@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 import os
 

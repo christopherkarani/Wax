@@ -1,7 +1,12 @@
 import Foundation
-import SQLite3
 import Testing
 import Wax
+
+// SQLite3 C API inspector: only available where the system SQLite3 module
+// exists (macOS/iOS). On Linux, tests that require direct SQLite3 C calls
+// are excluded at compile time; the CI only runs WaxCoreTests on Linux.
+#if canImport(SQLite3)
+import SQLite3
 
 private enum SQLiteBlobInspector {
     static func int32Pragma(_ pragma: String, fromSerialized data: Data) throws -> Int32 {
@@ -79,6 +84,7 @@ private enum SQLiteBlobInspector {
         return Data(bytes: raw, count: Int(size))
     }
 }
+#endif // canImport(SQLite3)
 
 @Test func ftsSchemaCreates() async throws {
     let engine = try FTS5SearchEngine.inMemory()
@@ -158,6 +164,7 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [0])
 }
 
+#if canImport(SQLite3)
 @Test func serializedBlobHasSchemaIdentityPragmas() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Hello, World!")
@@ -181,6 +188,7 @@ private enum SQLiteBlobInspector {
     #expect(appId == 0x5741_5854) // "WAXT"
     #expect(userVersion == 2)
 }
+#endif // canImport(SQLite3)
 
 @Test func serializeSupportsOptionalCompaction() async throws {
     let engine = try FTS5SearchEngine.inMemory()

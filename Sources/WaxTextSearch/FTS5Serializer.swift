@@ -1,6 +1,8 @@
 import Foundation
-import SQLite3
 import WaxCore
+
+#if canImport(SQLite3)
+import SQLite3
 
 enum FTS5Serializer {
     static func serialize(connection: OpaquePointer) throws -> Data {
@@ -58,3 +60,21 @@ enum FTS5Serializer {
         return String(cString: message)
     }
 }
+
+#else
+
+// SQLite3 system module is not available on this platform (e.g. Linux without
+// libsqlite3-dev). FTS5SearchEngine uses file-based GRDB persistence on Linux,
+// so the in-memory serialize/deserialize path is not exercised. These stubs
+// satisfy the type-checker so the target compiles cross-platform.
+enum FTS5Serializer {
+    static func serialize(connection: OpaquePointer) throws -> Data {
+        throw WaxError.io("FTS5 in-memory serialization is not supported on this platform")
+    }
+
+    static func deserialize(_ data: Data, into connection: OpaquePointer) throws {
+        throw WaxError.io("FTS5 in-memory deserialization is not supported on this platform")
+    }
+}
+
+#endif

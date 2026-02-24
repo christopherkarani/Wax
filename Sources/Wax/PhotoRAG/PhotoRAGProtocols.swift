@@ -1,3 +1,4 @@
+#if canImport(ImageIO)
 import CoreGraphics
 import Foundation
 
@@ -55,3 +56,5 @@ extension CaptionProvider {
     @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CaptionProvider conformance.")
     public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
+
+#endif // canImport(ImageIO)

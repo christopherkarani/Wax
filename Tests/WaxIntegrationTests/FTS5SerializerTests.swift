@@ -1,8 +1,13 @@
 import Foundation
-import SQLite3
 import Testing
 @testable import WaxTextSearch
 @testable import WaxCore
+
+// SQLite3 C API tests are only compiled where the system SQLite3 module is
+// available (macOS/iOS). On Linux the CI only runs WaxCoreTests, so these
+// tests are excluded at compile time rather than at runtime.
+#if canImport(SQLite3)
+import SQLite3
 
 @Test func fts5SerializerRoundTrip() throws {
     var db: OpaquePointer?
@@ -61,3 +66,5 @@ import Testing
         try FTS5Serializer.deserialize(Data(), into: conn)
     }
 }
+
+#endif // canImport(SQLite3)
