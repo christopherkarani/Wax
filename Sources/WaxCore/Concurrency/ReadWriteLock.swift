@@ -130,7 +130,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func withReadLock<T>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    public func withReadLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await readLock()
         do {
             let result = try await body()
@@ -142,7 +142,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func withWriteLock<T>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    public func withWriteLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await writeLock()
         do {
             let result = try await body()
