@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(Metal)
 import Metal
+#endif
 import Testing
 import Wax
 import WaxVectorSearch
@@ -33,6 +35,7 @@ import WaxVectorSearch
     #expect(hits.contains(where: { $0.frameId == 1 }))
 }
 
+#if canImport(Metal)
 @Test func metalVectorEngineAddBatchUpdatesExistingIdsCorrectly() async throws {
     guard MTLCreateSystemDefaultDevice() != nil else { return }
     let engine = try MetalVectorEngine(metric: .cosine, dimensions: 2)
@@ -45,6 +48,7 @@ import WaxVectorSearch
     let hits = try await engine.search(vector: [0.7, 0.7], topK: 1)
     #expect(hits.first?.frameId == 20)
 }
+#endif
 
 @Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -98,6 +102,7 @@ import WaxVectorSearch
     try await reopened.close()
 }
 
+#if canImport(Metal)
 @Test func vectorSearchSessionCosineSearchNormalizesScaledQueries() async throws {
     guard MTLCreateSystemDefaultDevice() != nil else { return }
 
@@ -129,6 +134,7 @@ import WaxVectorSearch
     try await session.commit()
     try await wax.close()
 }
+#endif // canImport(Metal)
 
 @Test func waxVecIndexPersistsAndReopens() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -140,7 +140,12 @@ extension Wax {
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
             guard includeVector, let vectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
             var queryEmbedding = embedding
-            if vectorEngine is MetalVectorEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
+            #if canImport(Metal)
+            let isMetalEngine = vectorEngine is MetalVectorEngine
+            #else
+            let isMetalEngine = false
+            #endif
+            if isMetalEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
                 queryEmbedding = VectorMath.normalizeL2(queryEmbedding)
             }
             return try await vectorEngine.search(vector: queryEmbedding, topK: candidateLimit)

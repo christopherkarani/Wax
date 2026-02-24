@@ -192,7 +192,7 @@ public actor Wax {
         self.walReplayStateSnapshotEnabled = walReplayStateSnapshotEnabled
     }
 
-    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.writeLock()
         do {
             let value = try await body()
@@ -204,7 +204,7 @@ public actor Wax {
         }
     }
 
-    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.readLock()
         do {
             let value = try await body()

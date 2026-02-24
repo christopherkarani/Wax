@@ -6,14 +6,18 @@ import WaxVectorSearch
 public actor WaxSession {
     private enum ConcreteVectorEngine: Sendable {
         case usearch(USearchVectorEngine)
+        #if canImport(Metal)
         case metal(MetalVectorEngine)
+        #endif
 
         var erased: any VectorSearchEngine {
             switch self {
             case .usearch(let engine):
                 return engine
+            #if canImport(Metal)
             case .metal(let engine):
                 return engine
+            #endif
             }
         }
 
@@ -21,8 +25,10 @@ public actor WaxSession {
             switch self {
             case .usearch(let engine):
                 try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            #if canImport(Metal)
             case .metal(let engine):
                 try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            #endif
             }
         }
 
@@ -30,8 +36,10 @@ public actor WaxSession {
             switch self {
             case .usearch(let engine):
                 try await engine.stageForCommit(into: wax)
+            #if canImport(Metal)
             case .metal(let engine):
                 try await engine.stageForCommit(into: wax)
+            #endif
             }
         }
     }
@@ -502,6 +510,7 @@ public actor WaxSession {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> ConcreteVectorEngine {
+        #if canImport(Metal)
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             do {
                 let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
@@ -514,6 +523,7 @@ public actor WaxSession {
                 )
             }
         }
+        #endif
         let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
         return .usearch(usearch)
     }

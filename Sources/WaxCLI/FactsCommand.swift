@@ -176,7 +176,7 @@ private func parseObjectValue(_ raw: String) -> FactValue {
     if let intValue = Int64(raw) {
         return .int(intValue)
     }
-    if let doubleValue = Double(raw), raw.contains(".") {
+    if let doubleValue = Double(raw), raw.contains(".") || raw.lowercased().contains("e") {
         return .double(doubleValue)
     }
     switch raw.lowercased() {
