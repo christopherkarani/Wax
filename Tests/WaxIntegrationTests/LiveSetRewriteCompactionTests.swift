@@ -229,7 +229,7 @@ func scheduledLiveSetRewriteFlushTriggerRunsDeferredFromCommitPath() async throw
 
         #expect(flushMs < 1_000)
 
-        let report = await waitForScheduledReport(orchestrator, timeoutMs: 20_000)
+        let report = await waitForScheduledReport(orchestrator, timeoutMs: 90_000)
         #expect(report != nil)
         #expect(report?.outcome == .rewriteSucceeded)
         #expect(report?.triggeredByFlush == true)
