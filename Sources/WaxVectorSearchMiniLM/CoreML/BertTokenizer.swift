@@ -554,18 +554,18 @@ final class WordpieceTokenizer: @unchecked Sendable {
 struct Utils {
     /// Time a block in ms
     static func time<T>(label: String, _ block: () -> T) -> T {
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let startTime = Date().timeIntervalSinceReferenceDate
         let result = block()
-        let diff = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        let diff = (Date().timeIntervalSinceReferenceDate - startTime) * 1000
         print("[\(label)] \(diff)ms")
         return result
     }
 
     /// Time a block in seconds and return (output, time)
     static func time<T>(_ block: () -> T) -> (T, Double) {
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let startTime = Date().timeIntervalSinceReferenceDate
         let result = block()
-        let diff = CFAbsoluteTimeGetCurrent() - startTime
+        let diff = Date().timeIntervalSinceReferenceDate - startTime
         return (result, diff)
     }
 
