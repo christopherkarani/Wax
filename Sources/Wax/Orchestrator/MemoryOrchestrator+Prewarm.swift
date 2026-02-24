@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(WaxVectorSearchMiniLM)
+#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 #endif
 
@@ -17,7 +17,7 @@ public enum WaxPrewarm {
         }
     }
 
-    #if canImport(WaxVectorSearchMiniLM)
+    #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
     public static func miniLM(sampleText: String = "hello") async throws {
         let embedder = try MiniLMEmbedder()
         try await embedder.prewarm()

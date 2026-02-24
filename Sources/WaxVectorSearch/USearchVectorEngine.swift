@@ -17,7 +17,7 @@ public actor USearchVectorEngine {
     private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
 
-    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.writeLock()
         do {
             let result = try await body()
@@ -29,7 +29,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.readLock()
         do {
             let result = try await body()

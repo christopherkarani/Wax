@@ -6,8 +6,9 @@
 //
 
 import Foundation
-import CoreML
 import WaxCore
+#if canImport(CoreML)
+import CoreML
 
 public struct BatchInputs {
     public let inputIds: MLMultiArray
@@ -446,6 +447,8 @@ extension BertTokenizer {
 }
 #endif
 
+#endif // canImport(CoreML)
+
 final class BasicTokenizer: @unchecked Sendable {
     let neverSplit = [
         "[UNK]", "[SEP]", "[PAD]", "[CLS]", "[MASK]",
@@ -604,6 +607,7 @@ struct Utils {
     }
 }
 
+#if canImport(CoreML)
 extension MLMultiArray {
     /// All values will be stored in the last dimension of the MLMultiArray (default is dims=1)
     static func from(_ arr: [Int], dims: Int = 1) throws -> MLMultiArray {
@@ -697,3 +701,4 @@ extension MLMultiArray {
         return array
     }
 }
+#endif // canImport(CoreML)

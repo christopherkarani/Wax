@@ -4,6 +4,7 @@
 // This file was automatically generated and should not be edited.
 //
 
+#if canImport(CoreML)
 import CoreML
 
 
@@ -321,3 +322,4 @@ public class all_MiniLM_L6_v2 {
         return results
     }
 }
+#endif // canImport(CoreML)

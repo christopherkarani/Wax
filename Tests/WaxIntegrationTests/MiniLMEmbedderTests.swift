@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-#if canImport(WaxVectorSearchMiniLM)
+#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 
 private func isMiniLMInferenceEnabled() -> Bool {

@@ -1,6 +1,7 @@
-import CoreML
 import Foundation
 import Accelerate
+#if canImport(CoreML)
+import CoreML
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
 @available(macOS 15.0, iOS 18.0, *)
@@ -389,3 +390,4 @@ public extension MiniLMEmbeddings {
         decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
     }
 }
+#endif // canImport(CoreML)
