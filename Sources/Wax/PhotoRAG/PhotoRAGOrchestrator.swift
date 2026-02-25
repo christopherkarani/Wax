@@ -1,3 +1,4 @@
+#if canImport(ImageIO)
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -1314,3 +1315,5 @@ public actor PhotoRAGOrchestrator {
         #endif
     }
 }
+
+#endif // canImport(ImageIO)

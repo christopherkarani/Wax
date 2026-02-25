@@ -1,3 +1,4 @@
+#if canImport(ImageIO)
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -1275,3 +1276,5 @@ public actor VideoRAGOrchestrator {
         return meta
     }
 }
+
+#endif // canImport(ImageIO)

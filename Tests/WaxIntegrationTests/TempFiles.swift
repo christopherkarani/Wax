@@ -2,7 +2,7 @@ import Foundation
 
 enum TempFiles {
     static func withTempFile<T>(
-        fileExtension ext: String = "mv2s",
+        fileExtension ext: String = "wax",
         _ body: (URL) async throws -> T
     ) async rethrows -> T {
         let url = FileManager.default.temporaryDirectory

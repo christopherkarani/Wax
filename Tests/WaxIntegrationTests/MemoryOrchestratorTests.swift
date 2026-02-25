@@ -114,17 +114,17 @@ func memoryOrchestratorSessionTaggingAndChunkMetadataPersist() async throws {
 }
 
 @Test
-func memoryOrchestratorEnableVectorSearchRequiresEmbedder() async throws {
+func memoryOrchestratorAutoDisablesVectorSearchWhenNoEmbedder() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = true
 
-        do {
-            _ = try await MemoryOrchestrator(at: url, config: config, embedder: nil)
-            #expect(Bool(false))
-        } catch {
-            #expect(Bool(true))
-        }
+        // When embedder is nil and no pre-existing vec index exists,
+        // the orchestrator auto-disables vector search instead of throwing.
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: nil)
+        let rtStats = await orchestrator.runtimeStats()
+        #expect(rtStats.vectorSearchEnabled == false)
+        try await orchestrator.close()
     }
 }
 

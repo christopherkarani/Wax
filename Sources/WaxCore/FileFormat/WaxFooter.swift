@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MV2SFooter: Equatable, Sendable {
+public struct WaxFooter: Equatable, Sendable {
     public static let size: Int = Int(Constants.footerSize)
     public static let magic: Data = Constants.footerMagic
 
@@ -35,7 +35,7 @@ public struct MV2SFooter: Equatable, Sendable {
         return data
     }
 
-    public static func decode(from data: Data) throws -> MV2SFooter {
+    public static func decode(from data: Data) throws -> WaxFooter {
         guard data.count == Self.size else {
             throw WaxError.invalidFooter(reason: "footer must be \(Self.size) bytes (got \(data.count))")
         }
@@ -52,7 +52,7 @@ public struct MV2SFooter: Equatable, Sendable {
         let walCommittedSeq = try decoder.decode(UInt64.self)
         try decoder.finalize()
 
-        return MV2SFooter(
+        return WaxFooter(
             tocLen: tocLen,
             tocHash: tocHash,
             generation: generation,
@@ -62,7 +62,7 @@ public struct MV2SFooter: Equatable, Sendable {
 
     /// Validates `toc_hash` against the TOC bytes.
     ///
-    /// MV2S v1 semantics:
+    /// Wax v1 semantics:
     /// - `toc_checksum` is the final 32 bytes of the TOC encoding.
     /// - The checksum is computed as `SHA256(toc_body + zero32)` where `toc_body = toc_bytes[0..<len-32]`.
     /// - Footer `toc_hash` must equal both the computed checksum and the stamped `toc_checksum` bytes.

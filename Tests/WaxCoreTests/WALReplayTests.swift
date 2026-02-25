@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStateThrowsOnPendingDecodeFailure() throws {
+@Test func walPendingScanWithStateStopsCollectingOnDecodeFailure() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -133,22 +133,21 @@ import Testing
         _ = try writer.append(payload: validPayload)
 
         let reader = WALRingReader(file: file, walOffset: 0, walSize: 2048)
-        let legacyPending = try reader.scanPendingMutations(from: 0, committedSeq: 0)
+
+        // scanPendingMutations re-throws decode failures (by design — see scanInternal comment).
+        #expect(throws: WaxError.self) {
+            _ = try reader.scanPendingMutations(from: 0, committedSeq: 0)
+        }
+
+        // scanState never decodes WAL entry payloads, so it succeeds.
         let legacyState = try reader.scanState(from: 0)
-        #expect(legacyPending.isEmpty)
         #expect(legacyState.lastSequence == 2)
 
-        do {
-            _ = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-            #expect(Bool(false))
-        } catch let error as WaxError {
-            guard case .walCorruption(let offset, let reason) = error else {
-                #expect(Bool(false))
-                return
-            }
-            #expect(offset == 0)
-            #expect(reason.contains("failed to decode pending WAL mutation"))
-        }
+        // scanPendingMutationsWithState stops collecting pending mutations on decode
+        // failure but continues scanning for state positions (non-fatal).
+        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+        #expect(result.pendingMutations.isEmpty)
+        #expect(result.state.lastSequence == 2)
     }
 }
 

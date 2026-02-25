@@ -11,7 +11,7 @@ import Testing
 }
 
 @Test func constantsAreCorrect() {
-    #expect(Constants.magic == "MV2S".data(using: .utf8)!)
+    #expect(Constants.magic == "WAX1".data(using: .utf8)!)
     #expect(Constants.headerSize == 4096)
-    #expect(Constants.footerMagic == "MV2SFOOT".data(using: .utf8)!)
+    #expect(Constants.footerMagic == "WAX1FOOT".data(using: .utf8)!)
 }

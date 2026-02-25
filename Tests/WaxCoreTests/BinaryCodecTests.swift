@@ -158,6 +158,90 @@ import Testing
     }
 }
 
+// MARK: - Optional UInt16
+
+@Test func optionalUInt16PresentRoundtrip() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(Optional<UInt16>.some(0x1234))
+    #expect(encoder.data.count == 3) // 1 tag + 2 payload
+    #expect(encoder.data[0] == 1)
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    #expect(try decoder.decodeOptional(UInt16.self) == 0x1234)
+    try decoder.finalize()
+}
+
+@Test func optionalUInt16AbsentRoundtrip() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(Optional<UInt16>.none)
+    #expect(encoder.data.count == 1)
+    #expect(encoder.data[0] == 0)
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    #expect(try decoder.decodeOptional(UInt16.self) == nil)
+    try decoder.finalize()
+}
+
+// MARK: - Typed array encoders
+
+@Test func uint16ArrayRoundtrip() throws {
+    var encoder = BinaryEncoder()
+    try encoder.encode([UInt16(100), UInt16(200), UInt16(300)])
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    let count = try decoder.decode(UInt32.self)
+    #expect(count == 3)
+    #expect(try decoder.decode(UInt16.self) == 100)
+    #expect(try decoder.decode(UInt16.self) == 200)
+    #expect(try decoder.decode(UInt16.self) == 300)
+    try decoder.finalize()
+}
+
+@Test func uint32ArrayRoundtrip() throws {
+    var encoder = BinaryEncoder()
+    try encoder.encode([UInt32(0xDEAD), UInt32(0xBEEF)])
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    let count = try decoder.decode(UInt32.self)
+    #expect(count == 2)
+    #expect(try decoder.decode(UInt32.self) == 0xDEAD)
+    #expect(try decoder.decode(UInt32.self) == 0xBEEF)
+    try decoder.finalize()
+}
+
+@Test func int64ArrayRoundtrip() throws {
+    var encoder = BinaryEncoder()
+    try encoder.encode([Int64(-1), Int64(0), Int64(Int64.max)])
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    let count = try decoder.decode(UInt32.self)
+    #expect(count == 3)
+    #expect(try decoder.decode(Int64.self) == -1)
+    #expect(try decoder.decode(Int64.self) == 0)
+    #expect(try decoder.decode(Int64.self) == Int64.max)
+    try decoder.finalize()
+}
+
+// MARK: - Pad
+
+@Test func padToSizeAppendsZeros() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt8(0xFF))
+    encoder.pad(to: 8)
+    #expect(encoder.data.count == 8)
+    #expect(encoder.data[0] == 0xFF)
+    for i in 1..<8 {
+        #expect(encoder.data[i] == 0)
+    }
+}
+
+@Test func padToSmallerSizeIsNoOp() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt64(42))
+    encoder.pad(to: 4) // already 8 bytes, pad to 4 is a no-op
+    #expect(encoder.data.count == 8)
+}
+
 @Test func invalidUTF8Throws() throws {
     var encoder = BinaryEncoder()
     encoder.encode(UInt32(3))

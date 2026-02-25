@@ -15,12 +15,16 @@ struct WaxRepoCommand: ParsableCommand {
 
 WaxRepoCommand.main()
 #else
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 let message = "WaxRepo requires the WaxRepo trait. Build with --traits WaxRepo.\n"
 if let data = message.data(using: .utf8) {
     FileHandle.standardError.write(data)
 }
-Darwin.exit(EXIT_FAILURE)
+exit(EXIT_FAILURE)
 #endif

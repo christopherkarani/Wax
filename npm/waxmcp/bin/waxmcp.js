@@ -64,10 +64,24 @@ for (const command of candidates) {
   process.exit(result.status === null ? 1 : result.status);
 }
 
-console.error("waxmcp: no Wax CLI found.");
-console.error("Install and build WaxCLI, or set WAX_CLI_BIN to the WaxCLI executable path.");
-console.error("Example:");
-console.error("  export WAX_CLI_BIN=/path/to/Wax/.build/debug/WaxCLI");
-console.error("  npx -y waxmcp@latest mcp serve");
-console.error("If using the published waxmcp package, packaged binaries are at dist/darwin-arm64 and dist/darwin-x64.");
+const checkedLocations = [
+  process.env.WAX_CLI_BIN
+    ? `  1. $WAX_CLI_BIN = ${process.env.WAX_CLI_BIN}`
+    : "  1. $WAX_CLI_BIN (not set)",
+  `  2. Bundled binary at dist/darwin-${os.arch()}/WaxCLI`,
+  "  3. 'wax' in PATH",
+  "  4. 'WaxCLI' in PATH",
+  `  5. ${path.join(process.cwd(), ".build", "debug", "WaxCLI")}`,
+];
+console.error(`
+ERROR: No valid WaxCLI binary found.
+
+Checked:
+${checkedLocations.join("\n")}
+
+Fix options:
+  Install:  npx waxmcp@latest
+  Build:    swift build --product WaxCLI --traits MCPServer
+  Override: export WAX_CLI_BIN=/path/to/WaxCLI
+`);
 process.exit(1);

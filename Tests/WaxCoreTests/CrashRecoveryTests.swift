@@ -150,7 +150,7 @@ import Testing
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -193,7 +193,7 @@ import Testing
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -227,12 +227,12 @@ import Testing
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
-    func selectedHeader(at fileURL: URL) throws -> MV2SHeaderPage {
+    func selectedHeader(at fileURL: URL) throws -> WaxHeaderPage {
         let file = try FDFile.open(at: fileURL)
         defer { try? file.close() }
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             throw WaxError.invalidHeader(reason: "no valid header pages")
         }
         return selected.page
@@ -276,7 +276,7 @@ import Testing
         staleHeader.footerOffset = gen1Header.footerOffset
         staleHeader.walCommittedSeq = gen1Header.walCommittedSeq
         staleHeader.tocChecksum = gen1Header.tocChecksum
-        staleHeader.walReplaySnapshot = MV2SHeaderPage.WALReplaySnapshot(
+        staleHeader.walReplaySnapshot = WaxHeaderPage.WALReplaySnapshot(
             fileGeneration: gen2Header.fileGeneration,
             walCommittedSeq: gen2Header.walCommittedSeq,
             footerOffset: gen2Header.footerOffset,
@@ -324,7 +324,7 @@ import Testing
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -343,7 +343,7 @@ import Testing
 
         var mutatedHeader = selected.page
         mutatedHeader.headerPageGeneration = selected.page.headerPageGeneration &+ 1
-        mutatedHeader.walReplaySnapshot = MV2SHeaderPage.WALReplaySnapshot(
+        mutatedHeader.walReplaySnapshot = WaxHeaderPage.WALReplaySnapshot(
             fileGeneration: selected.page.fileGeneration &+ 9,
             walCommittedSeq: selected.page.walCommittedSeq &+ 1,
             footerOffset: selected.page.footerOffset &+ 64,

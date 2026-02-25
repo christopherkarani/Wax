@@ -1,3 +1,4 @@
+#if canImport(ImageIO)
 import Foundation
 import ImageIO
 import os
@@ -240,3 +241,5 @@ enum PhotosAssetMetadata {
         return nil
     }
 }
+
+#endif // canImport(ImageIO)

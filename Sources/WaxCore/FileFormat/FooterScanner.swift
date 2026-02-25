@@ -3,11 +3,11 @@ import Foundation
 public struct FooterSlice: Equatable, Sendable {
     public let footerOffset: UInt64
     public let tocOffset: UInt64
-    public let footer: MV2SFooter
+    public let footer: WaxFooter
     public let tocBytes: Data
 }
 
-/// Scans for the most recent valid MV2S footer.
+/// Scans for the most recent valid Wax footer.
 public enum FooterScanner {
     public struct Limits: Sendable {
         public var maxTocBytes: UInt64 = Constants.maxTocBytes
@@ -18,7 +18,7 @@ public enum FooterScanner {
 
     /// Bounded scan over an in-memory buffer. Intended for tests and small buffers.
     public static func findLastValidFooter(in bytes: Data, limits: Limits = .init()) -> FooterSlice? {
-        let footerSize = MV2SFooter.size
+        let footerSize = WaxFooter.size
         guard bytes.count >= footerSize else { return nil }
 
         let scanWindow = Int(min(UInt64(bytes.count), limits.maxFooterScanBytes))
@@ -35,7 +35,7 @@ public enum FooterScanner {
             let footerEnd = pos + footerSize
             guard footerEnd <= bytes.count else { continue }
 
-            guard let footer = try? MV2SFooter.decode(from: bytes.subdata(in: pos..<footerEnd)) else {
+            guard let footer = try? WaxFooter.decode(from: bytes.subdata(in: pos..<footerEnd)) else {
                 continue
             }
 
@@ -74,7 +74,7 @@ public enum FooterScanner {
         defer { try? file.close() }
 
         let fileSize = try file.size()
-        guard fileSize >= UInt64(MV2SFooter.size) else { return nil }
+        guard fileSize >= UInt64(WaxFooter.size) else { return nil }
 
         let scanStart = fileSize > limits.maxFooterScanBytes ? (fileSize - limits.maxFooterScanBytes) : 0
         guard let best = try findBestFooter(
@@ -103,11 +103,11 @@ public enum FooterScanner {
         defer { try? file.close() }
 
         let fileSize = try file.size()
-        let footerSize = UInt64(MV2SFooter.size)
+        let footerSize = UInt64(WaxFooter.size)
         guard footerOffset + footerSize <= fileSize else { return nil }
 
         let footerBytes = try file.readExactly(length: Int(footerSize), at: footerOffset)
-        guard let footer = try? MV2SFooter.decode(from: footerBytes) else { return nil }
+        guard let footer = try? WaxFooter.decode(from: footerBytes) else { return nil }
         guard footer.tocLen >= 32 else { return nil }
         guard footer.tocLen <= limits.maxTocBytes else { return nil }
         guard footerOffset >= footer.tocLen else { return nil }
@@ -135,13 +135,13 @@ public enum FooterScanner {
         fileSize: UInt64,
         scanStart: UInt64,
         limits: Limits
-    ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: MV2SFooter)? {
-        let footerSize = UInt64(MV2SFooter.size)
-        let overlap = UInt64(MV2SFooter.size - 1)
+    ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
+        let footerSize = UInt64(WaxFooter.size)
+        let overlap = UInt64(WaxFooter.size - 1)
         let chunkSize: UInt64 = 1 * 1024 * 1024
 
         var end = fileSize
-        var best: (footerOffset: UInt64, tocOffset: UInt64, footer: MV2SFooter)?
+        var best: (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)?
 
         while end > scanStart, end >= footerSize {
             let start = max(scanStart, end > chunkSize ? (end - chunkSize) : 0)
@@ -182,11 +182,11 @@ public enum FooterScanner {
         file: FDFile,
         fileSize: UInt64,
         limits: Limits
-    ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: MV2SFooter)? {
-        let footerSize = MV2SFooter.size
+    ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
+        let footerSize = WaxFooter.size
         guard window.count >= footerSize else { return nil }
 
-        var best: (footerOffset: UInt64, tocOffset: UInt64, footer: MV2SFooter)?
+        var best: (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)?
 
         for localPos in stride(from: window.count - footerSize, through: 0, by: -1) {
             guard window[localPos] == Constants.footerMagic[0] else { continue }
@@ -197,7 +197,7 @@ public enum FooterScanner {
             let footerEnd = localPos + footerSize
             guard footerEnd <= window.count else { continue }
 
-            guard let footer = try? MV2SFooter.decode(from: window.subdata(in: localPos..<footerEnd)) else {
+            guard let footer = try? WaxFooter.decode(from: window.subdata(in: localPos..<footerEnd)) else {
                 continue
             }
 

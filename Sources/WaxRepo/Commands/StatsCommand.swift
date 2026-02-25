@@ -31,7 +31,7 @@ struct StatsCommand: ParsableCommand {
     private func runStats() async throws {
         let repoRoot = try resolveRepoRoot(repoPath)
         let waxDir = URL(fileURLWithPath: repoRoot).appendingPathComponent(".wax-repo")
-        let storePath = waxDir.appendingPathComponent("store.mv2s")
+        let storePath = waxDir.appendingPathComponent("store.wax")
         let lastHashFile = waxDir.appendingPathComponent("last-indexed-hash")
 
         guard FileManager.default.fileExists(atPath: storePath.path) else {

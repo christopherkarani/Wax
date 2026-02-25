@@ -5,7 +5,9 @@ import WaxVectorSearch
 public actor WaxVectorSearchSession {
     private enum ConcreteVectorEngine: Sendable {
         case usearch(USearchVectorEngine)
+        #if canImport(Metal)
         case metal(MetalVectorEngine)
+        #endif
     }
 
     public let wax: Wax
@@ -26,6 +28,7 @@ public actor WaxVectorSearchSession {
         self.metric = metric
         self.dimensions = dimensions
         let loadedEngine: ConcreteVectorEngine
+        #if canImport(Metal)
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             // Try Metal first; if load fails, fall back to CPU without aborting the session.
             do {
@@ -44,12 +47,18 @@ public actor WaxVectorSearchSession {
             let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
             loadedEngine = .usearch(usearch)
         }
+        #else
+        let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
+        loadedEngine = .usearch(usearch)
+        #endif
         self.concreteEngine = loadedEngine
         switch loadedEngine {
         case .usearch(let engine):
             self.engine = engine
+        #if canImport(Metal)
         case .metal(let engine):
             self.engine = engine
+        #endif
         }
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
@@ -199,8 +208,10 @@ public actor WaxVectorSearchSession {
         switch concreteEngine {
         case .usearch(let engine):
             try await engine.add(frameId: frameId, vector: vector)
+        #if canImport(Metal)
         case .metal(let engine):
             try await engine.add(frameId: frameId, vector: vector)
+        #endif
         }
     }
 
@@ -208,8 +219,10 @@ public actor WaxVectorSearchSession {
         switch concreteEngine {
         case .usearch(let engine):
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+        #if canImport(Metal)
         case .metal(let engine):
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+        #endif
         }
     }
 
@@ -217,8 +230,10 @@ public actor WaxVectorSearchSession {
         switch concreteEngine {
         case .usearch(let engine):
             try await engine.remove(frameId: frameId)
+        #if canImport(Metal)
         case .metal(let engine):
             try await engine.remove(frameId: frameId)
+        #endif
         }
     }
 
@@ -226,8 +241,10 @@ public actor WaxVectorSearchSession {
         switch concreteEngine {
         case .usearch(let engine):
             return try await engine.search(vector: vector, topK: topK)
+        #if canImport(Metal)
         case .metal(let engine):
             return try await engine.search(vector: vector, topK: topK)
+        #endif
         }
     }
 
@@ -235,8 +252,10 @@ public actor WaxVectorSearchSession {
         switch concreteEngine {
         case .usearch(let engine):
             try await engine.stageForCommit(into: wax)
+        #if canImport(Metal)
         case .metal(let engine):
             try await engine.stageForCommit(into: wax)
+        #endif
         }
     }
 }

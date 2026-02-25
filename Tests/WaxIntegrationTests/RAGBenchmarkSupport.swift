@@ -87,7 +87,7 @@ struct BenchmarkTextFactory {
         "Swift concurrency uses actors and tasks for safe parallelism.",
         "Vector search compares embeddings to find semantic neighbors.",
         "Hybrid search fuses lexical and vector signals for recall.",
-        "Wax stores memory in a single MV2S file with WAL safety.",
+        "Wax stores memory in a single Wax file with WAL safety.",
         "RAG pipelines rank, expand, and truncate context deterministically.",
         "Token budgets keep prompts stable across runs."
     ]

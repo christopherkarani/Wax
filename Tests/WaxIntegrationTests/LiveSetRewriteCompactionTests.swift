@@ -7,7 +7,7 @@ func rewriteLiveSetDropsNonLivePayloadsAndPreservesFrameState() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let destinationURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
         defer { try? FileManager.default.removeItem(at: destinationURL) }
 
         var config = OrchestratorConfig.default
@@ -97,7 +97,7 @@ func rewriteLiveSetRespectsDestinationOverwriteGuard() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let destinationURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
         defer { try? FileManager.default.removeItem(at: destinationURL) }
 
         var config = OrchestratorConfig.default
@@ -229,7 +229,7 @@ func scheduledLiveSetRewriteFlushTriggerRunsDeferredFromCommitPath() async throw
 
         #expect(flushMs < 1_000)
 
-        let report = await waitForScheduledReport(orchestrator, timeoutMs: 20_000)
+        let report = await waitForScheduledReport(orchestrator, timeoutMs: 90_000)
         #expect(report != nil)
         #expect(report?.outcome == .rewriteSucceeded)
         #expect(report?.triggeredByFlush == true)

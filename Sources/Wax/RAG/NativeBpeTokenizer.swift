@@ -1,6 +1,4 @@
-import Accelerate
 import Foundation
-import os
 
 public final class NativeBpeTokenizer: @unchecked Sendable {
     public enum Encoding: String, Sendable {
@@ -18,14 +16,19 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     }()
 
     private final class LockedCache<Key: Hashable & Sendable, Value: Sendable>: @unchecked Sendable {
-        private let lock = OSAllocatedUnfairLock(initialState: [Key: Value]())
+        private let lock = NSLock()
+        private var state: [Key: Value] = [:]
 
         func get(_ key: Key) -> Value? {
-            lock.withLock { $0[key] }
+            lock.lock()
+            defer { lock.unlock() }
+            return state[key]
         }
 
         func set(_ key: Key, _ value: Value) {
-            lock.withLock { $0[key] = value }
+            lock.lock()
+            defer { lock.unlock() }
+            state[key] = value
         }
     }
 
@@ -258,8 +261,6 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     }
 
     /// Returns the directory that contains Wax’s bundled `.tiktoken` encoding files.
-    ///
-    /// This is used to configure SwiftTiktoken for fully offline operation in tests and on-device.
     static func bundledEncodingDirectoryURL() -> URL? {
         let url =
             Bundle.module.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken")

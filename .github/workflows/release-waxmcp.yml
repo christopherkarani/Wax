@@ -26,6 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run MCP trait tests
+        run: |
+          set -euo pipefail
+          SKIP_REGEX="(RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark)"
+          swift test --parallel --traits MCPServer --skip "$SKIP_REGEX"
+
       - name: Build WaxCLI
         run: |
           set -euo pipefail
@@ -82,6 +88,21 @@ jobs:
           test -x npm/waxmcp/dist/darwin-arm64/WaxCLI
           chmod +x npm/waxmcp/dist/darwin-x64/WaxCLI
           test -x npm/waxmcp/dist/darwin-x64/WaxCLI
+
+      - name: Verify version consistency
+        run: |
+          set -euo pipefail
+          NPM_VERSION=$(node -p "require('./npm/waxmcp/package.json').version")
+          echo "npm package version: $NPM_VERSION"
+          # Extract the hardcoded version from main.swift and compare
+          SWIFT_VERSION=$(grep -E 'let serverVersion = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/WaxMCPServer/main.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          echo "Swift server version: $SWIFT_VERSION"
+          if [ "$NPM_VERSION" != "$SWIFT_VERSION" ]; then
+            echo "ERROR: version mismatch — npm=$NPM_VERSION swift=$SWIFT_VERSION"
+            echo "Update 'serverVersion' in Sources/WaxMCPServer/main.swift to match npm/waxmcp/package.json"
+            exit 1
+          fi
+          echo "Version consistency check passed: $NPM_VERSION"
 
       - uses: actions/setup-node@v4
         with:

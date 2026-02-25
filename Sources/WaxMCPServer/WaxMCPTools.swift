@@ -7,7 +7,6 @@ enum WaxMCPTools {
     private static let maxContentBytes = 128 * 1024
     private static let maxTopK = 200
     private static let maxRecallLimit = 100
-    private static let maxVideoPaths = 50
     private static let maxGraphLimit = 500
     private static let maxGraphIdentifierBytes = 256
     private static let maxGraphKindBytes = 64
@@ -17,8 +16,6 @@ enum WaxMCPTools {
     static func register(
         on server: Server,
         memory: MemoryOrchestrator,
-        video: VideoRAGOrchestrator?,
-        photo: PhotoRAGOrchestrator?,
         structuredMemoryEnabled: Bool
     ) async {
         _ = await server.withMethodHandler(ListTools.self) { _ in
@@ -29,15 +26,13 @@ enum WaxMCPTools {
         }
 
         _ = await server.withMethodHandler(CallTool.self) { params in
-            await handleCall(params: params, memory: memory, video: video, photo: photo)
+            await handleCall(params: params, memory: memory)
         }
     }
 
     static func handleCall(
         params: CallTool.Parameters,
-        memory: MemoryOrchestrator,
-        video: VideoRAGOrchestrator?,
-        photo: PhotoRAGOrchestrator?
+        memory: MemoryOrchestrator
     ) async -> CallTool.Result {
         do {
             switch params.name {
@@ -69,16 +64,6 @@ enum WaxMCPTools {
                 return try await factsQuery(arguments: params.arguments, memory: memory)
             case "wax_entity_resolve":
                 return try await entityResolve(arguments: params.arguments, memory: memory)
-            case "wax_video_ingest":
-                return try await videoIngest(arguments: params.arguments, video: video)
-            case "wax_video_recall":
-                return try await videoRecall(arguments: params.arguments, video: video)
-            case "wax_photo_ingest":
-                _ = photo
-                return redirectToSojuError()
-            case "wax_photo_recall":
-                _ = photo
-                return redirectToSojuError()
             default:
                 return errorResult(
                     message: "Unknown tool '\(params.name)'.",
@@ -139,9 +124,10 @@ enum WaxMCPTools {
         let context = try await memory.recall(query: query, frameFilter: sessionFilter)
         let selected = context.items.prefix(limit)
         var lines: [String] = []
-        lines.reserveCapacity(selected.count + 2)
+        lines.reserveCapacity(selected.count + 3)
         lines.append("Query: \(context.query)")
         lines.append("Total tokens: \(context.totalTokens)")
+        lines.append("Results: \(selected.count) of \(limit) requested (orchestrator returned \(context.items.count))")
 
         for (index, item) in selected.enumerated() {
             lines.append(
@@ -404,8 +390,8 @@ enum WaxMCPTools {
         if let predicateRaw {
             try validatePredicateKey(predicateRaw, field: "predicate")
         }
-        let subject = subjectRaw.map(EntityKey.init)
-        let predicate = predicateRaw.map(PredicateKey.init)
+        let subject = subjectRaw.map { EntityKey($0) }
+        let predicate = predicateRaw.map { PredicateKey($0) }
         let asOf = try args.optionalInt64("as_of") ?? Int64.max
         let limit = try args.optionalInt("limit") ?? 20
         guard limit > 0, limit <= maxGraphLimit else {
@@ -459,125 +445,6 @@ enum WaxMCPTools {
             "count": value(from: matches.count),
             "entities": .array(payload),
         ])
-    }
-
-    private static func videoIngest(
-        arguments: [String: Value]?,
-        video: VideoRAGOrchestrator?
-    ) async throws -> CallTool.Result {
-        guard let video else {
-            return errorResult(
-                message: "Video RAG is unavailable in this runtime.",
-                code: "video_unavailable"
-            )
-        }
-
-        let args = ToolArguments(arguments)
-        let paths = try args.requiredStringArray("paths")
-        guard !paths.isEmpty else {
-            throw ToolValidationError.missing("paths")
-        }
-        guard paths.count <= maxVideoPaths else {
-            throw ToolValidationError.invalid("paths supports up to \(maxVideoPaths) files per call")
-        }
-
-        let customID = try args.optionalString("id")
-        if customID != nil, paths.count != 1 {
-            throw ToolValidationError.invalid("id can only be used when exactly one path is provided")
-        }
-
-        var files: [VideoFile] = []
-        files.reserveCapacity(paths.count)
-
-        for (index, path) in paths.enumerated() {
-            let url = URL(fileURLWithPath: path).standardizedFileURL
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw ToolValidationError.invalid("video file does not exist: \(path)")
-            }
-
-            let generatedID: String = {
-                if let customID { return customID }
-                let stem = url.deletingPathExtension().lastPathComponent
-                if paths.count == 1 {
-                    return stem
-                }
-                return "\(stem)-\(index + 1)"
-            }()
-            files.append(VideoFile(id: generatedID, url: url))
-        }
-
-        try await video.ingest(files: files)
-        try await video.flush()
-
-        return jsonResult([
-            "status": "ok",
-            "ingested": value(from: files.count),
-            "ids": .array(files.map { .string($0.id) }),
-        ])
-    }
-
-    private static func videoRecall(
-        arguments: [String: Value]?,
-        video: VideoRAGOrchestrator?
-    ) async throws -> CallTool.Result {
-        guard let video else {
-            return errorResult(
-                message: "Video RAG is unavailable in this runtime.",
-                code: "video_unavailable"
-            )
-        }
-
-        let args = ToolArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: maxContentBytes)
-        let limit = try args.optionalInt("limit") ?? 5
-        guard limit > 0, limit <= maxRecallLimit else {
-            throw ToolValidationError.invalid("limit must be between 1 and \(maxRecallLimit)")
-        }
-
-        let timeRange: ClosedRange<Date>? = try {
-            guard let object = try args.optionalObject("time_range") else { return nil }
-            guard let start = valueAsDouble(object["start"]),
-                  let end = valueAsDouble(object["end"])
-            else {
-                throw ToolValidationError.invalid("time_range requires numeric start and end")
-            }
-            guard start <= end else {
-                throw ToolValidationError.invalid("time_range.start must be <= time_range.end")
-            }
-            return Date(timeIntervalSince1970: start)...Date(timeIntervalSince1970: end)
-        }()
-
-        let response = try await video.recall(
-            VideoQuery(
-                text: query,
-                timeRange: timeRange,
-                resultLimit: limit
-            )
-        )
-
-        var lines: [String] = []
-        lines.reserveCapacity(response.items.count * 3)
-        for item in response.items {
-            for segment in item.segments {
-                let row: Value = [
-                    "videoSource": value(from: sourceName(item.videoID.source)),
-                    "videoId": value(from: item.videoID.id),
-                    "startMs": value(from: UInt64(max(0, segment.startMs))),
-                    "endMs": value(from: UInt64(max(0, segment.endMs))),
-                    "score": value(from: Double(segment.score)),
-                    "snippet": value(from: segment.transcriptSnippet ?? ""),
-                ]
-                lines.append(encodeJSON(row) ?? "{}")
-            }
-        }
-
-        return textResult(lines.joined(separator: "\n"))
-    }
-
-    // Returns isError: true so MCP clients know the tool is not yet functional.
-    // Photo RAG will be implemented via Soju; until then callers must treat this as an error.
-    private static func redirectToSojuError() -> CallTool.Result {
-        errorResult(message: ToolSchemas.sojuMessage, code: "not_implemented")
     }
 
     private static func parseSessionFrameFilter(_ args: ToolArguments) throws -> FrameFilter? {
@@ -835,9 +702,7 @@ enum WaxMCPTools {
             content: [
                 .text(json),
                 .resource(
-                    uri: "wax://tool/result",
-                    mimeType: "application/json",
-                    text: json
+                    resource: .text(json, uri: "wax://tool/result", mimeType: "application/json")
                 ),
             ],
             isError: false
@@ -854,9 +719,7 @@ enum WaxMCPTools {
             content: [
                 .text(message),
                 .resource(
-                    uri: "wax://errors/\(code)",
-                    mimeType: "application/json",
-                    text: json
+                    resource: .text(json, uri: "wax://errors/\(code)", mimeType: "application/json")
                 ),
             ],
             isError: true
@@ -883,7 +746,13 @@ enum WaxMCPTools {
             case "\n": result += "\\n"
             case "\r": result += "\\r"
             case "\t": result += "\\t"
-            default: result.append(char)
+            default:
+                let scalar = char.unicodeScalars.first!
+                if scalar.value < 0x20 {
+                    result += String(format: "\\u%04x", scalar.value)
+                } else {
+                    result.append(char)
+                }
             }
         }
         result += "\""
@@ -939,14 +808,6 @@ enum WaxMCPTools {
         }
     }
 
-    private static func sourceName(_ source: VideoID.Source) -> String {
-        switch source {
-        case .photos:
-            return "photos"
-        case .file:
-            return "file"
-        }
-    }
 }
 
 private struct ToolArguments {

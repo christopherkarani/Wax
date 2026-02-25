@@ -39,7 +39,7 @@ extension TimeIndexManifest: BinaryCodable {
     }
 }
 
-public struct MV2STOC: Equatable, Sendable {
+public struct WaxTOC: Equatable, Sendable {
     public var tocVersion: UInt64
     public var frames: [FrameMeta]
     public var indexes: IndexManifests
@@ -69,8 +69,8 @@ public struct MV2STOC: Equatable, Sendable {
         self.tocChecksum = tocChecksum
     }
 
-    public static func emptyV1() -> MV2STOC {
-        MV2STOC(
+    public static func emptyV1() -> WaxTOC {
+        WaxTOC(
             tocVersion: 1,
             frames: [],
             indexes: IndexManifests(),
@@ -132,12 +132,12 @@ public struct MV2STOC: Equatable, Sendable {
         encoder.encodeFixedBytes(Data(repeating: 0, count: 32)) // toc_checksum placeholder
 
         var data = encoder.data
-        let checksum = MV2STOC.computeChecksum(for: data)
+        let checksum = WaxTOC.computeChecksum(for: data)
         data.replaceSubrange((data.count - 32)..<data.count, with: checksum)
         return data
     }
 
-    public static func decode(from tocBytes: Data) throws -> MV2STOC {
+    public static func decode(from tocBytes: Data) throws -> WaxTOC {
         guard tocBytes.count >= 32 else {
             throw WaxError.invalidToc(reason: "toc must be at least 32 bytes (got \(tocBytes.count))")
         }
@@ -213,7 +213,7 @@ public struct MV2STOC: Equatable, Sendable {
             throw WaxError.invalidToc(reason: "toc_checksum bytes mismatch")
         }
 
-        return MV2STOC(
+        return WaxTOC(
             tocVersion: tocVersion,
             frames: frames,
             indexes: indexes,

@@ -67,6 +67,7 @@ assert_full_pass_rate() {
 
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
+  local mcp_log_file="/tmp/wax-gate-full-mcp.log"
   local skip_regex
   skip_regex="(RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark)"
 
@@ -74,6 +75,11 @@ run_full() {
     swift test --parallel --skip "$skip_regex"
   assert_no_skips "$log_file"
   assert_full_pass_rate "$log_file"
+
+  run_and_capture "$mcp_log_file" \
+    swift test --parallel --traits MCPServer --skip "$skip_regex"
+  assert_no_skips "$mcp_log_file"
+  assert_full_pass_rate "$mcp_log_file"
 
   bash "$ROOT_DIR/scripts/quality/check_corruption_assertions.sh"
 }

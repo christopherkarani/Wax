@@ -1,8 +1,11 @@
 import Foundation
 import WaxCore
 import WaxVectorSearch
+#if canImport(CoreML)
 @preconcurrency import CoreML
+#if canImport(OSLog)
 import OSLog
+#endif
 
 extension MiniLMEmbeddings: @unchecked Sendable {}
 
@@ -178,3 +181,4 @@ private extension MiniLMEmbedder {
         return sizes
     }
 }
+#endif // canImport(CoreML)

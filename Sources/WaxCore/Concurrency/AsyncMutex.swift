@@ -26,7 +26,7 @@ public actor AsyncMutex {
         next.resume()
     }
 
-    public func withLock<T>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    public func withLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await lock()
         defer { unlock() }
         return try await body()

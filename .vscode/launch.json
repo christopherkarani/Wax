@@ -1,0 +1,84 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Debug WaxRepo",
+            "target": "WaxRepo",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug WaxRepo"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Release WaxRepo",
+            "target": "WaxRepo",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release WaxRepo"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Debug WaxMCPServer",
+            "target": "WaxMCPServer",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug WaxMCPServer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Release WaxMCPServer",
+            "target": "WaxMCPServer",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release WaxMCPServer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Debug WaxCrashHarness",
+            "target": "WaxCrashHarness",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug WaxCrashHarness"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Release WaxCrashHarness",
+            "target": "WaxCrashHarness",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release WaxCrashHarness"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Debug WaxCLI",
+            "target": "WaxCLI",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug WaxCLI"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Wax}",
+            "name": "Release WaxCLI",
+            "target": "WaxCLI",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release WaxCLI"
+        }
+    ]
+}

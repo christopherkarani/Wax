@@ -153,23 +153,19 @@ public extension MemoryOrchestrator {
 
         try await commitSurrogateBatchIfNeeded()
 
-        let _ = start.duration(to: ContinuousClock.now)
         return report
     }
 
     func compactIndexes(options: MaintenanceOptions = .init()) async throws -> MaintenanceReport {
-        let start = ContinuousClock.now
-
         var report = MaintenanceReport()
         report.scannedFrames = Int((await wax.stats()).frameCount)
 
         try await session.commit(compact: true)
 
-        let _ = start.duration(to: ContinuousClock.now)
         return report
     }
 
-    /// Rewrite the current committed store into a new `.mv2s` file.
+    /// Rewrite the current committed store into a new `.wax` file.
     ///
     /// This is an offline-style deep compaction path that copies committed frame state and
     /// carries forward committed index bytes. The source file is left unchanged for rollback safety.
@@ -434,7 +430,7 @@ public extension MemoryOrchestrator {
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
         let candidateURL = destinationDirectory
             .appendingPathComponent("\(baseName)-liveset-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
 
         var attemptedRewrite = false
         defer {
@@ -604,7 +600,7 @@ public extension MemoryOrchestrator {
         let prefix = "\(baseName)-liveset-"
         let candidates = contents.filter { url in
             let name = url.lastPathComponent
-            return name.hasPrefix(prefix) && name.hasSuffix(".mv2s")
+            return name.hasPrefix(prefix) && name.hasSuffix(".wax")
         }
         guard candidates.count > keepCount else { return }
 

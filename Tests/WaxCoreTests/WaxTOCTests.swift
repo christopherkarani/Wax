@@ -3,12 +3,12 @@ import Testing
 @testable import WaxCore
 
 private func restampTocChecksum(_ bytes: inout Data) {
-    let checksum = MV2STOC.computeChecksum(for: bytes)
+    let checksum = WaxTOC.computeChecksum(for: bytes)
     bytes.replaceSubrange((bytes.count - 32)..<bytes.count, with: checksum)
 }
 
 @Test func tocChecksumIsStampedAsFinal32Bytes() throws {
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.frames = [
         FrameMeta(
             id: 0,
@@ -35,19 +35,19 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocEncodingIsDeterministic() throws {
-    let toc = MV2STOC.emptyV1()
+    let toc = WaxTOC.emptyV1()
     let first = try toc.encode()
     let second = try toc.encode()
     #expect(first == second)
 }
 
 @Test func tocDecodeRejectsChecksumMismatch() throws {
-    let toc = MV2STOC.emptyV1()
+    let toc = WaxTOC.emptyV1()
     var bytes = try toc.encode()
     bytes[0] ^= 0xFF
 
     do {
-        _ = try MV2STOC.decode(from: bytes)
+        _ = try WaxTOC.decode(from: bytes)
         #expect(Bool(false))
     } catch let error as WaxError {
         guard case .invalidToc = error else {
@@ -58,7 +58,7 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocEncodeRejectsUnsupportedTocVersion() throws {
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.tocVersion = 2
 
     do {
@@ -73,7 +73,7 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocEncodeRejectsNonDenseFrameIds() throws {
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.frames = [
         FrameMeta(
             id: 1,
@@ -97,12 +97,12 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocDecodeRejectsUnsupportedTocVersion() throws {
-    var bytes = try MV2STOC.emptyV1().encode()
+    var bytes = try WaxTOC.emptyV1().encode()
     bytes[0] = 2 // toc_version (UInt64, little-endian)
     restampTocChecksum(&bytes)
 
     do {
-        _ = try MV2STOC.decode(from: bytes)
+        _ = try WaxTOC.decode(from: bytes)
         #expect(Bool(false))
     } catch let error as WaxError {
         guard case .invalidToc = error else {
@@ -113,7 +113,7 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocDecodeRejectsNonDenseFrameIds() throws {
-    var toc = MV2STOC.emptyV1()
+    var toc = WaxTOC.emptyV1()
     toc.frames = [
         FrameMeta(
             id: 0,
@@ -129,7 +129,7 @@ private func restampTocChecksum(_ bytes: inout Data) {
     restampTocChecksum(&bytes)
 
     do {
-        _ = try MV2STOC.decode(from: bytes)
+        _ = try WaxTOC.decode(from: bytes)
         #expect(Bool(false))
     } catch let error as WaxError {
         guard case .invalidToc = error else {
@@ -140,12 +140,12 @@ private func restampTocChecksum(_ bytes: inout Data) {
 }
 
 @Test func tocDecodeRejectsReservedTracksInV1() throws {
-    var bytes = try MV2STOC.emptyV1().encode()
+    var bytes = try WaxTOC.emptyV1().encode()
     bytes[16] = 1 // memories_track tag
     restampTocChecksum(&bytes)
 
     do {
-        _ = try MV2STOC.decode(from: bytes)
+        _ = try WaxTOC.decode(from: bytes)
         #expect(Bool(false))
     } catch let error as WaxError {
         guard case .invalidToc = error else {

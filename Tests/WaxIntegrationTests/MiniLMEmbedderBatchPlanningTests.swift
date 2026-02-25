@@ -1,6 +1,6 @@
 import Testing
 
-#if canImport(WaxVectorSearchMiniLM)
+#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 @_spi(Testing) import WaxVectorSearchMiniLM
 
 @available(macOS 15.0, iOS 18.0, *)

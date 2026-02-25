@@ -10,6 +10,7 @@
 //  - Eliminates O(N) copy latency during search synchronization.
 //
 
+#if canImport(Metal)
 import Foundation
 import Metal
 import WaxCore
@@ -56,7 +57,7 @@ public actor MetalVectorEngine {
     private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
 
-    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.writeLock()
         do {
             let value = try await body()
@@ -68,7 +69,7 @@ public actor MetalVectorEngine {
         }
     }
 
-    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.readLock()
         do {
             let value = try await body()
@@ -891,3 +892,4 @@ public actor MetalVectorEngine {
 }
 
 extension MetalVectorEngine: VectorSearchEngine {}
+#endif // canImport(Metal)

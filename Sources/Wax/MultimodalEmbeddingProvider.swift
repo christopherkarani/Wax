@@ -1,3 +1,4 @@
+#if canImport(ImageIO)
 @_exported import CoreGraphics
 import Foundation
 import WaxVectorSearch
@@ -31,3 +32,5 @@ extension MultimodalEmbeddingProvider {
     @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
     public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
+
+#endif // canImport(ImageIO)

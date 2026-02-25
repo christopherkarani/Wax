@@ -1,6 +1,6 @@
 import Foundation
 
-/// Deterministic binary decoder for MV2S primitives.
+/// Deterministic binary decoder for Wax primitives.
 public struct BinaryDecoder {
     public struct Limits: Sendable {
         public var maxStringBytes: Int = Constants.maxStringBytes

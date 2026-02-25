@@ -22,7 +22,7 @@ final class OptimizationComparisonBenchmark: XCTestCase {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_OPTIMIZATION=1 to run optimization benchmarks.") }
         // Setup: Create a Wax instance with documents
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metadata-benchmark-\(UUID().uuidString).mv2s")
+            .appendingPathComponent("metadata-benchmark-\(UUID().uuidString).wax")
         defer { try? FileManager.default.removeItem(at: tempURL) }
         
         let wax = try await Wax.create(at: tempURL)

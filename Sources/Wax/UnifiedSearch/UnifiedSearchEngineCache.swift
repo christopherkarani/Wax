@@ -41,7 +41,9 @@ actor UnifiedSearchEngineCache {
 
     enum VectorEngineKind: Hashable, Sendable {
         case usearch
+        #if canImport(Metal)
         case metal
+        #endif
     }
 
     func snapshotStats() -> Stats { stats }
@@ -99,8 +101,8 @@ actor UnifiedSearchEngineCache {
         guard queryEmbeddingDimensions > 0 else { return nil }
 
         let waxId = ObjectIdentifier(wax)
+        #if canImport(Metal)
         let allowMetal = preference != .cpuOnly && MetalVectorEngine.isAvailable
-
         if allowMetal {
             if let metalEngine = try await vectorEngine(
                 for: wax,
@@ -111,6 +113,7 @@ actor UnifiedSearchEngineCache {
                 return metalEngine
             }
         }
+        #endif
 
         return try await vectorEngine(
             for: wax,
@@ -127,22 +130,28 @@ actor UnifiedSearchEngineCache {
         engineKind: VectorEngineKind
     ) async throws -> (any VectorSearchEngine)? {
         let engineKindTag = engineKind
+        #if canImport(Metal)
         let preferMetal = engineKind == .metal
+        #endif
 
         let makeEngine: (VectorMetric, Int) throws -> any VectorSearchEngine = { metric, dimensions in
+            #if canImport(Metal)
             if preferMetal {
                 return try MetalVectorEngine(metric: metric, dimensions: dimensions)
             }
+            #endif
             return try USearchVectorEngine(metric: metric, dimensions: dimensions)
         }
 
         let deserialize: (any VectorSearchEngine, Data) async throws -> Void = { engine, bytes in
             switch engineKindTag {
+            #if canImport(Metal)
             case .metal:
                 guard let metal = engine as? MetalVectorEngine else {
                     throw WaxError.invalidToc(reason: "metal engine type mismatch")
                 }
                 try await metal.deserialize(bytes)
+            #endif
             case .usearch:
                 guard let usearch = engine as? USearchVectorEngine else {
                     throw WaxError.invalidToc(reason: "usearch engine type mismatch")

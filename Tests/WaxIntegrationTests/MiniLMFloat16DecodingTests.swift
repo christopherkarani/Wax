@@ -1,4 +1,4 @@
-#if canImport(WaxVectorSearchMiniLM)
+#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import CoreML
 import Testing
 @_spi(Testing) import WaxVectorSearchMiniLM

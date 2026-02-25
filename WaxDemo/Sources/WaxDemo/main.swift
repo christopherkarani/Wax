@@ -46,7 +46,7 @@ private func usage() -> String {
       swift run WaxDemo [--keep] [--corrupt-header-b] [--append-corrupt-footer]
 
     Flags:
-      --keep                 Keep the generated .mv2s file (prints its path)
+      --keep                 Keep the generated .wax file (prints its path)
       --corrupt-header-b     Corrupt header page B to prove A/B selection behavior
       --append-corrupt-footer Append a trailing corrupt footer to prove scanner finds prior valid one
     """
@@ -62,7 +62,7 @@ struct WaxDemoMain {
     private static func run(options: DemoOptions) throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-demo-\(UUID().uuidString)")
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
 
         defer {
             if !options.keepFile {
@@ -90,14 +90,14 @@ struct WaxDemoMain {
         let tocOffset = walOffset + walSize
         let footerOffset = tocOffset + UInt64(tocBytes.count)
 
-        let footer = MV2SFooter(
+        let footer = WaxFooter(
             tocLen: UInt64(tocBytes.count),
             tocHash: tocChecksum,
             generation: 1,
             walCommittedSeq: 1
         )
 
-        let headerA = MV2SHeaderPage(
+        let headerA = WaxHeaderPage(
             headerPageGeneration: 1,
             fileGeneration: 1,
             footerOffset: footerOffset,
@@ -109,7 +109,7 @@ struct WaxDemoMain {
             tocChecksum: tocChecksum
         )
 
-        let headerB = MV2SHeaderPage(
+        let headerB = WaxHeaderPage(
             headerPageGeneration: 2,
             fileGeneration: 1,
             footerOffset: footerOffset,
@@ -136,7 +136,7 @@ struct WaxDemoMain {
         if options.appendCorruptFooter {
             var badFooter = try footer.encode()
             badFooter[10] ^= 0xFF
-            let badOffset = footerOffset + UInt64(MV2SFooter.size) + 123
+            let badOffset = footerOffset + UInt64(WaxFooter.size) + 123
             try file.writeAll(tocBytes, at: badOffset - UInt64(tocBytes.count))
             try file.writeAll(badFooter, at: badOffset)
         }
@@ -146,10 +146,10 @@ struct WaxDemoMain {
         let ro = try FDFile.openReadOnly(at: url)
         defer { try? ro.close() }
 
-        let readA = try ro.readExactly(length: MV2SHeaderPage.size, at: 0)
-        let readB = try ro.readExactly(length: MV2SHeaderPage.size, at: Constants.headerPageSize)
+        let readA = try ro.readExactly(length: WaxHeaderPage.size, at: 0)
+        let readB = try ro.readExactly(length: WaxHeaderPage.size, at: Constants.headerPageSize)
 
-        if let selected = MV2SHeaderPage.selectValidPage(pageA: readA, pageB: readB) {
+        if let selected = WaxHeaderPage.selectValidPage(pageA: readA, pageB: readB) {
             print("Selected header page:", selected.pageIndex == 0 ? "A" : "B")
             print("Header footer_offset:", selected.page.footerOffset)
             print("Header wal_offset:", selected.page.walOffset)

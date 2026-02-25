@@ -62,7 +62,7 @@ import Testing
         #expect(Bool(false))
         return
     }
-    let toc = try MV2STOC.decode(from: slice.tocBytes)
+    let toc = try WaxTOC.decode(from: slice.tocBytes)
     guard let frame = toc.frames.first else {
         #expect(Bool(false))
         return

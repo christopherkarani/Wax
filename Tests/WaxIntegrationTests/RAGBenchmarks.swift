@@ -834,7 +834,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     private static func makeTempURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
     }
 }
 #endif

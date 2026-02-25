@@ -3,14 +3,14 @@ import Testing
 
 /// Test utilities for creating and managing temporary files
 enum TempFiles {
-    static func uniqueURL(fileExtension ext: String = "mv2s") -> URL {
+    static func uniqueURL(fileExtension ext: String = "wax") -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext)
     }
 
     static func withTempFile<T>(
-        fileExtension ext: String = "mv2s",
+        fileExtension ext: String = "wax",
         _ body: (URL) throws -> T
     ) rethrows -> T {
         let url = uniqueURL(fileExtension: ext)

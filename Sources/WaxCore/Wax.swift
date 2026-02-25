@@ -88,7 +88,7 @@ public struct PendingEmbeddingSnapshot: Equatable, Sendable {
     }
 }
 
-/// Primary handle for interacting with a `.mv2s` memory file.
+/// Primary handle for interacting with a `.wax` memory file.
 ///
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
 /// All mutable state is isolated within this actor for thread safety.
@@ -109,10 +109,10 @@ public actor Wax {
     private var file: FDFile
     private var lock: FileLock
 
-    private var header: MV2SHeaderPage
+    private var header: WaxHeaderPage
     private var selectedHeaderPageIndex: Int
 
-    private var toc: MV2STOC
+    private var toc: WaxTOC
     private var surrogateIndex: [UInt64: UInt64]? = nil
     private var wal: WALRingWriter
     private var pendingMutations: [PendingMutation]
@@ -145,9 +145,9 @@ public actor Wax {
         io: BlockingIOExecutor,
         file: FDFile,
         lock: FileLock,
-        header: MV2SHeaderPage,
+        header: WaxHeaderPage,
         selectedHeaderPageIndex: Int,
-        toc: MV2STOC,
+        toc: WaxTOC,
         wal: WALRingWriter,
         pendingMutations: [PendingMutation],
         stagedLexIndex: StagedLexIndex?,
@@ -192,7 +192,7 @@ public actor Wax {
         self.walReplayStateSnapshotEnabled = walReplayStateSnapshotEnabled
     }
 
-    private func withWriteLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.writeLock()
         do {
             let value = try await body()
@@ -204,7 +204,7 @@ public actor Wax {
         }
     }
 
-    private func withReadLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.readLock()
         do {
             let value = try await body()
@@ -394,7 +394,7 @@ public actor Wax {
         max(1, minPendingBytes)
     }
 
-    /// Create a new, empty `.mv2s` file.
+    /// Create a new, empty `.wax` file.
     public static func create(
         at url: URL,
         walSize: UInt64 = Constants.defaultWalSize,
@@ -408,8 +408,8 @@ public actor Wax {
         let created = try await io.run { () throws -> (
             file: FDFile,
             lock: FileLock,
-            header: MV2SHeaderPage,
-            toc: MV2STOC,
+            header: WaxHeaderPage,
+            toc: WaxTOC,
             wal: WALRingWriter,
             dataEnd: UInt64
         ) in
@@ -425,7 +425,7 @@ public actor Wax {
             let walOffset = Constants.walOffset
             let dataStart = walOffset + walSize
 
-            var toc = MV2STOC.emptyV1()
+            var toc = WaxTOC.emptyV1()
             let tocBytes = try toc.encode()
             let tocChecksum = tocBytes.suffix(32)
             toc.tocChecksum = Data(tocChecksum)
@@ -433,7 +433,7 @@ public actor Wax {
             let tocOffset = dataStart
             try file.writeAll(tocBytes, at: tocOffset)
             let footerOffset = tocOffset + UInt64(tocBytes.count)
-            let footer = MV2SFooter(
+            let footer = WaxFooter(
                 tocLen: UInt64(tocBytes.count),
                 tocHash: Data(tocChecksum),
                 generation: 0,
@@ -442,7 +442,7 @@ public actor Wax {
             try file.writeAll(try footer.encode(), at: footerOffset)
             try file.fsync()
 
-            let headerA = MV2SHeaderPage(
+            let headerA = WaxHeaderPage(
                 headerPageGeneration: 1,
                 fileGeneration: 0,
                 footerOffset: footerOffset,
@@ -516,7 +516,7 @@ public actor Wax {
         )
     }
 
-    /// Open an existing `.mv2s` file.
+    /// Open an existing `.wax` file.
     ///
     /// By default, Wax will repair trailing bytes beyond the last valid footer while preserving any
     /// uncommitted payload bytes referenced by the pending WAL.
@@ -524,7 +524,7 @@ public actor Wax {
         try await open(at: url, repair: true, options: options)
     }
 
-    /// Open an existing `.mv2s` file, optionally repairing trailing bytes past the last valid footer.
+    /// Open an existing `.wax` file, optionally repairing trailing bytes past the last valid footer.
     ///
     /// If `repair` is true and the file contains bytes beyond the last valid footer, the file is truncated to the
     /// smallest safe end offset:
@@ -535,9 +535,9 @@ public actor Wax {
         let opened = try await io.run { () throws -> (
             file: FDFile,
             lock: FileLock,
-            header: MV2SHeaderPage,
+            header: WaxHeaderPage,
             selectedHeaderPageIndex: Int,
-            toc: MV2STOC,
+            toc: WaxTOC,
             wal: WALRingWriter,
             pendingMutations: [PendingMutation],
             dataEnd: UInt64,
@@ -550,7 +550,7 @@ public actor Wax {
 
             let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
             let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-            guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
                 throw WaxError.invalidHeader(reason: "no valid header pages")
             }
             var header = selected.page
@@ -592,7 +592,7 @@ public actor Wax {
             }
             footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate, newerFooter)
 
-            let toc = try MV2STOC.decode(from: footerSlice.tocBytes)
+            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
             let recoveredCommittedSeq = footerSlice.footer.walCommittedSeq
@@ -934,7 +934,7 @@ public actor Wax {
         // fall back to per-entry appends (allows mid-batch commits).
         do {
             try await ensureWalCapacityLocked(payloadSizes: walPayloadSizes)
-        } catch let WaxError.capacityExceeded(_, _) {
+        } catch WaxError.capacityExceeded {
             return try await appendSequentially()
         }
 
@@ -1493,7 +1493,7 @@ public actor Wax {
 
         let tocOffset = dataEnd
         let footerOffset = tocOffset + UInt64(tocBytes.count)
-        let footer = MV2SFooter(
+        let footer = WaxFooter(
             tocLen: UInt64(tocBytes.count),
             tocHash: Data(tocChecksum),
             generation: generation &+ 1,
@@ -1506,7 +1506,7 @@ public actor Wax {
                 lastSequence: wal.lastSequence
             )
         }
-        let replaySnapshot = MV2SHeaderPage.WALReplaySnapshot(
+        let replaySnapshot = WaxHeaderPage.WALReplaySnapshot(
             fileGeneration: footer.generation,
             walCommittedSeq: appliedWalSeq,
             footerOffset: footerOffset,
@@ -2129,7 +2129,7 @@ public actor Wax {
             let pageB = try await io.run {
                 try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
             }
-            guard let selected = MV2SHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
                 throw WaxError.invalidHeader(reason: "no valid header pages")
             }
             let header = selected.page
@@ -2148,7 +2148,7 @@ public actor Wax {
                 }
                 footerSlice = scanned
             }
-            let toc = try MV2STOC.decode(from: footerSlice.tocBytes)
+            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
 
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
@@ -2275,7 +2275,7 @@ public actor Wax {
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
 
-    private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: MV2SHeaderPage.WALReplaySnapshot) async throws {
+    private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {
         var snapshotPage = header
         snapshotPage.walReplaySnapshot = snapshot
         let offset = UInt64(selectedHeaderPageIndex) * Constants.headerPageSize
@@ -2286,7 +2286,7 @@ public actor Wax {
         }
     }
 
-    private func writeHeaderPage(_ page: MV2SHeaderPage) async throws {
+    private func writeHeaderPage(_ page: WaxHeaderPage) async throws {
         let nextIndex = selectedHeaderPageIndex == 0 ? 1 : 0
         let offset = UInt64(nextIndex) * Constants.headerPageSize
         let file = self.file
@@ -2416,7 +2416,7 @@ public actor Wax {
         return 0
     }
 
-    private static func validateTocRanges(_ toc: MV2STOC, dataStart: UInt64, dataEnd: UInt64) throws {
+    private static func validateTocRanges(_ toc: WaxTOC, dataStart: UInt64, dataEnd: UInt64) throws {
         let frameRanges = try collectFramePayloadRanges(toc.frames, dataStart: dataStart, dataEnd: dataEnd)
         let segmentRanges = try collectSegmentRanges(toc.segmentCatalog.entries, dataStart: dataStart, dataEnd: dataEnd)
 

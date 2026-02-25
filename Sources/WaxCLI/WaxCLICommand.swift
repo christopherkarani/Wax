@@ -6,7 +6,21 @@ struct WaxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax",
         abstract: "Wax developer CLI",
-        subcommands: [MCP.self]
+        subcommands: [
+            RememberCommand.self,
+            RecallCommand.self,
+            SearchCommand.self,
+            StatsCommand.self,
+            FlushCommand.self,
+            HandoffCommand.self,
+            HandoffLatestCommand.self,
+            EntityUpsertCommand.self,
+            EntityResolveCommand.self,
+            FactAssertCommand.self,
+            FactRetractCommand.self,
+            FactsQueryCommand.self,
+            MCP.self,
+        ]
     )
 }
 
@@ -35,13 +49,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
-
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -56,8 +64,6 @@ extension WaxCLI.MCP {
             let resolvedServer = try Pathing.resolvePath(serverPath)
             var arguments = [
                 "--store-path", Pathing.expandPath(storePath),
-                "--video-store-path", Pathing.expandPath(videoStorePath),
-                "--photo-store-path", Pathing.expandPath(photoStorePath),
             ]
             if noEmbedder {
                 arguments.append("--no-embedder")
@@ -99,13 +105,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
-
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -168,8 +168,6 @@ extension WaxCLI.MCP {
                 "mcp", "serve",
                 "--server-path", resolvedServer,
                 "--store-path", Pathing.expandPath(storePath),
-                "--video-store-path", Pathing.expandPath(videoStorePath),
-                "--photo-store-path", Pathing.expandPath(photoStorePath),
             ])
             if noEmbedder {
                 addArguments.append("--no-embedder")
@@ -225,13 +223,7 @@ extension WaxCLI.MCP {
         var serverPath = ".build/debug/WaxMCPServer"
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
-        var storePath = "~/.wax/memory.mv2s"
-
-        @Option(name: .customLong("video-store-path"), help: "Path to video store")
-        var videoStorePath = "~/.wax/video.mv2s"
-
-        @Option(name: .customLong("photo-store-path"), help: "Path to photo store")
-        var photoStorePath = "~/.wax/photo.mv2s"
+        var storePath = "~/.wax/memory.wax"
 
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
@@ -277,8 +269,6 @@ extension WaxCLI.MCP {
 
                 var arguments = [
                     "--store-path", Pathing.expandPath(storePath),
-                    "--video-store-path", Pathing.expandPath(videoStorePath),
-                    "--photo-store-path", Pathing.expandPath(photoStorePath),
                 ]
                 if noEmbedder {
                     arguments.append("--no-embedder")
@@ -307,7 +297,7 @@ extension WaxCLI.MCP {
                         // We check the tools/list response specifically to avoid false positives
                         // from the initialize response containing the tool name incidentally.
                         let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: true)
-                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) })
+                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) || $0.contains(#""id": 2"#) })
                         let responseToCheck = toolsListResponse.map(String.init) ?? String(output.stdout)
                         if !responseToCheck.contains(#""name":"wax_remember""#) {
                             failures.append("Smoke check response missing wax_remember tool")
@@ -504,7 +494,7 @@ private func ensureToolExists(_ tool: String) throws {
     }
 }
 
-private struct CLIError: LocalizedError {
+struct CLIError: LocalizedError {
     let message: String
 
     init(_ message: String) {

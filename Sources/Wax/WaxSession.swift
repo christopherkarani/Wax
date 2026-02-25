@@ -6,14 +6,18 @@ import WaxVectorSearch
 public actor WaxSession {
     private enum ConcreteVectorEngine: Sendable {
         case usearch(USearchVectorEngine)
+        #if canImport(Metal)
         case metal(MetalVectorEngine)
+        #endif
 
         var erased: any VectorSearchEngine {
             switch self {
             case .usearch(let engine):
                 return engine
+            #if canImport(Metal)
             case .metal(let engine):
                 return engine
+            #endif
             }
         }
 
@@ -21,8 +25,10 @@ public actor WaxSession {
             switch self {
             case .usearch(let engine):
                 try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            #if canImport(Metal)
             case .metal(let engine):
                 try await engine.addBatch(frameIds: frameIds, vectors: vectors)
+            #endif
             }
         }
 
@@ -30,8 +36,10 @@ public actor WaxSession {
             switch self {
             case .usearch(let engine):
                 try await engine.stageForCommit(into: wax)
+            #if canImport(Metal)
             case .metal(let engine):
                 try await engine.stageForCommit(into: wax)
+            #endif
             }
         }
     }
@@ -90,37 +98,58 @@ public actor WaxSession {
         self.mode = mode
         self.config = config
 
+        var acquiredWriterLeaseId: UUID?
         if case .readWrite(let policy) = mode {
             let lease = try await wax.acquireWriterLease(policy: Self.mapWriterPolicy(policy))
-            self.writerLeaseId = lease
+            acquiredWriterLeaseId = lease
         }
+        self.writerLeaseId = acquiredWriterLeaseId
 
-        if config.enableTextSearch || config.enableStructuredMemory {
-            self.textEngine = try await FTS5SearchEngine.load(from: wax)
-        } else {
-            self.textEngine = nil
-        }
-
-        if config.enableVectorSearch {
-            let dimensions = try await Self.resolveVectorDimensions(for: wax, config: config)
-            if let dimensions {
-                let loadedVectorEngine = try await Self.loadVectorEngine(
-                    wax: wax,
-                    metric: config.vectorMetric,
-                    dimensions: dimensions,
-                    preference: config.vectorEnginePreference
-                )
-                self.concreteVectorEngine = loadedVectorEngine
-                self.vectorEngine = loadedVectorEngine.erased
-                let snapshot = await wax.pendingEmbeddingMutations(since: nil)
-                self.lastPendingEmbeddingSequence = snapshot.latestSequence
+        do {
+            let resolvedTextEngine: FTS5SearchEngine? = if config.enableTextSearch || config.enableStructuredMemory {
+                try await FTS5SearchEngine.load(from: wax)
             } else {
-                self.concreteVectorEngine = nil
-                self.vectorEngine = nil
+                nil
             }
-        } else {
-            self.concreteVectorEngine = nil
-            self.vectorEngine = nil
+
+            let resolvedConcreteVectorEngine: ConcreteVectorEngine?
+            let resolvedVectorEngine: (any VectorSearchEngine)?
+            let resolvedLastPendingEmbeddingSequence: UInt64?
+
+            if config.enableVectorSearch {
+                let dimensions = try await Self.resolveVectorDimensions(for: wax, config: config)
+                if let dimensions {
+                    let loadedVectorEngine = try await Self.loadVectorEngine(
+                        wax: wax,
+                        metric: config.vectorMetric,
+                        dimensions: dimensions,
+                        preference: config.vectorEnginePreference
+                    )
+                    resolvedConcreteVectorEngine = loadedVectorEngine
+                    resolvedVectorEngine = loadedVectorEngine.erased
+                    let snapshot = await wax.pendingEmbeddingMutations(since: nil)
+                    resolvedLastPendingEmbeddingSequence = snapshot.latestSequence
+                } else {
+                    resolvedConcreteVectorEngine = nil
+                    resolvedVectorEngine = nil
+                    resolvedLastPendingEmbeddingSequence = nil
+                }
+            } else {
+                resolvedConcreteVectorEngine = nil
+                resolvedVectorEngine = nil
+                resolvedLastPendingEmbeddingSequence = nil
+            }
+
+            self.textEngine = resolvedTextEngine
+            self.concreteVectorEngine = resolvedConcreteVectorEngine
+            self.vectorEngine = resolvedVectorEngine
+            self.lastPendingEmbeddingSequence = resolvedLastPendingEmbeddingSequence
+        } catch {
+            if let leaseId = acquiredWriterLeaseId {
+                await wax.releaseWriterLease(leaseId)
+                self.writerLeaseId = nil
+            }
+            throw error
         }
     }
 
@@ -481,6 +510,7 @@ public actor WaxSession {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> ConcreteVectorEngine {
+        #if canImport(Metal)
         if preference != .cpuOnly, MetalVectorEngine.isAvailable {
             do {
                 let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
@@ -493,6 +523,7 @@ public actor WaxSession {
                 )
             }
         }
+        #endif
         let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
         return .usearch(usearch)
     }
@@ -510,10 +541,10 @@ public actor WaxSession {
 
         var merged = options
         var metadata = merged.metadata ?? Metadata()
-        if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
-        if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
-        if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
-        if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
+        if let provider = identity.provider { metadata.entries["wax.embedding.provider"] = provider }
+        if let model = identity.model { metadata.entries["wax.embedding.model"] = model }
+        if let dims = identity.dimensions { metadata.entries["wax.embedding.dimension"] = String(dims) }
+        if let normalized = identity.normalized { metadata.entries["wax.embedding.normalized"] = String(normalized) }
         merged.metadata = metadata
         return merged
     }

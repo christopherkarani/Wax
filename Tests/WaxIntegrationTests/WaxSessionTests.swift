@@ -70,6 +70,35 @@ import Wax
     }
 }
 
+@Test func unifiedSession_releasesWriterLeaseWhenInitializationFails() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        var failingConfig = WaxSession.Config()
+        failingConfig.enableTextSearch = false
+        failingConfig.enableStructuredMemory = false
+        failingConfig.enableVectorSearch = true
+        failingConfig.vectorEnginePreference = .cpuOnly
+        failingConfig.vectorDimensions = 0 // Triggers USearchVectorEngine init failure.
+
+        do {
+            _ = try await wax.openSession(.readWrite(.fail), config: failingConfig)
+            Issue.record("Expected writer session initialization to fail for invalid vector dimensions")
+        } catch {
+            // Expected: initialization throws after acquiring writer lease.
+        }
+
+        var succeedingConfig = WaxSession.Config()
+        succeedingConfig.enableTextSearch = false
+        succeedingConfig.enableStructuredMemory = false
+        succeedingConfig.enableVectorSearch = false
+
+        let session = try await wax.openSession(.readWrite(.fail), config: succeedingConfig)
+        await session.close()
+        try await wax.close()
+    }
+}
+
 @Test func unifiedSession_vectorSearchWorksBeforeAndAfterCommit() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

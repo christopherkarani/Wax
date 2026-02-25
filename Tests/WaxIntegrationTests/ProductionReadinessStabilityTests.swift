@@ -53,7 +53,7 @@ final class ProductionReadinessStabilityTests: XCTestCase {
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mv2s")
+            .appendingPathExtension("wax")
         defer { try? FileManager.default.removeItem(at: url) }
 
         let wax = try await Wax.create(at: url)
