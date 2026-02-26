@@ -28,6 +28,17 @@ func toolsListContainsExpectedTools() {
 }
 
 @Test
+func toolsListHonorsStructuredMemoryFlag() {
+    let withStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: true).map(\.name))
+    let withoutStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: false).map(\.name))
+    #expect(withStructuredMemory.contains("wax_facts_query"))
+    #expect(!withoutStructuredMemory.contains("wax_facts_query"))
+    #expect(withStructuredMemory.contains("wax_entity_upsert"))
+    #expect(!withoutStructuredMemory.contains("wax_entity_upsert"))
+    #expect(!withoutStructuredMemory.contains("wax_fact_assert"))
+}
+
+@Test
 func toolSchemaRegression() {
     let tools = ToolSchemas.allTools
 
@@ -155,6 +166,49 @@ func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
         )
         #expect(outOfRange.isError == true)
         #expect(firstText(in: outOfRange).contains("topK is out of range"))
+    }
+}
+
+@Test
+func toolsRejectRecallLimitOutOfRange() async throws {
+    try await withMemory { memory in
+        let zero = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: ["query": "actors", "limit": 0]
+            ),
+            memory: memory,
+            structuredMemoryEnabled: true
+        )
+        #expect(zero.isError == true)
+        #expect(firstText(in: zero).contains("limit must be between 1 and"))
+
+        let tooHigh = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: ["query": "actors", "limit": 101]
+            ),
+            memory: memory,
+            structuredMemoryEnabled: true
+        )
+        #expect(tooHigh.isError == true)
+        #expect(firstText(in: tooHigh).contains("limit must be between 1 and"))
+    }
+}
+
+@Test
+func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_facts_query",
+                arguments: ["subject": "agent:codex", "limit": 10]
+            ),
+            memory: memory,
+            structuredMemoryEnabled: false
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("structured memory"))
     }
 }
 
