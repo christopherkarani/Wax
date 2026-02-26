@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: macos-13
+          - runs-on: macos-15-intel
             platform: darwin-x64
           - runs-on: macos-14
             platform: darwin-arm64
