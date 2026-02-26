@@ -4,13 +4,10 @@ import WaxVectorSearch
 #if canImport(CoreML)
 @preconcurrency import CoreML
 #if canImport(OSLog)
-import OSLog
+@preconcurrency import OSLog
 #endif
 
 extension MiniLMEmbeddings: @unchecked Sendable {}
-
-// MARK: - Logging
-private let logger = Logger(subsystem: "com.wax.vectormodel", category: "MiniLMEmbedder")
 
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
 /// Implements BatchEmbeddingProvider for significant throughput improvements during ingest.
@@ -80,10 +77,13 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     private nonisolated func logComputeUnits() {
+#if canImport(OSLog)
+        let logger = Logger(subsystem: "com.wax.vectormodel", category: "MiniLMEmbedder")
         let units = currentComputeUnits()
         let aneAvailable = isUsingANE()
         logger.info("MiniLMEmbedder initialized with computeUnits: \(units.rawValue, privacy: .public)")
         logger.info("ANE configured: \(aneAvailable ? "Yes" : "No", privacy: .public)")
+#endif
 
         // TODO: Expose MLModelConfiguration knobs (e.g. low-precision accumulation) for more tuning.
     }

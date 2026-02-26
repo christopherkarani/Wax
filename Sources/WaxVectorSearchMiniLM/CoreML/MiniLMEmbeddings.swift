@@ -271,11 +271,9 @@ private extension MiniLMEmbeddings {
                 let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
                 return (0..<batch).map { row in
                     let start = row * dim
-                    var vector = [Float](repeating: 0, count: dim)
-                    // Use Accelerate SIMD for 8-16x faster Float16→Float32 conversion
-                    let srcPtr = float16Ptr.advanced(by: start)
-                    vDSP.convertElements(of: UnsafeBufferPointer(start: srcPtr, count: dim), to: &vector)
-                    return vector
+                    return (0..<dim).map { col in
+                        Float(float16Ptr[start + col])
+                    }
                 }
             }
         }

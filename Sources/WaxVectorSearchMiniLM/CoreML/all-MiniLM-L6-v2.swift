@@ -55,13 +55,11 @@ public class all_MiniLM_L6_v2Output : MLFeatureProvider {
     }
 
     /// var_554 as multidimensional array of 16-bit floats
-    #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
-    @available(macOS, unavailable)
-    @available(macCatalyst, unavailable)
-    #endif
+    #if !(os(macOS) || targetEnvironment(macCatalyst))
     public var var_554ShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(var_554)
     }
+    #endif
 
     public var featureNames: Set<String> {
         provider.featureNames
