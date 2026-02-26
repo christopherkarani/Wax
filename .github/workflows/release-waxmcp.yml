@@ -18,15 +18,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: macos-15-intel
+          - runs-on: macos-14
             platform: darwin-x64
+            triple: x86_64-apple-macosx13.0
+            run-tests: false
           - runs-on: macos-14
             platform: darwin-arm64
+            triple: arm64-apple-macosx14.0
+            run-tests: true
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Verify SwiftPM trait support
+        if: ${{ matrix.run-tests }}
+        run: |
+          set -euo pipefail
+          swift --version
+          swift test --help | grep -q -- "--traits <traits>"
 
       - name: Run MCP trait tests
+        if: ${{ matrix.run-tests }}
         run: |
           set -euo pipefail
           SKIP_REGEX="(RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark)"
@@ -35,8 +50,8 @@ jobs:
       - name: Build WaxCLI
         run: |
           set -euo pipefail
-          swift build --product WaxCLI --traits MCPServer --configuration release
-          BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --show-bin-path)"
+          swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}"
+          BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}" --show-bin-path)"
           mkdir -p npm/waxmcp/dist/${{ matrix.platform }}
           cp "$BIN_PATH/WaxCLI" npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
           chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI

@@ -65,6 +65,14 @@ assert_full_pass_rate() {
   fi
 }
 
+require_swiftpm_traits() {
+  if ! swift test --help | grep -q -- "--traits <traits>"; then
+    echo "FAIL: current Swift toolchain does not support package traits (--traits)." >&2
+    echo "Install a Swift toolchain that supports package traits (for example Swift 6.1+)." >&2
+    return 1
+  fi
+}
+
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
   local mcp_log_file="/tmp/wax-gate-full-mcp.log"
@@ -75,6 +83,8 @@ run_full() {
     swift test --parallel --skip "$skip_regex"
   assert_no_skips "$log_file"
   assert_full_pass_rate "$log_file"
+
+  require_swiftpm_traits
 
   run_and_capture "$mcp_log_file" \
     swift test --parallel --traits MCPServer --skip "$skip_regex"
