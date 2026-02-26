@@ -85,7 +85,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
 
         // SYNC: keep this version in sync with npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.2"
+        let serverVersion = "0.1.4"
         writeStderr("WaxMCPServer v\(serverVersion) starting")
         let server = Server(
             name: "WaxMCPServer",
@@ -191,9 +191,12 @@ struct WaxMCPServerCommand: ParsableCommand {
         }
 
         #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
-        let embedder = try MiniLMEmbedder()
-        try? await embedder.prewarm(batchSize: 4)
-        return embedder
+        do {
+            return try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
+        } catch {
+            writeStderr("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.")
+            return nil
+        }
         #else
         return nil
         #endif

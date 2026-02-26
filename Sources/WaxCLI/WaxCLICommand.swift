@@ -11,6 +11,7 @@ struct WaxCLI: ParsableCommand {
             RecallCommand.self,
             SearchCommand.self,
             StatsCommand.self,
+            VectorHealthCommand.self,
             FlushCommand.self,
             HandoffCommand.self,
             HandoffLatestCommand.self,

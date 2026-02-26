@@ -25,8 +25,7 @@ enum StoreSession {
             guard !noEmbedder else { return nil }
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
             do {
-                let e = try MiniLMEmbedder()
-                try? await e.prewarm(batchSize: 1)
+                let e = try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
                 return e
             } catch {
                 fputs("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.\n", stderr)

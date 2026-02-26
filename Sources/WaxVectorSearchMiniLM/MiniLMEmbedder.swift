@@ -155,6 +155,35 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
 @available(macOS 15.0, iOS 18.0, *)
 extension MiniLMEmbedder {
+    /// Builds a MiniLM embedder with CLI/MCP-friendly defaults and compute-unit fallback.
+    ///
+    /// This path intentionally uses `batchSize = 1` because some executable contexts are
+    /// more reliable with single-prediction CoreML APIs than large batch prediction APIs.
+    public static func makeCommandLineEmbedder(
+        prewarmBatchSize: Int = 1,
+        computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]
+    ) async throws -> MiniLMEmbedder {
+        var failures: [String] = []
+        for units in computeUnitsOrder {
+            let modelConfiguration = MLModelConfiguration()
+            modelConfiguration.computeUnits = units
+            modelConfiguration.allowLowPrecisionAccumulationOnGPU = true
+            do {
+                let embedder = try MiniLMEmbedder(
+                    config: Config(batchSize: 1, modelConfiguration: modelConfiguration)
+                )
+                try await embedder.prewarm(batchSize: prewarmBatchSize)
+                return embedder
+            } catch {
+                failures.append("\(describe(units)): \(error.localizedDescription)")
+            }
+        }
+
+        throw WaxError.io(
+            "MiniLM init failed for all compute units (\(failures.joined(separator: " | ")))."
+        )
+    }
+
     /// SPI for deterministic batch planning tests.
     @_spi(Testing)
     public static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
@@ -163,6 +192,21 @@ extension MiniLMEmbedder {
 }
 
 private extension MiniLMEmbedder {
+    static func describe(_ units: MLComputeUnits) -> String {
+        switch units {
+        case .all:
+            return "all"
+        case .cpuAndGPU:
+            return "cpuAndGPU"
+        case .cpuAndNeuralEngine:
+            return "cpuAndNeuralEngine"
+        case .cpuOnly:
+            return "cpuOnly"
+        @unknown default:
+            return "unknown(\(units.rawValue))"
+        }
+    }
+
     static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
         guard totalCount > 0 else { return [] }
         let clampedMax = Swift.max(1, maxBatchSize)
