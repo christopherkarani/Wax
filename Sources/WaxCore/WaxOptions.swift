@@ -1,4 +1,4 @@
-import Dispatch
+@preconcurrency import Dispatch
 
 public struct WaxOptions: Sendable {
     public var walFsyncPolicy: WALFsyncPolicy
