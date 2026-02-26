@@ -179,6 +179,10 @@ Issues and PRs are welcome. If you're building something with Wax, open a Discus
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=christopherkarani/wax&type=date&legend=top-left)](https://www.star-history.com/#christopherkarani/wax&type=date&legend=top-left)
+
 ## License
 
 Apache 2.0 © [Christopher Karani](https://github.com/christopherkarani)
