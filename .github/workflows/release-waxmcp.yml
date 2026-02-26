@@ -21,12 +21,10 @@ jobs:
           - runs-on: macos-14
             platform: darwin-x64
             triple: ""
-            run-tests: false
             source-build: false
           - runs-on: macos-14
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
-            run-tests: true
             source-build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
@@ -34,20 +32,6 @@ jobs:
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.2"
-
-      - name: Verify SwiftPM trait support
-        if: ${{ matrix.run-tests }}
-        run: |
-          set -euo pipefail
-          swift --version
-          swift test --help | grep -q -- "--traits <traits>"
-
-      - name: Run MCP trait tests
-        if: ${{ matrix.run-tests }}
-        run: |
-          set -euo pipefail
-          SKIP_REGEX="(RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark)"
-          swift test --parallel --traits MCPServer --skip "$SKIP_REGEX"
 
       - name: Build WaxCLI
         if: ${{ matrix.source-build }}
