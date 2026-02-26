@@ -16,10 +16,18 @@ extension AsyncParsableCommand {
         Task(priority: .userInitiated) {
             do {
                 try await command.runAsync()
-                exit(EXIT_SUCCESS)
+                #if canImport(Darwin)
+                Darwin.exit(EXIT_SUCCESS)
+                #elseif canImport(Glibc)
+                Glibc.exit(EXIT_SUCCESS)
+                #endif
             } catch {
                 writeStderr("Error: \(error.localizedDescription)")
-                exit(EXIT_FAILURE)
+                #if canImport(Darwin)
+                Darwin.exit(EXIT_FAILURE)
+                #elseif canImport(Glibc)
+                Glibc.exit(EXIT_FAILURE)
+                #endif
             }
         }
         dispatchMain()

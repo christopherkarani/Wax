@@ -7,7 +7,21 @@ public struct WaxOptions: Sendable {
     public var walProactiveCommitMinPendingBytes: UInt64
     public var walReplayStateSnapshotEnabled: Bool
     public var ioQueueLabel: String
-    public var ioQueueQos: DispatchQoS
+    public var ioQueueQosClass: DispatchQoS.QoSClass
+    public var ioQueueRelativePriority: Int
+
+    public var ioQueueQos: DispatchQoS {
+        get {
+            DispatchQoS(
+                qosClass: ioQueueQosClass,
+                relativePriority: ioQueueRelativePriority
+            )
+        }
+        set {
+            ioQueueQosClass = newValue.qosClass
+            ioQueueRelativePriority = newValue.relativePriority
+        }
+    }
 
     public init(
         walFsyncPolicy: WALFsyncPolicy = .onCommit,
@@ -24,6 +38,7 @@ public struct WaxOptions: Sendable {
         self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
         self.walReplayStateSnapshotEnabled = walReplayStateSnapshotEnabled
         self.ioQueueLabel = ioQueueLabel
-        self.ioQueueQos = ioQueueQos
+        self.ioQueueQosClass = ioQueueQos.qosClass
+        self.ioQueueRelativePriority = ioQueueQos.relativePriority
     }
 }

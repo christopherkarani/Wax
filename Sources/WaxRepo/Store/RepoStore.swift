@@ -3,7 +3,7 @@ import Wax
 import WaxCore
 import WaxVectorSearch
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import CoreML
 import WaxVectorSearchMiniLM
 #endif
@@ -45,7 +45,7 @@ actor RepoStore {
 
         let embedder: (any EmbeddingProvider)? = try await {
             guard !textOnly else { return nil }
-            #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+            #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
             // Some CLI executable contexts are unstable with CoreML batch
             // prediction APIs. Keep batch size at 1 so MiniLM runs through
             // the single-prediction path for reliability.

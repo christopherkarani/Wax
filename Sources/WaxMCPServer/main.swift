@@ -6,7 +6,7 @@ import Foundation
 import MCP
 import Wax
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 #endif
 
@@ -190,7 +190,7 @@ struct WaxMCPServerCommand: ParsableCommand {
             return nil
         }
 
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
         do {
             return try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
         } catch {

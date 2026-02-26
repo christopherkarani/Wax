@@ -1,7 +1,7 @@
 import Foundation
 import Wax
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 #endif
 
@@ -23,7 +23,7 @@ enum StoreSession {
     static func open(at url: URL, noEmbedder: Bool = false) async throws -> MemoryOrchestrator {
         let embedder: (any EmbeddingProvider)? = try await {
             guard !noEmbedder else { return nil }
-            #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
+            #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
             do {
                 let e = try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
                 return e
