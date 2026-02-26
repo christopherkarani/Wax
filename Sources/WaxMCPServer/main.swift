@@ -70,13 +70,19 @@ struct WaxMCPServerCommand: ParsableCommand {
             memoryConfig.rag.searchMode = .textOnly
         }
 
+        let activeToolNames = ToolSchemas.tools(structuredMemoryEnabled: memoryConfig.enableStructuredMemory)
+            .map(\.name)
+
+        let embedderStatus = memoryConfig.enableVectorSearch ? "miniLM" : "text-only"
         writeStderr(
-            "WaxMCPServer features: " +
-                "structured_memory=\(memoryConfig.enableStructuredMemory) " +
-                "access_stats_scoring=\(memoryConfig.enableAccessStatsScoring) " +
-                "license_validation=\(licenseEnabled) " +
-                "vector_search=\(memoryConfig.enableVectorSearch)"
+            "WaxMCPServer config: store=\"\(memoryURL.path)\" " +
+                "structuredMemory=\(memoryConfig.enableStructuredMemory) " +
+                "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
+                "licenseValidation=\(licenseEnabled) " +
+                "vectorSearch=\(memoryConfig.enableVectorSearch) " +
+                "embedder=\(embedderStatus)"
         )
+        writeStderr("WaxMCPServer toolset: \(activeToolNames.joined(separator: \",\"))")
 
         let memory = try await MemoryOrchestrator(
             at: memoryURL,
@@ -85,12 +91,12 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
 
         // SYNC: keep this version in sync with npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.5"
+        let serverVersion = "0.1.6"
         writeStderr("WaxMCPServer v\(serverVersion) starting")
         let server = Server(
             name: "WaxMCPServer",
             version: serverVersion,
-            instructions: "Use these tools to store, search, and recall Wax memory.",
+            instructions: "Use these tools to store, search, and recall Wax memory. Server v\(serverVersion).",
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )

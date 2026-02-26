@@ -26,13 +26,14 @@ enum WaxMCPTools {
         }
 
         _ = await server.withMethodHandler(CallTool.self) { params in
-            await handleCall(params: params, memory: memory)
+            await handleCall(params: params, memory: memory, structuredMemoryEnabled: structuredMemoryEnabled)
         }
     }
 
     static func handleCall(
         params: CallTool.Parameters,
-        memory: MemoryOrchestrator
+        memory: MemoryOrchestrator,
+        structuredMemoryEnabled: Bool = true
     ) async -> CallTool.Result {
         do {
             switch params.name {
@@ -54,16 +55,25 @@ enum WaxMCPTools {
                 return try await handoff(arguments: params.arguments, memory: memory)
             case "wax_handoff_latest":
                 return try await handoffLatest(arguments: params.arguments, memory: memory)
-            case "wax_entity_upsert":
+            case "wax_entity_upsert" where structuredMemoryEnabled:
                 return try await entityUpsert(arguments: params.arguments, memory: memory)
-            case "wax_fact_assert":
+            case "wax_fact_assert" where structuredMemoryEnabled:
                 return try await factAssert(arguments: params.arguments, memory: memory)
-            case "wax_fact_retract":
+            case "wax_fact_retract" where structuredMemoryEnabled:
                 return try await factRetract(arguments: params.arguments, memory: memory)
-            case "wax_facts_query":
+            case "wax_facts_query" where structuredMemoryEnabled:
                 return try await factsQuery(arguments: params.arguments, memory: memory)
-            case "wax_entity_resolve":
+            case "wax_entity_resolve" where structuredMemoryEnabled:
                 return try await entityResolve(arguments: params.arguments, memory: memory)
+            case "wax_entity_upsert",
+                 "wax_fact_assert",
+                 "wax_fact_retract",
+                 "wax_facts_query",
+                 "wax_entity_resolve":
+                return errorResult(
+                    message: "tool '\(params.name)' requires structured memory to be enabled",
+                    code: "feature_disabled"
+                )
             default:
                 return errorResult(
                     message: "Unknown tool '\(params.name)'.",

@@ -53,23 +53,36 @@ jobs:
         if: ${{ matrix.source-build }}
         run: |
           set -euo pipefail
-          swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}"
-          BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}" --show-bin-path)"
-          mkdir -p npm/waxmcp/dist/${{ matrix.platform }}
-          cp "$BIN_PATH/WaxCLI" npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
-          chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          ./Scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}" "${{ matrix.triple }}"
 
       - name: Reuse checked-in x64 binary
         if: ${{ !matrix.source-build }}
         run: |
           set -euo pipefail
-          test -f npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
-          chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          ./Scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}"
+
+      - name: Verify packaged binary
+        run: |
+          set -euo pipefail
+          PLATFORM_DIR="npm/waxmcp/dist/${{ matrix.platform }}"
+          test -f "$PLATFORM_DIR/WaxCLI"
+          test -f "$PLATFORM_DIR/WaxCLI.sha256"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "$PLATFORM_DIR/WaxCLI.sha256"
+          else
+            sha256sum -c "$PLATFORM_DIR/WaxCLI.sha256"
+          fi
+
+      - name: Smoke check MCP CLI entrypoint
+        if: ${{ matrix.source-build }}
+        run: |
+          set -euo pipefail
+          npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI mcp serve --help
 
       - uses: actions/upload-artifact@v4
         with:
           name: waxmcp-${{ matrix.platform }}
-          path: npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          path: npm/waxmcp/dist/${{ matrix.platform }}
           if-no-files-found: error
 
   publish:
@@ -109,10 +122,22 @@ jobs:
 
       - name: Verify packaged binaries
         run: |
+          set -euo pipefail
           chmod +x npm/waxmcp/dist/darwin-arm64/WaxCLI
           test -x npm/waxmcp/dist/darwin-arm64/WaxCLI
           chmod +x npm/waxmcp/dist/darwin-x64/WaxCLI
           test -x npm/waxmcp/dist/darwin-x64/WaxCLI
+
+      - name: Verify package integrity
+        run: |
+          set -euo pipefail
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "npm/waxmcp/dist/darwin-arm64/WaxCLI.sha256"
+            shasum -a 256 -c "npm/waxmcp/dist/darwin-x64/WaxCLI.sha256"
+          else
+            sha256sum -c "npm/waxmcp/dist/darwin-arm64/WaxCLI.sha256"
+            sha256sum -c "npm/waxmcp/dist/darwin-x64/WaxCLI.sha256"
+          fi
 
       - name: Verify version consistency
         run: |
