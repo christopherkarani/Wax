@@ -20,12 +20,14 @@ jobs:
         include:
           - runs-on: macos-14
             platform: darwin-x64
-            triple: x86_64-apple-macosx13.0
+            triple: ""
             run-tests: false
+            source-build: false
           - runs-on: macos-14
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
             run-tests: true
+            source-build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
@@ -48,12 +50,20 @@ jobs:
           swift test --parallel --traits MCPServer --skip "$SKIP_REGEX"
 
       - name: Build WaxCLI
+        if: ${{ matrix.source-build }}
         run: |
           set -euo pipefail
           swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}"
           BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --triple "${{ matrix.triple }}" --show-bin-path)"
           mkdir -p npm/waxmcp/dist/${{ matrix.platform }}
           cp "$BIN_PATH/WaxCLI" npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+          chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
+
+      - name: Reuse checked-in x64 binary
+        if: ${{ !matrix.source-build }}
+        run: |
+          set -euo pipefail
+          test -f npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
           chmod +x npm/waxmcp/dist/${{ matrix.platform }}/WaxCLI
 
       - uses: actions/upload-artifact@v4
