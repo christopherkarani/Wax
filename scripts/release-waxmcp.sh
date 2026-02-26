@@ -33,9 +33,9 @@ if ! grep -q "let serverVersion = \"$VERSION\"" Sources/WaxMCPServer/main.swift;
 fi
 
 echo "Preparing release binaries for version $VERSION"
-./Scripts/build-waxmcp-binaries.sh darwin-arm64 arm64-apple-macosx14.0
+./scripts/build-waxmcp-binaries.sh darwin-arm64 arm64-apple-macosx14.0
 
-if ! ./Scripts/build-waxmcp-binaries.sh darwin-x64 x86_64-apple-macosx14.0; then
+if ! ./scripts/build-waxmcp-binaries.sh darwin-x64 x86_64-apple-macosx14.0; then
   if [[ -f "$PROJECT_ROOT/npm/waxmcp/dist/darwin-x64/WaxCLI" ]]; then
     echo "WARN: x64 cross-compile is unavailable on this host. Reusing checked-in darwin-x64 binary."
   else

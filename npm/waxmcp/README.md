@@ -21,7 +21,7 @@ This repo also ships a release script that updates `version`, syncs
 
 ```bash
 cd /path/to/Wax
-./Scripts/release-waxmcp.sh patch   # or minor / major / 1.2.3
+./scripts/release-waxmcp.sh patch   # or minor / major / 1.2.3
 git add npm/waxmcp/package.json Sources/WaxMCPServer/main.swift npm/waxmcp/dist/darwin-*/WaxCLI npm/waxmcp/dist/darwin-*/WaxCLI.sha256
 git commit -m "release: bump waxmcp version"
 ```

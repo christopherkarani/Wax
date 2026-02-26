@@ -37,13 +37,13 @@ jobs:
         if: ${{ matrix.source-build }}
         run: |
           set -euo pipefail
-          ./Scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}" "${{ matrix.triple }}"
+          ./scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}" "${{ matrix.triple }}"
 
       - name: Reuse checked-in x64 binary
         if: ${{ !matrix.source-build }}
         run: |
           set -euo pipefail
-          ./Scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}"
+          ./scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}"
 
       - name: Verify packaged binary
         run: |
