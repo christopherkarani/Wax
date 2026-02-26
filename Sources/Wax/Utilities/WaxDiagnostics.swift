@@ -4,10 +4,6 @@ import os
 #endif
 
 enum WaxDiagnostics {
-    #if canImport(os)
-    private static let logger = Logger(subsystem: "com.wax.framework", category: "diagnostics")
-    #endif
-
     static func logSwallowed(
         _ error: any Error,
         context: StaticString,
@@ -16,6 +12,7 @@ enum WaxDiagnostics {
         line: UInt = #line
     ) {
         #if canImport(os)
+        let logger = Logger(subsystem: "com.wax.framework", category: "diagnostics")
         logger.error(
             "\(context, privacy: .public): \(String(describing: error), privacy: .public); fallback: \(fallback, privacy: .public) [\(fileID, privacy: .public):\(line)]"
         )
