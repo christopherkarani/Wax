@@ -82,7 +82,7 @@ struct WaxMCPServerCommand: ParsableCommand {
                 "vectorSearch=\(memoryConfig.enableVectorSearch) " +
                 "embedder=\(embedderStatus)"
         )
-        writeStderr("WaxMCPServer toolset: \(activeToolNames.joined(separator: \",\"))")
+        writeStderr("WaxMCPServer toolset: \(activeToolNames.joined(separator: ","))")
 
         let memory = try await MemoryOrchestrator(
             at: memoryURL,
