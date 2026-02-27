@@ -16,6 +16,55 @@ fi
 PLATFORM="$1"
 shift
 
+apply_usarch_float16_patch_for_x86() {
+  local triple="$1"
+  if [[ "$triple" != x86_64-* ]]; then
+    return 0
+  fi
+
+  local source="$PROJECT_ROOT/.build/checkouts/USearch/swift/USearchIndex.swift"
+  if [[ ! -f "$source" ]]; then
+    return 0
+  fi
+
+  chmod u+w "$source" || true
+  if [[ ! -w "$source" ]]; then
+    return 0
+  fi
+
+  if rg -q "#if arch\\(arm64\\)" "$source"; then
+    return 0
+  fi
+
+  python - "$source" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r") as fh:
+    text = fh.read()
+
+start_marker = "    /**\n     * @brief Adds a labeled vector to the index.\n     * @param vector Half-precision vector.\n     */"
+end_marker = "    public func contains(key: USearchKey) throws -> Bool {\n"
+
+if start_marker not in text or end_marker not in text:
+    raise SystemExit(0)
+
+start_index = text.index(start_marker)
+end_index = text.index(end_marker)
+block = text[start_index:end_index]
+
+if "#if arch(arm64)" in block or "#endif" in block:
+    raise SystemExit(0)
+
+patched = "    #if arch(arm64)\n\n" + block + "    #endif\n\n"
+text = text[:start_index] + patched + text[end_index:]
+
+with open(path, "w") as fh:
+    fh.write(text)
+PY
+}
+
 if [[ $# -gt 0 ]]; then
   case "$1" in
     --triple)
@@ -45,6 +94,7 @@ BIN_PATH="$DIST_DIR/WaxCLI"
 mkdir -p "$DIST_DIR"
 
 if [[ -n "$TRIPLE" ]]; then
+  apply_usarch_float16_patch_for_x86 "$TRIPLE"
   swift build --product WaxCLI --traits MCPServer --configuration release --triple "$TRIPLE"
   LOCAL_BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
   cp "$LOCAL_BIN_PATH/WaxCLI" "$BIN_PATH"

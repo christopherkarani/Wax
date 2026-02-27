@@ -267,6 +267,7 @@ private extension MiniLMEmbeddings {
                 }
             }
             
+            #if arch(arm64)
             if isContiguous && dataType == .float16 {
                 let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
                 return (0..<batch).map { row in
@@ -276,11 +277,16 @@ private extension MiniLMEmbeddings {
                     }
                 }
             }
+            #endif
         }
 
+        #if arch(arm64)
         let float16Ptr: UnsafeMutablePointer<Float16>? = dataType == .float16
             ? embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
             : nil
+        #else
+        let float16Ptr: UnsafeMutablePointer<Float>? = nil
+        #endif
         let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
             ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
             : nil
@@ -289,9 +295,15 @@ private extension MiniLMEmbeddings {
             if let floatPtr {
                 return floatPtr[index]
             }
+            #if arch(arm64)
             if let float16Ptr {
                 return Float(float16Ptr[index])
             }
+            #else
+            if dataType == .float16 {
+                return 0
+            }
+            #endif
             return 0
         }
 
