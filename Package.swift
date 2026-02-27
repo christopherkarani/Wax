@@ -114,7 +114,7 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
-            name: "WaxMCPServer",
+            name: "wax-mcp",
             dependencies: [
                 "Wax",
                 .product(
@@ -142,7 +142,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "WaxCLI",
+            name: "wax",
             dependencies: [
                 "Wax",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -204,12 +204,12 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
-            name: "WaxMCPServerTests",
+            name: "wax-mcpTests",
             dependencies: [
                 "Wax",
                 .product(name: "Testing", package: "swift-testing"),
                 .target(
-                    name: "WaxMCPServer",
+                    name: "wax-mcp",
                     condition: .when(traits: ["MCPServer"])
                 ),
                 .product(
@@ -226,7 +226,7 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "WaxCLITests",
+            name: "waxTests",
             dependencies: [
                 "Wax",
                 .product(name: "Testing", package: "swift-testing"),

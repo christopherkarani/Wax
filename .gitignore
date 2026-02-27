@@ -1,6 +1,8 @@
 .DS_Store
 /.build
 /WaxDemo/.build/
+Resources/WaxDemo/.build/
+**/.build/
 /Packages
 xcuserdata/
 DerivedData/
