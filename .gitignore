@@ -14,3 +14,6 @@ DerivedData/
 .wax-repo/
 *.profraw
 *.profdata
+.claude/agents/
+.vscode/
+AGENTS.md
