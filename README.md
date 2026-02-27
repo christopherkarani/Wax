@@ -75,6 +75,12 @@ dependencies: [
 
 Or in Xcode: **File → Add Package Dependencies** → paste the repo URL.
 
+## MCP Installer (npm)
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
+
 ---
 
 ## Quick Start
