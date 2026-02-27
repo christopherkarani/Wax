@@ -4,7 +4,7 @@ import Foundation
 @main
 struct WaxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "wax",
+        commandName: "wax-cli",
         abstract: "Wax developer CLI",
         subcommands: [
             RememberCommand.self,

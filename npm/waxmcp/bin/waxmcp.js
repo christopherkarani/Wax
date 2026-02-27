@@ -40,7 +40,9 @@ if (bundledBinary) {
   candidates.push(bundledBinary);
 }
 candidates.push("wax");
+candidates.push("wax-cli");
 candidates.push("WaxCLI");
+candidates.push(path.join(process.cwd(), ".build", "debug", "wax-cli"));
 candidates.push(path.join(process.cwd(), ".build", "debug", "WaxCLI"));
 
 for (const command of candidates) {
@@ -70,8 +72,10 @@ const checkedLocations = [
     : "  1. $WAX_CLI_BIN (not set)",
   `  2. Bundled binary at dist/darwin-${os.arch()}/WaxCLI`,
   "  3. 'wax' in PATH",
-  "  4. 'WaxCLI' in PATH",
-  `  5. ${path.join(process.cwd(), ".build", "debug", "WaxCLI")}`,
+  "  4. 'wax-cli' in PATH",
+  "  5. 'WaxCLI' in PATH",
+  `  6. ${path.join(process.cwd(), ".build", "debug", "wax-cli")}`,
+  `  7. ${path.join(process.cwd(), ".build", "debug", "WaxCLI")}`,
 ];
 console.error(`
 ERROR: No valid WaxCLI binary found.
