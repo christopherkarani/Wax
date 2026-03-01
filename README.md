@@ -63,7 +63,7 @@ Wax packages all of it into one self-contained file:
 ## Architecture
 
 <div align="center">
-<img src="Resources/website/static/img/architecture.svg" width="800" alt="Wax Deep Architecture" />
+<img src="https://raw.githubusercontent.com/christopherkarani/Wax/main/Resources/website/static/img/architecture.svg" width="800" alt="Wax Deep Architecture" />
 </div>
 
 <br/>
