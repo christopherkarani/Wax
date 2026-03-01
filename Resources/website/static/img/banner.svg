@@ -1,0 +1,105 @@
+<svg width="1200" height="600" viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1200" height="600" fill="#070604" />
+  
+  <!-- Subtle Grain Pattern -->
+  <filter id="noise">
+    <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="3" stitchTiles="stitch" />
+    <feColorMatrix type="saturate" values="0" />
+    <feComponentTransfer>
+      <feFuncR type="linear" slope="0.03" />
+      <feFuncG type="linear" slope="0.03" />
+      <feFuncB type="linear" slope="0.03" />
+    </feComponentTransfer>
+  </filter>
+  <rect width="1200" height="600" filter="url(#noise)" opacity="0.5" />
+
+  <!-- Ambient Glow -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="0%" stop-color="#c4873a" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#c4873a" stop-opacity="0" />
+    </radialGradient>
+    
+    <linearGradient id="speedLine" x1="1" y1="0.5" x2="0" y2="0.5">
+      <stop offset="0%" stop-color="#dfa04d" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#dfa04d" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="shellGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c4873a" />
+      <stop offset="100%" stop-color="#8a6030" />
+    </linearGradient>
+  </defs>
+  
+  <circle cx="450" cy="300" r="400" fill="url(#glow)" />
+
+  <!-- Speed Lines -->
+  <g transform="translate(100, 320)">
+    <rect x="0" y="0" width="600" height="2" fill="url(#speedLine)" opacity="0.4" rx="1">
+      <animate attributeName="x" from="600" to="-1200" dur="0.8s" repeatCount="indefinite" />
+    </rect>
+    <rect x="150" y="40" width="400" height="3" fill="url(#speedLine)" opacity="0.6" rx="1.5">
+      <animate attributeName="x" from="600" to="-1200" dur="0.6s" repeatCount="indefinite" />
+    </rect>
+    <rect x="50" y="-60" width="500" height="1.5" fill="url(#speedLine)" opacity="0.3" rx="0.75">
+      <animate attributeName="x" from="600" to="-1200" dur="1s" repeatCount="indefinite" />
+    </rect>
+    <rect x="300" y="-100" width="300" height="2" fill="url(#speedLine)" opacity="0.5" rx="1">
+      <animate attributeName="x" from="600" to="-1200" dur="0.7s" repeatCount="indefinite" />
+    </rect>
+    <rect x="400" y="80" width="450" height="2" fill="url(#speedLine)" opacity="0.4" rx="1">
+      <animate attributeName="x" from="600" to="-1200" dur="0.9s" repeatCount="indefinite" />
+    </rect>
+  </g>
+
+  <!-- Mascot: Snail at Speed of Light -->
+  <g transform="translate(400, 250) scale(1.2)">
+    <!-- Motion Blur Streaks -->
+    <path d="M-50,50 L-200,50" stroke="#dfa04d" stroke-width="20" stroke-linecap="round" opacity="0.2" />
+    <path d="M-40,20 L-180,20" stroke="#dfa04d" stroke-width="15" stroke-linecap="round" opacity="0.1" />
+    
+    <!-- Snail Body -->
+    <path d="M0,80 C50,80 150,80 180,80 C200,80 210,60 210,50 C210,40 200,30 180,30 L60,30" fill="#ede8df" />
+    
+    <!-- Snail Shell -->
+    <path d="M30,50 C30,0 130,0 130,50 C130,100 30,100 30,50 Z" fill="url(#shellGradient)" />
+    <!-- Shell Pattern (Spiral/Modern) -->
+    <path d="M80,50 m-30,0 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 M80,50 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0" fill="none" stroke="#070604" stroke-width="2" opacity="0.3" />
+    
+    <!-- Biker Helmet -->
+    <g transform="translate(160, 10)">
+      <path d="M0,45 C0,15 50,15 50,45 L50,60 L0,60 Z" fill="#2c2822" />
+      <path d="M10,25 C10,20 40,20 40,25 L45,40 L5,40 Z" fill="#1e1b17" /> <!-- Visor -->
+      <path d="M5,40 L45,40 L43,45 L7,45 Z" fill="#433e38" /> <!-- Visor detail -->
+      <!-- Visor reflection -->
+      <path d="M15,28 L25,28" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.3" />
+    </g>
+    
+    <!-- Exhaust/Speed Effect from Shell -->
+    <path d="M35,60 L-20,65 L35,70" fill="#dfa04d" opacity="0.6">
+      <animate attributeName="opacity" values="0.4;0.8;0.4" dur="0.1s" repeatCount="indefinite" />
+    </path>
+  </g>
+
+  <!-- Text -->
+  <g transform="translate(650, 310)">
+    <text x="0" y="0" font-family="Georgia, serif" font-size="120" font-style="italic" fill="#ede8df" letter-spacing="-2">WAX</text>
+    <text x="5" y="50" font-family="Arial, sans-serif" font-size="20" font-weight="500" fill="#c4873a" letter-spacing="4">OPEN SOURCE RAG FRAMEWORK</text>
+    <text x="5" y="85" font-family="Arial, sans-serif" font-size="16" fill="#7c7268" letter-spacing="1">On-device. One file. Zero servers.</text>
+  </g>
+  
+  <!-- Star converting sparkle -->
+  <g transform="translate(1000, 150)">
+    <path d="M0,-20 L5,-5 L20,0 L5,5 L0,20 L-5,5 L-20,0 L-5,-5 Z" fill="#dfa04d">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite" />
+      <animateTransform attributeName="transform" type="scale" values="0.8;1.2;0.8" dur="2s" repeatCount="indefinite" />
+    </path>
+  </g>
+  <g transform="translate(1100, 450)">
+    <path d="M0,-15 L4,-4 L15,0 L4,4 L0,15 L-4,4 L-15,0 L-4,-4 Z" fill="#dfa04d">
+      <animate attributeName="opacity" values="1;0.2;1" dur="3s" repeatCount="indefinite" />
+      <animateTransform attributeName="transform" type="scale" values="1;0.7;1" dur="3s" repeatCount="indefinite" />
+    </path>
+  </g>
+</svg>
