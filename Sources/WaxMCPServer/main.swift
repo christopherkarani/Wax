@@ -13,7 +13,7 @@ import WaxVectorSearchMiniLM
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "WaxMCPServer",
+        commandName: "wax-mcp",
         abstract: "Stdio MCP server exposing Wax memory and multimodal RAG tools."
     )
 
@@ -36,7 +36,7 @@ struct WaxMCPServerCommand: ParsableCommand {
                 writeStderr(error.localizedDescription)
                 Darwin.exit(EXIT_FAILURE)
             } catch {
-                writeStderr("WaxMCPServer failed: \(error)")
+                writeStderr("wax-mcp failed: \(error)")
                 Darwin.exit(EXIT_FAILURE)
             }
         }
@@ -75,14 +75,14 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         let embedderStatus = memoryConfig.enableVectorSearch ? "miniLM" : "text-only"
         writeStderr(
-            "WaxMCPServer config: store=\"\(memoryURL.path)\" " +
+            "wax-mcp config: store=\"\(memoryURL.path)\" " +
                 "structuredMemory=\(memoryConfig.enableStructuredMemory) " +
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
                 "vectorSearch=\(memoryConfig.enableVectorSearch) " +
                 "embedder=\(embedderStatus)"
         )
-        writeStderr("WaxMCPServer toolset: \(activeToolNames.joined(separator: ","))")
+        writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
         let memory = try await MemoryOrchestrator(
             at: memoryURL,
@@ -92,9 +92,9 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         // SYNC: keep this version in sync with npm/waxmcp/package.json "version"
         let serverVersion = "0.1.12"
-        writeStderr("WaxMCPServer v\(serverVersion) starting")
+        writeStderr("wax-mcp v\(serverVersion) starting")
         let server = Server(
-            name: "WaxMCPServer",
+            name: "wax-mcp",
             version: serverVersion,
             instructions: "Use these tools to store, search, and recall Wax memory. Server v\(serverVersion).",
             capabilities: .init(tools: .init(listChanged: false)),
@@ -238,7 +238,7 @@ import Glibc
 #endif
 import Foundation
 
-let message = "WaxMCPServer requires the MCPServer trait. Build with --traits MCPServer.\n"
+let message = "wax-mcp requires the MCPServer trait. Build with --traits MCPServer.\n"
 if let data = message.data(using: .utf8) {
     FileHandle.standardError.write(data)
 }

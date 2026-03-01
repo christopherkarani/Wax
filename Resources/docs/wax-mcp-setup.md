@@ -4,25 +4,25 @@
 
 ```bash
 cd /Users/chriskarani/CodingProjects/AIStack/Wax
-swift run WaxCLI mcp install --scope user
+swift run --traits MCPServer wax-cli mcp install --scope user
 ```
 
 This will:
 
-1. Build `WaxMCPServer`
+1. Build `wax-mcp`
 2. Register a `wax` MCP server entry in Claude Code
 3. Configure default store paths under `~/.wax`
 
 ## Run doctor
 
 ```bash
-swift run WaxCLI mcp doctor
+swift run --traits MCPServer wax-cli mcp doctor
 ```
 
 ## Manual serve
 
 ```bash
-swift run WaxCLI mcp serve
+swift run --traits MCPServer wax-cli mcp serve
 ```
 
 ## Feature flags
@@ -51,16 +51,16 @@ The npm launcher is at `npm/waxmcp`.
 npx -y waxmcp@latest mcp serve
 ```
 
-This package includes embedded `WaxCLI` binaries for:
+This package includes embedded binaries for:
 
-1. `dist/darwin-arm64/WaxCLI`
-2. `dist/darwin-x64/WaxCLI`
+1. `dist/darwin-arm64/wax-cli` + `dist/darwin-arm64/wax-mcp`
+2. `dist/darwin-x64/wax-cli` + `dist/darwin-x64/wax-mcp`
 
 For users of the published package, no local Wax build is required.
 
 For local development:
 
 ```bash
-export WAX_CLI_BIN=/Users/chriskarani/CodingProjects/AIStack/Wax/.build/debug/WaxCLI
+export WAX_CLI_BIN=/Users/chriskarani/CodingProjects/AIStack/Wax/.build/debug/wax-cli
 npx --yes /Users/chriskarani/CodingProjects/AIStack/Wax/npm/waxmcp mcp doctor
 ```

@@ -46,8 +46,8 @@ extension WaxCLI.MCP {
             abstract: "Run the Wax MCP stdio server"
         )
 
-        @Option(name: .customLong("server-path"), help: "Path to WaxMCPServer binary")
-        var serverPath = ".build/debug/WaxMCPServer"
+        @Option(name: .customLong("server-path"), help: "Path to wax-mcp binary")
+        var serverPath = Pathing.resolveDefaultServerPath()
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.wax"
@@ -102,8 +102,8 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("scope"), help: "Claude config scope: local, user, project")
         var scope: WaxCLI.MCPScope = .user
 
-        @Option(name: .customLong("server-path"), help: "Path to WaxMCPServer binary")
-        var serverPath = ".build/debug/WaxMCPServer"
+        @Option(name: .customLong("server-path"), help: "Path to wax-mcp binary")
+        var serverPath = Pathing.resolveDefaultServerPath()
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.wax"
@@ -117,7 +117,7 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("feature-license"), help: "Enable license validation (default disabled)")
         var featureLicense = false
 
-        @Flag(name: .customLong("skip-build"), help: "Skip building WaxMCPServer before install")
+        @Flag(name: .customLong("skip-build"), help: "Skip building wax-mcp before install")
         var skipBuild = false
 
         @Flag(name: .customLong("dry-run"), help: "Print commands without executing")
@@ -129,7 +129,7 @@ extension WaxCLI.MCP {
             }
 
             if !skipBuild {
-                let buildArguments = ["build", "--product", "WaxMCPServer", "--traits", "default,MCPServer"]
+                let buildArguments = ["build", "--product", "wax-mcp", "--traits", "default,MCPServer"]
                 if dryRun {
                     print("swift \(buildArguments.joined(separator: " "))")
                 } else {
@@ -220,8 +220,8 @@ extension WaxCLI.MCP {
             abstract: "Validate Wax MCP setup and run a tools/list smoke check"
         )
 
-        @Option(name: .customLong("server-path"), help: "Path to WaxMCPServer binary")
-        var serverPath = ".build/debug/WaxMCPServer"
+        @Option(name: .customLong("server-path"), help: "Path to wax-mcp binary")
+        var serverPath = Pathing.resolveDefaultServerPath()
 
         @Option(name: .customLong("store-path"), help: "Path to text memory store")
         var storePath = "~/.wax/memory.wax"
@@ -242,10 +242,10 @@ extension WaxCLI.MCP {
             do {
                 resolvedServer = try Pathing.resolvePath(serverPath)
                 if !FileManager.default.isExecutableFile(atPath: resolvedServer) {
-                    failures.append("WaxMCPServer is not executable at \(resolvedServer)")
+                    failures.append("wax-mcp is not executable at \(resolvedServer)")
                 }
             } catch {
-                failures.append("WaxMCPServer binary not found: \(error.localizedDescription)")
+                failures.append("wax-mcp binary not found: \(error.localizedDescription)")
                 resolvedServer = serverPath
             }
 
@@ -453,6 +453,21 @@ private enum Pathing {
             return url.path
         }
         throw CLIError("Path not found: \(url.path)")
+    }
+
+    /// Resolves the `wax-mcp` server binary path using a search order:
+    /// 1. Sibling `wax-mcp` next to the running CLI binary (production/npm layout)
+    /// 2. `.build/debug/wax-mcp` relative to cwd (development)
+    static func resolveDefaultServerPath() -> String {
+        // 1. Look next to the running binary
+        if let selfPath = Bundle.main.executableURL?.deletingLastPathComponent() {
+            let sibling = selfPath.appendingPathComponent("wax-mcp").path
+            if FileManager.default.isExecutableFile(atPath: sibling) {
+                return sibling
+            }
+        }
+        // 2. Fall back to development build path
+        return ".build/debug/wax-mcp"
     }
 
     static func resolveSelfExecutablePath() throws -> String {
