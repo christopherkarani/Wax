@@ -60,6 +60,14 @@ Wax packages all of it into one self-contained file:
 
 ---
 
+## Architecture
+
+<div align="center">
+<img src="Resources/website/static/img/architecture.svg" width="800" alt="Wax Deep Architecture" />
+</div>
+
+<br/>
+
 ## Features
 
 - **Hybrid retrieval** — BM25 keyword search fused with HNSW vector similarity. Gets the right memory, even when wording differs.

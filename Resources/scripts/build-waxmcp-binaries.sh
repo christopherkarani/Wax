@@ -89,31 +89,63 @@ fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$PROJECT_ROOT/npm/waxmcp/dist/$PLATFORM"
-BIN_PATH="$DIST_DIR/WaxCLI"
+CLI_BIN_PATH="$DIST_DIR/wax-cli"
+MCP_BIN_PATH="$DIST_DIR/wax-mcp"
 
 mkdir -p "$DIST_DIR"
 
 if [[ -n "$TRIPLE" ]]; then
   apply_usarch_float16_patch_for_x86 "$TRIPLE"
-  swift build --product WaxCLI --traits MCPServer --configuration release --triple "$TRIPLE"
-  LOCAL_BIN_PATH="$(swift build --product WaxCLI --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
-  cp "$LOCAL_BIN_PATH/WaxCLI" "$BIN_PATH"
+
+  # Build the CLI binary
+  swift build --product wax-cli --traits MCPServer --configuration release --triple "$TRIPLE"
+  LOCAL_BIN_PATH="$(swift build --product wax-cli --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
+  cp "$LOCAL_BIN_PATH/wax-cli" "$CLI_BIN_PATH"
+
+  # Build the MCP server binary
+  swift build --product wax-mcp --traits MCPServer --configuration release --triple "$TRIPLE"
+  MCP_LOCAL_BIN_PATH="$(swift build --product wax-mcp --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
+  cp "$MCP_LOCAL_BIN_PATH/wax-mcp" "$MCP_BIN_PATH"
+
+  # Copy resource bundles required for vector search and runtime.
+  # Scan both bin paths defensively (they're usually identical but may diverge).
+  echo "Copying resource bundles..."
+  for dir in "$LOCAL_BIN_PATH" "$MCP_LOCAL_BIN_PATH"; do
+    for bundle in "$dir"/*.bundle; do
+      [[ -d "$bundle" ]] || continue
+      bundle_name="$(basename "$bundle")"
+      [[ -d "$DIST_DIR/$bundle_name" ]] && continue  # skip if already copied
+      cp -r "$bundle" "$DIST_DIR/$bundle_name"
+      echo "  Copied $bundle_name"
+    done
+  done
 else
-  if [[ ! -f "$BIN_PATH" ]]; then
-    echo "ERROR: expected checked-in WaxCLI at $BIN_PATH but it does not exist." >&2
+  if [[ ! -f "$CLI_BIN_PATH" ]]; then
+    echo "ERROR: expected checked-in wax-cli binary at $CLI_BIN_PATH but it does not exist." >&2
     echo "Rebuild with a matching triple or copy the binary first." >&2
     exit 1
   fi
+  if [[ ! -f "$MCP_BIN_PATH" ]]; then
+    echo "WARN: wax-mcp binary not found at $MCP_BIN_PATH. MCP server will not be shipped for this platform." >&2
+  fi
 fi
 
-chmod +x "$BIN_PATH"
+chmod +x "$CLI_BIN_PATH"
+echo "Created $CLI_BIN_PATH"
 
-echo "Created $BIN_PATH"
-
-if command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 "$BIN_PATH" > "$BIN_PATH.sha256"
-else
-  sha256sum "$BIN_PATH" > "$BIN_PATH.sha256"
+if [[ -f "$MCP_BIN_PATH" ]]; then
+  chmod +x "$MCP_BIN_PATH"
+  echo "Created $MCP_BIN_PATH"
 fi
 
-echo "Wrote $BIN_PATH.sha256"
+# Generate checksums
+for bin in "$CLI_BIN_PATH" "$MCP_BIN_PATH"; do
+  if [[ -f "$bin" ]]; then
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$bin" > "$bin.sha256"
+    else
+      sha256sum "$bin" > "$bin.sha256"
+    fi
+    echo "Wrote $bin.sha256"
+  fi
+done

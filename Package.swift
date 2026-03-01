@@ -142,7 +142,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "wax",
+            name: "wax-cli",
             dependencies: [
                 "Wax",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -218,6 +218,7 @@ let package = Package(
                     condition: .when(traits: ["MCPServer"])
                 ),
             ],
+            path: "Tests/WaxMCPServerTests",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 // Must mirror the WaxMCPServer target so #if MCPServer guards in test
@@ -231,6 +232,7 @@ let package = Package(
                 "Wax",
                 .product(name: "Testing", package: "swift-testing"),
             ],
+            path: "Tests/WaxTests",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
     ]

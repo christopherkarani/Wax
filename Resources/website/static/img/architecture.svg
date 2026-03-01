@@ -1,0 +1,110 @@
+<svg width="1000" height="800" viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1000" height="800" fill="#070604" rx="12" />
+  
+  <defs>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#dfa04d" />
+      <stop offset="100%" stop-color="#8a6030" />
+    </linearGradient>
+    
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <style>
+      .title { font-family: 'Georgia', serif; font-style: italic; fill: #ede8df; font-size: 28px; }
+      .label { font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500; }
+      .sublabel { font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px; }
+      .box { fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5; }
+      .highlight { fill: #2c2822; stroke: #c4873a; stroke-width: 2; }
+      .arrow { stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    </style>
+
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#dfa04d" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="50" y="50" class="title">Wax Deep Architecture</text>
+  <text x="50" y="75" class="sublabel">Local-first RAG & Semantic Memory Engine</text>
+
+  <!-- Layer: Application -->
+  <g transform="translate(300, 100)">
+    <rect width="400" height="80" class="box" rx="8" />
+    <text x="200" y="35" text-anchor="middle" class="label">Application Interface</text>
+    <text x="200" y="55" text-anchor="middle" class="sublabel">Swift Package • CLI Tool • MCP Server</text>
+  </g>
+
+  <!-- Arrow App -> Session -->
+  <path d="M500,180 L500,220" class="arrow" />
+
+  <!-- Layer: Orchestration -->
+  <g transform="translate(150, 230)">
+    <rect width="700" height="120" class="highlight" rx="8" />
+    <text x="350" y="30" text-anchor="middle" class="label">Wax Orchestration (WaxSession)</text>
+    
+    <!-- Sub-components -->
+    <g transform="translate(30, 50)">
+      <rect width="200" height="50" class="box" rx="4" />
+      <text x="100" y="30" text-anchor="middle" class="label">Multimodal RAG</text>
+    </g>
+    <g transform="translate(250, 50)">
+      <rect width="200" height="50" class="box" rx="4" />
+      <text x="100" y="30" text-anchor="middle" class="label">Structured Memory</text>
+    </g>
+    <g transform="translate(470, 50)">
+      <rect width="200" height="50" class="box" rx="4" />
+      <text x="100" y="30" text-anchor="middle" class="label">Embeddings</text>
+    </g>
+  </g>
+
+  <!-- Arrows Session -> Engines -->
+  <path d="M300,350 L300,400" class="arrow" />
+  <path d="M700,350 L700,400" class="arrow" />
+
+  <!-- Layer: Search Engines -->
+  <g transform="translate(100, 410)">
+    <rect width="350" height="100" class="box" rx="8" />
+    <text x="175" y="30" text-anchor="middle" class="label">WaxTextSearch</text>
+    <text x="175" y="55" text-anchor="middle" class="sublabel">SQLite FTS5 + BM25</text>
+    <text x="175" y="75" text-anchor="middle" class="sublabel">Entities & Facts</text>
+    
+    <rect x="500" y="0" width="350" height="100" class="box" rx="8" />
+    <text x="675" y="30" text-anchor="middle" class="label">WaxVectorSearch</text>
+    <text x="675" y="55" text-anchor="middle" class="sublabel">HNSW (USearch) • Metal GPU</text>
+    <text x="675" y="75" text-anchor="middle" class="sublabel">Vector Acceleration</text>
+  </g>
+
+  <!-- Arrows Engines -> Core -->
+  <path d="M275,510 L450,560" class="arrow" />
+  <path d="M725,510 L550,560" class="arrow" />
+
+  <!-- Layer: WaxCore -->
+  <g transform="translate(300, 570)">
+    <rect width="400" height="100" class="highlight" rx="8" style="fill: #dfa04d; fill-opacity: 0.1;" />
+    <text x="200" y="30" text-anchor="middle" class="label">WaxCore Storage Engine</text>
+    <text x="200" y="55" text-anchor="middle" class="sublabel">ACID Actor • WAL Ring Writer • TOC</text>
+    <text x="200" y="75" text-anchor="middle" class="sublabel">Blocking I/O Executor (Serial)</text>
+  </g>
+
+  <!-- Arrow Core -> File -->
+  <path d="M500,670 L500,710" class="arrow" />
+
+  <!-- Layer: Physical Storage -->
+  <g transform="translate(150, 720)">
+    <rect width="700" height="60" fill="url(#goldGrad)" rx="4" />
+    <text x="350" y="35" text-anchor="middle" class="label" style="fill: #070604;">Single Portable .wax File</text>
+    
+    <!-- File Regions -->
+    <g transform="translate(10, 40)">
+      <text x="50" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Headers A/B</text>
+      <text x="180" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">WAL Buffer</text>
+      <text x="350" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Payload Frames</text>
+      <text x="520" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Index Segments</text>
+      <text x="640" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">TOC + Footer</text>
+    </g>
+  </g>
+</svg>
