@@ -1,4 +1,7 @@
 <div align="center">
+<img src="Resources/website/static/img/banner.svg" width="800" alt="Wax Banner" />
+
+<br/>
 
 <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat&logo=swift&logoColor=white" />
 <img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-blue?style=flat&logo=apple" />
