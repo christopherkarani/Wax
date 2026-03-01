@@ -1,0 +1,90 @@
+<svg width="800" height="420" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="420" rx="12" fill="#070604" />
+  <rect x="1" y="1" width="798" height="418" rx="11" fill="none" stroke="#1e1b17" stroke-width="1" />
+
+  <!-- Header -->
+  <text x="40" y="50" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#c4873a" letter-spacing="2">BENCHMARKS</text>
+  <text x="40" y="80" font-family="Georgia, serif" font-size="28" font-style="italic" fill="#ede8df">Vector Search Latency</text>
+  <text x="40" y="105" font-family="Arial, sans-serif" font-size="14" fill="#7c7268">10,000 × 384-dim documents on M2 Ultra (lower is better)</text>
+
+  <!-- Legend/Unit -->
+  <text x="740" y="105" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#433e38">Time in Milliseconds (ms)</text>
+
+  <!-- Benchmark Rows -->
+  <g transform="translate(40, 140)">
+    
+    <!-- Row 1: Wax Metal (Warm) -->
+    <g transform="translate(0, 0)">
+      <text y="18" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#ede8df">Wax Metal <tspan fill="#c4873a" font-size="12">(Warm)</tspan></text>
+      <text x="720" y="18" text-anchor="end" font-family="monospace" font-size="14" font-weight="700" fill="#dfa04d">0.84ms</text>
+      <rect y="30" width="720" height="8" rx="4" fill="#161412" />
+      <rect y="30" height="8" rx="4" fill="url(#grad-wax)">
+        <animate attributeName="width" from="0" to="4" dur="1s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" />
+      </rect>
+      <!-- Snail Icon at the end of the bar -->
+      <g transform="translate(4, 34)">
+        <animateTransform attributeName="transform" type="translate" from="0, 34" to="4, 34" dur="1s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" />
+        <circle r="3" fill="#dfa04d" />
+      </g>
+    </g>
+
+    <!-- Row 2: Wax Metal (Cold) -->
+    <g transform="translate(0, 65)">
+      <text y="18" font-family="Arial, sans-serif" font-size="14" fill="#ede8df">Wax Metal <tspan fill="#7c7268" font-size="12">(Cold)</tspan></text>
+      <text x="720" y="18" text-anchor="end" font-family="monospace" font-size="14" fill="#ede8df">9.20ms</text>
+      <rect y="30" width="720" height="8" rx="4" fill="#161412" />
+      <rect y="30" height="8" rx="4" fill="#c4873a" opacity="0.6">
+        <animate attributeName="width" from="0" to="44" dur="1.2s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" />
+      </rect>
+    </g>
+
+    <!-- Row 3: Wax CPU -->
+    <g transform="translate(0, 130)">
+      <text y="18" font-family="Arial, sans-serif" font-size="14" fill="#ede8df">Wax CPU</text>
+      <text x="720" y="18" text-anchor="end" font-family="monospace" font-size="14" fill="#ede8df">105.00ms</text>
+      <rect y="30" width="720" height="8" rx="4" fill="#161412" />
+      <rect y="30" height="8" rx="4" fill="#c4873a" opacity="0.3">
+        <animate attributeName="width" from="0" to="504" dur="1.4s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" />
+      </rect>
+    </g>
+
+    <!-- Row 4: SQLite FTS5 -->
+    <g transform="translate(0, 195)">
+      <text y="18" font-family="Arial, sans-serif" font-size="14" fill="#7c7268">SQLite FTS5 (Full Text)</text>
+      <text x="720" y="18" text-anchor="end" font-family="monospace" font-size="14" fill="#7c7268">150.00ms+</text>
+      <rect y="30" width="720" height="8" rx="4" fill="#161412" />
+      <rect y="30" height="8" rx="4" fill="#433e38">
+        <animate attributeName="width" from="0" to="720" dur="1.6s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" />
+      </rect>
+    </g>
+  </g>
+
+  <!-- Bottom Stats Row -->
+  <g transform="translate(40, 365)">
+    <line x1="0" y1="0" x2="720" y2="0" stroke="#1e1b17" stroke-width="1" />
+    
+    <g transform="translate(0, 25)">
+      <text font-family="monospace" font-size="20" font-weight="700" fill="#ede8df">17ms</text>
+      <text y="20" font-family="Arial, sans-serif" font-size="12" fill="#7c7268">Cold Open to First Query</text>
+    </g>
+
+    <g transform="translate(240, 25)">
+      <text font-family="monospace" font-size="20" font-weight="700" fill="#ede8df">105ms</text>
+      <text y="20" font-family="Arial, sans-serif" font-size="12" fill="#7c7268">Hybrid Search (Metal + FTS)</text>
+    </g>
+
+    <g transform="translate(480, 25)">
+      <text font-family="monospace" font-size="20" font-weight="700" fill="#c4873a">100%</text>
+      <text y="20" font-family="Arial, sans-serif" font-size="12" fill="#7c7268">On-Device &amp; Private</text>
+    </g>
+  </g>
+
+  <!-- Defs for Gradients -->
+  <defs>
+    <linearGradient id="grad-wax" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8a6030" />
+      <stop offset="100%" stop-color="#dfa04d" />
+    </linearGradient>
+  </defs>
+</svg>
