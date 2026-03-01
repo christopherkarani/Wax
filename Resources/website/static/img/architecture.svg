@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <svg width="1000" height="800" viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg">
   <!-- Background -->
   <rect width="1000" height="800" fill="#070604" rx="12" />
@@ -13,98 +14,89 @@
       <feComposite in="SourceGraphic" in2="blur" operator="over" />
     </filter>
 
-    <style>
-      .title { font-family: 'Georgia', serif; font-style: italic; fill: #ede8df; font-size: 28px; }
-      .label { font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500; }
-      .sublabel { font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px; }
-      .box { fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5; }
-      .highlight { fill: #2c2822; stroke: #c4873a; stroke-width: 2; }
-      .arrow { stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
-    </style>
-
     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#dfa04d" />
     </marker>
   </defs>
 
   <!-- Title -->
-  <text x="50" y="50" class="title">Wax Deep Architecture</text>
-  <text x="50" y="75" class="sublabel">Local-first RAG & Semantic Memory Engine</text>
+  <text x="50" y="50" style="font-family: 'Georgia', serif; font-style: italic; fill: #ede8df; font-size: 28px;">Wax Deep Architecture</text>
+  <text x="50" y="75" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Local-first RAG & Semantic Memory Engine</text>
 
   <!-- Layer: Application -->
   <g transform="translate(300, 100)">
-    <rect width="400" height="80" class="box" rx="8" />
-    <text x="200" y="35" text-anchor="middle" class="label">Application Interface</text>
-    <text x="200" y="55" text-anchor="middle" class="sublabel">Swift Package • CLI Tool • MCP Server</text>
+    <rect width="400" height="80" rx="8" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+    <text x="200" y="35" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">Application Interface</text>
+    <text x="200" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Swift Package • CLI Tool • MCP Server</text>
   </g>
 
   <!-- Arrow App -> Session -->
-  <path d="M500,180 L500,220" class="arrow" />
+  <path d="M500,180 L500,220" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
 
   <!-- Layer: Orchestration -->
   <g transform="translate(150, 230)">
-    <rect width="700" height="120" class="highlight" rx="8" />
-    <text x="350" y="30" text-anchor="middle" class="label">Wax Orchestration (WaxSession)</text>
+    <rect width="700" height="120" rx="8" style="fill: #2c2822; stroke: #c4873a; stroke-width: 2;" />
+    <text x="350" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">Wax Orchestration (WaxSession)</text>
     
     <!-- Sub-components -->
     <g transform="translate(30, 50)">
-      <rect width="200" height="50" class="box" rx="4" />
-      <text x="100" y="30" text-anchor="middle" class="label">Multimodal RAG</text>
+      <rect width="200" height="50" rx="4" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+      <text x="100" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">Multimodal RAG</text>
     </g>
     <g transform="translate(250, 50)">
-      <rect width="200" height="50" class="box" rx="4" />
-      <text x="100" y="30" text-anchor="middle" class="label">Structured Memory</text>
+      <rect width="200" height="50" rx="4" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+      <text x="100" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">Structured Memory</text>
     </g>
     <g transform="translate(470, 50)">
-      <rect width="200" height="50" class="box" rx="4" />
-      <text x="100" y="30" text-anchor="middle" class="label">Embeddings</text>
+      <rect width="200" height="50" rx="4" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+      <text x="100" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">Embeddings</text>
     </g>
   </g>
 
   <!-- Arrows Session -> Engines -->
-  <path d="M300,350 L300,400" class="arrow" />
-  <path d="M700,350 L700,400" class="arrow" />
+  <path d="M300,350 L300,400" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
+  <path d="M700,350 L700,400" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
 
   <!-- Layer: Search Engines -->
   <g transform="translate(100, 410)">
-    <rect width="350" height="100" class="box" rx="8" />
-    <text x="175" y="30" text-anchor="middle" class="label">WaxTextSearch</text>
-    <text x="175" y="55" text-anchor="middle" class="sublabel">SQLite FTS5 + BM25</text>
-    <text x="175" y="75" text-anchor="middle" class="sublabel">Entities & Facts</text>
+    <rect width="350" height="100" rx="8" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+    <text x="175" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">WaxTextSearch</text>
+    <text x="175" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">SQLite FTS5 + BM25</text>
+    <text x="175" y="75" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Entities & Facts</text>
     
-    <rect x="500" y="0" width="350" height="100" class="box" rx="8" />
-    <text x="675" y="30" text-anchor="middle" class="label">WaxVectorSearch</text>
-    <text x="675" y="55" text-anchor="middle" class="sublabel">HNSW (USearch) • Metal GPU</text>
-    <text x="675" y="75" text-anchor="middle" class="sublabel">Vector Acceleration</text>
+    <rect x="500" y="0" width="350" height="100" rx="8" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
+    <text x="675" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">WaxVectorSearch</text>
+    <text x="675" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">HNSW (USearch) • Metal GPU</text>
+    <text x="675" y="75" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Vector Acceleration</text>
   </g>
 
   <!-- Arrows Engines -> Core -->
-  <path d="M275,510 L450,560" class="arrow" />
-  <path d="M725,510 L550,560" class="arrow" />
+  <path d="M275,510 L450,560" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
+  <path d="M725,510 L550,560" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
 
   <!-- Layer: WaxCore -->
   <g transform="translate(300, 570)">
-    <rect width="400" height="100" class="highlight" rx="8" style="fill: #dfa04d; fill-opacity: 0.1;" />
-    <text x="200" y="30" text-anchor="middle" class="label">WaxCore Storage Engine</text>
-    <text x="200" y="55" text-anchor="middle" class="sublabel">ACID Actor • WAL Ring Writer • TOC</text>
-    <text x="200" y="75" text-anchor="middle" class="sublabel">Blocking I/O Executor (Serial)</text>
+    <rect width="400" height="100" rx="8" style="fill: #dfa04d; fill-opacity: 0.1; stroke: #c4873a; stroke-width: 2;" />
+    <text x="200" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">WaxCore Storage Engine</text>
+    <text x="200" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">ACID Actor • WAL Ring Writer • TOC</text>
+    <text x="200" y="75" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Blocking I/O Executor (Serial)</text>
   </g>
 
   <!-- Arrow Core -> File -->
-  <path d="M500,670 L500,710" class="arrow" />
+  <path d="M500,670 L500,710" style="stroke: #dfa04d; stroke-width: 2; fill: none; marker-end: url(#arrowhead);" />
 
   <!-- Layer: Physical Storage -->
   <g transform="translate(150, 720)">
-    <rect width="700" height="60" fill="url(#goldGrad)" rx="4" />
-    <text x="350" y="35" text-anchor="middle" class="label" style="fill: #070604;">Single Portable .wax File</text>
+    <rect width="700" height="60" rx="4" style="fill: url(#goldGrad);" />
+    <text x="350" y="35" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #070604; font-size: 14px; font-weight: 500;">Single Portable .wax File</text>
     
     <!-- File Regions -->
     <g transform="translate(10, 40)">
-      <text x="50" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Headers A/B</text>
-      <text x="180" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">WAL Buffer</text>
-      <text x="350" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Payload Frames</text>
-      <text x="520" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">Index Segments</text>
-      <text x="640" y="10" class="sublabel" style="fill: #2c2822; font-size: 10px;">TOC + Footer</text>
+      <text x="50" y="10" style="font-family: 'Arial', sans-serif; fill: #2c2822; font-size: 10px;">Headers A/B</text>
+      <text x="180" y="10" style="font-family: 'Arial', sans-serif; fill: #2c2822; font-size: 10px;">WAL Buffer</text>
+      <text x="350" y="10" style="font-family: 'Arial', sans-serif; fill: #2c2822; font-size: 10px;">Payload Frames</text>
+      <text x="520" y="10" style="font-family: 'Arial', sans-serif; fill: #2c2822; font-size: 10px;">Index Segments</text>
+      <text x="640" y="10" style="font-family: 'Arial', sans-serif; fill: #2c2822; font-size: 10px;">TOC + Footer</text>
     </g>
   </g>
 </svg>
