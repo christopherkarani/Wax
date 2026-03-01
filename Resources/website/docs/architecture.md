@@ -10,32 +10,13 @@ Understand the module dependency graph, actor model, and end-to-end data flow.
 
 Wax is organized as a stack of Swift Package Manager library targets. Each layer adds capability while depending only on the layers below it.
 
-## Module Dependency Graph
+## Architecture
 
-```
-┌─────────────────────────────────────────┐
-│                 Wax                     │  Orchestration, RAG, Unified Search
-│  MemoryOrchestrator, PhotoRAG, VideoRAG │
-└────────────┬──────────┬────────────┬────┘
-             │          │            │
-     ┌───────▼──┐  ┌────▼────────┐  │
-     │WaxText   │  │WaxVector    │  │
-     │Search    │  │Search       │  │
-     │(FTS5/SQL)│  │(USearch/    │  │
-     │          │  │ Metal)      │  │
-     └────┬─────┘  └──────┬──────┘  │
-          │               │         │
-          │  ┌────────────▼──────┐  │
-          │  │WaxVectorSearch    │  │  (trait-gated)
-          │  │MiniLM             │  │
-          │  │(CoreML embedder)  │  │
-          │  └───────────────────┘  │
-          │                         │
-     ┌────▼─────────────────────────▼────┐
-     │             WaxCore               │  Persistence, WAL, Binary Codec,
-     │  Wax actor, .wax format, Locks   │  Structured Memory types
-     └───────────────────────────────────┘
-```
+<div align="center">
+<img src="/Wax/img/architecture.svg" width="800" alt="Wax Deep Architecture" />
+</div>
+
+<br/>
 
 ## Actor Model
 

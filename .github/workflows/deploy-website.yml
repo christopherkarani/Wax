@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'website/**'
+      - 'Resources/website/**'
       - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
 
@@ -29,21 +29,21 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: Resources/website/package-lock.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
       - name: Install dependencies
-        run: cd website && npm ci
+        run: cd Resources/website && npm ci
 
       - name: Build website
-        run: cd website && npm run build
+        run: cd Resources/website && npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: website/build
+          path: Resources/website/build
 
   deploy:
     needs: build
