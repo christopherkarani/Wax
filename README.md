@@ -35,6 +35,14 @@ let context = try await memory.search("communication preferences", limit: 5)
 
 ---
 
+## Performance
+
+<div align="center">
+<img src="Resources/website/static/img/benchmarks.svg" width="800" alt="Wax Performance Benchmarks" />
+</div>
+
+<br/>
+
 ## Why Wax
 
 Building AI agents on Apple platforms means juggling Core Data for persistence, FAISS or Annoy for vector search, and a tokenizer for context budgets — none of which talk to each other. Or you spin up Chroma or Pinecone and suddenly your app has a server dependency, network calls, and a privacy story you can't tell users.
