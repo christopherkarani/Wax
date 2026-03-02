@@ -17,3 +17,4 @@ DerivedData/
 .claude/agents/
 .vscode/
 AGENTS.md
+.worktrees/
