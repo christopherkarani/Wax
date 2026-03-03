@@ -123,6 +123,7 @@ public actor MemoryOrchestrator {
     let session: WaxSession
     private let embedder: (any EmbeddingProvider)?
     private let embeddingCache: EmbeddingMemoizer?
+    private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
 
@@ -189,6 +190,7 @@ public actor MemoryOrchestrator {
             capacity: resolvedConfig.embeddingCacheCapacity,
             enabled: embedder != nil
         )
+        self.enrichmentPipeline = resolvedConfig.enableAsyncEnrichment ? EnrichmentPipeline() : nil
 
         let preference: VectorEnginePreference = resolvedConfig.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let sessionConfig = WaxSession.Config(
@@ -203,6 +205,15 @@ public actor MemoryOrchestrator {
 
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
+        if let enrichmentPipeline {
+            await enrichmentPipeline.start { task in
+                EnrichmentResult(
+                    frameId: task.frameId,
+                    keywords: KeywordExtractor.extract(from: task.text),
+                    entities: []
+                )
+            }
+        }
         if resolvedConfig.enableAccessStatsScoring {
             try await loadPersistedAccessStatsIfNeeded()
         }
@@ -421,11 +432,25 @@ public actor MemoryOrchestrator {
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
                 }
+                if let enrichmentPipeline {
+                    for (offset, frameId) in frameIds.enumerated() {
+                        try await enrichmentPipeline.enqueue(
+                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                        )
+                    }
+                }
             } else {
                 let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
 
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                }
+                if let enrichmentPipeline {
+                    for (offset, frameId) in frameIds.enumerated() {
+                        try await enrichmentPipeline.enqueue(
+                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                        )
+                    }
                 }
             }
         }
@@ -907,6 +932,9 @@ public actor MemoryOrchestrator {
     // MARK: - Persistence lifecycle
 
     public func flush() async throws {
+        if let enrichmentPipeline {
+            try await enrichmentPipeline.waitUntilIdle(timeout: .seconds(2))
+        }
         if config.enableAccessStatsScoring {
             try await persistAccessStatsIfNeeded()
         }
@@ -916,12 +944,20 @@ public actor MemoryOrchestrator {
     }
 
     public func close() async throws {
+        if let enrichmentPipeline {
+            try await enrichmentPipeline.stop(timeout: .seconds(2))
+        }
         try await flush()
         if let task = scheduledLiveSetMaintenanceTask {
             await task.value
         }
         await session.close()
         try await wax.close()
+    }
+
+    func enrichmentStatsForTesting() async -> EnrichmentPipeline.Stats? {
+        guard let enrichmentPipeline else { return nil }
+        return await enrichmentPipeline.stats
     }
 
     public func scheduledLiveSetMaintenanceReport() -> ScheduledLiveSetMaintenanceReport? {

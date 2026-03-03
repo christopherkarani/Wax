@@ -6,6 +6,7 @@ public struct OrchestratorConfig: Sendable {
     public var enableVectorSearch: Bool = true
     public var enableStructuredMemory: Bool = false
     public var enableAccessStatsScoring: Bool = false
+    public var enableAsyncEnrichment: Bool = false
 
     public var rag: FastRAGConfig = .init()
     public var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
