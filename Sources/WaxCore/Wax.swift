@@ -394,6 +394,15 @@ public actor Wax {
         max(1, minPendingBytes)
     }
 
+    private static func applyDataProtectionIfSupported(at url: URL) throws {
+        #if os(iOS) || os(watchOS) || os(tvOS) || os(visionOS)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: url.path
+        )
+        #endif
+    }
+
     /// Create a new, empty `.wax` file.
     public static func create(
         at url: URL,
@@ -478,7 +487,7 @@ public actor Wax {
             )
         }
 
-        return Wax(
+        let wax = Wax(
             url: url,
             io: io,
             file: created.file,
@@ -514,6 +523,13 @@ public actor Wax {
             ),
             walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
+        do {
+            try Self.applyDataProtectionIfSupported(at: url)
+        } catch {
+            try? await wax.close()
+            throw error
+        }
+        return wax
     }
 
     /// Open an existing `.wax` file.
@@ -707,7 +723,7 @@ public actor Wax {
             )
         }
 
-        return Wax(
+        let wax = Wax(
             url: url,
             io: io,
             file: opened.file,
@@ -743,6 +759,13 @@ public actor Wax {
             ),
             walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
+        do {
+            try Self.applyDataProtectionIfSupported(at: url)
+        } catch {
+            try? await wax.close()
+            throw error
+        }
+        return wax
     }
 
     // MARK: - Mutations
