@@ -122,10 +122,6 @@ After installing the MCP server, add this to your `CLAUDE.md` so Claude Code use
 <summary><strong>CLAUDE.md snippet</strong> (click to expand)</summary>
 
 ```markdown
-# Memory — Wax
-
-Wax MCP is installed. Store: `~/.wax/memory.wax`.
-
 ## Rules
 
 1. **Session start** — call `wax_handoff_latest` to resume prior context
