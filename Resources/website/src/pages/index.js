@@ -31,6 +31,7 @@ const features = [
 
 const comparison = [
   { feature: "warm search @ 10K",  wax: "0.85ms", chroma: "~20ms",      pgvector: "~15ms",  pinecone: "~50-100ms" },
+  { feature: "cold start",         wax: "71ms",   chroma: "~500ms",      pgvector: "n/a",    pinecone: "n/a"       },
   { feature: "works offline",      wax: true,     chroma: true,          pgvector: true,     pinecone: false       },
   { feature: "zero servers",       wax: true,     chroma: false,         pgvector: false,    pinecone: false       },
   { feature: "single file",        wax: true,     chroma: false,         pgvector: false,    pinecone: false       },
@@ -41,7 +42,7 @@ const comparison = [
 ];
 
 const perfBars = [
-  { label: "wax metal (warm)",  value: 1.22,  max: 100, unit: "ms", isWax: true  },
+  { label: "wax metal (warm)",  value: 0.85,  max: 100, unit: "ms", isWax: true  },
   { label: "wax metal (cold)",  value: 71.63, max: 100, unit: "ms", isWax: true  },
   { label: "pgvector (hnsw)",   value: 15,    max: 100, unit: "ms", isWax: false },
   { label: "chroma local",      value: 20,    max: 100, unit: "ms", isWax: false },
@@ -147,8 +148,8 @@ function PerfSection() {
 
       <div className="perf-stats-row">
         <div>
-          <div className="perf-stat-value">1.22ms</div>
-          <div className="perf-stat-label">warm metal search</div>
+          <div className="perf-stat-value">0.85ms</div>
+          <div className="perf-stat-label">warm metal search (p50)</div>
         </div>
         <div>
           <div className="perf-stat-value">58.6x</div>

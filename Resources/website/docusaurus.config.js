@@ -65,6 +65,11 @@ const config = {
             label: "Docs",
           },
           {
+            label: "install →",
+            href: "/docs/intro",
+            position: "right",
+          },
+          {
             href: "https://github.com/christopherkarani/Wax",
             label: "GitHub",
             position: "right",
