@@ -42,6 +42,14 @@ let orchestrator = try await MemoryOrchestrator(
 )
 ```
 
+You can also use the convenience initializer:
+
+```swift
+let orchestrator = try await MemoryOrchestrator.openMiniLM(
+    at: URL(filePath: "memory.wax")
+)
+```
+
 The orchestrator creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.
 
 ## Remember Content
@@ -141,4 +149,36 @@ Always close the orchestrator when done:
 
 ```swift
 try await orchestrator.close()
+```
+
+## Using Wax with Claude Code
+
+Wax ships with an MCP server that gives Claude Code persistent memory. Install and configure:
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
+
+Then add the memory prompt to your `CLAUDE.md` — see the [README](https://github.com/christopherkarani/Wax#claude-code-integration) for the recommended snippet.
+
+### MCP Tools
+
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `wax_remember` | Store text, auto-extract entities/facts | `content`, `project`, `extract` |
+| `wax_recall` | Hybrid retrieval (text + vector + graph) | `query`, `project`, `graph`, `max_depth` |
+| `wax_forget` | Retract wrong facts | `content` or `fact_id` |
+| `wax_context` | Entity knowledge card | `entity` |
+| `wax_reflect` | Memory stats and introspection | `project` |
+| `wax_handoff` | Save session state | `content`, `project`, `pending_tasks` |
+| `wax_handoff_latest` | Load previous handoff | `project` |
+
+### Agent Workflow
+
+```
+Session start  →  wax_handoff_latest(project: "my-app")
+During work    →  wax_recall("auth architecture", project: "my-app")
+Learn fact     →  wax_remember("Auth uses session cookies", project: "my-app")
+Correct error  →  wax_forget(content: "auth uses JWT")
+Session end    →  wax_handoff("Migrated auth to cookies", project: "my-app")
 ```

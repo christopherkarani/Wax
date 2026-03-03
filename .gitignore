@@ -18,3 +18,8 @@ DerivedData/
 .vscode/
 AGENTS.md
 .worktrees/
+*.d
+*.dia
+*.o
+*.swiftdeps
+tasks/
