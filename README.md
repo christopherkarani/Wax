@@ -24,13 +24,18 @@ No server. No cloud. One file.
 Most iOS AI apps lose their memory the moment the user closes them. Wax fixes that — giving your agents persistent, searchable, private memory that lives entirely on-device in a single portable file.
 
 ```swift
-let memory = try WaxMemory(url: .documentsDirectory.appending(path: "agent.wax"))
+import Wax
+import WaxVectorSearchMiniLM
+
+let memory = try await MemoryOrchestrator.openMiniLM(
+    at: .documentsDirectory.appending(path: "agent.wax")
+)
 
 // Store a memory
-try await memory.store("User prefers concise answers and hates bullet points.")
+try await memory.remember("User prefers concise answers and hates bullet points.")
 
 // Retrieve the most relevant context — semantically
-let context = try await memory.search("communication preferences", limit: 5)
+let context = try await memory.recall(query: "communication preferences")
 ```
 
 ---
@@ -89,6 +94,15 @@ Wax packages all of it into one self-contained file:
 // Package.swift
 dependencies: [
     .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8")
+],
+targets: [
+    .target(
+        name: "MyApp",
+        dependencies: [
+            .product(name: "Wax", package: "Wax"),
+            .product(name: "WaxVectorSearchMiniLM", package: "Wax")
+        ]
+    )
 ]
 ```
 
@@ -100,53 +114,62 @@ Or in Xcode: **File → Add Package Dependencies** → paste the repo URL.
 npx -y waxmcp@latest mcp install --scope user
 ```
 
+## Claude Code Integration
+
+After installing the MCP server, add this to your `CLAUDE.md` so Claude Code uses Wax as its memory:
+
+<details>
+<summary><strong>CLAUDE.md snippet</strong> (click to expand)</summary>
+
+```markdown
+# Memory — Wax
+
+Wax MCP is installed. Store: `~/.wax/memory.wax`.
+
+## Rules
+
+1. **Session start** — call `wax_handoff_latest` to resume prior context
+2. **Before answering** — call `wax_recall` to check what you already know. Always try this first.
+3. **When you learn something durable** — call `wax_remember`. Worth storing: user preferences, project decisions, architectural patterns, conventions, people/roles. Not worth storing: transient debugging, one-off commands.
+4. **When corrected** — call `wax_forget` with what changed (e.g. "we don't use Redux anymore")
+5. **Session end** — call `wax_handoff` with summary + pending tasks
+
+## Tools
+
+| Tool | When |
+|------|------|
+| `wax_remember` | User states a preference, makes a decision, or you learn a stable pattern. `project` to scope. |
+| `wax_recall` | Before answering anything that might have prior context. Use `graph: true` for relationship-aware search. |
+| `wax_forget` | User corrects you or facts become outdated. Natural language or `fact_id`. |
+| `wax_context` | Need the full picture of a specific entity (person, project, library). |
+| `wax_reflect` | Audit what you know — entity counts, top predicates, memory health. |
+| `wax_handoff` | Session ending. Pass `pending_tasks` array for continuity. |
+| `wax_handoff_latest` | Session starting. Loads last handoff. |
+```
+
+</details>
+
 ---
 
 ## Quick Start
 
 ```swift
 import Wax
+import WaxVectorSearchMiniLM
 
 // 1. Open (or create) a memory store
-let memory = try WaxMemory(
-    url: .documentsDirectory.appending(path: "myagent.wax"),
-    tokenBudget: 4096
+let memory = try await MemoryOrchestrator.openMiniLM(
+    at: .documentsDirectory.appending(path: "myagent.wax")
 )
 
 // 2. Store memories
-try await memory.store("The user's name is Alex and they live in Toronto.")
-try await memory.store("Alex dislikes formal language. Keep responses casual.")
-try await memory.store("Alex is building a habit tracker in SwiftUI.")
+try await memory.remember("The user's name is Alex and they live in Toronto.")
+try await memory.remember("Alex dislikes formal language. Keep responses casual.")
+try await memory.remember("Alex is building a habit tracker in SwiftUI.")
 
 // 3. Retrieve relevant context for a prompt
-let relevant = try await memory.search("how should I address the user?", limit: 3)
-
-// 4. Build your system prompt with budget-aware context
-let context = memory.buildContext(from: relevant) // trims to fit tokenBudget
-```
-
-### With Apple Foundation Models (iOS 26+)
-
-```swift
-import Wax
-import FoundationModels
-
-let memory = try WaxMemory(url: agentMemoryURL, tokenBudget: 4096)
-let model = SystemLanguageModel.default
-
-// Retrieve relevant memories and inject into session
-let memories = try await memory.search(userMessage, limit: 5)
-let systemPrompt = memory.buildContext(from: memories)
-
-let session = LanguageModelSession(
-    model: model,
-    instructions: systemPrompt
-)
-let response = try await session.respond(to: userMessage)
-
-// Store the exchange for future recall
-try await memory.store(userMessage)
-try await memory.store(response.content)
+let context = try await memory.recall(query: "how should I address the user?")
+print(context.items.map(\.text))
 ```
 
 ---
