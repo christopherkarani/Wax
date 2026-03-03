@@ -649,6 +649,49 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testDedupThroughputWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let corpus = BenchmarkDedupHarness.makeCorpus(
+            total: max(1_000, scale.documentCount * 4),
+            uniqueModulo: max(64, scale.documentCount / 4)
+        )
+        let expectedUnique = max(64, scale.documentCount / 4)
+        let label = "dedup_throughput_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let uniqueCount = BenchmarkDedupHarness.deduplicate(corpus: corpus)
+            XCTAssertEqual(uniqueCount, expectedUnique)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
+    }
+
+    func testTemporalParsingWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let queries = BenchmarkTemporalHarness.makeQueries(count: max(1_000, scale.documentCount * 3))
+        let label = "temporal_parsing_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let resolved = BenchmarkTemporalHarness.parseAll(queries)
+            XCTAssertEqual(resolved, queries.count)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
+    }
+
+    func testEnrichmentDrainWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let tasks = BenchmarkEnrichmentHarness.makeTasks(count: max(1_000, scale.documentCount * 2))
+        let label = "enrichment_drain_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let processed = BenchmarkEnrichmentHarness.drain(tasks)
+            XCTAssertEqual(processed, tasks.count)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
+    }
+
     func testIncrementalStageAndCommitLatencySamples() async throws {
         guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
         let scale = self.scale
