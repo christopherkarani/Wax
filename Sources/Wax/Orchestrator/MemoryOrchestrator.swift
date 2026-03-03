@@ -114,6 +114,7 @@ public actor MemoryOrchestrator {
     private static let accessStatsLabel = "wax.internal"
     private static let accessStatsMarkerKey = "wax.internal.kind"
     private static let accessStatsMarkerValue = "access_stats"
+    private static let contentHashMetadataKey = "wax.content.hash"
 
     let wax: Wax
     let config: OrchestratorConfig
@@ -232,9 +233,16 @@ public actor MemoryOrchestrator {
     ///   implement their own rollback by superseding the document frame on failure.
     public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
         lastWriteActivityAt = .now
+        let contentData = Data(content.utf8)
+        let contentHash = ContentHasher.hash(contentData).hexString
+        if await session.findFrameByMetadata(key: Self.contentHashMetadataKey, value: contentHash) != nil {
+            return
+        }
+
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
         var docMeta = Metadata(metadata)
+        docMeta.entries[Self.contentHashMetadataKey] = contentHash
         if docMeta.entries["session_id"] == nil, let session = currentSessionId {
             docMeta.entries["session_id"] = session.uuidString
         }
@@ -250,7 +258,7 @@ public actor MemoryOrchestrator {
 
         guard !chunks.isEmpty else {
             _ = try await localSession.put(
-                Data(content.utf8),
+                contentData,
                 options: FrameMetaSubset(
                     role: .document,
                     metadata: docMeta
@@ -352,7 +360,7 @@ public actor MemoryOrchestrator {
         }
 
         let docId = try await localSession.put(
-            Data(content.utf8),
+            contentData,
             options: FrameMetaSubset(
                 role: .document,
                 metadata: docMeta

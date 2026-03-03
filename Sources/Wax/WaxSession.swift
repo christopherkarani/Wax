@@ -415,6 +415,21 @@ public actor WaxSession {
         return frameIds
     }
 
+    /// Finds the most recent active document frame whose metadata contains `key == value`.
+    ///
+    /// - Note: This performs an O(n) scan over `frameMetas()` and is acceptable for v2.
+    ///   A dedicated metadata index can optimize this in a later version.
+    public func findFrameByMetadata(key: String, value: String) async -> UInt64? {
+        let metas = await wax.frameMetas()
+        for meta in metas.reversed() {
+            guard meta.role == .document else { continue }
+            guard meta.status == .active, meta.supersededBy == nil else { continue }
+            guard meta.metadata?.entries[key] == value else { continue }
+            return meta.id
+        }
+        return nil
+    }
+
     // MARK: - Lifecycle
 
     public func stage(compact: Bool = false) async throws {
