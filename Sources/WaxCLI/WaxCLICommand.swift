@@ -124,8 +124,10 @@ extension WaxCLI.MCP {
         var dryRun = false
 
         mutating func run() throws {
-            if !dryRun {
-                try ensureToolExists("claude")
+            let claudePath = if dryRun {
+                "claude"
+            } else {
+                try resolveToolPath("claude")
             }
 
             if !skipBuild {
@@ -151,19 +153,20 @@ extension WaxCLI.MCP {
                 try Pathing.resolvePath(serverPath)
             }
             let resolvedCLI = try Pathing.resolveSelfExecutablePath()
+            // Name must precede -e flags; claude mcp add treats positional args after -e as env vars.
             var addArguments = [
                 "mcp", "add",
-                "--transport", "stdio",
-                "--scope", scope.rawValue,
-                "--env", "WAX_MCP_FEATURE_LICENSE=\(featureLicense ? "1" : "0")",
+                name,
+                "-t", "stdio",
+                "-s", scope.rawValue,
+                "-e", "WAX_MCP_FEATURE_LICENSE=\(featureLicense ? "1" : "0")",
             ]
 
             if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
-                addArguments.append(contentsOf: ["--env", "WAX_LICENSE_KEY=\(key)"])
+                addArguments.append(contentsOf: ["-e", "WAX_LICENSE_KEY=\(key)"])
             }
 
             addArguments.append(contentsOf: [
-                name,
                 "--",
                 resolvedCLI,
                 "mcp", "serve",
@@ -177,7 +180,7 @@ extension WaxCLI.MCP {
                 addArguments.append("--feature-license")
             }
 
-            let removeArguments = ["mcp", "remove", "--scope", scope.rawValue, name]
+            let removeArguments = ["mcp", "remove", "-s", scope.rawValue, name]
 
             if dryRun {
                 print("claude \(removeArguments.joined(separator: " "))")
@@ -189,7 +192,7 @@ extension WaxCLI.MCP {
             // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
             // Any other non-zero exit code indicates an unexpected error (e.g. permissions).
             let removeStatus = try ProcessRunner.run(
-                command: "claude",
+                command: claudePath,
                 arguments: removeArguments,
                 passthrough: false,
                 allowNonZeroExit: true
@@ -199,7 +202,7 @@ extension WaxCLI.MCP {
             }
 
             let addStatus = try ProcessRunner.run(
-                command: "claude",
+                command: claudePath,
                 arguments: addArguments,
                 passthrough: true,
                 allowNonZeroExit: true
@@ -250,7 +253,7 @@ extension WaxCLI.MCP {
             }
 
             do {
-                try ensureToolExists("claude")
+                try resolveToolPath("claude")
             } catch {
                 failures.append(error.localizedDescription)
             }
@@ -335,10 +338,10 @@ extension WaxCLI.MCP {
         var scope: WaxCLI.MCPScope = .user
 
         mutating func run() throws {
-            try ensureToolExists("claude")
+            let claudePath = try resolveToolPath("claude")
             let status = try ProcessRunner.run(
-                command: "claude",
-                arguments: ["mcp", "remove", "--scope", scope.rawValue, name],
+                command: claudePath,
+                arguments: ["mcp", "remove", "-s", scope.rawValue, name],
                 passthrough: true,
                 allowNonZeroExit: true
             )
@@ -503,11 +506,34 @@ private func normalizedKey(_ key: String?) -> String? {
     return trimmed
 }
 
-private func ensureToolExists(_ tool: String) throws {
+/// Resolve a tool to its full path, checking PATH first and then well-known locations.
+@discardableResult
+private func resolveToolPath(_ tool: String) throws -> String {
     let output = try ProcessRunner.runCaptured(command: "which", arguments: [tool])
-    if output.status != EXIT_SUCCESS {
-        throw CLIError("Required tool not found on PATH: \(tool)")
+    if output.status == EXIT_SUCCESS {
+        let path = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !path.isEmpty { return path }
     }
+
+    // Check well-known installation paths
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let candidates = [
+        "\(home)/.local/bin/\(tool)",
+        "/usr/local/bin/\(tool)",
+        "/opt/homebrew/bin/\(tool)",
+    ]
+    for candidate in candidates {
+        if FileManager.default.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+    }
+
+    throw CLIError("Required tool not found on PATH or common locations: \(tool)")
+}
+
+@available(*, deprecated, renamed: "resolveToolPath")
+private func ensureToolExists(_ tool: String) throws {
+    try resolveToolPath(tool)
 }
 
 struct CLIError: LocalizedError {
