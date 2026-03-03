@@ -44,6 +44,7 @@ enum StructuredMemorySchema {
               object_blob          BLOB,
               object_time_ms       INTEGER,
               object_entity_id     INTEGER REFERENCES sm_entity(entity_id) ON DELETE RESTRICT,
+              version_relation     INTEGER NOT NULL DEFAULT 0,
 
               qualifiers_hash      BLOB,
               fact_hash            BLOB NOT NULL,
@@ -51,6 +52,7 @@ enum StructuredMemorySchema {
 
               CHECK (length(fact_hash) == 32),
               CHECK (qualifiers_hash IS NULL OR length(qualifiers_hash) == 32),
+              CHECK (version_relation IN (0, 1, 2, 3)),
 
               CHECK (
                 (object_kind == 1 AND object_text IS NOT NULL AND object_int IS NULL AND object_real IS NULL AND object_bool IS NULL AND object_blob IS NULL AND object_time_ms IS NULL AND object_entity_id IS NULL) OR

@@ -216,6 +216,7 @@ public actor FTS5SearchEngine {
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
+        relation: VersionRelation = .sets,
         valid: StructuredTimeRange,
         system: StructuredTimeRange,
         evidence: [StructuredEvidence]
@@ -239,6 +240,7 @@ public actor FTS5SearchEngine {
                 subject: subject,
                 predicate: predicate,
                 object: object,
+                relation: relation,
                 valid: valid,
                 system: system,
                 evidence: evidence,
@@ -519,6 +521,7 @@ public actor FTS5SearchEngine {
             subject: EntityKey,
             predicate: PredicateKey,
             object: FactValue,
+            relation: VersionRelation,
             valid: StructuredTimeRange,
             system: StructuredTimeRange,
             evidence: [StructuredEvidence],
@@ -662,13 +665,17 @@ public actor FTS5SearchEngine {
                         object_blob,
                         object_time_ms,
                         object_entity_id,
+                        version_relation,
                         qualifiers_hash,
                         fact_hash,
                         created_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """)
                 let selectFactIdStmt = try db.makeStatement(sql: """
                     SELECT fact_id FROM sm_fact WHERE fact_hash = ?
+                    """)
+                let updateFactRelationStmt = try db.makeStatement(sql: """
+                    UPDATE sm_fact SET version_relation = ? WHERE fact_id = ?
                     """)
                 let insertSpanStmt = try db.makeStatement(sql: """
                     INSERT OR IGNORE INTO sm_fact_span(
@@ -702,6 +709,19 @@ public actor FTS5SearchEngine {
                 let selectOpenSpanStmt = try db.makeStatement(sql: """
                     SELECT span_id, system_from_ms FROM sm_fact_span
                     WHERE fact_id = ? AND system_to_ms IS NULL
+                    """)
+                let selectOpenSpanForSubjectPredicateStmt = try db.makeStatement(sql: """
+                    SELECT s.span_id AS span_id,
+                           s.system_from_ms AS system_from_ms
+                    FROM sm_fact_span s
+                    JOIN sm_fact f ON f.fact_id = s.fact_id
+                    WHERE f.subject_entity_id = ?
+                      AND f.predicate_id = ?
+                      AND s.system_to_ms IS NULL
+                    """)
+                let closeSpanByIDStmt = try db.makeStatement(sql: """
+                    UPDATE sm_fact_span SET system_to_ms = ?
+                    WHERE span_id = ? AND system_to_ms IS NULL
                     """)
                 let retractSpanStmt = try db.makeStatement(sql: """
                     UPDATE sm_fact_span SET system_to_ms = ?
@@ -745,6 +765,7 @@ public actor FTS5SearchEngine {
                         let subject,
                         let predicate,
                         let object,
+                        let relation,
                         let valid,
                         let system,
                         let evidence,
@@ -752,6 +773,19 @@ public actor FTS5SearchEngine {
                     ):
                         let subjectId = try ensureEntityId(key: subject, kind: "", nowMs: system.fromMs)
                         let predicateId = try ensurePredicateId(key: predicate, nowMs: system.fromMs)
+
+                        if relation.supersedes {
+                            let openSpans = try Row.fetchAll(
+                                selectOpenSpanForSubjectPredicateStmt,
+                                arguments: [subjectId, predicateId]
+                            )
+                            for row in openSpans {
+                                let spanId: Int64 = row["span_id"] ?? 0
+                                let systemFrom: Int64 = row["system_from_ms"] ?? 0
+                                let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
+                                try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
+                            }
+                        }
 
                         let objectColumns = try FactObjectColumns.from(
                             object: object,
@@ -771,6 +805,7 @@ public actor FTS5SearchEngine {
                             objectColumns.blobValue,
                             objectColumns.timeValue,
                             objectColumns.entityId,
+                            Int(relation.rawValue),
                             nil,
                             factHash,
                             system.fromMs,
@@ -780,6 +815,7 @@ public actor FTS5SearchEngine {
                               let factId: Int64 = factRow["fact_id"] else {
                             throw WaxError.io("missing fact_id after insert")
                         }
+                        try updateFactRelationStmt.execute(arguments: [Int(relation.rawValue), factId])
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
                             factId: FactRowID(rawValue: factId),

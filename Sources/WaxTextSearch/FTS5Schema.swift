@@ -3,7 +3,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 2
+    static let userVersion: Int32 = 3
 
     static func create(in db: Database) throws {
         try db.execute(sql: "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content)")
@@ -43,6 +43,11 @@ enum FTS5Schema {
             try applyUserVersion(in: db, version: userVersion)
             return
         }
+        if version == 2 {
+            try migrateV2ToV3(in: db)
+            try StructuredMemorySchema.create(in: db)
+            return
+        }
         guard version == userVersion else {
             throw WaxError.io("unsupported sqlite user_version \(version) (expected \(userVersion))")
         }
@@ -56,6 +61,23 @@ enum FTS5Schema {
 
     private static func applyUserVersion(in db: Database, version: Int32) throws {
         try db.execute(sql: "PRAGMA user_version = \(version)")
+    }
+
+    private static func migrateV2ToV3(in db: Database) throws {
+        let factTableExists: String? = try String.fetchOne(
+            db,
+            sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='sm_fact'"
+        )
+        if factTableExists == "sm_fact" {
+            let hasVersionRelation = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM pragma_table_info('sm_fact') WHERE name='version_relation'"
+            ) ?? 0
+            if hasVersionRelation == 0 {
+                try db.execute(sql: "ALTER TABLE sm_fact ADD COLUMN version_relation INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+        try applyUserVersion(in: db, version: userVersion)
     }
 
     private static func requireTables(in db: Database) throws {

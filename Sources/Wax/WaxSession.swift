@@ -239,6 +239,7 @@ public actor WaxSession {
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
+        relation: VersionRelation = .sets,
         valid: StructuredTimeRange,
         system: StructuredTimeRange,
         evidence: [StructuredEvidence]
@@ -251,6 +252,7 @@ public actor WaxSession {
             subject: subject,
             predicate: predicate,
             object: object,
+            relation: relation,
             valid: valid,
             system: system,
             evidence: evidence

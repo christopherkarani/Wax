@@ -824,6 +824,7 @@ public actor MemoryOrchestrator {
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
+        relation: VersionRelation = .sets,
         validFromMs: Int64? = nil,
         validToMs: Int64? = nil,
         evidence: [StructuredEvidence] = [],
@@ -837,6 +838,7 @@ public actor MemoryOrchestrator {
             subject: subject,
             predicate: predicate,
             object: object,
+            relation: relation,
             valid: valid,
             system: system,
             evidence: evidence

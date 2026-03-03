@@ -19,6 +19,9 @@ struct FactAssertCommand: AsyncParsableCommand {
     @Option(name: .customLong("object"), help: "Object value (parsed as int64, then bool, then string)")
     var objectRaw: String
 
+    @Option(name: .customLong("relation"), help: "Version relation: sets, updates, extends, retracts")
+    var relation: String = "sets"
+
     @Flag(name: .customLong("commit"), inversion: .prefixedNo, help: "Commit immediately (default: true)")
     var commit: Bool = true
 
@@ -35,6 +38,7 @@ struct FactAssertCommand: AsyncParsableCommand {
         guard !trimmedObject.isEmpty else {
             throw CLIError("--object must not be empty")
         }
+        let parsedRelation = try parseVersionRelation(relation)
 
         let object = parseObjectValue(trimmedObject)
 
@@ -46,6 +50,7 @@ struct FactAssertCommand: AsyncParsableCommand {
             subject: EntityKey(trimmedSubject),
             predicate: PredicateKey(trimmedPredicate),
             object: object,
+            relation: parsedRelation,
             validFromMs: nil,
             validToMs: nil,
             commit: commit
@@ -186,6 +191,21 @@ private func parseObjectValue(_ raw: String) -> FactValue {
         return .bool(false)
     default:
         return .string(raw)
+    }
+}
+
+private func parseVersionRelation(_ raw: String) throws -> VersionRelation {
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "sets":
+        return .sets
+    case "updates":
+        return .updates
+    case "extends":
+        return .extends
+    case "retracts":
+        return .retracts
+    default:
+        throw CLIError("--relation must be one of: sets, updates, extends, retracts")
     }
 }
 
