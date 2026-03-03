@@ -555,10 +555,12 @@ public actor MemoryOrchestrator {
     private func buildRecallContext(
         query: String,
         embedding: [Float]?,
-        frameFilter: FrameFilter? = nil
+        frameFilter: FrameFilter? = nil,
+        timeRange: TimeRange? = nil
     ) async throws -> RAGContext {
         let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let recallConfig = ragConfigForRecall()
+        let resolvedTimeRange = timeRange ?? extractTemporalTimeRange(from: query, anchorMs: recallConfig.deterministicNowMs)
         let context = try await ragBuilder.build(
             query: query,
             embedding: embedding,
@@ -566,6 +568,7 @@ public actor MemoryOrchestrator {
             wax: wax,
             session: session,
             frameFilter: frameFilter,
+            timeRange: resolvedTimeRange,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
@@ -709,6 +712,29 @@ public actor MemoryOrchestrator {
             recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
         }
         return recallConfig
+    }
+
+    private func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> TimeRange? {
+        guard let anchorMs else { return nil }
+        let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
+        let normalizer = TemporalNormalizer(anchor: anchor)
+        let words = query
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return nil }
+
+        for window in stride(from: min(4, words.count), through: 1, by: -1) {
+            guard words.count >= window else { continue }
+            for i in 0...(words.count - window) {
+                let candidate = words[i..<(i + window)].joined(separator: " ")
+                guard let resolution = try? normalizer.resolve(candidate) else { continue }
+                let range = resolution.asTimeRange
+                return TimeRange(after: range.afterMs, before: range.beforeMs)
+            }
+        }
+        return nil
     }
 
     public func rememberHandoff(

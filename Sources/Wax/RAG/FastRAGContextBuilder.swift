@@ -19,6 +19,7 @@ public struct FastRAGContextBuilder: Sendable {
         wax: Wax,
         session: WaxSession? = nil,
         frameFilter: FrameFilter? = nil,
+        timeRange: TimeRange? = nil,
         accessStatsManager: AccessStatsManager? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
@@ -32,6 +33,7 @@ public struct FastRAGContextBuilder: Sendable {
             vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
             topK: clamped.searchTopK,
+            timeRange: timeRange,
             frameFilter: frameFilter,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
@@ -51,7 +53,7 @@ public struct FastRAGContextBuilder: Sendable {
             )
             : response.results
         let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
-            await accessStatsManager.getStats(frameIds: rankedResults.map(\.frameId))
+            await accessStatsManager.getStats(frameIds: rankedResults.map { $0.frameId })
         } else {
             [:]
         }
@@ -73,7 +75,7 @@ public struct FastRAGContextBuilder: Sendable {
             && clamped.maxSurrogates > 0
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
-        let sourceFrameIds = rankedResults.map(\.frameId)
+        let sourceFrameIds = rankedResults.map { $0.frameId }
         async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
