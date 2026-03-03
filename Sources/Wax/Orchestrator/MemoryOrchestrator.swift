@@ -253,11 +253,16 @@ public actor MemoryOrchestrator {
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
-        if await session.findFrameByMetadata(key: Self.contentHashMetadataKey, value: contentHash) != nil {
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        let localEmbedder = embedder
+        if let existingDocId = await session.findFrameByMetadata(key: Self.contentHashMetadataKey, value: contentHash),
+           await isCompleteRememberIngest(
+               documentId: existingDocId,
+               expectedChunkCount: chunks.count,
+               embeddingIdentity: localEmbedder?.identity
+           ) {
             return
         }
-
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
 
         var docMeta = Metadata(metadata)
         docMeta.entries[Self.contentHashMetadataKey] = contentHash
@@ -268,7 +273,6 @@ public actor MemoryOrchestrator {
 
         let chunkCount = chunks.count
         let localSession = session
-        let localEmbedder = embedder
         let cache = embeddingCache
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
@@ -454,6 +458,68 @@ public actor MemoryOrchestrator {
                 }
             }
         }
+    }
+
+    /// Returns true only when a previously ingested hashed document looks complete.
+    /// This prevents dedup from masking retries after partial ingest failures.
+    private func isCompleteRememberIngest(
+        documentId: UInt64,
+        expectedChunkCount: Int,
+        embeddingIdentity: EmbeddingIdentity?
+    ) async -> Bool {
+        let metas = await wax.frameMetas()
+        guard metas.contains(where: {
+            $0.id == documentId &&
+                $0.role == .document &&
+                $0.status == .active &&
+                $0.supersededBy == nil
+        }) else {
+            return false
+        }
+
+        guard expectedChunkCount > 0 else { return true }
+
+        let chunkMetas = metas.filter {
+            $0.role == .chunk &&
+                $0.parentId == documentId &&
+                $0.status == .active &&
+                $0.supersededBy == nil
+        }
+
+        guard chunkMetas.count == expectedChunkCount else { return false }
+
+        var indices = Set<Int>()
+        indices.reserveCapacity(expectedChunkCount)
+        for chunk in chunkMetas {
+            guard chunk.chunkCount == UInt32(expectedChunkCount) else { return false }
+            guard let chunkIndex = chunk.chunkIndex else { return false }
+            let index = Int(chunkIndex)
+            guard (0..<expectedChunkCount).contains(index) else { return false }
+            guard indices.insert(index).inserted else { return false }
+        }
+        guard indices.count == expectedChunkCount else { return false }
+
+        if let identity = embeddingIdentity {
+            for chunk in chunkMetas {
+                let entries = chunk.metadata?.entries ?? [:]
+                if let provider = identity.provider, entries["wax.embedding.provider"] != provider {
+                    return false
+                }
+                if let model = identity.model, entries["wax.embedding.model"] != model {
+                    return false
+                }
+                if let dimensions = identity.dimensions,
+                   entries["wax.embedding.dimension"] != String(dimensions) {
+                    return false
+                }
+                if let normalized = identity.normalized,
+                   entries["wax.embedding.normalized"] != String(normalized) {
+                    return false
+                }
+            }
+        }
+
+        return true
     }
 
     /// Optimized batch embedding preparation with cache-aware batching.

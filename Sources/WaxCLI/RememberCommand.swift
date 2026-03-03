@@ -32,8 +32,8 @@ struct RememberCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         let url = try StoreSession.resolveURL(store.storePath)
-        // Store text-only for fast CLI response; embeddings index on next recall/search.
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
+        // Respect `--no-embedder`; for write-heavy usage we skip prewarm to reduce cold-start latency.
+        let memory = try await StoreSession.open(at: url, noEmbedder: store.noEmbedder, skipPrewarm: true)
         defer { Task { try? await memory.close() } }
 
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
