@@ -787,9 +787,11 @@ public actor MetalVectorEngine {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId length")
             }
             
-            // Resize buffer and copy vectors directly
-            vectorCount = savedVectorCount
-            reservedCapacity = max(reservedCapacity, UInt32(min(vectorCount, UInt64(UInt32.max))))
+            // Resize buffer for deserialized vectors.
+            // Keep vectorCount = 0 during resize so resizeBuffersIfNeeded() does NOT
+            // try to copy from the old (undersized) buffer — there are no existing
+            // vectors to preserve during deserialization.
+            reservedCapacity = max(reservedCapacity, UInt32(min(savedVectorCount, UInt64(UInt32.max))))
             try resizeBuffersIfNeeded(for: reservedCapacity)
             
             let destPtr = vectorsBuffer.contents()
@@ -799,6 +801,9 @@ public actor MetalVectorEngine {
                  }
             }
             offset += Int(vectorLength)
+
+            // Set vectorCount AFTER data is copied into the resized buffer.
+            vectorCount = savedVectorCount
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)

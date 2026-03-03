@@ -246,16 +246,20 @@ extension XCTestCase {
         options.iterationCount = iterations
 
         measure(options: options) {
-            let exp = expectation(description: "benchmark")
-            Task {
+            let semaphore = DispatchSemaphore(value: 0)
+            let task = Task {
                 do {
                     try await block()
                 } catch {
                     XCTFail("Benchmark failed: \(error)")
                 }
-                exp.fulfill()
+                semaphore.signal()
             }
-            wait(for: [exp], timeout: timeout)
+            let result = semaphore.wait(timeout: .now() + timeout)
+            if result == .timedOut {
+                task.cancel()
+                XCTFail("Benchmark timed out after \(timeout)s")
+            }
         }
     }
 
@@ -269,16 +273,20 @@ extension XCTestCase {
         options.iterationCount = iterations
 
         measure(metrics: metrics, options: options) {
-            let exp = expectation(description: "benchmark")
-            Task {
+            let semaphore = DispatchSemaphore(value: 0)
+            let task = Task {
                 do {
                     try await block()
                 } catch {
                     XCTFail("Benchmark failed: \(error)")
                 }
-                exp.fulfill()
+                semaphore.signal()
             }
-            wait(for: [exp], timeout: timeout)
+            let result = semaphore.wait(timeout: .now() + timeout)
+            if result == .timedOut {
+                task.cancel()
+                XCTFail("Benchmark timed out after \(timeout)s")
+            }
         }
     }
 
@@ -459,11 +467,12 @@ enum BenchmarkTemporalHarness {
            parts.suffix(2) == ["days", "ago"] {
             return (-value, 0)
         }
-        if parts.count >= 3,
-           parts[0] == "in",
-           let value = Int(parts[1]),
-           parts[2] == "days" {
-            return (value, value + 1)
+        for i in 0..<(parts.count - 2) {
+            if parts[i] == "in",
+               let value = Int(parts[i + 1]),
+               parts[i + 2] == "days" {
+                return (value, value + 1)
+            }
         }
         return nil
     }
