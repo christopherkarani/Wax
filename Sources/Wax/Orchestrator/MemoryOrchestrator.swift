@@ -174,6 +174,13 @@ public actor MemoryOrchestrator {
         if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             resolvedConfig.enableVectorSearch = false
         }
+        if let identity = embedder?.identity,
+           let binding = await wax.memoryBinding(),
+           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
+            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+            try? await wax.close()
+            throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+        }
 
         self.config = resolvedConfig
         self.ragBuilder = FastRAGContextBuilder()
@@ -254,6 +261,12 @@ public actor MemoryOrchestrator {
         let cache = embeddingCache
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
+        let bindingForEmbedderIdentity: MemoryBinding?
+        if let identity = localEmbedder?.identity {
+            bindingForEmbedderIdentity = MemoryBindingCompatibility.binding(from: identity)
+        } else {
+            bindingForEmbedderIdentity = nil
+        }
         let fileManager = FileManager.default
 
         guard !chunks.isEmpty else {
@@ -358,6 +371,7 @@ public actor MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) staged embedding batches, got \(stagedEmbeddingFiles.count)"
             )
         }
+        var didSetMemoryBinding = false
 
         let docId = try await localSession.put(
             contentData,
@@ -399,6 +413,10 @@ public actor MemoryOrchestrator {
                     identity: localEmbedder?.identity,
                     options: options
                 )
+                if !didSetMemoryBinding, let binding = bindingForEmbedderIdentity {
+                    try await wax.setMemoryBindingIfMissing(binding)
+                    didSetMemoryBinding = true
+                }
 
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)

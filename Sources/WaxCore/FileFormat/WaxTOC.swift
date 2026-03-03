@@ -46,6 +46,7 @@ public struct WaxTOC: Equatable, Sendable {
     public var timeIndex: TimeIndexManifest?
     public var segmentCatalog: SegmentCatalog
     public var ticketRef: TicketRef
+    public var memoryBinding: MemoryBinding?
     public var merkleRoot: Data
     public var tocChecksum: Data
 
@@ -56,6 +57,7 @@ public struct WaxTOC: Equatable, Sendable {
         timeIndex: TimeIndexManifest?,
         segmentCatalog: SegmentCatalog,
         ticketRef: TicketRef,
+        memoryBinding: MemoryBinding? = nil,
         merkleRoot: Data,
         tocChecksum: Data
     ) {
@@ -65,6 +67,7 @@ public struct WaxTOC: Equatable, Sendable {
         self.timeIndex = timeIndex
         self.segmentCatalog = segmentCatalog
         self.ticketRef = ticketRef
+        self.memoryBinding = memoryBinding
         self.merkleRoot = merkleRoot
         self.tocChecksum = tocChecksum
     }
@@ -77,6 +80,7 @@ public struct WaxTOC: Equatable, Sendable {
             timeIndex: nil,
             segmentCatalog: SegmentCatalog(),
             ticketRef: TicketRef.emptyV1(),
+            memoryBinding: nil,
             merkleRoot: Data(repeating: 0, count: 32),
             tocChecksum: Data(repeating: 0, count: 32)
         )
@@ -121,7 +125,12 @@ public struct WaxTOC: Equatable, Sendable {
         var ticketRef = ticketRef
         try ticketRef.encode(to: &encoder)
 
-        encoder.encode(UInt8(0)) // memory_binding absent in v1
+        if var memoryBinding, !memoryBinding.isEmpty {
+            encoder.encode(UInt8(1))
+            try memoryBinding.encode(to: &encoder)
+        } else {
+            encoder.encode(UInt8(0))
+        }
         encoder.encode(UInt8(0)) // replay_manifest absent in v1
         encoder.encode(UInt8(0)) // enrichment_queue absent in v1
 
@@ -193,8 +202,14 @@ public struct WaxTOC: Equatable, Sendable {
         let ticketRef = try TicketRef.decode(from: &decoder)
 
         let memoryBindingTag = try decoder.decode(UInt8.self)
-        guard memoryBindingTag == 0 else {
-            throw WaxError.invalidToc(reason: "memory_binding not supported in v1")
+        let memoryBinding: MemoryBinding?
+        switch memoryBindingTag {
+        case 0:
+            memoryBinding = nil
+        case 1:
+            memoryBinding = try MemoryBinding.decode(from: &decoder)
+        default:
+            throw WaxError.invalidToc(reason: "invalid memory_binding optional tag \(memoryBindingTag)")
         }
         let replayTag = try decoder.decode(UInt8.self)
         guard replayTag == 0 else {
@@ -220,6 +235,7 @@ public struct WaxTOC: Equatable, Sendable {
             timeIndex: timeIndex,
             segmentCatalog: segmentCatalog,
             ticketRef: ticketRef,
+            memoryBinding: memoryBinding,
             merkleRoot: merkleRoot,
             tocChecksum: tocChecksum
         )

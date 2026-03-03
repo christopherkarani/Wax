@@ -2089,6 +2089,29 @@ public actor Wax {
         }
     }
 
+    public func memoryBinding() async -> MemoryBinding? {
+        await withReadLock {
+            toc.memoryBinding
+        }
+    }
+
+    public func setMemoryBindingIfMissing(_ binding: MemoryBinding) async throws {
+        try await withWriteLock {
+            guard !binding.isEmpty else { return }
+            guard toc.memoryBinding == nil else { return }
+            toc.memoryBinding = binding
+            dirty = true
+        }
+    }
+
+    public func overwriteMemoryBindingForTesting(_ binding: MemoryBinding?) async throws {
+        try await withWriteLock {
+            guard toc.memoryBinding != binding else { return }
+            toc.memoryBinding = binding
+            dirty = true
+        }
+    }
+
     // MARK: - Introspection
 
     public func stats() async -> WaxStats {
