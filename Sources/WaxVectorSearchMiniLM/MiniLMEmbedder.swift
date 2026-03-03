@@ -159,8 +159,12 @@ extension MiniLMEmbedder {
     ///
     /// This path intentionally uses `batchSize = 1` because some executable contexts are
     /// more reliable with single-prediction CoreML APIs than large batch prediction APIs.
+    ///
+    /// - Parameter skipPrewarm: When `true`, skip the prewarm step to reduce cold-start latency.
+    ///   Use for write-only operations where the first real embedding will warm the model.
     public static func makeCommandLineEmbedder(
         prewarmBatchSize: Int = 1,
+        skipPrewarm: Bool = false,
         computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]
     ) async throws -> MiniLMEmbedder {
         var failures: [String] = []
@@ -172,7 +176,9 @@ extension MiniLMEmbedder {
                 let embedder = try MiniLMEmbedder(
                     config: Config(batchSize: 1, modelConfiguration: modelConfiguration)
                 )
-                try await embedder.prewarm(batchSize: prewarmBatchSize)
+                if !skipPrewarm {
+                    try await embedder.prewarm(batchSize: prewarmBatchSize)
+                }
                 return embedder
             } catch {
                 failures.append("\(describe(units)): \(error.localizedDescription)")

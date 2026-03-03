@@ -26,7 +26,8 @@ struct HandoffCommand: AsyncParsableCommand {
         }
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: store.noEmbedder)
+        // Store text-only for fast CLI response; embeddings index on next recall/search.
+        let memory = try await StoreSession.open(at: url, noEmbedder: true)
         defer { Task { try? await memory.close() } }
 
         let frameId = try await memory.rememberHandoff(

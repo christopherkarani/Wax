@@ -248,8 +248,13 @@ extension WaxCLI.MCP {
                     failures.append("wax-mcp is not executable at \(resolvedServer)")
                 }
             } catch {
-                failures.append("wax-mcp binary not found: \(error.localizedDescription)")
-                resolvedServer = serverPath
+                // Default path failed — try well-known locations for wax-mcp.
+                do {
+                    resolvedServer = try resolveToolPath("wax-mcp")
+                } catch {
+                    failures.append("wax-mcp binary not found at '\(serverPath)' or in common locations")
+                    resolvedServer = serverPath
+                }
             }
 
             do {

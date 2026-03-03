@@ -18,6 +18,7 @@ struct StatsCommand: AsyncParsableCommand {
 
         let stats = await memory.runtimeStats()
         let sessionStats = try await memory.sessionRuntimeStats()
+        let compiled = StoreSession.miniLMCompiled
 
         let diskBytes: UInt64 = {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: stats.storeURL.path),
@@ -47,6 +48,7 @@ struct StatsCommand: AsyncParsableCommand {
                 "diskBytes": diskBytes,
                 "storePath": stats.storeURL.path,
                 "vectorSearchEnabled": stats.vectorSearchEnabled,
+                "miniLMCompiled": compiled,
                 "features": [
                     "structuredMemoryEnabled": stats.structuredMemoryEnabled,
                     "accessStatsScoringEnabled": stats.accessStatsScoringEnabled,
@@ -76,6 +78,7 @@ struct StatsCommand: AsyncParsableCommand {
             print("Frames: \(stats.frameCount) (\(stats.pendingFrames) pending)")
             print("Generation: \(stats.generation)")
             print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
+            print("MiniLM compiled: \(compiled ? "yes" : "no")")
             print("Vector search: \(stats.vectorSearchEnabled ? "enabled" : "disabled")")
             if let identity = stats.embedderIdentity {
                 let provider = identity.provider ?? "unknown"
