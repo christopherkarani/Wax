@@ -165,7 +165,7 @@ extension MiniLMEmbedder {
     public static func makeCommandLineEmbedder(
         prewarmBatchSize: Int = 1,
         skipPrewarm: Bool = false,
-        computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]
+        computeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
     ) async throws -> MiniLMEmbedder {
         var failures: [String] = []
         for units in computeUnitsOrder {

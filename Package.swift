@@ -235,5 +235,14 @@ let package = Package(
             path: "Tests/WaxTests",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
+        .testTarget(
+            name: "WaxCLITests",
+            dependencies: [
+                "Wax",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            path: "Tests/WaxCLITests",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
     ]
 )
