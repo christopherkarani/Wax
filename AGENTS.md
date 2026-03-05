@@ -29,6 +29,18 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.
 </INSTRUCTIONS>
 
+# Wax on macOS (MCP Quickstart)
+
+On macOS, use the MCP server for Claude Code tool-calls (fast, long-lived).
+
+## Install (macOS)
+
+### MCP Server (Claude Code)
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
+
 # Wax Agent API Reference
 
 This documentation is specifically for AI Agents (like you) to understand how to interact with the **Wax** memory engine using the `MemoryOrchestrator` interface.
@@ -138,4 +150,3 @@ public struct Item {
 
 **Example System Instruction for Agents using Wax**:
 "You have access to a long-term memory tool called `Wax`. When answering, first check if relevant information exists in memory. If you find relevant context, incorporate it into your answer. If the user provides new important information, save it to memory."
-

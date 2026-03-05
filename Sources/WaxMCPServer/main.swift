@@ -90,8 +90,8 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedder: embedder
         )
 
-        // SYNC: keep this version in sync with npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.12"
+        // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
+        let serverVersion = "0.1.15"
         writeStderr("wax-mcp v\(serverVersion) starting")
         let server = Server(
             name: "wax-mcp",
@@ -198,7 +198,28 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
         do {
-            return try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
+            // CoreML model loading isn't reliably cancellable; bound init with a timeout so the server
+            // can degrade to text-only mode instead of hanging indefinitely on startup.
+            let timeout: Duration = {
+                let env = ProcessInfo.processInfo.environment
+                if let raw = env["WAX_EMBEDDER_TIMEOUT_SECS"],
+                   let secs = Double(raw),
+                   secs > 0 {
+                    return .milliseconds(Int64(secs * 1000))
+                }
+                return .seconds(30)
+            }()
+
+            do {
+                return try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder init") {
+                    try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
+                }
+            } catch let error as AsyncTimeout.TimeoutError {
+                writeStderr(
+                    "Warning: MiniLM embedder timed out after \(timeout) (\(error)); falling back to text-only search."
+                )
+                return nil
+            }
         } catch {
             writeStderr("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.")
             return nil

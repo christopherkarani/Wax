@@ -5,13 +5,13 @@ import Accelerate
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
 @available(macOS 15.0, iOS 18.0, *)
-public final class MiniLMEmbeddings {
-    public enum InitError: LocalizedError, Sendable {
+package final class MiniLMEmbeddings {
+    package enum InitError: LocalizedError, Sendable {
         case missingModelResource
         case modelLoadFailed(String)
         case tokenizerLoadFailed(String)
 
-        public var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case .missingModelResource:
                 return "Could not find a Core ML model resource in the MiniLMAll bundle."
@@ -23,7 +23,7 @@ public final class MiniLMEmbeddings {
         }
     }
 
-    public struct Overrides: Sendable {
+    package struct Overrides: Sendable {
         var modelURLProvider: (@Sendable () -> URL?)?
         var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
         var usesBundleFallback: Bool
@@ -47,17 +47,17 @@ public final class MiniLMEmbeddings {
         )
     }
 
-    public let model: all_MiniLM_L6_v2
-    public let tokenizer: BertTokenizer
-    public let inputDimension: Int = 512
-    public let outputDimension: Int = 384
+    package let model: all_MiniLM_L6_v2
+    package let tokenizer: BertTokenizer
+    package let inputDimension: Int = 512
+    package let outputDimension: Int = 384
     private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
 
-    public var computeUnits: MLComputeUnits {
+    package var computeUnits: MLComputeUnits {
         model.model.configuration.computeUnits
     }
 
-    public convenience init(configuration: MLModelConfiguration? = nil) throws {
+    package convenience init(configuration: MLModelConfiguration? = nil) throws {
         try self.init(configuration: configuration, overrides: .default)
     }
 
@@ -102,7 +102,7 @@ public final class MiniLMEmbeddings {
     // MARK: - Dense Embeddings
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
-    public func encode(sentence: String) async -> [Float]? {
+    package func encode(sentence: String) async -> [Float]? {
         guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: [sentence],
             sequenceLengthBuckets: Self.sequenceLengthBuckets
@@ -123,12 +123,12 @@ public final class MiniLMEmbeddings {
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    public func encode(batch sentences: [String]) async -> [[Float]]? {
+    package func encode(batch sentences: [String]) async -> [[Float]]? {
         var reuse: BatchInputBuffers?
         return encode(batch: sentences, reuseBuffers: &reuse)
     }
 
-    public func encode(
+    package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
     ) -> [[Float]]? {
@@ -155,7 +155,7 @@ public final class MiniLMEmbeddings {
     }
 
     /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
-    public func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
+    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
         let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
         let output = try? model.prediction(input: inputFeatures)
 
@@ -267,7 +267,6 @@ private extension MiniLMEmbeddings {
                 }
             }
             
-            #if arch(arm64)
             if isContiguous && dataType == .float16 {
                 let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
                 return (0..<batch).map { row in
@@ -277,16 +276,11 @@ private extension MiniLMEmbeddings {
                     }
                 }
             }
-            #endif
         }
 
-        #if arch(arm64)
         let float16Ptr: UnsafeMutablePointer<Float16>? = dataType == .float16
             ? embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
             : nil
-        #else
-        let float16Ptr: UnsafeMutablePointer<Float>? = nil
-        #endif
         let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
             ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
             : nil
@@ -295,15 +289,9 @@ private extension MiniLMEmbeddings {
             if let floatPtr {
                 return floatPtr[index]
             }
-            #if arch(arm64)
             if let float16Ptr {
                 return Float(float16Ptr[index])
             }
-            #else
-            if dataType == .float16 {
-                return 0
-            }
-            #endif
             return 0
         }
 
@@ -391,7 +379,7 @@ private extension MiniLMEmbeddings {
 
 @available(macOS 15.0, iOS 18.0, *)
 @_spi(Testing)
-public extension MiniLMEmbeddings {
+package extension MiniLMEmbeddings {
     static func _decodeEmbeddingsForTesting(
         _ embeddings: MLMultiArray,
         batchSize: Int,
