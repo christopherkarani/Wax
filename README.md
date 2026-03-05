@@ -1,7 +1,7 @@
 <div align="center">
-<img src="Resources/website/static/img/banner.svg" width="800" alt="Wax Banner" />
 
-<br/>
+<br/><img width="2816" height="1536" alt="Gemini_Generated_Image_3m176s3m176s3m17" src="https://github.com/user-attachments/assets/63eadebd-a738-4483-a39f-50b2a0d41f98" />
+
 
 <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat&logo=swift&logoColor=white" />
 <img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-blue?style=flat&logo=apple" />
@@ -64,14 +64,6 @@ Wax packages all of it into one self-contained file:
 | Server required | Often | ✅ Never |
 
 ---
-
-## Architecture
-
-<div align="center">
-<img src="https://raw.githubusercontent.com/christopherkarani/Wax/main/Resources/website/static/img/architecture.svg" width="800" alt="Wax Deep Architecture" />
-</div>
-
-<br/>
 
 ## Features
 
