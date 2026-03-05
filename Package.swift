@@ -11,6 +11,7 @@ waxIntegrationLinuxExcludes = [
     "BertTokenizerReuseTests.swift",
     "BufferSerializationBenchmark.swift",
     "FoundationModelsToolAvailabilityTests.swift",
+    "LongMemoryBenchmarkHarness.swift",
     "MLMultiArrayBatchBuilderTests.swift",
     "MemoryOrchestratorTests.swift",
     "MetalVectorEngineBenchmark.swift",

@@ -25,15 +25,9 @@ private func repeatedData(_ seed: Data, count: Int) -> Data {
 
 @Test func lz4Roundtrip() throws {
     let original = repeatedData(Data("Hello, World! ".utf8), count: 1000)
-    #if os(Linux)
-    #expect(throws: WaxError.self) {
-        _ = try PayloadCompressor.compress(original, algorithm: .lz4)
-    }
-    #else
     let compressed = try PayloadCompressor.compress(original, algorithm: .lz4)
     let decompressed = try PayloadCompressor.decompress(compressed, algorithm: .lz4, uncompressedLength: original.count)
     #expect(decompressed == original)
-    #endif
 }
 
 @Test func deflateRoundtrip() throws {

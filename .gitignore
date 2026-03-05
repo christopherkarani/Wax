@@ -40,3 +40,4 @@ Resources/website/node_modules/
 Resources/website/.docusaurus/
 Resources/website/build/
 *.xcresult
+docs/\ntasks/\nscripts/
