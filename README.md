@@ -9,12 +9,8 @@
 <img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat" />
 
 <br/><br/>
-
-# 🕯️ Wax
-
 ### On-device memory for iOS & macOS AI agents.
 No server. No cloud. One file.
-
 <br/>
 
 </div>
