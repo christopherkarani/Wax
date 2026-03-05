@@ -448,6 +448,38 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testMemoryOrchestratorIngestLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let iterations = max(3, min(5, scale.iterations))
+
+        let stats = try await timedSamples(label: "memory_orchestrator_ingest", iterations: iterations, warmup: 0) {
+            let url = Self.makeTempURL()
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            var config = OrchestratorConfig.default
+            config.rag.searchTopK = scale.searchTopK
+            config.rag.searchMode = .hybrid(alpha: 0.7)
+            config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
+
+            let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+
+            for index in 0..<scale.documentCount {
+                let content = factory.makeDocument(index: index)
+                try await orchestrator.remember(content)
+            }
+            try await orchestrator.flush()
+            try await orchestrator.close()
+        }
+        BenchmarkRegressionGuard.assertMeanBudget(
+            label: "memory_orchestrator_ingest",
+            stats: stats,
+            meanBudget: 1.75
+        )
+    }
+
     func testMemoryOrchestratorRecallPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)

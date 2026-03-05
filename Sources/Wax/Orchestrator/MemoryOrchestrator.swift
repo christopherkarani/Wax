@@ -293,7 +293,6 @@ package actor MemoryOrchestrator {
         } else {
             bindingForEmbedderIdentity = nil
         }
-        let fileManager = FileManager.default
 
         guard !chunks.isEmpty else {
             _ = try await localSession.put(
@@ -324,15 +323,8 @@ package actor MemoryOrchestrator {
 
         let parallelism = max(1, config.ingestConcurrency)
 
-        let stagingDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("wax-ingest-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: stagingDirectory) }
-        if useVectorSearch {
-            try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
-        }
-
-        var stagedEmbeddingFiles: [Int: URL] = [:]
-        stagedEmbeddingFiles.reserveCapacity(batchRanges.count)
+        var preparedEmbeddingsByBatch: [Int: [[Float]]] = [:]
+        preparedEmbeddingsByBatch.reserveCapacity(batchRanges.count)
         var preparedBatchCount = 0
 
         try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
@@ -374,9 +366,7 @@ package actor MemoryOrchestrator {
                 inFlight -= 1
 
                 if let embeddings = result.embeddings {
-                    let fileURL = stagingDirectory.appendingPathComponent("batch-\(result.index).emb")
-                    try Self.writeEmbeddings(embeddings, to: fileURL)
-                    stagedEmbeddingFiles[result.index] = fileURL
+                    preparedEmbeddingsByBatch[result.index] = embeddings
                 }
                 preparedBatchCount += 1
 
@@ -392,9 +382,9 @@ package actor MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared batches, got \(preparedBatchCount)"
             )
         }
-        if useVectorSearch, stagedEmbeddingFiles.count != batchRanges.count {
+        if useVectorSearch, preparedEmbeddingsByBatch.count != batchRanges.count {
             throw WaxError.io(
-                "ingest batching incomplete: expected \(batchRanges.count) staged embedding batches, got \(stagedEmbeddingFiles.count)"
+                "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
         var didSetMemoryBinding = false
@@ -429,10 +419,9 @@ package actor MemoryOrchestrator {
             }
 
             if useVectorSearch {
-                guard let fileURL = stagedEmbeddingFiles[entry.index] else {
-                    throw WaxError.io("missing staged embeddings for batch \(entry.index)")
+                guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
+                    throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
                 }
-                let embeddings = try Self.readEmbeddings(from: fileURL)
                 let frameIds = try await localSession.putBatch(
                     contents: batchContents,
                     embeddings: embeddings,
