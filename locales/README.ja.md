@@ -1,48 +1,25 @@
 <!-- HEADER:START -->
 <div align="center">
-<img src="Resources/website/static/img/banner.svg" width="800" alt="Wax Banner" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/banner-dark.svg">
+    <img src="../docs/assets/banner-light.svg" width="800" alt="Wax Banner" />
+  </picture>
 </div>
+
+<p align="center">
+  [English](../README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [中文](README.zh-CN.md)
+</p>
 <!-- HEADER:END -->
 
 <div style="height: 16px;"></div>
 
-<p align="center">
-  <strong>Wax は Apple プラットフォーム向け AI エージェントの単一ファイルメモリレイヤーです。</strong><br/>
-  オンデバイス、プライベート、ポータブル。サーバー不要、クラウド不要、1つの <code>.wax</code> ファイルだけで動作します。
-</p>
 
-<p align="center">
-  <strong>Languages:</strong>
-  <a href="README.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.ko.md">한국어</a> ·
-  <a href="README.ja.md">日本語</a> ·
-  <a href="README.es.md">Español</a> ·
-  <a href="README.pt.md">Português</a>
-</p>
 
 <!-- NAV:START -->
-<p align="center">
-  <a href="https://wax.sh">Web サイト</a>
-  ·
-  <a href="https://wax.sh/docs">ドキュメント</a>
-  ·
-  <a href="https://github.com/christopherkarani/Wax/discussions">ディスカッション</a>
-</p>
 <!-- NAV:END -->
 
 <!-- BADGES:START -->
-<p align="center">
-  <a href="https://github.com/christopherkarani/Wax/releases"><img src="https://img.shields.io/github/v/release/christopherkarani/Wax?style=flat-square&logo=swift&logoColor=white&label=SPM" alt="Swift Package" /></a>
-  <a href="https://www.npmjs.com/package/waxmcp"><img src="https://img.shields.io/npm/v/waxmcp?style=flat-square&logo=npm" alt="npm" /></a>
-  <a href="https://github.com/christopherkarani/Wax/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License" /></a>
-</p>
 
-<p align="center">
-  <a href="https://github.com/christopherkarani/Wax/stargazers"><img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat-square&logo=github" alt="Stars" /></a>
-  <a href="https://github.com/christopherkarani/Wax/network/members"><img src="https://img.shields.io/github/forks/christopherkarani/Wax?style=flat-square&logo=github" alt="Forks" /></a>
-  <a href="https://github.com/christopherkarani/Wax/issues"><img src="https://img.shields.io/github/issues/christopherkarani/Wax?style=flat-square&logo=github" alt="Issues" /></a>
-</p>
 <!-- BADGES:END -->
 
 ---
