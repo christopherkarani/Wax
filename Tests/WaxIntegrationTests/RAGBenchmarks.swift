@@ -597,9 +597,15 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             _ = try await fixture.wax.search(requestWithPreviews)
             _ = try await fixture.wax.search(requestNoPreviews)
 
-            _ = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
+            let previewStats = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
                 _ = try await fixture.wax.search(requestWithPreviews)
             }
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "unified_search_hybrid_warm_previews",
+                stats: previewStats,
+                p95Budget: 0.0070,
+                p99Budget: 0.0073
+            )
             _ = try await timedSamples(label: "unified_search_hybrid_warm_no_previews", iterations: 30, warmup: 5) {
                 _ = try await fixture.wax.search(requestNoPreviews)
             }

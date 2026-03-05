@@ -1774,11 +1774,16 @@ package actor Wax {
             previews[frameId] = Data()
         }
 
-        for plan in plainPlans {
-            let bytes = try await io.run {
-                try file.readExactly(length: plan.length, at: plan.offset)
+        if !plainPlans.isEmpty {
+            let plainPreviewBytes = try await io.run {
+                var bytesByFrameId: [UInt64: Data] = [:]
+                bytesByFrameId.reserveCapacity(plainPlans.count)
+                for plan in plainPlans {
+                    bytesByFrameId[plan.frameId] = try file.readExactly(length: plan.length, at: plan.offset)
+                }
+                return bytesByFrameId
             }
-            previews[plan.frameId] = bytes
+            previews.merge(plainPreviewBytes, uniquingKeysWith: { _, new in new })
         }
 
         for frame in compressedFrames {
