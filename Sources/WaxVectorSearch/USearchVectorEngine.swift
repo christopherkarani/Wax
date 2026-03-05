@@ -2,13 +2,13 @@ import Foundation
 @preconcurrency import USearch
 import WaxCore
 
-public actor USearchVectorEngine {
+package actor USearchVectorEngine {
     private static let maxResults = 10_000
     private static let connectivity: UInt32 = 16
     private static let initialReserve: UInt32 = 64
 
     private let metric: VectorMetric
-    public let dimensions: Int
+    package let dimensions: Int
 
     private var vectorCount: UInt64
     private var reservedCapacity: UInt32
@@ -41,7 +41,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public init(metric: VectorMetric, dimensions: Int) throws {
+    package init(metric: VectorMetric, dimensions: Int) throws {
         guard dimensions > 0 else {
             throw WaxError.invalidToc(reason: "dimensions must be > 0")
         }
@@ -67,7 +67,7 @@ public actor USearchVectorEngine {
         try index.reserve(reservedCapacity)
     }
 
-    public static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> USearchVectorEngine {
+    package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> USearchVectorEngine {
         let engine = try USearchVectorEngine(metric: metric, dimensions: dimensions)
         if let bytes = try await wax.readCommittedVecIndexBytes() {
             try await engine.deserialize(bytes)
@@ -79,7 +79,7 @@ public actor USearchVectorEngine {
         return engine
     }
 
-    public func add(frameId: UInt64, vector: [Float]) async throws {
+    package func add(frameId: UInt64, vector: [Float]) async throws {
         try await withWriteLock {
             try validate(vector)
             let index = self.index
@@ -102,7 +102,7 @@ public actor USearchVectorEngine {
     /// Batch add multiple vectors in a single operation.
     /// This amortizes lock acquisition and I/O overhead across all vectors.
     /// Optimized for high-throughput ingest with minimal actor contention.
-    public func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
+    package func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == vectors.count else {
             throw WaxError.encodingError(reason: "addBatch: frameIds.count != vectors.count")
@@ -165,7 +165,7 @@ public actor USearchVectorEngine {
     
     /// High-throughput batch add optimized for large ingestion workloads.
     /// Processes vectors in chunks to balance memory usage with throughput.
-    public func addBatchStreaming(frameIds: [UInt64], vectors: [[Float]], chunkSize: Int = 256) async throws {
+    package func addBatchStreaming(frameIds: [UInt64], vectors: [[Float]], chunkSize: Int = 256) async throws {
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == vectors.count else {
             throw WaxError.encodingError(reason: "addBatchStreaming: frameIds.count != vectors.count")
@@ -186,7 +186,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public func remove(frameId: UInt64) async throws {
+    package func remove(frameId: UInt64) async throws {
         try await withWriteLock {
             guard vectorCount > 0 else { return }
             let index = self.index
@@ -198,7 +198,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
+    package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         try await withReadLock {
             guard vectorCount > 0 else { return [] }
             try validate(vector)
@@ -215,7 +215,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public func serialize() async throws -> Data {
+    package func serialize() async throws -> Data {
         try await withReadLock {
             let index = self.index
             let metric = self.metric
@@ -232,7 +232,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public func deserialize(_ data: Data) async throws {
+    package func deserialize(_ data: Data) async throws {
         try await withWriteLock {
             let decoded = try VectorSerializer.decodeVecSegment(from: data)
             switch decoded {
@@ -304,7 +304,7 @@ public actor USearchVectorEngine {
         }
     }
 
-    public func stageForCommit(into wax: Wax) async throws {
+    package func stageForCommit(into wax: Wax) async throws {
         if !dirty { return }
         let blob = try await serialize()
         try await wax.stageVecIndexForNextCommit(

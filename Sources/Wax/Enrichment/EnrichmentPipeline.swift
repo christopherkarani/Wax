@@ -1,12 +1,12 @@
 import Foundation
 
-public actor EnrichmentPipeline {
-    public struct Stats: Sendable, Equatable {
-        public var processedCount: UInt64
-        public var pendingCount: UInt64
-        public var isRunning: Bool
+package actor EnrichmentPipeline {
+    package struct Stats: Sendable, Equatable {
+        package var processedCount: UInt64
+        package var pendingCount: UInt64
+        package var isRunning: Bool
 
-        public init(processedCount: UInt64, pendingCount: UInt64, isRunning: Bool) {
+        package init(processedCount: UInt64, pendingCount: UInt64, isRunning: Bool) {
             self.processedCount = processedCount
             self.pendingCount = pendingCount
             self.isRunning = isRunning
@@ -26,9 +26,9 @@ public actor EnrichmentPipeline {
     private var processedCount: UInt64 = 0
     private var pendingCount: UInt64 = 0
 
-    public init() {}
+    package init() {}
 
-    public func start(
+    package func start(
         handler: @escaping @Sendable (EnrichmentTask) async -> EnrichmentResult
     ) {
         guard state == .idle || state == .stopped else { return }
@@ -46,7 +46,7 @@ public actor EnrichmentPipeline {
         }
     }
 
-    public func enqueue(_ task: EnrichmentTask) throws {
+    package func enqueue(_ task: EnrichmentTask) throws {
         guard state == .running, continuation != nil else {
             throw WaxError.io("enrichment pipeline not running")
         }
@@ -54,7 +54,7 @@ public actor EnrichmentPipeline {
         continuation?.yield(task)
     }
 
-    public func waitUntilProcessed(atLeast target: UInt64, timeout: Duration) async throws {
+    package func waitUntilProcessed(atLeast target: UInt64, timeout: Duration) async throws {
         let deadline = ContinuousClock.now + timeout
         while processedCount < target {
             if ContinuousClock.now >= deadline {
@@ -67,7 +67,30 @@ public actor EnrichmentPipeline {
         }
     }
 
-    public func waitUntilIdle(timeout: Duration) async throws {
+    package func waitUntilIdle() async throws {
+        while pendingCount > 0 {
+            if state == .stopped {
+                throw WaxError.io("enrichment pipeline stopped before queue drain")
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    package func waitUntilIdle(bestEffortTimeout timeout: Duration) async throws -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while pendingCount > 0 {
+            if state == .stopped {
+                throw WaxError.io("enrichment pipeline stopped before queue drain")
+            }
+            if ContinuousClock.now >= deadline {
+                return false
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return true
+    }
+
+    package func waitUntilIdle(timeout: Duration) async throws {
         let deadline = ContinuousClock.now + timeout
         while pendingCount > 0 {
             if ContinuousClock.now >= deadline {
@@ -80,7 +103,7 @@ public actor EnrichmentPipeline {
         }
     }
 
-    public func stop(timeout: Duration = .seconds(2)) async throws {
+    package func stop(timeout: Duration = .seconds(2)) async throws {
         guard state == .running || state == .stopping else { return }
         state = .stopping
         continuation?.finish()
@@ -100,7 +123,7 @@ public actor EnrichmentPipeline {
         }
     }
 
-    public var stats: Stats {
+    package var stats: Stats {
         Stats(
             processedCount: processedCount,
             pendingCount: pendingCount,

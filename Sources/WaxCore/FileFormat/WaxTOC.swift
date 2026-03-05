@@ -1,12 +1,12 @@
 import Foundation
 
-public struct TimeIndexManifest: Equatable, Sendable {
-    public var bytesOffset: UInt64
-    public var bytesLength: UInt64
-    public var entryCount: UInt64
-    public var checksum: Data
+package struct TimeIndexManifest: Equatable, Sendable {
+    package var bytesOffset: UInt64
+    package var bytesLength: UInt64
+    package var entryCount: UInt64
+    package var checksum: Data
 
-    public init(bytesOffset: UInt64, bytesLength: UInt64, entryCount: UInt64, checksum: Data) {
+    package init(bytesOffset: UInt64, bytesLength: UInt64, entryCount: UInt64, checksum: Data) {
         self.bytesOffset = bytesOffset
         self.bytesLength = bytesLength
         self.entryCount = entryCount
@@ -15,7 +15,7 @@ public struct TimeIndexManifest: Equatable, Sendable {
 }
 
 extension TimeIndexManifest: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(bytesOffset)
         encoder.encode(bytesLength)
         encoder.encode(entryCount)
@@ -25,7 +25,7 @@ extension TimeIndexManifest: BinaryCodable {
         encoder.encodeFixedBytes(checksum)
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> TimeIndexManifest {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> TimeIndexManifest {
         let bytesOffset = try decoder.decode(UInt64.self)
         let bytesLength = try decoder.decode(UInt64.self)
         let entryCount = try decoder.decode(UInt64.self)
@@ -39,18 +39,18 @@ extension TimeIndexManifest: BinaryCodable {
     }
 }
 
-public struct WaxTOC: Equatable, Sendable {
-    public var tocVersion: UInt64
-    public var frames: [FrameMeta]
-    public var indexes: IndexManifests
-    public var timeIndex: TimeIndexManifest?
-    public var segmentCatalog: SegmentCatalog
-    public var ticketRef: TicketRef
-    public var memoryBinding: MemoryBinding?
-    public var merkleRoot: Data
-    public var tocChecksum: Data
+package struct WaxTOC: Equatable, Sendable {
+    package var tocVersion: UInt64
+    package var frames: [FrameMeta]
+    package var indexes: IndexManifests
+    package var timeIndex: TimeIndexManifest?
+    package var segmentCatalog: SegmentCatalog
+    package var ticketRef: TicketRef
+    package var memoryBinding: MemoryBinding?
+    package var merkleRoot: Data
+    package var tocChecksum: Data
 
-    public init(
+    package init(
         tocVersion: UInt64,
         frames: [FrameMeta],
         indexes: IndexManifests,
@@ -72,7 +72,7 @@ public struct WaxTOC: Equatable, Sendable {
         self.tocChecksum = tocChecksum
     }
 
-    public static func emptyV1() -> WaxTOC {
+    package static func emptyV1() -> WaxTOC {
         WaxTOC(
             tocVersion: 1,
             frames: [],
@@ -86,7 +86,7 @@ public struct WaxTOC: Equatable, Sendable {
         )
     }
 
-    public func encode() throws -> Data {
+    package func encode() throws -> Data {
         guard tocVersion == 1 else {
             throw WaxError.encodingError(reason: "unsupported toc_version \(tocVersion)")
         }
@@ -146,7 +146,7 @@ public struct WaxTOC: Equatable, Sendable {
         return data
     }
 
-    public static func decode(from tocBytes: Data) throws -> WaxTOC {
+    package static func decode(from tocBytes: Data) throws -> WaxTOC {
         guard tocBytes.count >= 32 else {
             throw WaxError.invalidToc(reason: "toc must be at least 32 bytes (got \(tocBytes.count))")
         }
@@ -241,7 +241,7 @@ public struct WaxTOC: Equatable, Sendable {
         )
     }
 
-    public static func computeChecksum(for tocBytes: Data) -> Data {
+    package static func computeChecksum(for tocBytes: Data) -> Data {
         guard tocBytes.count >= 32 else {
             assertionFailure("toc must be at least 32 bytes")
             return Data(repeating: 0, count: 32)

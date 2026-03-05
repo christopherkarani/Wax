@@ -2,14 +2,14 @@ import Foundation
 import USearch
 import WaxCore
 
-public enum VectorSerializer {
-    public struct SegmentInfo: Sendable, Equatable {
-        public var similarity: VecSimilarity
-        public var dimension: UInt32
-        public var vectorCount: UInt64
-        public var payloadLength: UInt64
+package enum VectorSerializer {
+    package struct SegmentInfo: Sendable, Equatable {
+        package var similarity: VecSimilarity
+        package var dimension: UInt32
+        package var vectorCount: UInt64
+        package var payloadLength: UInt64
 
-        public init(similarity: VecSimilarity, dimension: UInt32, vectorCount: UInt64, payloadLength: UInt64) {
+        package init(similarity: VecSimilarity, dimension: UInt32, vectorCount: UInt64, payloadLength: UInt64) {
             self.similarity = similarity
             self.dimension = dimension
             self.vectorCount = vectorCount
@@ -17,19 +17,19 @@ public enum VectorSerializer {
         }
     }
 
-    public enum VecSegmentPayload: Sendable, Equatable {
+    package enum VecSegmentPayload: Sendable, Equatable {
         case uSearch(info: SegmentInfo, payload: Data)
         case metal(info: SegmentInfo, vectors: [Float], frameIds: [UInt64])
     }
 
-    public enum VecEncoding: UInt8, Sendable {
+    package enum VecEncoding: UInt8, Sendable {
         case uSearch = 1
         case metal = 2
     }
 
     /// Returns the on-disk encoding (USearch or Metal) without fully decoding the payload.
     /// Throws if the header is malformed.
-    public static func detectEncoding(from data: Data) throws -> VecEncoding {
+    package static func detectEncoding(from data: Data) throws -> VecEncoding {
         guard data.count >= 8 else {
             throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
         }
@@ -51,7 +51,7 @@ public enum VectorSerializer {
         return encoding
     }
 
-    public static func serializeUSearchIndex(
+    package static func serializeUSearchIndex(
         _ index: USearchIndex,
         metric: VectorMetric,
         dimensions: Int,
@@ -71,7 +71,7 @@ public enum VectorSerializer {
         return data
     }
 
-    public static func decodeUSearchPayload(from data: Data) throws -> (info: SegmentInfo, payload: Data) {
+    package static func decodeUSearchPayload(from data: Data) throws -> (info: SegmentInfo, payload: Data) {
         let payload = try decodeVecSegment(from: data)
         switch payload {
         case .uSearch(let info, let bytes):
@@ -81,7 +81,7 @@ public enum VectorSerializer {
         }
     }
 
-    public static func decodeVecSegment(from data: Data) throws -> VecSegmentPayload {
+    package static func decodeVecSegment(from data: Data) throws -> VecSegmentPayload {
         guard data.count >= VecSegmentHeaderV1.encodedSize else {
             throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
         }
@@ -158,7 +158,7 @@ public enum VectorSerializer {
 
     /// Loads the index directly from an in-memory buffer.
     /// This is ~10-100x faster than the file-based approach.
-    public static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
+    package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
         // Use buffer-based loading (no temp file I/O)
         try index.deserializeFromData(payload)
     }

@@ -10,17 +10,17 @@ import CoreML
 
 /// Model Prediction Input Type
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
-public class all_MiniLM_L6_v2Input : MLFeatureProvider {
+package class all_MiniLM_L6_v2Input : MLFeatureProvider {
 
     /// input_ids as 1 by 32 matrix of 32-bit integers
-    public var input_ids: MLMultiArray
+    package var input_ids: MLMultiArray
 
     /// attention_mask as 1 by 32 matrix of 32-bit integers
-    public var attention_mask: MLMultiArray
+    package var attention_mask: MLMultiArray
 
-    public var featureNames: Set<String> { ["input_ids", "attention_mask"] }
+    package var featureNames: Set<String> { ["input_ids", "attention_mask"] }
 
-    public func featureValue(for featureName: String) -> MLFeatureValue? {
+    package func featureValue(for featureName: String) -> MLFeatureValue? {
         if featureName == "input_ids" {
             return MLFeatureValue(multiArray: input_ids)
         }
@@ -30,12 +30,12 @@ public class all_MiniLM_L6_v2Input : MLFeatureProvider {
         return nil
     }
 
-    public init(input_ids: MLMultiArray, attention_mask: MLMultiArray) {
+    package init(input_ids: MLMultiArray, attention_mask: MLMultiArray) {
         self.input_ids = input_ids
         self.attention_mask = attention_mask
     }
 
-    public convenience init(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) {
+    package convenience init(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) {
         self.init(input_ids: MLMultiArray(input_ids), attention_mask: MLMultiArray(attention_mask))
     }
 
@@ -44,36 +44,36 @@ public class all_MiniLM_L6_v2Input : MLFeatureProvider {
 
 /// Model Prediction Output Type
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
-public class all_MiniLM_L6_v2Output : MLFeatureProvider {
+package class all_MiniLM_L6_v2Output : MLFeatureProvider {
 
     /// Source provided by CoreML
     private let provider : MLFeatureProvider
 
     /// var_554 as multidimensional array of 16-bit floats
-    public var var_554: MLMultiArray {
+    package var var_554: MLMultiArray {
         provider.featureValue(for: "var_554")!.multiArrayValue!
     }
 
     /// var_554 as multidimensional array of 16-bit floats
     #if !(os(macOS) || targetEnvironment(macCatalyst))
-    public var var_554ShapedArray: MLShapedArray<Float16> {
+    package var var_554ShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(var_554)
     }
     #endif
 
-    public var featureNames: Set<String> {
+    package var featureNames: Set<String> {
         provider.featureNames
     }
 
-    public func featureValue(for featureName: String) -> MLFeatureValue? {
+    package func featureValue(for featureName: String) -> MLFeatureValue? {
         provider.featureValue(for: featureName)
     }
 
-    public init(var_554: MLMultiArray) throws {
+    package init(var_554: MLMultiArray) throws {
         self.provider = try MLDictionaryFeatureProvider(dictionary: ["var_554" : MLFeatureValue(multiArray: var_554)])
     }
 
-    public init(features: MLFeatureProvider) {
+    package init(features: MLFeatureProvider) {
         self.provider = features
     }
 }
@@ -81,8 +81,8 @@ public class all_MiniLM_L6_v2Output : MLFeatureProvider {
 
 /// Class for model loading and prediction
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
-public class all_MiniLM_L6_v2 {
-    public let model: MLModel
+package class all_MiniLM_L6_v2 {
+    package let model: MLModel
 
     /// URL of model assuming it was installed in the same bundle as this class
     class var urlOfModelInThisBundle : URL {
@@ -117,7 +117,7 @@ public class all_MiniLM_L6_v2 {
 
         - throws: an NSError object that describes the problem
     */
-    public convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
+    package convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
         try self.init(contentsOf: type(of:self).urlOfModelInThisBundle, configuration: configuration)
     }
 
@@ -128,7 +128,7 @@ public class all_MiniLM_L6_v2 {
 
         - throws: an NSError object that describes the problem
     */
-    public convenience init(contentsOf modelURL: URL) throws {
+    package convenience init(contentsOf modelURL: URL) throws {
         try self.init(model: MLModel(contentsOf: modelURL))
     }
 
@@ -141,7 +141,7 @@ public class all_MiniLM_L6_v2 {
 
         - throws: an NSError object that describes the problem
     */
-    public convenience init(contentsOf modelURL: URL, configuration: MLModelConfiguration) throws {
+    package convenience init(contentsOf modelURL: URL, configuration: MLModelConfiguration) throws {
         try self.init(model: MLModel(contentsOf: modelURL, configuration: configuration))
     }
 
@@ -154,7 +154,7 @@ public class all_MiniLM_L6_v2 {
           - configuration: the desired model configuration
           - handler: the completion handler to be called when the model loading completes successfully or unsuccessfully
     */
-    public class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
+    package class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
         load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration, completionHandler: handler)
     }
 
@@ -166,7 +166,7 @@ public class all_MiniLM_L6_v2 {
         - parameters:
           - configuration: the desired model configuration
     */
-    public class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
+    package class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
         try await load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration)
     }
 
@@ -180,7 +180,7 @@ public class all_MiniLM_L6_v2 {
           - configuration: the desired model configuration
           - handler: the completion handler to be called when the model loading completes successfully or unsuccessfully
     */
-    public class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
+    package class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
         MLModel.load(contentsOf: modelURL, configuration: configuration) { result in
             switch result {
             case .failure(let error):
@@ -200,7 +200,7 @@ public class all_MiniLM_L6_v2 {
           - modelURL: the URL to the model
           - configuration: the desired model configuration
     */
-    public class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
+    package class func load(contentsOf modelURL: URL, configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
         let model = try await MLModel.load(contentsOf: modelURL, configuration: configuration)
         return all_MiniLM_L6_v2(model: model)
     }
@@ -217,7 +217,7 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
-    public func prediction(input: all_MiniLM_L6_v2Input) throws -> all_MiniLM_L6_v2Output {
+    package func prediction(input: all_MiniLM_L6_v2Input) throws -> all_MiniLM_L6_v2Output {
         try prediction(input: input, options: MLPredictionOptions())
     }
 
@@ -234,7 +234,7 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
-    public func prediction(input: all_MiniLM_L6_v2Input, options: MLPredictionOptions) throws -> all_MiniLM_L6_v2Output {
+    package func prediction(input: all_MiniLM_L6_v2Input, options: MLPredictionOptions) throws -> all_MiniLM_L6_v2Output {
         let outFeatures = try model.prediction(from: input, options: options)
         return all_MiniLM_L6_v2Output(features: outFeatures)
     }
@@ -252,7 +252,7 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
-    public func prediction(input: all_MiniLM_L6_v2Input, options: MLPredictionOptions = MLPredictionOptions()) async throws -> all_MiniLM_L6_v2Output {
+    package func prediction(input: all_MiniLM_L6_v2Input, options: MLPredictionOptions = MLPredictionOptions()) async throws -> all_MiniLM_L6_v2Output {
         let outFeatures = try await model.prediction(from: input, options: options)
         return all_MiniLM_L6_v2Output(features: outFeatures)
     }
@@ -270,7 +270,7 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
-    public func prediction(input_ids: MLMultiArray, attention_mask: MLMultiArray) throws -> all_MiniLM_L6_v2Output {
+    package func prediction(input_ids: MLMultiArray, attention_mask: MLMultiArray) throws -> all_MiniLM_L6_v2Output {
         let input_ = all_MiniLM_L6_v2Input(input_ids: input_ids, attention_mask: attention_mask)
         return try prediction(input: input_)
     }
@@ -289,7 +289,7 @@ public class all_MiniLM_L6_v2 {
         - returns: the result of the prediction as all_MiniLM_L6_v2Output
     */
 
-    public func prediction(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) throws -> all_MiniLM_L6_v2Output {
+    package func prediction(input_ids: MLShapedArray<Int32>, attention_mask: MLShapedArray<Int32>) throws -> all_MiniLM_L6_v2Output {
         let input_ = all_MiniLM_L6_v2Input(input_ids: input_ids, attention_mask: attention_mask)
         return try prediction(input: input_)
     }
@@ -307,7 +307,7 @@ public class all_MiniLM_L6_v2 {
 
         - returns: the result of the prediction as [all_MiniLM_L6_v2Output]
     */
-    public func predictions(inputs: [all_MiniLM_L6_v2Input], options: MLPredictionOptions = MLPredictionOptions()) throws -> [all_MiniLM_L6_v2Output] {
+    package func predictions(inputs: [all_MiniLM_L6_v2Input], options: MLPredictionOptions = MLPredictionOptions()) throws -> [all_MiniLM_L6_v2Output] {
         let batchIn = MLArrayBatchProvider(array: inputs)
         let batchOut = try model.predictions(from: batchIn, options: options)
         var results : [all_MiniLM_L6_v2Output] = []

@@ -1,15 +1,15 @@
 import Foundation
 
-public struct Metadata: Equatable, Sendable {
-    public var entries: [String: String]
+package struct Metadata: Equatable, Sendable {
+    package var entries: [String: String]
 
-    public init(_ entries: [String: String] = [:]) {
+    package init(_ entries: [String: String] = [:]) {
         self.entries = entries
     }
 }
 
 extension Metadata: BinaryEncodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         let keys = entries.keys.sorted()
         guard keys.count <= Constants.maxArrayCount else {
             throw WaxError.encodingError(reason: "metadata count \(keys.count) exceeds limit \(Constants.maxArrayCount)")
@@ -27,7 +27,7 @@ extension Metadata: BinaryEncodable {
 }
 
 extension Metadata: BinaryDecodable {
-    public static func decode(from decoder: inout BinaryDecoder) throws -> Metadata {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> Metadata {
         let count = Int(try decoder.decode(UInt32.self))
         guard count <= Constants.maxArrayCount else {
             throw WaxError.decodingError(reason: "metadata count \(count) exceeds limit \(Constants.maxArrayCount)")

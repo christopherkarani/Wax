@@ -1,15 +1,15 @@
 import Foundation
 
-public struct TemporalNormalizer: Sendable {
-    public let anchor: Date
-    public let calendar: Calendar
+package struct TemporalNormalizer: Sendable {
+    package let anchor: Date
+    package let calendar: Calendar
 
-    public init(anchor: Date = Date(), calendar: Calendar = .init(identifier: .gregorian)) {
+    package init(anchor: Date = Date(), calendar: Calendar = .init(identifier: .gregorian)) {
         self.anchor = anchor
         self.calendar = calendar
     }
 
-    public func resolve(_ phrase: String) throws -> TemporalResolution {
+    package func resolve(_ phrase: String) throws -> TemporalResolution {
         let normalized = phrase
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()

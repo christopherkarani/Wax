@@ -14,10 +14,10 @@ import Glibc
 /// concurrency — multiple readers can hold the lock simultaneously. The previous Darwin
 /// path used `os_unfair_lock` + a usleep spin which serialised all readers, negating
 /// any concurrency benefit over a plain mutex.
-public final class ReadWriteLock: @unchecked Sendable {
+package final class ReadWriteLock: @unchecked Sendable {
     private var rwlock = pthread_rwlock_t()
 
-    public init() {
+    package init() {
         let result = pthread_rwlock_init(&rwlock, nil)
         precondition(result == 0, "pthread_rwlock_init failed: \(result)")
     }
@@ -29,7 +29,7 @@ public final class ReadWriteLock: @unchecked Sendable {
     // MARK: - Synchronous API (Hot Path)
 
     @inline(__always)
-    public func readLock() {
+    package func readLock() {
         while true {
             let result = pthread_rwlock_rdlock(&rwlock)
             if result == 0 { return }
@@ -39,13 +39,13 @@ public final class ReadWriteLock: @unchecked Sendable {
     }
 
     @inline(__always)
-    public func readUnlock() {
+    package func readUnlock() {
         let result = pthread_rwlock_unlock(&rwlock)
         precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
     }
 
     @inline(__always)
-    public func writeLock() {
+    package func writeLock() {
         while true {
             let result = pthread_rwlock_wrlock(&rwlock)
             if result == 0 { return }
@@ -55,20 +55,20 @@ public final class ReadWriteLock: @unchecked Sendable {
     }
 
     @inline(__always)
-    public func writeUnlock() {
+    package func writeUnlock() {
         let result = pthread_rwlock_unlock(&rwlock)
         precondition(result == 0, "pthread_rwlock_unlock failed: \(result)")
     }
 
     @inline(__always)
-    public func withReadLock<T>(_ body: () throws -> T) rethrows -> T {
+    package func withReadLock<T>(_ body: () throws -> T) rethrows -> T {
         readLock()
         defer { readUnlock() }
         return try body()
     }
 
     @inline(__always)
-    public func withWriteLock<T>(_ body: () throws -> T) rethrows -> T {
+    package func withWriteLock<T>(_ body: () throws -> T) rethrows -> T {
         writeLock()
         defer { writeUnlock() }
         return try body()
@@ -76,15 +76,15 @@ public final class ReadWriteLock: @unchecked Sendable {
 }
 
 /// Async-compatible ReadWriteLock using continuations.
-public actor AsyncReadWriteLock {
+package actor AsyncReadWriteLock {
     private var readers: Int = 0
     private var writers: Int = 0
     private var writerWaiters: [CheckedContinuation<Void, Never>] = []
     private var readerWaiters: [CheckedContinuation<Void, Never>] = []
 
-    public init() {}
+    package init() {}
 
-    public func readLock() async {
+    package func readLock() async {
         if writers > 0 || !writerWaiters.isEmpty {
             await withCheckedContinuation { continuation in
                 readerWaiters.append(continuation)
@@ -94,7 +94,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func readUnlock() {
+    package func readUnlock() {
         if readers > 0 {
             readers -= 1
         }
@@ -105,7 +105,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func writeLock() async {
+    package func writeLock() async {
         if readers > 0 || writers > 0 {
             await withCheckedContinuation { continuation in
                 writerWaiters.append(continuation)
@@ -115,7 +115,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func writeUnlock() {
+    package func writeUnlock() {
         writers -= 1
         if !writerWaiters.isEmpty {
             let nextWriter = writerWaiters.removeFirst()
@@ -130,7 +130,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func withReadLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    package func withReadLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await readLock()
         do {
             let result = try await body()
@@ -142,7 +142,7 @@ public actor AsyncReadWriteLock {
         }
     }
 
-    public func withWriteLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    package func withWriteLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await writeLock()
         do {
             let result = try await body()
@@ -156,14 +156,14 @@ public actor AsyncReadWriteLock {
 }
 
 /// Simple lock wrapper for hot paths requiring minimal overhead.
-public final class UnfairLock: @unchecked Sendable {
+package final class UnfairLock: @unchecked Sendable {
     #if canImport(os)
     private var rawLock = os_unfair_lock()
     #else
     private var mutex = pthread_mutex_t()
     #endif
 
-    public init() {
+    package init() {
         #if !canImport(os)
         let result = pthread_mutex_init(&mutex, nil)
         precondition(result == 0, "pthread_mutex_init failed: \(result)")
@@ -177,7 +177,7 @@ public final class UnfairLock: @unchecked Sendable {
     }
 
     @inline(__always)
-    public func acquire() {
+    package func acquire() {
         #if canImport(os)
         os_unfair_lock_lock(&rawLock)
         #else
@@ -187,7 +187,7 @@ public final class UnfairLock: @unchecked Sendable {
     }
 
     @inline(__always)
-    public func release() {
+    package func release() {
         #if canImport(os)
         os_unfair_lock_unlock(&rawLock)
         #else
@@ -197,14 +197,14 @@ public final class UnfairLock: @unchecked Sendable {
     }
 
     @inline(__always)
-    public func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    package func withLock<T>(_ body: () throws -> T) rethrows -> T {
         acquire()
         defer { release() }
         return try body()
     }
 
     @inline(__always)
-    public func tryAcquire() -> Bool {
+    package func tryAcquire() -> Bool {
         #if canImport(os)
         os_unfair_lock_trylock(&rawLock)
         #else

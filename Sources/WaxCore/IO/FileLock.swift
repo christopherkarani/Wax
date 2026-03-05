@@ -5,16 +5,16 @@ import Darwin
 import Glibc
 #endif
 
-public enum LockMode: Sendable {
+package enum LockMode: Sendable {
     case shared
     case exclusive
 }
 
 /// Advisory whole-file lock backed by `flock`.
-public final class FileLock {
+package final class FileLock {
     private let fd: Int32
     private let url: URL
-    public private(set) var mode: LockMode
+    package private(set) var mode: LockMode
     private var isReleased = false
 
     private init(fd: Int32, url: URL, mode: LockMode) {
@@ -34,7 +34,7 @@ public final class FileLock {
         }
     }
 
-    public static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
+    package static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
         let fd = try openFile(at: url, mode: mode)
         do {
             _ = try lock(fd: fd, mode: mode, nonBlocking: false)
@@ -45,7 +45,7 @@ public final class FileLock {
         }
     }
 
-    public static func tryAcquire(at url: URL, mode: LockMode) throws -> FileLock? {
+    package static func tryAcquire(at url: URL, mode: LockMode) throws -> FileLock? {
         let fd = try openFile(at: url, mode: mode)
         do {
             let acquired = try lock(fd: fd, mode: mode, nonBlocking: true)
@@ -60,21 +60,21 @@ public final class FileLock {
         }
     }
 
-    public func upgrade() throws {
+    package func upgrade() throws {
         try ensureActive()
         if mode == .exclusive { return }
         _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false)
         mode = .exclusive
     }
 
-    public func downgrade() throws {
+    package func downgrade() throws {
         try ensureActive()
         if mode == .shared { return }
         _ = try Self.lock(fd: fd, mode: .shared, nonBlocking: false)
         mode = .shared
     }
 
-    public func release() throws {
+    package func release() throws {
         if isReleased { return }
         var unlockError: WaxError?
         while true {

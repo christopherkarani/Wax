@@ -1,13 +1,13 @@
 import Foundation
 
 /// Store-level embedding identity binding persisted in the TOC extension area.
-public struct MemoryBinding: Equatable, Sendable {
-    public var embeddingProvider: String?
-    public var embeddingModel: String?
-    public var embeddingDimensions: UInt32?
-    public var embeddingNormalized: Bool?
+package struct MemoryBinding: Equatable, Sendable {
+    package var embeddingProvider: String?
+    package var embeddingModel: String?
+    package var embeddingDimensions: UInt32?
+    package var embeddingNormalized: Bool?
 
-    public init(
+    package init(
         embeddingProvider: String? = nil,
         embeddingModel: String? = nil,
         embeddingDimensions: UInt32? = nil,
@@ -19,7 +19,7 @@ public struct MemoryBinding: Equatable, Sendable {
         self.embeddingNormalized = embeddingNormalized
     }
 
-    public var isEmpty: Bool {
+    package var isEmpty: Bool {
         embeddingProvider == nil &&
             embeddingModel == nil &&
             embeddingDimensions == nil &&
@@ -28,7 +28,7 @@ public struct MemoryBinding: Equatable, Sendable {
 }
 
 extension MemoryBinding: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         try encoder.encode(embeddingProvider)
         try encoder.encode(embeddingModel)
         encoder.encode(embeddingDimensions)
@@ -36,7 +36,7 @@ extension MemoryBinding: BinaryCodable {
         encoder.encode(normalizedRaw)
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> MemoryBinding {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> MemoryBinding {
         let provider = try decoder.decodeOptional(String.self)
         let model = try decoder.decodeOptional(String.self)
         let dimensions = try decoder.decodeOptional(UInt32.self)

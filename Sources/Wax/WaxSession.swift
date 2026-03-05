@@ -3,7 +3,7 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-public actor WaxSession {
+package actor WaxSession {
     private enum ConcreteVectorEngine: Sendable {
         case usearch(USearchVectorEngine)
         #if canImport(Metal)
@@ -44,26 +44,26 @@ public actor WaxSession {
         }
     }
 
-    public enum Mode: Sendable, Equatable {
+    package enum Mode: Sendable, Equatable {
         case readOnly
         case readWrite(WriterPolicy = .wait)
     }
 
-    public enum WriterPolicy: Sendable, Equatable {
+    package enum WriterPolicy: Sendable, Equatable {
         case wait
         case fail
         case timeout(Duration)
     }
 
-    public struct Config: Sendable, Equatable {
-        public var enableTextSearch: Bool
-        public var enableVectorSearch: Bool
-        public var enableStructuredMemory: Bool
-        public var vectorEnginePreference: VectorEnginePreference
-        public var vectorMetric: VectorMetric
-        public var vectorDimensions: Int?
+    package struct Config: Sendable, Equatable {
+        package var enableTextSearch: Bool
+        package var enableVectorSearch: Bool
+        package var enableStructuredMemory: Bool
+        package var vectorEnginePreference: VectorEnginePreference
+        package var vectorMetric: VectorMetric
+        package var vectorDimensions: Int?
 
-        public init(
+        package init(
             enableTextSearch: Bool = true,
             enableVectorSearch: Bool = true,
             enableStructuredMemory: Bool = true,
@@ -79,12 +79,12 @@ public actor WaxSession {
             self.vectorDimensions = vectorDimensions
         }
 
-        public static let `default` = Config()
+        package static let `default` = Config()
     }
 
-    public let wax: Wax
-    public let mode: Mode
-    public let config: Config
+    package let wax: Wax
+    package let mode: Mode
+    package let config: Config
 
     private let textEngine: FTS5SearchEngine?
     private let vectorEngine: (any VectorSearchEngine)?
@@ -93,7 +93,7 @@ public actor WaxSession {
     private var writerLeaseId: UUID?
     private var isClosed = false
 
-    public init(wax: Wax, mode: Mode = .readOnly, config: Config = .default) async throws {
+    package init(wax: Wax, mode: Mode = .readOnly, config: Config = .default) async throws {
         self.wax = wax
         self.mode = mode
         self.config = config
@@ -160,7 +160,7 @@ public actor WaxSession {
         }
     }
 
-    public func close() async {
+    package func close() async {
         guard !isClosed else { return }
         isClosed = true
         if let leaseId = writerLeaseId {
@@ -171,7 +171,7 @@ public actor WaxSession {
 
     // MARK: - Search
 
-    public func search(_ request: SearchRequest) async throws -> SearchResponse {
+    package func search(_ request: SearchRequest) async throws -> SearchResponse {
         let overrides = UnifiedSearchEngineOverrides(
             textEngine: textEngine,
             vectorEngine: nil,
@@ -180,7 +180,7 @@ public actor WaxSession {
         return try await wax.search(request, engineOverrides: overrides)
     }
 
-    public func searchText(query: String, topK: Int) async throws -> [TextSearchResult] {
+    package func searchText(query: String, topK: Int) async throws -> [TextSearchResult] {
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.io("text search is disabled")
         }
@@ -189,7 +189,7 @@ public actor WaxSession {
 
     // MARK: - Text Search (write)
 
-    public func indexText(frameId: UInt64, text: String) async throws {
+    package func indexText(frameId: UInt64, text: String) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.io("text search is disabled")
@@ -197,7 +197,7 @@ public actor WaxSession {
         try await textEngine.index(frameId: frameId, text: text)
     }
 
-    public func indexTextBatch(frameIds: [UInt64], texts: [String]) async throws {
+    package func indexTextBatch(frameIds: [UInt64], texts: [String]) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.io("text search is disabled")
@@ -205,7 +205,7 @@ public actor WaxSession {
         try await textEngine.indexBatch(frameIds: frameIds, texts: texts)
     }
 
-    public func removeText(frameId: UInt64) async throws {
+    package func removeText(frameId: UInt64) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.io("text search is disabled")
@@ -215,7 +215,7 @@ public actor WaxSession {
 
     // MARK: - Structured Memory
 
-    public func upsertEntity(
+    package func upsertEntity(
         key: EntityKey,
         kind: String,
         aliases: [String],
@@ -228,14 +228,14 @@ public actor WaxSession {
         return try await textEngine.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs)
     }
 
-    public func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
+    package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         guard config.enableStructuredMemory, let textEngine else {
             throw WaxError.io("structured memory is disabled")
         }
         return try await textEngine.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
-    public func assertFact(
+    package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
@@ -259,7 +259,7 @@ public actor WaxSession {
         )
     }
 
-    public func retractFact(factId: FactRowID, atMs: Int64) async throws {
+    package func retractFact(factId: FactRowID, atMs: Int64) async throws {
         try ensureWritable()
         guard config.enableStructuredMemory, let textEngine else {
             throw WaxError.io("structured memory is disabled")
@@ -267,7 +267,7 @@ public actor WaxSession {
         try await textEngine.retractFact(factId: factId, atMs: atMs)
     }
 
-    public func facts(
+    package func facts(
         about subject: EntityKey?,
         predicate: PredicateKey?,
         asOf: StructuredMemoryAsOf,
@@ -281,7 +281,7 @@ public actor WaxSession {
 
     // MARK: - Frames
 
-    public func put(
+    package func put(
         _ content: Data,
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
@@ -290,7 +290,7 @@ public actor WaxSession {
         return try await wax.put(content, options: options, compression: compression)
     }
 
-    public func put(
+    package func put(
         _ content: Data,
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain,
@@ -300,7 +300,7 @@ public actor WaxSession {
         return try await wax.put(content, options: options, compression: compression, timestampMs: timestampMs)
     }
 
-    public func put(
+    package func put(
         _ content: Data,
         embedding: [Float],
         identity: EmbeddingIdentity? = nil,
@@ -314,7 +314,7 @@ public actor WaxSession {
         return frameId
     }
 
-    public func put(
+    package func put(
         _ content: Data,
         embedding: [Float],
         identity: EmbeddingIdentity? = nil,
@@ -329,7 +329,7 @@ public actor WaxSession {
         return frameId
     }
 
-    public func putBatch(
+    package func putBatch(
         contents: [Data],
         options: [FrameMetaSubset],
         compression: CanonicalEncoding = .plain
@@ -338,7 +338,7 @@ public actor WaxSession {
         return try await wax.putBatch(contents, options: options, compression: compression)
     }
 
-    public func putBatch(
+    package func putBatch(
         contents: [Data],
         options: [FrameMetaSubset],
         compression: CanonicalEncoding = .plain,
@@ -348,7 +348,7 @@ public actor WaxSession {
         return try await wax.putBatch(contents, options: options, compression: compression, timestampsMs: timestampsMs)
     }
 
-    public func putBatch(
+    package func putBatch(
         contents: [Data],
         embeddings: [[Float]],
         identity: EmbeddingIdentity? = nil,
@@ -380,7 +380,7 @@ public actor WaxSession {
         return frameIds
     }
 
-    public func putBatch(
+    package func putBatch(
         contents: [Data],
         embeddings: [[Float]],
         identity: EmbeddingIdentity? = nil,
@@ -421,7 +421,7 @@ public actor WaxSession {
     ///
     /// - Note: This performs an O(n) scan over `frameMetas()` and is acceptable for v2.
     ///   A dedicated metadata index can optimize this in a later version.
-    public func findFrameByMetadata(key: String, value: String) async -> UInt64? {
+    package func findFrameByMetadata(key: String, value: String) async -> UInt64? {
         let metas = await wax.frameMetas()
         for meta in metas.reversed() {
             guard meta.role == .document else { continue }
@@ -434,7 +434,7 @@ public actor WaxSession {
 
     // MARK: - Lifecycle
 
-    public func stage(compact: Bool = false) async throws {
+    package func stage(compact: Bool = false) async throws {
         try ensureWritable()
 
         let localTextEngine = textEngine
@@ -464,7 +464,7 @@ public actor WaxSession {
         try await vectorStaging
     }
 
-    public func commit(compact: Bool = false) async throws {
+    package func commit(compact: Bool = false) async throws {
         try await stage(compact: compact)
         try await wax.commit()
     }
@@ -567,7 +567,7 @@ public actor WaxSession {
     }
 }
 
-public extension Wax {
+package extension Wax {
     func openSession(
         _ mode: WaxSession.Mode = .readOnly,
         config: WaxSession.Config = .default

@@ -2,7 +2,7 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
-public actor WaxVectorSearchSession {
+package actor WaxVectorSearchSession {
     private enum ConcreteVectorEngine: Sendable {
         case usearch(USearchVectorEngine)
         #if canImport(Metal)
@@ -10,15 +10,15 @@ public actor WaxVectorSearchSession {
         #endif
     }
 
-    public let wax: Wax
-    public let engine: any VectorSearchEngine
-    public let metric: VectorMetric
-    public let dimensions: Int
+    package let wax: Wax
+    package let engine: any VectorSearchEngine
+    package let metric: VectorMetric
+    package let dimensions: Int
     private let concreteEngine: ConcreteVectorEngine
     private var lastPendingEmbeddingSequence: UInt64?
     private var pendingRemovedFrameIds: Set<UInt64> = []
 
-    public init(
+    package init(
         wax: Wax,
         metric: VectorMetric = .cosine,
         dimensions: Int,
@@ -65,18 +65,18 @@ public actor WaxVectorSearchSession {
         self.lastPendingEmbeddingSequence = snapshot.latestSequence
     }
 
-    public func add(frameId: UInt64, vector: [Float]) async throws {
+    package func add(frameId: UInt64, vector: [Float]) async throws {
         try await addToEngine(frameId: frameId, vector: vector)
         pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: vector)
     }
 
-    public func remove(frameId: UInt64) async throws {
+    package func remove(frameId: UInt64) async throws {
         try await removeFromEngine(frameId: frameId)
         pendingRemovedFrameIds.insert(frameId)
     }
 
-    public func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
+    package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         var query = vector
         if metric == .cosine, !query.isEmpty, !VectorMath.isNormalizedL2(query) {
             query = VectorMath.normalizeL2(query)
@@ -84,7 +84,7 @@ public actor WaxVectorSearchSession {
         return try await searchEngine(vector: query, topK: topK)
     }
 
-    public func putWithEmbedding(
+    package func putWithEmbedding(
         _ content: Data,
         embedding: [Float],
         options: FrameMetaSubset = .init(),
@@ -118,7 +118,7 @@ public actor WaxVectorSearchSession {
     /// Batch put multiple frames with embeddings in a single operation.
     /// This amortizes actor and I/O overhead across all frames.
     /// Returns frame IDs in the same order as the input contents.
-    public func putWithEmbeddingBatch(
+    package func putWithEmbeddingBatch(
         contents: [Data],
         embeddings: [[Float]],
         options: [FrameMetaSubset],
@@ -171,12 +171,12 @@ public actor WaxVectorSearchSession {
         return frameIds
     }
 
-    public func commit() async throws {
+    package func commit() async throws {
         try await stageForCommit()
         try await wax.commit()
     }
 
-    public func stageForCommit() async throws {
+    package func stageForCommit() async throws {
         let snapshot = await wax.pendingEmbeddingMutations(since: lastPendingEmbeddingSequence)
         if let latest = snapshot.latestSequence,
            let last = lastPendingEmbeddingSequence,
@@ -260,7 +260,7 @@ public actor WaxVectorSearchSession {
     }
 }
 
-public extension Wax {
+package extension Wax {
     @available(*, deprecated, message: "Use Wax.openSession(...)")
     func enableVectorSearch(
         metric: VectorMetric = .cosine,

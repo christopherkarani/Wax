@@ -170,6 +170,43 @@ package final class MiniLMEmbeddings {
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbeddings {
+    @inline(__always)
+    static func floatFromFloat16Bits(_ bits: UInt16) -> Float {
+        let sign = UInt32(bits & 0x8000) << 16
+        let exponent = UInt32((bits & 0x7C00) >> 10)
+        let mantissa = UInt32(bits & 0x03FF)
+
+        let resultBits: UInt32
+        if exponent == 0 {
+            if mantissa == 0 {
+                resultBits = sign
+            } else {
+                // Normalize subnormal half-precision values.
+                var normalizedMantissa = mantissa
+                var adjustedExponent: Int32 = -14
+                while (normalizedMantissa & 0x0400) == 0 {
+                    normalizedMantissa <<= 1
+                    adjustedExponent -= 1
+                }
+                normalizedMantissa &= 0x03FF
+                let exponentBits = UInt32(adjustedExponent + 127) << 23
+                let mantissaBits = normalizedMantissa << 13
+                resultBits = sign | exponentBits | mantissaBits
+            }
+        } else if exponent == 0x1F {
+            // Preserve Inf/NaN payloads.
+            let exponentBits = UInt32(0xFF) << 23
+            let mantissaBits = mantissa << 13
+            resultBits = sign | exponentBits | mantissaBits
+        } else {
+            let exponentBits = UInt32(Int32(exponent) - 15 + 127) << 23
+            let mantissaBits = mantissa << 13
+            resultBits = sign | exponentBits | mantissaBits
+        }
+
+        return Float(bitPattern: resultBits)
+    }
+
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
         if let compiledURL = Bundle.module.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
             let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
@@ -268,18 +305,18 @@ private extension MiniLMEmbeddings {
             }
             
             if isContiguous && dataType == .float16 {
-                let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
+                let float16BitsPtr = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
                 return (0..<batch).map { row in
                     let start = row * dim
                     return (0..<dim).map { col in
-                        Float(float16Ptr[start + col])
+                        floatFromFloat16Bits(float16BitsPtr[start + col])
                     }
                 }
             }
         }
 
-        let float16Ptr: UnsafeMutablePointer<Float16>? = dataType == .float16
-            ? embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
+        let float16BitsPtr: UnsafeMutablePointer<UInt16>? = dataType == .float16
+            ? embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
             : nil
         let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
             ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
@@ -289,8 +326,8 @@ private extension MiniLMEmbeddings {
             if let floatPtr {
                 return floatPtr[index]
             }
-            if let float16Ptr {
-                return Float(float16Ptr[index])
+            if let float16BitsPtr {
+                return floatFromFloat16Bits(float16BitsPtr[index])
             }
             return 0
         }

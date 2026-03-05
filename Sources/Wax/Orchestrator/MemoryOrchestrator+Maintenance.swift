@@ -1,7 +1,7 @@
 import Foundation
 import WaxCore
 
-public protocol MaintenableMemory: Sendable {
+package protocol MaintenableMemory: Sendable {
     func optimizeSurrogates(
         options: MaintenanceOptions,
         generator: some SurrogateGenerator
@@ -29,7 +29,7 @@ private enum SurrogateDefaults {
     static let hierarchicalFormat = "hierarchical_v1"
 }
 
-public extension MemoryOrchestrator {
+package extension MemoryOrchestrator {
     func optimizeSurrogates(
         options: MaintenanceOptions = .init(),
         generator: (any SurrogateGenerator)? = nil

@@ -8,7 +8,7 @@ import WaxVectorSearch
 /// Requirements:
 /// - `embed(text:)` and `embed(image:)` must return vectors in the same embedding space.
 /// - If `normalize == true`, Wax will L2-normalize embeddings before storage/search.
-public protocol MultimodalEmbeddingProvider: Sendable {
+package protocol MultimodalEmbeddingProvider: Sendable {
     /// Dimensionality of all embeddings produced by this provider.
     var dimensions: Int { get }
     /// Whether embeddings are expected to be L2-normalized.
@@ -30,7 +30,7 @@ extension MultimodalEmbeddingProvider {
     /// Default removed to enforce explicit execution mode declaration.
     /// Provide an explicit `executionMode` property on your conformance.
     @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
-    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+    package var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
 
 #endif // canImport(ImageIO)

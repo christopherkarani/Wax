@@ -80,3 +80,35 @@ import Wax
         try await retry.close()
     }
 }
+
+@Test func rememberIdenticalContentAcrossSessionsPersistsEachScope() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = true
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        let content = "Scoped duplicate content must persist independently per session."
+
+        let sessionA = await orchestrator.startSession()
+        try await orchestrator.remember(content)
+        try await orchestrator.flush()
+        let sessionAStats = try await orchestrator.sessionRuntimeStats()
+        #expect(sessionAStats.active)
+        #expect(sessionAStats.sessionId == sessionA)
+        #expect(sessionAStats.sessionFrameCount > 0)
+
+        let sessionB = await orchestrator.startSession()
+        try await orchestrator.remember(content)
+        try await orchestrator.flush()
+        let sessionBStats = try await orchestrator.sessionRuntimeStats()
+        #expect(sessionBStats.active)
+        #expect(sessionBStats.sessionId == sessionB)
+        #expect(sessionBStats.sessionFrameCount > 0)
+        #expect(sessionBStats.sessionFrameCount == sessionAStats.sessionFrameCount)
+
+        let runtime = await orchestrator.runtimeStats()
+        #expect(runtime.frameCount >= UInt64(sessionAStats.sessionFrameCount + sessionBStats.sessionFrameCount))
+        try await orchestrator.close()
+    }
+}

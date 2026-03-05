@@ -1,6 +1,6 @@
 import Foundation
 
-public enum PhotoMetadataKey: String, Sendable, CaseIterable {
+package enum PhotoMetadataKey: String, Sendable, CaseIterable {
     case assetID = "photos.asset_id"
     case captureMs = "photo.capture_ms"
     case isLocal = "photo.availability.local"

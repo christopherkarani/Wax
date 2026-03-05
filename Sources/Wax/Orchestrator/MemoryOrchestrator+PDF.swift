@@ -1,7 +1,7 @@
 import Foundation
 
 #if canImport(PDFKit)
-public extension MemoryOrchestrator {
+package extension MemoryOrchestrator {
     /// Extracts text from a PDF and ingests it as document + chunks.
     func remember(pdfAt url: URL, metadata: [String: String] = [:]) async throws {
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {

@@ -82,7 +82,7 @@ enum StoreSession {
             guard !noEmbedder else { return nil }
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
             if !skipPrewarm {
-                fputs("Loading MiniLM embedder...\n", stderr)
+                writeStderr("Loading MiniLM embedder...")
             }
 
             // Race embedder init against a deadline using two unstructured Tasks sharing
@@ -110,7 +110,7 @@ enum StoreSession {
                         )
                         once.resume(returning: embedder)
                     } catch {
-                        fputs("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.\n", stderr)
+                        writeStderr("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.")
                         once.resume(returning: nil)
                     }
                 }
@@ -120,14 +120,14 @@ enum StoreSession {
                     try? await Task.sleep(nanoseconds: timeoutNS)
                     if once.resume(returning: nil) {
                         let secs = Int(timeoutNS / 1_000_000_000)
-                        fputs("Warning: MiniLM embedder timed out (>\(secs)s); falling back to text-only search. Set WAX_EMBEDDER_TIMEOUT_SECS to extend.\n", stderr)
+                        writeStderr("Warning: MiniLM embedder timed out (>\(secs)s); falling back to text-only search. Set WAX_EMBEDDER_TIMEOUT_SECS to extend.")
                     }
                 }
             }
             return e
             #else
             if !noEmbedder {
-                fputs("Note: MiniLM not available in this build. Falling back to text-only search.\n", stderr)
+                writeStderr("Note: MiniLM not available in this build. Falling back to text-only search.")
             }
             return nil
             #endif

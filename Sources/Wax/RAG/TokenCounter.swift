@@ -2,8 +2,8 @@ import Foundation
 
 /// Deterministic token counter backed by the built-in NativeBpeTokenizer.
 /// Optimized with LRU caching to avoid redundant tokenization operations.
-public actor TokenCounter {
-    public enum Encoding: String, Sendable {
+package actor TokenCounter {
+    package enum Encoding: String, Sendable {
         case cl100kBase = "cl100k_base"
     }
 
@@ -43,17 +43,17 @@ public actor TokenCounter {
 
     private static let sharedCache = TokenCounterCache()
     private static let nativeBpeCache = NativeBpeCache()
-    public static let maxTokenizationBytes = 8 * 1024 * 1024
+    package static let maxTokenizationBytes = 8 * 1024 * 1024
 
     private let tokenizer: NativeBpeTokenizer
     private let encodingCache: TokenizationCache
 
-    public init(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws {
+    package init(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws {
         self.tokenizer = try await Self.nativeBpeCache.tokenizer(for: encoding)
         self.encodingCache = TokenizationCache(capacity: cacheCapacity)
     }
 
-    public static func shared(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws -> TokenCounter {
+    package static func shared(encoding: Encoding = .cl100kBase, cacheCapacity: Int = 1024) async throws -> TokenCounter {
         try await sharedCache.counter(for: encoding, cacheCapacity: cacheCapacity)
     }
 
@@ -67,13 +67,13 @@ public actor TokenCounter {
     /// }
     /// ```
     @discardableResult
-    public static func preload(encoding: Encoding = .cl100kBase) async throws -> Bool {
+    package static func preload(encoding: Encoding = .cl100kBase) async throws -> Bool {
         _ = try await nativeBpeCache.tokenizer(for: encoding)
         return true
     }
 
     /// Check if the tokenizer is already loaded (no cold start penalty).
-    public static func isPreloaded(encoding: Encoding = .cl100kBase) async -> Bool {
+    package static func isPreloaded(encoding: Encoding = .cl100kBase) async -> Bool {
         await nativeBpeCache.isLoaded(encoding: encoding)
     }
 
@@ -90,11 +90,11 @@ public actor TokenCounter {
         ComparisonSnapshot()
     }
 
-    public func count(_ text: String) -> Int {
+    package func count(_ text: String) -> Int {
         encode(text).count
     }
 
-    public func truncate(_ text: String, maxTokens: Int) async -> String {
+    package func truncate(_ text: String, maxTokens: Int) async -> String {
         guard maxTokens > 0 else { return "" }
 
         // Check cache for existing encoding
@@ -117,12 +117,12 @@ public actor TokenCounter {
         return decode(sliced)
     }
 
-    public func encode(_ text: String) -> [UInt32] {
+    package func encode(_ text: String) -> [UInt32] {
         let capped = Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
         return tokenizer.encode(capped)
     }
 
-    public func decode(_ tokens: [UInt32]) -> String {
+    package func decode(_ tokens: [UInt32]) -> String {
         tokenizer.decode(tokens)
     }
 
@@ -141,7 +141,7 @@ public actor TokenCounter {
     }
 
     /// Count tokens for multiple texts - uses parallel processing for better throughput.
-    public func countBatch(_ texts: [String]) async -> [Int] {
+    package func countBatch(_ texts: [String]) async -> [Int] {
         // For small batches, sequential is faster due to overhead
         guard texts.count > 4 else {
             return texts.map { encode($0).count }
@@ -167,7 +167,7 @@ public actor TokenCounter {
     }
 
     /// Encode multiple texts to tokens - uses parallel processing.
-    public func encodeBatch(_ texts: [String]) async -> [[UInt32]] {
+    package func encodeBatch(_ texts: [String]) async -> [[UInt32]] {
         guard texts.count > 4 else {
             return texts.map { encode($0) }
         }
@@ -191,7 +191,7 @@ public actor TokenCounter {
     }
 
     /// Truncate multiple texts to max tokens - optimized with parallel processing.
-    public func truncateBatch(_ texts: [String], maxTokens: Int) async -> [String] {
+    package func truncateBatch(_ texts: [String], maxTokens: Int) async -> [String] {
         guard maxTokens > 0 else {
             return [String](repeating: "", count: texts.count)
         }
@@ -233,7 +233,7 @@ public actor TokenCounter {
     }
 
     /// Optimized batch count and truncate - single pass for both operations.
-    public func countAndTruncateBatch(_ texts: [String], maxTokens: Int) async -> [(count: Int, truncated: String)] {
+    package func countAndTruncateBatch(_ texts: [String], maxTokens: Int) async -> [(count: Int, truncated: String)] {
         guard maxTokens > 0 else {
             return texts.map { _ in (count: 0, truncated: "") }
         }

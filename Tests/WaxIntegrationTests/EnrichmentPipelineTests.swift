@@ -24,6 +24,22 @@ func enrichmentPipelineProcessesEnqueuedTasks() async throws {
 }
 
 @Test
+func enrichmentPipelineWaitUntilIdleWithoutTimeoutDrainsSlowTask() async throws {
+    let pipeline = EnrichmentPipeline()
+    await pipeline.start { task in
+        try? await Task.sleep(for: .seconds(3))
+        return EnrichmentResult(frameId: task.frameId, keywords: [], entities: [])
+    }
+
+    try await pipeline.enqueue(EnrichmentTask(frameId: 42, text: "slow task"))
+    try await pipeline.waitUntilIdle()
+    let stats = await pipeline.stats
+    #expect(stats.pendingCount == 0)
+    #expect(stats.processedCount >= 1)
+    try await pipeline.stop()
+}
+
+@Test
 func memoryOrchestratorCloseDrainsEnrichmentQueue() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
@@ -40,5 +56,41 @@ func memoryOrchestratorCloseDrainsEnrichmentQueue() async throws {
 
         #expect(afterClose >= beforeClose)
         #expect(afterClose > 0)
+    }
+}
+
+@Test
+func memoryOrchestratorCloseHandlesLongEnrichmentWorkload() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+        config.enableAsyncEnrichment = true
+        config.chunking = .tokenCount(targetTokens: 500_000, overlapTokens: 0)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        let content = (0..<350_000).map { "enrich\($0)" }.joined(separator: " ")
+        try await orchestrator.remember(content)
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func memoryOrchestratorFlushDoesNotFailOnEnrichmentDrainTimeout() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+        config.enableAsyncEnrichment = true
+        config.enrichmentFlushDrainTimeout = .milliseconds(1)
+        config.enrichmentStopTimeout = .milliseconds(1)
+        config.chunking = .tokenCount(targetTokens: 500_000, overlapTokens: 0)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        let content = (0..<350_000).map { "flush\($0)" }.joined(separator: " ")
+        try await orchestrator.remember(content)
+
+        try await orchestrator.flush()
+        try await orchestrator.close()
     }
 }

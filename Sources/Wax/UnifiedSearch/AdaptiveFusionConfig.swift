@@ -1,10 +1,10 @@
 /// Fusion weights for hybrid search.
-public struct FusionWeights: Sendable, Equatable {
-    public var bm25: Float
-    public var vector: Float
-    public var temporal: Float
+package struct FusionWeights: Sendable, Equatable {
+    package var bm25: Float
+    package var vector: Float
+    package var temporal: Float
 
-    public init(bm25: Float, vector: Float, temporal: Float = 0) {
+    package init(bm25: Float, vector: Float, temporal: Float = 0) {
         self.bm25 = bm25
         self.vector = vector
         self.temporal = temporal
@@ -12,12 +12,12 @@ public struct FusionWeights: Sendable, Equatable {
 }
 
 /// Query-adaptive fusion configuration.
-public struct AdaptiveFusionConfig: Sendable {
+package struct AdaptiveFusionConfig: Sendable {
     private var weightsByType: [QueryType: FusionWeights]
 
-    public static let `default` = AdaptiveFusionConfig()
+    package static let `default` = AdaptiveFusionConfig()
 
-    public init() {
+    package init() {
         self.weightsByType = [
             .factual: FusionWeights(bm25: 0.7, vector: 0.3, temporal: 0.0),
             .semantic: FusionWeights(bm25: 0.3, vector: 0.7, temporal: 0.0),
@@ -26,11 +26,11 @@ public struct AdaptiveFusionConfig: Sendable {
         ]
     }
 
-    public init(weights: [QueryType: FusionWeights]) {
+    package init(weights: [QueryType: FusionWeights]) {
         self.weightsByType = weights
     }
 
-    public func weights(for queryType: QueryType) -> FusionWeights {
+    package func weights(for queryType: QueryType) -> FusionWeights {
         weightsByType[queryType] ?? FusionWeights(bm25: 0.5, vector: 0.5)
     }
 }

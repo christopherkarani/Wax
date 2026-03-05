@@ -199,7 +199,7 @@ extension WaxCLI.MCP {
                 allowNonZeroExit: true
             )
             if removeStatus != EXIT_SUCCESS && removeStatus != 1 {
-                fputs("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)\n", stderr)
+                writeStderr("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)")
             }
 
             let addStatus = try ProcessRunner.run(

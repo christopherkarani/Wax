@@ -1,13 +1,13 @@
 import Foundation
 
 /// Query constraints for structured memory traversal.
-public struct StructuredMemoryQueryContext: Sendable, Equatable {
-    public var asOf: StructuredMemoryAsOf
-    public var maxResults: Int
-    public var maxTraversalEdges: Int
-    public var maxDepth: Int
+package struct StructuredMemoryQueryContext: Sendable, Equatable {
+    package var asOf: StructuredMemoryAsOf
+    package var maxResults: Int
+    package var maxTraversalEdges: Int
+    package var maxDepth: Int
 
-    public init(
+    package init(
         asOf: StructuredMemoryAsOf,
         maxResults: Int,
         maxTraversalEdges: Int,

@@ -94,6 +94,7 @@ enum WaxMCPTools {
         let args = ToolArguments(arguments)
         let content = try args.requiredString("content", maxBytes: maxContentBytes)
         let sessionID = try parseOptionalSessionID(args)
+        let commit = try args.optionalBool("commit") ?? true
         var metadata = try coerceMetadata(try args.optionalObject("metadata"))
         if let sessionID {
             metadata["session_id"] = sessionID.uuidString
@@ -101,6 +102,9 @@ enum WaxMCPTools {
 
         let before = await memory.runtimeStats()
         try await memory.remember(content, metadata: metadata)
+        if commit {
+            try await memory.flush()
+        }
         let after = await memory.runtimeStats()
 
         let totalBefore = before.frameCount + before.pendingFrames
@@ -112,6 +116,11 @@ enum WaxMCPTools {
             "framesAdded": value(from: added),
             "frameCount": value(from: after.frameCount),
             "pendingFrames": value(from: after.pendingFrames),
+            "committed": value(from: commit),
+            "commit": [
+                "requested": value(from: commit),
+                "performed": value(from: commit),
+            ],
         ])
     }
 
@@ -125,19 +134,35 @@ enum WaxMCPTools {
         guard limit > 0, limit <= maxRecallLimit else {
             throw ToolValidationError.invalid("limit must be between 1 and \(maxRecallLimit)")
         }
-        let sessionFilter = try parseSessionFrameFilter(args)
+        let parsedFilters = try parseSearchFilters(args)
+        let mode = try parseRecallMode(args)
+        let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
+        if let requestedTopK, !(1...maxTopK).contains(requestedTopK) {
+            throw ToolValidationError.invalid("search_top_k must be between 1 and \(maxTopK)")
+        }
+        let effectiveTopK = requestedTopK ?? limit
+        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = if case .text? = mode {
+            .never
+        } else {
+            .ifAvailable
+        }
 
-        // NOTE: MemoryOrchestrator.recall() does not accept a limit parameter.
-        // The orchestrator returns its own default item count, and we truncate
-        // post-hoc. If the orchestrator's default is lower than the requested
-        // limit, the user may receive fewer items than expected.
-        let context = try await memory.recall(query: query, frameFilter: sessionFilter)
+        let context = try await memory.recall(
+            query: query,
+            embeddingPolicy: embeddingPolicy,
+            frameFilter: parsedFilters.frameFilter,
+            timeRange: parsedFilters.timeRange,
+            topK: effectiveTopK,
+            mode: mode
+        )
         let selected = context.items.prefix(limit)
         var lines: [String] = []
-        lines.reserveCapacity(selected.count + 3)
+        lines.reserveCapacity(selected.count + 5)
         lines.append("Query: \(context.query)")
         lines.append("Total tokens: \(context.totalTokens)")
         lines.append("Results: \(selected.count) of \(limit) requested (orchestrator returned \(context.items.count))")
+        lines.append("Search controls: mode=\(modeSummary(mode)) search_top_k=\(effectiveTopK) limit=\(limit)")
+        lines.append("Applied filters: \(encodeJSON(parsedFilters.summary) ?? "{}")")
 
         for (index, item) in selected.enumerated() {
             lines.append(
@@ -145,7 +170,19 @@ enum WaxMCPTools {
             )
         }
 
-        return textResult(lines.joined(separator: "\n"))
+        return textWithJSONResourceResult(
+            text: lines.joined(separator: "\n"),
+            payload: [
+                "query": value(from: context.query),
+                "total_tokens": value(from: context.totalTokens),
+                "result_count": value(from: selected.count),
+                "limit": value(from: limit),
+                "search_top_k": value(from: effectiveTopK),
+                "mode": value(from: modeSummary(mode)),
+                "applied_filters": parsedFilters.summary,
+            ],
+            uri: "wax://tool/recall-summary"
+        )
     }
 
     private static func search(
@@ -154,24 +191,21 @@ enum WaxMCPTools {
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let query = try args.requiredString("query", maxBytes: maxContentBytes)
-        let modeRaw = try args.optionalString("mode")?.lowercased() ?? "hybrid"
+        let modeRaw = try args.optionalString("mode")?.lowercased()
+        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
         let topK = try args.optionalInt("topK") ?? 10
         guard topK > 0, topK <= maxTopK else {
             throw ToolValidationError.invalid("topK must be between 1 and \(maxTopK)")
         }
-        let sessionFilter = try parseSessionFrameFilter(args)
+        let parsedFilters = try parseSearchFilters(args)
 
-        let mode: MemoryOrchestrator.DirectSearchMode
-        switch modeRaw {
-        case "text":
-            mode = .text
-        case "hybrid":
-            mode = .hybrid(alpha: 0.5)
-        default:
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
-
-        let hits = try await memory.search(query: query, mode: mode, topK: topK, frameFilter: sessionFilter)
+        let hits = try await memory.search(
+            query: query,
+            mode: mode,
+            topK: topK,
+            frameFilter: parsedFilters.frameFilter,
+            timeRange: parsedFilters.timeRange
+        )
         let lines = hits.enumerated().map { index, hit in
             let row: Value = [
                 "rank": value(from: index + 1),
@@ -182,7 +216,18 @@ enum WaxMCPTools {
             ]
             return encodeJSON(row) ?? "{}"
         }
-        return textResult(lines.joined(separator: "\n"))
+        return textWithJSONResourceResult(
+            text: lines.joined(separator: "\n"),
+            payload: [
+                "query": value(from: query),
+                "topK": value(from: topK),
+                "mode": value(from: modeSummary(mode)),
+                "applied_filters": parsedFilters.summary,
+                "time_range_requested": value(from: parsedFilters.timeRange != nil),
+                "time_range_applied": value(from: parsedFilters.timeRange != nil),
+            ],
+            uri: "wax://tool/search-summary"
+        )
     }
 
     private static func flush(memory: MemoryOrchestrator) async throws -> CallTool.Result {
@@ -272,17 +317,24 @@ enum WaxMCPTools {
         let sessionID = try parseOptionalSessionID(args)
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
+        let commit = try args.optionalBool("commit") ?? true
 
         let frameId = try await memory.rememberHandoff(
             content: content,
             project: project,
             pendingTasks: pendingTasks,
-            sessionId: sessionID
+            sessionId: sessionID,
+            commit: commit
         )
 
         return jsonResult([
             "status": "ok",
             "frame_id": value(from: frameId),
+            "committed": value(from: commit),
+            "commit": [
+                "requested": value(from: commit),
+                "performed": value(from: commit),
+            ],
         ])
     }
 
@@ -457,11 +509,204 @@ enum WaxMCPTools {
         ])
     }
 
-    private static func parseSessionFrameFilter(_ args: ToolArguments) throws -> FrameFilter? {
-        guard let sessionID = try parseOptionalSessionID(args) else { return nil }
-        return FrameFilter(
-            metadataFilter: MetadataFilter(requiredEntries: ["session_id": sessionID.uuidString])
+    private struct ParsedSearchFilters {
+        let frameFilter: FrameFilter?
+        let timeRange: SearchTimeRange?
+        let summary: Value
+    }
+
+    private static func parseSearchFilters(_ args: ToolArguments) throws -> ParsedSearchFilters {
+        let sessionID = try parseOptionalSessionID(args)
+        let filters = try args.optionalObject("filters")
+
+        var metadataEntries: [String: String] = [:]
+        var labels: [String] = []
+        var includeSurrogates = false
+        var timeAfterMs: Int64?
+        var timeBeforeMs: Int64?
+
+        if let filters {
+            let allowedKeys: Set<String> = [
+                "metadata",
+                "labels",
+                "time_after_ms",
+                "time_before_ms",
+                "include_surrogates",
+            ]
+            let unknownKeys = Set(filters.keys).subtracting(allowedKeys)
+            if let unknown = unknownKeys.sorted().first {
+                throw ToolValidationError.invalid("filters.\(unknown) is not supported")
+            }
+
+            if let metadataRaw = filters["metadata"] {
+                guard let metadataObject = metadataRaw.objectValue else {
+                    throw ToolValidationError.invalid("filters.metadata must be an object")
+                }
+                if let exact = metadataObject["exact"] {
+                    guard metadataObject.count == 1 else {
+                        throw ToolValidationError.invalid(
+                            "filters.metadata may be either a flat object or {\"exact\": {...}}"
+                        )
+                    }
+                    guard let exactObject = exact.objectValue else {
+                        throw ToolValidationError.invalid("filters.metadata.exact must be an object")
+                    }
+                    metadataEntries = try coerceMetadata(exactObject)
+                } else {
+                    metadataEntries = try coerceMetadata(metadataObject)
+                }
+            }
+
+            if let labelsRaw = filters["labels"] {
+                guard case .array(let rawLabels) = labelsRaw else {
+                    throw ToolValidationError.invalid("filters.labels must be an array of strings")
+                }
+                labels = try rawLabels.map { element in
+                    guard case .string(let raw) = element else {
+                        throw ToolValidationError.invalid("filters.labels must contain only strings")
+                    }
+                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else {
+                        throw ToolValidationError.invalid("filters.labels must not contain empty values")
+                    }
+                    return trimmed
+                }
+            }
+
+            if let includeSurrogatesRaw = filters["include_surrogates"] {
+                guard let parsed = try valueAsBool(includeSurrogatesRaw, field: "filters.include_surrogates") else {
+                    throw ToolValidationError.invalid("filters.include_surrogates must be a boolean")
+                }
+                includeSurrogates = parsed
+            }
+
+            if let timeAfterRaw = filters["time_after_ms"] {
+                guard let parsed = try valueAsInt64(timeAfterRaw, field: "filters.time_after_ms") else {
+                    throw ToolValidationError.invalid("filters.time_after_ms must be an integer")
+                }
+                timeAfterMs = parsed
+            }
+
+            if let timeBeforeRaw = filters["time_before_ms"] {
+                guard let parsed = try valueAsInt64(timeBeforeRaw, field: "filters.time_before_ms") else {
+                    throw ToolValidationError.invalid("filters.time_before_ms must be an integer")
+                }
+                timeBeforeMs = parsed
+            }
+        }
+
+        if let sessionID {
+            if let existing = metadataEntries["session_id"], existing != sessionID.uuidString {
+                throw ToolValidationError.invalid("filters.metadata.session_id conflicts with session_id")
+            }
+            metadataEntries["session_id"] = sessionID.uuidString
+        }
+
+        if let timeAfterMs, let timeBeforeMs, timeAfterMs >= timeBeforeMs {
+            throw ToolValidationError.invalid("filters.time_after_ms must be less than filters.time_before_ms")
+        }
+
+        let metadataFilter: MetadataFilter? =
+            (!metadataEntries.isEmpty || !labels.isEmpty)
+            ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
+            : nil
+
+        let frameFilter: FrameFilter? =
+            (metadataFilter != nil || includeSurrogates)
+            ? FrameFilter(includeSurrogates: includeSurrogates, metadataFilter: metadataFilter)
+            : nil
+
+        let timeRange: SearchTimeRange? =
+            (timeAfterMs != nil || timeBeforeMs != nil)
+            ? SearchTimeRange(after: timeAfterMs, before: timeBeforeMs)
+            : nil
+
+        let metadataSummary = Value.object(metadataEntries.reduce(into: [String: Value]()) { partial, entry in
+            partial[entry.key] = value(from: entry.value)
+        })
+        let summary: Value = [
+            "session_id": sessionID.map { value(from: $0.uuidString) } ?? .null,
+            "metadata": metadataSummary,
+            "labels": .array(labels.map(value(from:))),
+            "time_after_ms": timeAfterMs.map(value(from:)) ?? .null,
+            "time_before_ms": timeBeforeMs.map(value(from:)) ?? .null,
+            "include_surrogates": value(from: includeSurrogates),
+            "has_frame_filter": value(from: frameFilter != nil),
+            "has_time_range": value(from: timeRange != nil),
+        ]
+
+        return ParsedSearchFilters(
+            frameFilter: frameFilter,
+            timeRange: timeRange,
+            summary: summary
         )
+    }
+
+    private static func parseRecallMode(_ args: ToolArguments) throws -> MemoryOrchestrator.DirectSearchMode? {
+        let modeRaw = try args.optionalString("mode")?.lowercased()
+        let alpha = try args.optionalDouble("alpha")
+
+        guard let modeRaw else {
+            if alpha != nil {
+                return .hybrid(alpha: try validatedHybridAlpha(alpha))
+            }
+            return nil
+        }
+
+        switch modeRaw {
+        case "text":
+            if alpha != nil {
+                throw ToolValidationError.invalid("alpha is only valid when mode=hybrid")
+            }
+            return .text
+        case "hybrid":
+            return .hybrid(alpha: try validatedHybridAlpha(alpha))
+        default:
+            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
+        }
+    }
+
+    private static func parseSearchMode(
+        modeRaw: String?,
+        alpha: Double?
+    ) throws -> MemoryOrchestrator.DirectSearchMode {
+        let resolvedMode = modeRaw ?? "hybrid"
+        switch resolvedMode {
+        case "text":
+            if alpha != nil {
+                throw ToolValidationError.invalid("alpha is only valid when mode=hybrid")
+            }
+            return .text
+        case "hybrid":
+            return .hybrid(alpha: try validatedHybridAlpha(alpha))
+        default:
+            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
+        }
+    }
+
+    private static func validatedHybridAlpha(_ alpha: Double?) throws -> Float {
+        let resolved = alpha ?? 0.5
+        guard resolved.isFinite else {
+            throw ToolValidationError.invalid("alpha must be a finite number in [0,1]")
+        }
+        guard (0...1).contains(resolved) else {
+            throw ToolValidationError.invalid("alpha must be between 0 and 1")
+        }
+        return Float(resolved)
+    }
+
+    private static func modeSummary(_ mode: MemoryOrchestrator.DirectSearchMode?) -> String {
+        guard let mode else { return "default" }
+        return modeSummary(mode)
+    }
+
+    private static func modeSummary(_ mode: MemoryOrchestrator.DirectSearchMode) -> String {
+        switch mode {
+        case .text:
+            return "text"
+        case .hybrid(let alpha):
+            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
+        }
     }
 
     private static func parseOptionalSessionID(_ args: ToolArguments) throws -> UUID? {
@@ -706,6 +951,23 @@ enum WaxMCPTools {
         CallTool.Result(content: [.text(text)], isError: false)
     }
 
+    private static func textWithJSONResourceResult(
+        text: String,
+        payload: Value,
+        uri: String = "wax://tool/result"
+    ) -> CallTool.Result {
+        let json = encodeJSON(payload) ?? "{}"
+        return CallTool.Result(
+            content: [
+                .text(text),
+                .resource(
+                    resource: .text(json, uri: uri, mimeType: "application/json")
+                ),
+            ],
+            isError: false
+        )
+    }
+
     private static func jsonResult(_ value: Value) -> CallTool.Result {
         let json = encodeJSON(value) ?? "{}"
         return CallTool.Result(
@@ -818,6 +1080,24 @@ enum WaxMCPTools {
         }
     }
 
+    private static func valueAsBool(_ value: Value, field: String) throws -> Bool? {
+        switch value {
+        case .bool(let bool):
+            return bool
+        case .string(let raw):
+            switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                throw ToolValidationError.invalid("\(field) must be a boolean")
+            }
+        default:
+            return nil
+        }
+    }
+
 }
 
 private struct ToolArguments {
@@ -877,6 +1157,26 @@ private struct ToolArguments {
             return parsed
         default:
             throw ToolValidationError.invalid("\(key) must be an integer")
+        }
+    }
+
+    func optionalDouble(_ key: String) throws -> Double? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .double(let double):
+            guard double.isFinite else {
+                throw ToolValidationError.invalid("\(key) must be a finite number")
+            }
+            return double
+        case .int(let int):
+            return Double(int)
+        case .string(let string):
+            guard let parsed = Double(string), parsed.isFinite else {
+                throw ToolValidationError.invalid("\(key) must be a finite number, got '\(string)'")
+            }
+            return parsed
+        default:
+            throw ToolValidationError.invalid("\(key) must be a number")
         }
     }
 

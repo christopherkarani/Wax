@@ -1,8 +1,8 @@
 import Foundation
 
-public struct WaxHeaderPage: Equatable, Sendable {
-    public static let size: Int = Int(Constants.headerPageSize)
-    public static let magic: Data = Constants.magic
+package struct WaxHeaderPage: Equatable, Sendable {
+    package static let size: Int = Int(Constants.headerPageSize)
+    package static let magic: Data = Constants.magic
 
     private static let headerChecksumOffset: Int = 104
     private static let headerChecksumCount: Int = 32
@@ -19,16 +19,16 @@ public struct WaxHeaderPage: Equatable, Sendable {
     private static let replaySnapshotValidFlag: UInt64 = 0x1
     private static let replaySnapshotMagic = Data([0x57, 0x41, 0x4C, 0x53, 0x4E, 0x41, 0x50, 0x31]) // WALSNAP1
 
-    public struct WALReplaySnapshot: Equatable, Sendable {
-        public var fileGeneration: UInt64
-        public var walCommittedSeq: UInt64
-        public var footerOffset: UInt64
-        public var walWritePos: UInt64
-        public var walCheckpointPos: UInt64
-        public var walPendingBytes: UInt64
-        public var walLastSequence: UInt64
+    package struct WALReplaySnapshot: Equatable, Sendable {
+        package var fileGeneration: UInt64
+        package var walCommittedSeq: UInt64
+        package var footerOffset: UInt64
+        package var walWritePos: UInt64
+        package var walCheckpointPos: UInt64
+        package var walPendingBytes: UInt64
+        package var walLastSequence: UInt64
 
-        public init(
+        package init(
             fileGeneration: UInt64,
             walCommittedSeq: UInt64,
             footerOffset: UInt64,
@@ -47,26 +47,26 @@ public struct WaxHeaderPage: Equatable, Sendable {
         }
     }
 
-    public var formatVersion: UInt16
-    public var specMajor: UInt8
-    public var specMinor: UInt8
+    package var formatVersion: UInt16
+    package var specMajor: UInt8
+    package var specMinor: UInt8
 
-    public var headerPageGeneration: UInt64
-    public var fileGeneration: UInt64
+    package var headerPageGeneration: UInt64
+    package var fileGeneration: UInt64
 
-    public var footerOffset: UInt64
-    public var walOffset: UInt64
-    public var walSize: UInt64
-    public var walWritePos: UInt64
-    public var walCheckpointPos: UInt64
-    public var walCommittedSeq: UInt64
+    package var footerOffset: UInt64
+    package var walOffset: UInt64
+    package var walSize: UInt64
+    package var walWritePos: UInt64
+    package var walCheckpointPos: UInt64
+    package var walCommittedSeq: UInt64
 
-    public var walReplaySnapshot: WALReplaySnapshot?
+    package var walReplaySnapshot: WALReplaySnapshot?
 
-    public var tocChecksum: Data
-    public var headerChecksum: Data
+    package var tocChecksum: Data
+    package var headerChecksum: Data
 
-    public init(
+    package init(
         formatVersion: UInt16 = Constants.specVersion,
         specMajor: UInt8 = Constants.specMajor,
         specMinor: UInt8 = Constants.specMinor,
@@ -98,7 +98,7 @@ public struct WaxHeaderPage: Equatable, Sendable {
         self.headerChecksum = headerChecksum
     }
 
-    public func encodeWithChecksum() throws -> Data {
+    package func encodeWithChecksum() throws -> Data {
         let unpackedMajor = UInt8(truncatingIfNeeded: formatVersion >> 8)
         let unpackedMinor = UInt8(truncatingIfNeeded: formatVersion & 0x00FF)
         guard specMajor == unpackedMajor && specMinor == unpackedMinor else {
@@ -161,7 +161,7 @@ public struct WaxHeaderPage: Equatable, Sendable {
         return page
     }
 
-    public static func decodeWithChecksumValidation(from data: Data) throws -> WaxHeaderPage {
+    package static func decodeWithChecksumValidation(from data: Data) throws -> WaxHeaderPage {
         let page = try decodeUnchecked(from: data)
 
         let stored = data.subdata(in: Self.headerChecksumOffset..<(Self.headerChecksumOffset + Self.headerChecksumCount))
@@ -175,7 +175,7 @@ public struct WaxHeaderPage: Equatable, Sendable {
         return validated
     }
 
-    public static func decodeUnchecked(from data: Data) throws -> WaxHeaderPage {
+    package static func decodeUnchecked(from data: Data) throws -> WaxHeaderPage {
         guard data.count == Self.size else {
             throw WaxError.invalidHeader(reason: "header page must be \(Self.size) bytes (got \(data.count))")
         }
@@ -306,7 +306,7 @@ public struct WaxHeaderPage: Equatable, Sendable {
     ///
     /// Selection:
     /// - If both are valid, choose the one with higher `header_page_generation` (tie-breaker: page A).
-    public static func selectValidPage(pageA: Data, pageB: Data) -> (page: WaxHeaderPage, pageIndex: Int)? {
+    package static func selectValidPage(pageA: Data, pageB: Data) -> (page: WaxHeaderPage, pageIndex: Int)? {
         let a = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageA)
         let b = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageB)
 

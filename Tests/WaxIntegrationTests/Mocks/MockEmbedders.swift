@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 import Wax
 
@@ -72,6 +71,9 @@ struct WrongDimensionTextEmbedder: EmbeddingProvider, Sendable {
     }
 }
 
+#if canImport(CoreGraphics)
+import CoreGraphics
+
 struct DeterministicMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -97,6 +99,7 @@ struct DeterministicMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
         return [0, 1, 0, 0]
     }
 }
+#endif
 
 // MARK: - Hanging Mocks
 

@@ -1,6 +1,6 @@
 import Foundation
 
-public extension MemoryOrchestrator {
+package extension MemoryOrchestrator {
     /// Extracts UTF-8 text from a local file and ingests it as document + chunks.
     func remember(fileAt url: URL, metadata: [String: String] = [:]) async throws {
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {

@@ -2,7 +2,7 @@ import Foundation
 @preconcurrency import GRDB
 import WaxCore
 
-public actor FTS5SearchEngine {
+package actor FTS5SearchEngine {
     private static let maxResults = 10_000
     /// Upper bound on queued writes before forcing a flush to SQLite.
     ///
@@ -38,7 +38,7 @@ public actor FTS5SearchEngine {
         try? FileManager.default.removeItem(at: url)
     }
 
-    public static func inMemory() throws -> FTS5SearchEngine {
+    package static func inMemory() throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
         let queue = try DatabaseQueue(configuration: config)
@@ -48,7 +48,7 @@ public actor FTS5SearchEngine {
         return FTS5SearchEngine(dbQueue: queue, io: io, backingStoreDirectory: nil, docCount: 0, dirty: false)
     }
 
-    public static func deserialize(from data: Data) throws -> FTS5SearchEngine {
+    package static func deserialize(from data: Data) throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
         let storeDirectory = FileManager.default.temporaryDirectory
@@ -77,19 +77,19 @@ public actor FTS5SearchEngine {
         )
     }
 
-    public static func load(from wax: Wax) async throws -> FTS5SearchEngine {
+    package static func load(from wax: Wax) async throws -> FTS5SearchEngine {
         if let bytes = try await wax.readCommittedLexIndexBytes() {
             return try FTS5SearchEngine.deserialize(from: bytes)
         }
         return try FTS5SearchEngine.inMemory()
     }
 
-    public func count() async throws -> Int {
+    package func count() async throws -> Int {
         try await flushPendingOpsIfNeeded()
         return Int(docCount)
     }
 
-    public func index(frameId: UInt64, text: String) async throws {
+    package func index(frameId: UInt64, text: String) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             try await remove(frameId: frameId)
@@ -102,7 +102,7 @@ public actor FTS5SearchEngine {
 
     /// Batch index multiple frames in a single database transaction.
     /// This amortizes transaction overhead and actor hops across all documents.
-    public func indexBatch(frameIds: [UInt64], texts: [String]) async throws {
+    package func indexBatch(frameIds: [UInt64], texts: [String]) async throws {
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == texts.count else {
             throw WaxError.encodingError(reason: "indexBatch: frameIds.count != texts.count")
@@ -120,13 +120,13 @@ public actor FTS5SearchEngine {
         try await flushPendingOpsIfThresholdExceeded()
     }
 
-    public func remove(frameId: UInt64) async throws {
+    package func remove(frameId: UInt64) async throws {
         let frameIdValue = try Self.toInt64(frameId)
         enqueuePendingOp(frameIdValue: frameIdValue, op: .delete)
         try await flushPendingOpsIfThresholdExceeded()
     }
 
-    public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
+    package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
         try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -161,7 +161,7 @@ public actor FTS5SearchEngine {
 
     // MARK: - Structured Memory
 
-    public func upsertEntity(
+    package func upsertEntity(
         key: EntityKey,
         kind: String,
         aliases: [String],
@@ -182,7 +182,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
+    package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         try await flushPendingOpsIfNeeded()
         let normalized = StructuredMemoryCanonicalizer.normalizedAlias(alias)
         guard !normalized.isEmpty else { return [] }
@@ -212,7 +212,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func assertFact(
+    package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
@@ -262,13 +262,13 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func retractFact(factId: FactRowID, atMs: Int64) async throws {
+    package func retractFact(factId: FactRowID, atMs: Int64) async throws {
         enqueueStructuredOp(.retractFact(factId: factId, atMs: atMs))
         try await flushPendingStructuredOpsIfThresholdExceeded()
         try await flushPendingStructuredOpsIfNeeded()
     }
 
-    public func facts(
+    package func facts(
         about subject: EntityKey?,
         predicate: PredicateKey?,
         asOf: StructuredMemoryAsOf,
@@ -397,7 +397,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func evidenceFrameIds(
+    package func evidenceFrameIds(
         subjectKeys: [EntityKey],
         asOf: StructuredMemoryAsOf,
         maxFacts: Int,
@@ -485,7 +485,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func serialize(compact: Bool = false) async throws -> Data {
+    package func serialize(compact: Bool = false) async throws -> Data {
         try await flushPendingOpsIfNeeded()
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -502,7 +502,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
+    package func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         let blob = try await serialize(compact: compact)

@@ -3,12 +3,12 @@ import Foundation
 import FoundationModels
 
 @available(macOS 26.0, iOS 26.0, *)
-public actor WaxFoundationModelSession {
+package actor WaxFoundationModelSession {
     private let memory: MemoryOrchestrator
     private let session: LanguageModelSession
-    public let configuration: FoundationModelsMemorySessionConfig
+    package let configuration: FoundationModelsMemorySessionConfig
 
-    public init(
+    package init(
         memory: MemoryOrchestrator,
         model: SystemLanguageModel = .default,
         instructions: String? = nil,
@@ -25,7 +25,7 @@ public actor WaxFoundationModelSession {
     }
 
     /// Builds the memory-augmented prompt sent to Foundation Models.
-    public func preparePrompt(for userPrompt: String) async throws -> String {
+    package func preparePrompt(for userPrompt: String) async throws -> String {
         let context = try await memory.recall(
             query: userPrompt,
             embeddingPolicy: configuration.queryEmbeddingPolicy
@@ -34,7 +34,7 @@ public actor WaxFoundationModelSession {
     }
 
     /// Generates a text response and optionally persists both sides of the turn.
-    public func respond(to userPrompt: String) async throws -> String {
+    package func respond(to userPrompt: String) async throws -> String {
         let prompt = try await preparePrompt(for: userPrompt)
         let response = try await session.respond(to: prompt).content
         try await persistTurn(userPrompt: userPrompt, assistantResponse: response)
@@ -45,7 +45,7 @@ public actor WaxFoundationModelSession {
     ///
     /// When assistant persistence is enabled, structured values are persisted using
     /// `String(describing:)` by default.
-    public func respond<T: Generable>(to userPrompt: String, generating type: T.Type) async throws -> T {
+    package func respond<T: Generable>(to userPrompt: String, generating type: T.Type) async throws -> T {
         let prompt = try await preparePrompt(for: userPrompt)
         let response = try await session.respond(to: prompt, generating: type).content
         try await persistTurn(userPrompt: userPrompt, assistantResponse: String(describing: response))
@@ -53,17 +53,17 @@ public actor WaxFoundationModelSession {
     }
 
     /// Persists content directly into the underlying Wax store.
-    public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
+    package func remember(_ content: String, metadata: [String: String] = [:]) async throws {
         try await memory.remember(content, metadata: metadata)
     }
 
     /// Recalls memory context directly from the underlying Wax store.
-    public func recall(query: String) async throws -> RAGContext {
+    package func recall(query: String) async throws -> RAGContext {
         try await memory.recall(query: query)
     }
 
     /// Closes the underlying memory orchestrator.
-    public func close() async throws {
+    package func close() async throws {
         try await memory.close()
     }
 
@@ -85,7 +85,7 @@ public actor WaxFoundationModelSession {
 }
 
 @available(macOS 26.0, iOS 26.0, *)
-public extension MemoryOrchestrator {
+package extension MemoryOrchestrator {
     /// Creates a memory-backed Foundation Models session from an existing orchestrator.
     func foundationModelsSession(
         model: SystemLanguageModel = .default,

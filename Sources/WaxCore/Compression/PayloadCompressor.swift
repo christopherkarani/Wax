@@ -7,8 +7,8 @@ import WaxCoreCompressionC
 #endif
 
 /// Payload compression backend selected per platform.
-public enum PayloadCompressor {
-    public static func compress(_ data: Data, algorithm: CompressionKind) throws -> Data {
+package enum PayloadCompressor {
+    package static func compress(_ data: Data, algorithm: CompressionKind) throws -> Data {
         guard algorithm != .none else { return data }
         if data.isEmpty { return Data() }
 
@@ -21,7 +21,7 @@ public enum PayloadCompressor {
         #endif
     }
 
-    public static func decompress(
+    package static func decompress(
         _ data: Data,
         algorithm: CompressionKind,
         uncompressedLength: Int

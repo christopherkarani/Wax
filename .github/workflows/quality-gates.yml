@@ -18,4 +18,4 @@ jobs:
 
       - name: Run Production Gate
         run: |
-          bash scripts/quality/production_readiness_gates.sh ${{ matrix.mode }}
+          bash Resources/scripts/quality/production_readiness_gates.sh ${{ matrix.mode }}

@@ -1,18 +1,18 @@
 import Foundation
 
-public struct LiveSetRewriteSchedule: Sendable, Equatable {
-    public var enabled: Bool
-    public var checkEveryFlushes: Int
-    public var minDeadPayloadBytes: UInt64
-    public var minDeadPayloadFraction: Double
-    public var minimumCompactionGainBytes: UInt64
-    public var minimumIdleMs: Int
-    public var minIntervalMs: Int
-    public var verifyDeep: Bool
-    public var destinationDirectory: URL?
-    public var keepLatestCandidates: Int
+package struct LiveSetRewriteSchedule: Sendable, Equatable {
+    package var enabled: Bool
+    package var checkEveryFlushes: Int
+    package var minDeadPayloadBytes: UInt64
+    package var minDeadPayloadFraction: Double
+    package var minimumCompactionGainBytes: UInt64
+    package var minimumIdleMs: Int
+    package var minIntervalMs: Int
+    package var verifyDeep: Bool
+    package var destinationDirectory: URL?
+    package var keepLatestCandidates: Int
 
-    public init(
+    package init(
         enabled: Bool = false,
         checkEveryFlushes: Int = 32,
         minDeadPayloadBytes: UInt64 = 64 * 1024 * 1024,
@@ -36,5 +36,5 @@ public struct LiveSetRewriteSchedule: Sendable, Equatable {
         self.keepLatestCandidates = keepLatestCandidates
     }
 
-    public static let disabled = LiveSetRewriteSchedule()
+    package static let disabled = LiveSetRewriteSchedule()
 }

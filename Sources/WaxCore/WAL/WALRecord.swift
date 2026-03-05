@@ -1,35 +1,35 @@
 import Foundation
 
-public struct WALFlags: OptionSet, Sendable, Equatable {
-    public let rawValue: UInt32
+package struct WALFlags: OptionSet, Sendable, Equatable {
+    package let rawValue: UInt32
 
-    public init(rawValue: UInt32) {
+    package init(rawValue: UInt32) {
         self.rawValue = rawValue
     }
 
-    public static let isPadding = WALFlags(rawValue: 1 << 0)
+    package static let isPadding = WALFlags(rawValue: 1 << 0)
 }
 
-public struct WALRecordHeader: Equatable, Sendable {
-    public static let size: Int = 48
+package struct WALRecordHeader: Equatable, Sendable {
+    package static let size: Int = 48
 
-    public var sequence: UInt64
-    public var length: UInt32
-    public var flags: WALFlags
-    public var checksum: Data
+    package var sequence: UInt64
+    package var length: UInt32
+    package var flags: WALFlags
+    package var checksum: Data
 
-    public init(sequence: UInt64, length: UInt32, flags: WALFlags, checksum: Data) {
+    package init(sequence: UInt64, length: UInt32, flags: WALFlags, checksum: Data) {
         self.sequence = sequence
         self.length = length
         self.flags = flags
         self.checksum = checksum
     }
 
-    public var isSentinel: Bool {
+    package var isSentinel: Bool {
         sequence == 0 && length == 0 && flags.rawValue == 0 && checksum.allSatisfy { $0 == 0 }
     }
 
-    public func encode() throws -> Data {
+    package func encode() throws -> Data {
         guard checksum.count == WALRecord.checksumSize else {
             throw WaxError.encodingError(reason: "checksum must be \(WALRecord.checksumSize) bytes (got \(checksum.count))")
         }
@@ -52,7 +52,7 @@ public struct WALRecordHeader: Equatable, Sendable {
         return data
     }
 
-    public static func decode(from data: Data, offset: UInt64) throws -> WALRecordHeader {
+    package static func decode(from data: Data, offset: UInt64) throws -> WALRecordHeader {
         guard data.count == Self.size else {
             throw WaxError.walCorruption(offset: offset, reason: "header must be \(Self.size) bytes (got \(data.count))")
         }
@@ -82,16 +82,16 @@ public struct WALRecordHeader: Equatable, Sendable {
     }
 }
 
-public enum WALRecord: Equatable, Sendable {
-    public static let headerSize: Int = WALRecordHeader.size
-    public static let checksumSize: Int = 32
-    public static let paddingChecksum: Data = SHA256Checksum.digest(Data())
+package enum WALRecord: Equatable, Sendable {
+    package static let headerSize: Int = WALRecordHeader.size
+    package static let checksumSize: Int = 32
+    package static let paddingChecksum: Data = SHA256Checksum.digest(Data())
 
     case data(sequence: UInt64, flags: WALFlags, payload: Data)
     case padding(sequence: UInt64, skipBytes: UInt32)
     case sentinel
 
-    public var sequence: UInt64? {
+    package var sequence: UInt64? {
         switch self {
         case .data(let sequence, _, _):
             return sequence
@@ -102,7 +102,7 @@ public enum WALRecord: Equatable, Sendable {
         }
     }
 
-    public func encode() throws -> Data {
+    package func encode() throws -> Data {
         switch self {
         case .sentinel:
             return Data(repeating: 0, count: Self.headerSize)
@@ -131,7 +131,7 @@ public enum WALRecord: Equatable, Sendable {
         }
     }
 
-    public static func decodeRecord(from data: Data, walSize: UInt64, offset: UInt64 = 0) throws -> WALRecord {
+    package static func decodeRecord(from data: Data, walSize: UInt64, offset: UInt64 = 0) throws -> WALRecord {
         guard data.count >= Self.headerSize else {
             throw WaxError.walCorruption(offset: offset, reason: "record buffer shorter than header")
         }

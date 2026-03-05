@@ -1,24 +1,24 @@
 import Foundation
 
-public struct TemporalResolution: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable {
+package struct TemporalResolution: Sendable, Equatable {
+    package enum Kind: Sendable, Equatable {
         case date
         case dateTime
         case range
     }
 
-    public var kind: Kind
-    public var start: Date
-    public var end: Date?
+    package var kind: Kind
+    package var start: Date
+    package var end: Date?
 
-    public init(kind: Kind, start: Date, end: Date? = nil) {
+    package init(kind: Kind, start: Date, end: Date? = nil) {
         self.kind = kind
         self.start = start
         self.end = end
     }
 
-    /// Convert to half-open millisecond range expected by `TimeRange`.
-    public var asTimeRange: (afterMs: Int64, beforeMs: Int64) {
+    /// Convert to half-package millisecond range expected by `SearchTimeRange`.
+    package var asTimeRange: (afterMs: Int64, beforeMs: Int64) {
         let afterMs = Int64(start.timeIntervalSince1970 * 1000)
         let beforeDate: Date
         if let end {

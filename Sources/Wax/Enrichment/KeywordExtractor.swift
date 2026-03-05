@@ -1,7 +1,7 @@
 import Foundation
 
 /// Deterministic TF-based keyword extraction with simple stopword filtering.
-public enum KeywordExtractor {
+package enum KeywordExtractor {
     private static let stopwords: Set<String> = [
         "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
         "can", "could", "did", "do", "does", "for", "from", "had", "has", "have",
@@ -12,7 +12,7 @@ public enum KeywordExtractor {
         "where", "which", "who", "will", "with", "would", "you", "your"
     ]
 
-    public static func extract(from text: String, topK: Int = 12) -> [String] {
+    package static func extract(from text: String, topK: Int = 12) -> [String] {
         guard topK > 0 else { return [] }
         guard !text.isEmpty else { return [] }
 
