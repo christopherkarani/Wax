@@ -364,6 +364,30 @@ struct BenchmarkStats {
 }
 
 struct BenchmarkRegressionGuard {
+    static func assertTailBudget(
+        label: String,
+        stats: BenchmarkStats,
+        p95Budget: Double,
+        p99Budget: Double,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertLessThanOrEqual(
+            stats.p95,
+            p95Budget,
+            "p95 budget exceeded for \(label): current=\(stats.p95.formatSeconds)s budget=\(p95Budget.formatSeconds)s",
+            file: file,
+            line: line
+        )
+        XCTAssertLessThanOrEqual(
+            stats.p99,
+            p99Budget,
+            "p99 budget exceeded for \(label): current=\(stats.p99.formatSeconds)s budget=\(p99Budget.formatSeconds)s",
+            file: file,
+            line: line
+        )
+    }
+
     static func assertP95NoRegression(
         label: String,
         stats: BenchmarkStats,

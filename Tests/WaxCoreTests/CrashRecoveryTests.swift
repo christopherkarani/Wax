@@ -172,6 +172,35 @@ import Testing
     }
 }
 
+@Test func cleanReopenUsesReplaySnapshotFastPath() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(
+            at: url,
+            walSize: 2 * 1024 * 1024,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+        _ = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    do {
+        let reopened = try await Wax.open(
+            at: url,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == 1)
+        #expect(try await reopened.frameContent(frameId: 0) == Data("seed".utf8))
+        let walStats = await reopened.walStats()
+        #expect(walStats.replaySnapshotHitCount == 1)
+        try await reopened.close()
+    }
+}
+
 @Test func openFallsBackToReplayScanWhenPersistedCursorNoLongerTerminal() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }

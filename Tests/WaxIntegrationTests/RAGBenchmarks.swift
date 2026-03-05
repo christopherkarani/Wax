@@ -642,10 +642,16 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             _ = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
 
             // Measure open/close only: footer scan + WAL scan + engine cache hydration.
-            _ = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
+            let stats = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
                 let wax = try await Wax.open(at: url)
                 try await wax.close()
             }
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "wax_open_close_cold",
+                stats: stats,
+                p95Budget: 1.15,
+                p99Budget: 1.20
+            )
         }
     }
 
@@ -789,8 +795,16 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 commitSamples.append(commitSeconds)
             }
 
-            BenchmarkStats(samples: stageSamples).report(label: "stage_for_commit_incremental_batch64")
-            BenchmarkStats(samples: commitSamples).report(label: "wax_commit_incremental_batch64")
+            let stageStats = BenchmarkStats(samples: stageSamples)
+            stageStats.report(label: "stage_for_commit_incremental_batch64")
+            let commitStats = BenchmarkStats(samples: commitSamples)
+            commitStats.report(label: "wax_commit_incremental_batch64")
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "wax_commit_incremental_batch64",
+                stats: commitStats,
+                p95Budget: 0.14,
+                p99Budget: 0.17
+            )
 
             await session.close()
             try await wax.close()

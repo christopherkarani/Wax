@@ -589,9 +589,29 @@ package actor Wax {
             } else {
                 snapshotFooter = nil
             }
+            var fileSize = try file.size()
 
             let footerSlice: FooterSlice
-            let scannedFooter = try FooterScanner.findLastValidFooter(in: url)
+            let shouldScanForNewerFooter: Bool = {
+                guard let fastFooter else { return true }
+                guard selectedHeaderFileGeneration == fastFooter.footer.generation else { return true }
+                guard header.tocChecksum == fastFooter.footer.tocHash else { return true }
+                let expectedEnd = fastFooter.footerOffset + Constants.footerSize
+                guard fileSize == expectedEnd else { return true }
+                if let snapshotFooter {
+                    if snapshotFooter.footer.generation > fastFooter.footer.generation {
+                        return true
+                    }
+                    if snapshotFooter.footer.generation == fastFooter.footer.generation,
+                       snapshotFooter.footerOffset > fastFooter.footerOffset {
+                        return true
+                    }
+                }
+                return false
+            }()
+            let scannedFooter = shouldScanForNewerFooter
+                ? try FooterScanner.findLastValidFooter(in: url)
+                : nil
             var footerCandidates: [FooterSlice] = []
             footerCandidates.reserveCapacity(3)
             if let fastFooter {
@@ -698,7 +718,6 @@ package actor Wax {
                 if end > requiredEnd { requiredEnd = end }
             }
 
-            var fileSize = try file.size()
             guard requiredEnd <= fileSize else {
                 throw WaxError.invalidToc(reason: "pending WAL references bytes beyond file size")
             }
