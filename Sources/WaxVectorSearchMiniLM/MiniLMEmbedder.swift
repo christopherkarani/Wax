@@ -89,9 +89,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     public func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
-            throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
-        }
+        let vector = try await model.encodeThrowing(sentence: text)
         if vector.count != dimensions {
             throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
@@ -129,9 +127,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     
     /// Core ML batch prediction path (true batching).
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = model.encode(batch: texts, reuseBuffers: &batchInputBuffers) else {
-            throw WaxError.io("MiniLMAll batch embedding failed.")
-        }
+        let vectors = try model.encodeThrowing(batch: texts, reuseBuffers: &batchInputBuffers)
         guard vectors.count == texts.count else {
             throw WaxError.io("MiniLMAll batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
         }
