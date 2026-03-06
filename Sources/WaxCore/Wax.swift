@@ -1682,6 +1682,44 @@ package actor Wax {
         }
     }
 
+    package func activeFrameIDs(
+        matchingMetadataKey key: String,
+        value: String
+    ) async -> [UInt64] {
+        await withReadLock {
+            var frameIDs: [UInt64] = []
+            frameIDs.reserveCapacity(toc.frames.count)
+
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+                guard frame.metadata?.entries[key] == value else { continue }
+                frameIDs.append(frame.id)
+            }
+
+            return frameIDs
+        }
+    }
+
+    package func committedPayloadLivenessBytes() async -> (
+        totalPayloadBytes: UInt64,
+        deadPayloadBytes: UInt64
+    ) {
+        await withReadLock {
+            var totalPayloadBytes: UInt64 = 0
+            var deadPayloadBytes: UInt64 = 0
+
+            for frame in toc.frames where frame.payloadLength > 0 {
+                totalPayloadBytes &+= frame.payloadLength
+                let isLive = frame.status == .active && frame.supersededBy == nil
+                if !isLive {
+                    deadPayloadBytes &+= frame.payloadLength
+                }
+            }
+
+            return (totalPayloadBytes, deadPayloadBytes)
+        }
+    }
+
     package func rememberDedupProbe(
         contentHash: String,
         metadata: [String: String],

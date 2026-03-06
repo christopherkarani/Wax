@@ -385,17 +385,9 @@ package extension MemoryOrchestrator {
         }
 
         let sourceURL = (await wax.fileURL()).standardizedFileURL
-        let frames = await wax.frameMetas()
-
-        var totalPayloadBytes: UInt64 = 0
-        var deadPayloadBytes: UInt64 = 0
-        for frame in frames where frame.payloadLength > 0 {
-            totalPayloadBytes &+= frame.payloadLength
-            let isLive = frame.status == .active && frame.supersededBy == nil
-            if !isLive {
-                deadPayloadBytes &+= frame.payloadLength
-            }
-        }
+        let payloadBytes = await wax.committedPayloadLivenessBytes()
+        let totalPayloadBytes = payloadBytes.totalPayloadBytes
+        let deadPayloadBytes = payloadBytes.deadPayloadBytes
         let deadPayloadFraction = totalPayloadBytes == 0
             ? 0
             : Double(deadPayloadBytes) / Double(totalPayloadBytes)

@@ -753,13 +753,12 @@ package actor MemoryOrchestrator {
             )
         }
 
-        let metas = await wax.frameMetas()
-        let matching = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil else { return false }
-            return meta.metadata?.entries["session_id"] == sessionId.uuidString
-        }
+        let frameIds = await wax.activeFrameIDs(
+            matchingMetadataKey: "session_id",
+            value: sessionId.uuidString
+        )
 
-        guard !matching.isEmpty else {
+        guard !frameIds.isEmpty else {
             return SessionRuntimeStats(
                 active: true,
                 sessionId: sessionId,
@@ -770,7 +769,6 @@ package actor MemoryOrchestrator {
             )
         }
 
-        let frameIds = matching.map(\.id)
         let contentMap = try await wax.frameContents(frameIds: frameIds)
         let texts: [String] = frameIds.compactMap { frameId in
             guard let data = contentMap[frameId] else { return nil }
@@ -783,7 +781,7 @@ package actor MemoryOrchestrator {
         return SessionRuntimeStats(
             active: true,
             sessionId: sessionId,
-            sessionFrameCount: matching.count,
+            sessionFrameCount: frameIds.count,
             sessionTokenEstimate: totalTokens,
             pendingFramesStoreWide: pendingFramesStoreWide,
             countsIncludePending: false

@@ -151,6 +151,9 @@ func scheduledLiveSetRewriteCreatesValidatedCandidateWhenThresholdMet() async th
 
         #expect(report.outcome == .rewriteSucceeded)
         #expect(report.rollbackPerformed == false)
+        #expect(report.deadPayloadBytes == 393_216)
+        #expect(report.totalPayloadBytes == 393_234)
+        #expect(report.deadPayloadFraction == Double(393_216) / Double(393_234))
         #expect(report.candidateURL != nil)
         if let candidateURL = report.candidateURL {
             #expect(FileManager.default.fileExists(atPath: candidateURL.path))
@@ -284,6 +287,9 @@ func scheduledLiveSetRewritePromotesValidatedCandidateOnCloseAndShrinksSource() 
         let reopened = try await MemoryOrchestrator(at: sourceURL, config: config)
         let report = try await reopened.runScheduledLiveSetMaintenanceNow()
         #expect(report.outcome == .belowThreshold)
+        #expect(report.deadPayloadBytes == 0)
+        #expect(report.totalPayloadBytes == 18)
+        #expect(report.deadPayloadFraction == 0)
         try await reopened.close()
 
         let reopenedWax = try await Wax.open(at: sourceURL)
