@@ -135,13 +135,21 @@ public struct BinaryDecoder {
 
     // MARK: - Generic decode support
 
+    @inline(__always)
+    private func castDecodedValue<T>(_ value: some Any, to type: T.Type) throws -> T {
+        guard let typed = value as? T else {
+            throw WaxError.decodingError(reason: "type mismatch while decoding \(String(reflecting: type))")
+        }
+        return typed
+    }
+
     public mutating func decode<T>(_ type: T.Type) throws -> T {
-        if type == UInt8.self { return try decode(UInt8.self) as! T }
-        if type == UInt16.self { return try decode(UInt16.self) as! T }
-        if type == UInt32.self { return try decode(UInt32.self) as! T }
-        if type == UInt64.self { return try decode(UInt64.self) as! T }
-        if type == Int64.self { return try decode(Int64.self) as! T }
-        if type == String.self { return try decode(String.self) as! T }
+        if type == UInt8.self { return try castDecodedValue(decode(UInt8.self), to: type) }
+        if type == UInt16.self { return try castDecodedValue(decode(UInt16.self), to: type) }
+        if type == UInt32.self { return try castDecodedValue(decode(UInt32.self), to: type) }
+        if type == UInt64.self { return try castDecodedValue(decode(UInt64.self), to: type) }
+        if type == Int64.self { return try castDecodedValue(decode(Int64.self), to: type) }
+        if type == String.self { return try castDecodedValue(decode(String.self), to: type) }
 
         throw WaxError.decodingError(reason: "unsupported decode type: \(String(reflecting: type))")
     }

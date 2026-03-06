@@ -470,7 +470,8 @@ public actor MetalVectorEngine {
 
             var currentVectorCount = UInt32(vectorCount)
             withUnsafeBytes(of: &currentVectorCount) { raw in
-                transientCountBuffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+                guard let baseAddress = raw.baseAddress else { return }
+                transientCountBuffer.contents().copyMemory(from: baseAddress, byteCount: raw.count)
             }
 
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -502,7 +503,7 @@ public actor MetalVectorEngine {
             }
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
 
-            let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline
+            let activePipeline = (useSIMD8 ? computePipelineSIMD8 : nil) ?? computePipeline
             computeEncoder.setComputePipelineState(activePipeline)
 
             let maxThreads = activePipeline.maxTotalThreadsPerThreadgroup
