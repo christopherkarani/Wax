@@ -43,20 +43,28 @@ Wax is a Swift-native persistence engine designed for the next generation of AI 
 
 Wax is tuned for the M-series architecture, providing near-instantaneous recall even with large-scale local indices.
 
+Latest measured snapshot (2026-03-06):
+
+- **Cold open p95:** `9.2 ms`
+- **Warm hybrid with previews p95 / p99:** `6.1 ms / 6.5 ms`
+- **MemoryOrchestrator ingest:** `0.445 s avg`
+- **WAL large_hybrid_10k commit p95 / p99:** `97.40 ms / 100.30 ms`
+- Full benchmark report: [docs/benchmarks/2026-03-06-performance-results.md](docs/benchmarks/2026-03-06-performance-results.md)
+
 <div align="center">
 <svg width="600" height="120" viewBox="0 0 600 120" xmlns="http://www.w3.org/2000/svg">
   <!-- Recall Latency (ms) -->
   <text x="0" y="20" font-family="system-ui" font-size="12" fill="#8E8E93">Recall Latency (ms) - Lower is better</text>
   <rect x="0" y="30" width="450" height="20" rx="4" fill="#E5E5EA" />
-  <rect x="0" y="30" width="45" height="20" rx="4" fill="#007AFF" />
-  <text x="50" y="44" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">12ms (Wax)</text>
+  <rect x="0" y="30" width="24" height="20" rx="4" fill="#007AFF" />
+  <text x="30" y="44" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">6.1ms p95 (Wax)</text>
   <text x="455" y="44" font-family="system-ui" font-size="12" fill="#8E8E93">vs 150ms+ (Cloud RAG)</text>
 
-  <!-- Thruput (ops/s) -->
-  <text x="0" y="80" font-family="system-ui" font-size="12" fill="#8E8E93">Write Throughput (ops/s) - Higher is better</text>
+  <!-- Throughput (docs/s) -->
+  <text x="0" y="80" font-family="system-ui" font-size="12" fill="#8E8E93">Ingest Throughput (docs/s) - Higher is better</text>
   <rect x="0" y="90" width="450" height="20" rx="4" fill="#E5E5EA" />
-  <rect x="0" y="90" width="380" height="20" rx="4" fill="#34C759" />
-  <text x="385" y="104" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">2.4k (Wax)</text>
+  <rect x="0" y="90" width="160" height="20" rx="4" fill="#34C759" />
+  <text x="165" y="104" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">85.9 docs/s (Wax)</text>
 </svg>
 <p><sub>Benchmark conducted on Apple M3 Max. Results vary by hardware.</sub></p>
 </div>
