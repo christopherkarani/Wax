@@ -34,8 +34,8 @@ final class BatchEmbeddingBenchmark: XCTestCase {
 
     private func makeBenchmarkEmbedder() async throws -> MiniLMEmbedder {
         let configuration = MLModelConfiguration()
-        // XCTest/CLI contexts are prone to CoreML/ANE compile stalls; keep this benchmark bounded and deterministic.
-        configuration.computeUnits = .cpuOnly
+        // XCTest contexts need a bounded path, but pure CPU under-represents batch throughput.
+        configuration.computeUnits = .cpuAndGPU
         configuration.allowLowPrecisionAccumulationOnGPU = true
         return try await MiniLMEmbedder.make(
             config: .init(batchSize: 256, modelConfiguration: configuration),
@@ -110,9 +110,13 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         print("   Speedup:             \(String(format: "%.2f", speedup))x faster")
         print("   Improvement:         \(String(format: "%.1f", improvement))%")
         print("   ─────────────────────────────────────\n")
-        
-        // Assert that batch is at least somewhat faster (allows for variance)
-        XCTAssertGreaterThan(speedup, 0.8, "Batch embedding should not be significantly slower than sequential")
+
+        let speedupLabel = String(format: "%.2f", speedup)
+        XCTAssertGreaterThanOrEqual(
+            speedup,
+            1.25,
+            "Batch embedding throughput regression at batchSize=32: current=\(speedupLabel)x target=1.25x"
+        )
     }
     
     /// Test batch embedding with varying batch sizes
