@@ -220,10 +220,10 @@ public actor FTS5SearchEngine {
         system: StructuredTimeRange,
         evidence: [StructuredEvidence]
     ) async throws -> FactRowID {
-        guard valid.toMs == nil || valid.toMs! > valid.fromMs else {
+        if let validToMs = valid.toMs, validToMs <= valid.fromMs {
             throw WaxError.encodingError(reason: "valid_to_ms must be greater than valid_from_ms")
         }
-        guard system.toMs == nil || system.toMs! > system.fromMs else {
+        if let systemToMs = system.toMs, systemToMs <= system.fromMs {
             throw WaxError.encodingError(reason: "system_to_ms must be greater than system_from_ms")
         }
 
