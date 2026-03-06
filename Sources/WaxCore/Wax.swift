@@ -1734,6 +1734,36 @@ package actor Wax {
         }
     }
 
+    package func latestCommittedActiveHandoffMeta(project: String? = nil) async -> FrameMeta? {
+        await withReadLock {
+            var latest: FrameMeta?
+
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+
+                let hasHandoffKind = frame.kind == "handoff" || frame.metadata?.entries["kind"] == "handoff"
+                let hasHandoffLabel = frame.labels.contains("handoff")
+                guard hasHandoffKind || hasHandoffLabel else { continue }
+
+                if let project, !project.isEmpty, frame.metadata?.entries["project"] != project {
+                    continue
+                }
+
+                guard let current = latest else {
+                    latest = frame
+                    continue
+                }
+
+                if frame.timestamp > current.timestamp
+                    || (frame.timestamp == current.timestamp && frame.id > current.id) {
+                    latest = frame
+                }
+            }
+
+            return latest
+        }
+    }
+
     package func committedPayloadLivenessBytes() async -> (
         totalPayloadBytes: UInt64,
         deadPayloadBytes: UInt64

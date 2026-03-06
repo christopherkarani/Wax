@@ -877,24 +877,7 @@ package actor MemoryOrchestrator {
     }
 
     package func latestHandoff(project: String? = nil) async throws -> HandoffRecord? {
-        let metas = await wax.frameMetas()
-        let filtered = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil else { return false }
-            let hasHandoffKind = meta.kind == "handoff" || meta.metadata?.entries["kind"] == "handoff"
-            let hasHandoffLabel = meta.labels.contains("handoff")
-            guard hasHandoffKind || hasHandoffLabel else { return false }
-            if let project, !project.isEmpty {
-                return meta.metadata?.entries["project"] == project
-            }
-            return true
-        }
-
-        guard let latest = filtered.max(by: { lhs, rhs in
-            if lhs.timestamp == rhs.timestamp {
-                return lhs.id < rhs.id
-            }
-            return lhs.timestamp < rhs.timestamp
-        }) else {
+        guard let latest = await wax.latestCommittedActiveHandoffMeta(project: project) else {
             return nil
         }
 
