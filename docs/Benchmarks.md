@@ -5,7 +5,7 @@
 > Highlights:
 > - Cold open p95: **9.2 ms**
 > - Warm hybrid with previews p95 / p99: **6.1 ms / 6.5 ms**
-> - MemoryOrchestrator ingest: **0.445 s avg**
+> - MemoryOrchestrator ingest: **0.339 s avg**
 > - WAL `large_hybrid_10k` commit p95 / p99: **34.25 ms / 40.03 ms**
 >
 > This page retains the earlier 2026-03-03 snapshot for historical comparison.

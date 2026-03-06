@@ -7,7 +7,7 @@
 **Performance sweep commit:** `3ff3246e91f4a232c6587611445db6a1e612a59a`  
 **MiniLM benchmark-fix commit:** `bd65ceaef8cfd3e3d6a68c0d51c69caa71d060de`
 
-This report now includes a follow-up WAL optimization pass from the same machine after the original sweep. The updated WAL numbers below supersede the earlier March 6 WAL figures from `3ff3246e`.
+This report now includes follow-up WAL and `MemoryOrchestrator` ingest optimization passes from the same machine after the original sweep. The updated figures below supersede the earlier March 6 WAL and `MemoryOrchestrator` ingest numbers from `3ff3246e`.
 
 ## Top Stats
 
@@ -17,7 +17,7 @@ This report now includes a follow-up WAL optimization pass from the same machine
 | **Cold open p99** | **9.2 ms** | **99.7% lower, 323.9x faster** |
 | **Warm hybrid with previews p95** | **6.1 ms** | **86.1% lower, 7.20x faster** |
 | **Warm hybrid with previews p99** | **6.5 ms** | **88.7% lower, 8.83x faster** |
-| **MemoryOrchestrator ingest avg** | **0.445 s** | **77.8% lower, 4.50x faster** |
+| **MemoryOrchestrator ingest avg** | **0.339 s** | **83.1% lower, 5.90x faster** |
 | **Ingest text-only avg** | **0.082 s** | **74.4% lower, 3.90x faster** |
 | **WAL `large_hybrid_10k` commit p95** | **34.25 ms** | **82.6% lower, 5.75x faster** |
 | **WAL `large_hybrid_10k` commit p99** | **40.03 ms** | **83.7% lower, 6.12x faster** |
@@ -29,11 +29,14 @@ This report covers:
 1. The required March 6 benchmark sweep captured on commit `3ff3246e`
 2. The MiniLM `BatchEmbeddingBenchmark` hang fix captured on commit `bd65ceae`
 3. A follow-up WAL frame-section TOC encoding cache optimization validated on the same machine
-4. Deltas against the prompt baseline supplied at the start of the optimization pass
+4. A follow-up `MemoryOrchestrator` ingest fast-path and memory-binding caching pass validated on the same machine
+5. Deltas against the prompt baseline supplied at the start of the optimization pass
 
 The required sweep was mostly green on `3ff3246e`. One warm-hybrid run failed its tight p99 guard at `7.5 ms`; the immediate rerun on the same commit passed at `6.5 ms`. The report uses the passing rerun as the final measured value and retains the failed run in the evidence section.
 
 The follow-up WAL pass replaced full frame-section re-encoding on append-only commits with a cached frame-section payload that is invalidated when committed frames are mutated (for example, delete/supersede). The first attempted follow-up optimization, append-only TOC range validation, was rejected because it worsened p95/p99 tails and was reverted before the validated cache pass landed.
+
+The follow-up `MemoryOrchestrator` pass targeted the remaining single-document ingest overhead in the standard benchmark corpus. `MemoryOrchestrator.remember(...)` now uses a dedicated single-chunk ingest path instead of the general batch-preparation scaffolding, and it ensures the store memory binding once per orchestrator instead of re-checking it on every document ingest. The main benchmark lane moved from `0.445 s avg` to `0.339 s avg`. Sampled latency runs remained noisy because an external `ANECompilerService` process was active on the runner during collection, so the sampled `p50`/`p95`/`p99` values are retained as evidence only and are not used as the final target metric for this slice.
 
 ## Summary Table
 
@@ -42,7 +45,7 @@ The follow-up WAL pass replaced full frame-section re-encoding on append-only co
 | Ingest text-only avg | `0.320 s` | `0.082 s` | `74.4%` lower | `3.90x` |
 | Ingest hybrid avg | `0.500 s` | `0.228 s` | `54.4%` lower | `2.19x` |
 | Ingest hybrid batched avg | `0.241 s` | `0.216 s` | `10.4%` lower | `1.12x` |
-| MemoryOrchestrator ingest avg | `2.001 s` | `0.445 s` | `77.8%` lower | `4.50x` |
+| MemoryOrchestrator ingest avg | `2.001 s` | `0.339 s` | `83.1%` lower | `5.90x` |
 | Unified hybrid search avg | `0.009 s` | `0.006 s` | `33.3%` lower | `1.50x` |
 | Warm hybrid with previews p95 | `43.9 ms` | `6.1 ms` | `86.1%` lower | `7.20x` |
 | Warm hybrid with previews p99 | `57.4 ms` | `6.5 ms` | `88.7%` lower | `8.83x` |
@@ -61,7 +64,7 @@ The follow-up WAL pass replaced full frame-section re-encoding on append-only co
 | Ingest text-only | `0.082 s avg` | `0.919%` RSD |
 | Ingest hybrid | `0.228 s avg` | `0.292%` RSD |
 | Ingest hybrid batched | `0.216 s avg` | `0.796%` RSD |
-| MemoryOrchestrator ingest | `0.445 s avg` | `1.765%` RSD |
+| MemoryOrchestrator ingest | `0.339 s avg` | `0.562%` RSD |
 | Unified hybrid search | `0.006 s avg` | `3.023%` RSD |
 
 ### Warm Tail Latency
@@ -205,6 +208,23 @@ Key files:
 /tmp/wax-perf-20260306-065553-wal-tail/wal_compaction_post_frame_cache.log
 ```
 
+### Follow-up MemoryOrchestrator Ingest Logs
+
+```text
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_ingest.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/red_single_chunk_batch_path_rerun.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/red_single_chunk_memory_binding.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_binding_and_single_chunk_correctness_serialized.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_ingest_post_single_chunk.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_ingest_post_single_chunk_rerun.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_ingest_post_binding_cache.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/memory_orchestrator_ingest_samples_post_binding_cache.log
+/tmp/wax-perf-20260306-102254-memory-orchestrator/processes_before_rerun.txt
+/tmp/wax-perf-20260306-102254-memory-orchestrator/top_before_rerun.txt
+/tmp/wax-perf-20260306-102254-memory-orchestrator/processes_after_cooldown.txt
+/tmp/wax-perf-20260306-102254-memory-orchestrator/top_after_cooldown.txt
+```
+
 ### MiniLM Fix Logs
 
 ```text
@@ -218,3 +238,4 @@ Key files:
 2. The warm-hybrid lane remains very fast, but its p99 guard is still sensitive to runner noise. The report keeps both the failing `7.5 ms` run and the passing `6.5 ms` rerun in evidence.
 3. The WAL frame-section cache pass materially outperformed both the original March 6 WAL sweep and the rejected append-only validation experiment on the same runner.
 4. The main March 6 optimization sweep is represented by commit `3ff3246e`; the MiniLM benchmark fix landed afterward on `bd65ceae`.
+5. The `MemoryOrchestrator` sampled latency lane was noisy during the follow-up pass because an external `ANECompilerService` process was active; the stable result for this slice is the main benchmark run at `0.339 s avg` with `0.562%` RSD.

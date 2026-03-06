@@ -126,6 +126,7 @@ package actor MemoryOrchestrator {
     private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
+    private var hasEnsuredMemoryBinding = false
     private var queryEmbeddingCircuitOpen = false
 
     private var currentSessionId: UUID?
@@ -180,11 +181,12 @@ package actor MemoryOrchestrator {
         // vector index exists. This lets the simple `MemoryOrchestrator(at:)` initializer
         // work out-of-the-box with text-only search instead of throwing an error.
         var resolvedConfig = config
+        let existingMemoryBinding = await wax.memoryBinding()
         if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             resolvedConfig.enableVectorSearch = false
         }
         if let identity = embedder?.identity,
-           let binding = await wax.memoryBinding(),
+           let binding = existingMemoryBinding,
            !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
             let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
             try? await wax.close()
@@ -199,6 +201,7 @@ package actor MemoryOrchestrator {
             enabled: embedder != nil
         )
         self.enrichmentPipeline = resolvedConfig.enableAsyncEnrichment ? EnrichmentPipeline() : nil
+        self.hasEnsuredMemoryBinding = existingMemoryBinding != nil
 
         let preference: VectorEnginePreference = resolvedConfig.useMetalVectorSearch ? .metalPreferred : .cpuOnly
         let sessionConfig = WaxSession.Config(
@@ -306,6 +309,78 @@ package actor MemoryOrchestrator {
             throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
         }
 
+        if chunkCount == 1 {
+            let chunk = chunks[0]
+            let chunkData = Data(chunk.utf8)
+
+            var chunkMeta = Metadata(metadata)
+            if let effectiveSessionId {
+                chunkMeta.entries["session_id"] = effectiveSessionId
+            }
+
+            let chunkEmbedding: [Float]?
+            if useVectorSearch {
+                guard let localEmbedder else {
+                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                }
+                chunkEmbedding = try await Self.embedOne(
+                    chunk,
+                    embedder: localEmbedder,
+                    cache: cache
+                )
+            } else {
+                chunkEmbedding = nil
+            }
+
+            let docId = try await localSession.put(
+                contentData,
+                options: FrameMetaSubset(
+                    role: .document,
+                    metadata: docMeta
+                )
+            )
+
+            var option = FrameMetaSubset()
+            option.role = .chunk
+            option.parentId = docId
+            option.chunkIndex = 0
+            option.chunkCount = 1
+            option.searchText = chunk
+            option.metadata = chunkMeta
+
+            if let chunkEmbedding {
+                guard let localEmbedder else {
+                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                }
+                let frameId = try await localSession.put(
+                    chunkData,
+                    embedding: chunkEmbedding,
+                    identity: localEmbedder.identity,
+                    options: option
+                )
+                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
+                if config.enableTextSearch {
+                    try await localSession.indexText(frameId: frameId, text: chunk)
+                }
+                if let enrichmentPipeline {
+                    try await enrichmentPipeline.enqueue(
+                        EnrichmentTask(frameId: frameId, text: chunk)
+                    )
+                }
+            } else {
+                let frameId = try await localSession.put(chunkData, options: option)
+                if config.enableTextSearch {
+                    try await localSession.indexText(frameId: frameId, text: chunk)
+                }
+                if let enrichmentPipeline {
+                    try await enrichmentPipeline.enqueue(
+                        EnrichmentTask(frameId: frameId, text: chunk)
+                    )
+                }
+            }
+            return
+        }
+
         struct IngestBatchResult {
             let index: Int
             let embeddings: [[Float]]?
@@ -384,8 +459,6 @@ package actor MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
-        var didSetMemoryBinding = false
-
         let docId = try await localSession.put(
             contentData,
             options: FrameMetaSubset(
@@ -425,10 +498,7 @@ package actor MemoryOrchestrator {
                     identity: localEmbedder?.identity,
                     options: options
                 )
-                if !didSetMemoryBinding, let binding = bindingForEmbedderIdentity {
-                    try await wax.setMemoryBindingIfMissing(binding)
-                    didSetMemoryBinding = true
-                }
+                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
 
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
@@ -469,6 +539,15 @@ package actor MemoryOrchestrator {
         )
     }
 
+    private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
+        guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
+#if DEBUG
+        Self._recordMemoryBindingEnsureCallForTests()
+#endif
+        try await wax.setMemoryBindingIfMissing(binding)
+        hasEnsuredMemoryBinding = true
+    }
+
     /// Optimized batch embedding preparation with cache-aware batching.
     /// Minimizes cache lookups and maximizes batch embedding efficiency.
     private static func prepareEmbeddingsBatchOptimized(
@@ -476,6 +555,9 @@ package actor MemoryOrchestrator {
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [[Float]] {
+#if DEBUG
+        Self._recordBatchPreparationPathCallForTests()
+#endif
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
         let cacheKeys: [UInt64]? = if cache != nil {
             chunks.map {
@@ -1206,6 +1288,52 @@ package actor MemoryOrchestrator {
     }
 
     #if DEBUG
+    private final class DebugCounterState: @unchecked Sendable {
+        let lock = NSLock()
+        var batchPreparationPathCallCount: Int = 0
+        var memoryBindingEnsureCallCount: Int = 0
+    }
+
+    private static let debugCounterState = DebugCounterState()
+
+    package static func _recordBatchPreparationPathCallForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.batchPreparationPathCallCount += 1
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _resetBatchPreparationPathCallCountForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.batchPreparationPathCallCount = 0
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _batchPreparationPathCallCountForTests() -> Int {
+        debugCounterState.lock.lock()
+        let count = debugCounterState.batchPreparationPathCallCount
+        debugCounterState.lock.unlock()
+        return count
+    }
+
+    package static func _recordMemoryBindingEnsureCallForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.memoryBindingEnsureCallCount += 1
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _resetMemoryBindingEnsureCallCountForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.memoryBindingEnsureCallCount = 0
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _memoryBindingEnsureCallCountForTests() -> Int {
+        debugCounterState.lock.lock()
+        let count = debugCounterState.memoryBindingEnsureCallCount
+        debugCounterState.lock.unlock()
+        return count
+    }
+
     package static func _writeEmbeddingsForTesting(_ embeddings: [[Float]], to url: URL) throws {
         try writeEmbeddings(embeddings, to: url)
     }
