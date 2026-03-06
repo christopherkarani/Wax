@@ -58,9 +58,9 @@ package extension MemoryOrchestrator {
 
         let surrogateMaxTokens = max(0, options.surrogateMaxTokens)
 
-        let frames = await wax.frameMetas()
+        let frames = await wax.activeSurrogateSourceFrames()
         var report = MaintenanceReport()
-        report.scannedFrames = frames.count
+        report.scannedFrames = Int((await wax.stats()).frameCount)
 
         for frame in frames {
             if let deadline, ContinuousClock.now >= deadline {
@@ -72,23 +72,14 @@ package extension MemoryOrchestrator {
                 break
             }
 
-            guard frame.status == .active else { continue }
-            guard frame.supersededBy == nil else { continue }
-            guard frame.role == .chunk else { continue }
-            guard frame.kind != SurrogateDefaults.kind else { continue }
-            guard let sourceText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !sourceText.isEmpty else {
-                continue
-            }
-
             report.eligibleFrames += 1
 
-            let sourceHash = SHA256Checksum.digest(Data(sourceText.utf8)).hexString
+            let sourceHash = SHA256Checksum.digest(Data(frame.searchText.utf8)).hexString
             let existingId = await wax.surrogateFrameId(sourceFrameId: frame.id)
             let isUpToDate: Bool = if let existingId {
                 (try? await isUpToDateSurrogate(
                     surrogateFrameId: existingId,
-                    sourceFrame: frame,
+                    sourceFrameId: frame.id,
                     sourceHash: sourceHash,
                     algorithmID: generator.algorithmID,
                     surrogateMaxTokens: surrogateMaxTokens
@@ -109,7 +100,7 @@ package extension MemoryOrchestrator {
             if options.enableHierarchicalSurrogates,
                let hierarchicalGen = generator as? HierarchicalSurrogateGenerator {
                 let tiers = try await hierarchicalGen.generateTiers(
-                    sourceText: sourceText,
+                    sourceText: frame.searchText,
                     config: options.tierConfig
                 )
                 guard !tiers.full.isEmpty else { continue }
@@ -117,7 +108,10 @@ package extension MemoryOrchestrator {
                 isHierarchical = true
             } else {
                 // Fallback: single-tier legacy format
-                let surrogateText = try await generator.generateSurrogate(sourceText: sourceText, maxTokens: surrogateMaxTokens)
+                let surrogateText = try await generator.generateSurrogate(
+                    sourceText: frame.searchText,
+                    maxTokens: surrogateMaxTokens
+                )
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !surrogateText.isEmpty else { continue }
                 surrogatePayload = Data(surrogateText.utf8)
@@ -525,7 +519,7 @@ package extension MemoryOrchestrator {
 
     private func isUpToDateSurrogate(
         surrogateFrameId: UInt64,
-        sourceFrame: FrameMeta,
+        sourceFrameId: UInt64,
         sourceHash: String,
         algorithmID: String,
         surrogateMaxTokens: Int
@@ -535,7 +529,7 @@ package extension MemoryOrchestrator {
         guard surrogate.status == .active else { return false }
         guard surrogate.supersededBy == nil else { return false }
         guard let entries = surrogate.metadata?.entries else { return false }
-        guard entries[SurrogateMetadataKeys.sourceFrameId] == String(sourceFrame.id) else { return false }
+        guard entries[SurrogateMetadataKeys.sourceFrameId] == String(sourceFrameId) else { return false }
         guard entries[SurrogateMetadataKeys.algorithm] == algorithmID else { return false }
         guard entries[SurrogateMetadataKeys.version] == String(SurrogateDefaults.version) else { return false }
         guard entries[SurrogateMetadataKeys.sourceContentHash] == sourceHash else { return false }

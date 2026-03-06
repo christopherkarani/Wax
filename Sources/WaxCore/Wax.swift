@@ -133,6 +133,16 @@ package struct RememberDedupProbe: Equatable, Sendable {
     }
 }
 
+package struct SurrogateSourceFrame: Equatable, Sendable {
+    package var id: UInt64
+    package var searchText: String
+
+    package init(id: UInt64, searchText: String) {
+        self.id = id
+        self.searchText = searchText
+    }
+}
+
 /// Primary handle for interacting with a `.wax` memory file.
 ///
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
@@ -1717,6 +1727,26 @@ package actor Wax {
             }
 
             return (totalPayloadBytes, deadPayloadBytes)
+        }
+    }
+
+    package func activeSurrogateSourceFrames() async -> [SurrogateSourceFrame] {
+        await withReadLock {
+            var sources: [SurrogateSourceFrame] = []
+            sources.reserveCapacity(toc.frames.count)
+
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+                guard frame.role == .chunk else { continue }
+                guard frame.kind != "surrogate" else { continue }
+                guard let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !searchText.isEmpty else {
+                    continue
+                }
+                sources.append(.init(id: frame.id, searchText: searchText))
+            }
+
+            return sources
         }
     }
 
