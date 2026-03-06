@@ -270,15 +270,12 @@ package actor MemoryOrchestrator {
             docMeta.entries["session_id"] = session.uuidString
         }
         let effectiveSessionId = docMeta.entries["session_id"]
-        if let existingDocId = await findRememberDocument(
+        if let existingProbe = await wax.rememberDedupProbe(
             contentHash: contentHash,
-            metadata: docMeta.entries
-        ),
-           await isCompleteRememberIngest(
-               documentId: existingDocId,
-               expectedChunkCount: chunks.count,
-               embeddingIdentity: localEmbedder?.identity
-           ) {
+            metadata: docMeta.entries,
+            expectedChunkCount: chunks.count,
+            embeddingIdentity: Self.rememberDedupEmbeddingIdentity(from: localEmbedder?.identity)
+        ), existingProbe.isComplete {
             return
         }
 
@@ -460,81 +457,16 @@ package actor MemoryOrchestrator {
         }
     }
 
-    /// Finds the newest active document with the same content hash and exact metadata scope.
-    /// Scope-aware dedup prevents skipping remembers across session/metadata boundaries.
-    private func findRememberDocument(contentHash: String, metadata: [String: String]) async -> UInt64? {
-        let metas = await wax.frameMetas()
-        for meta in metas.reversed() {
-            guard meta.role == .document else { continue }
-            guard meta.status == .active, meta.supersededBy == nil else { continue }
-            guard let entries = meta.metadata?.entries else { continue }
-            guard entries[Self.contentHashMetadataKey] == contentHash else { continue }
-            guard entries == metadata else { continue }
-            return meta.id
-        }
-        return nil
-    }
-
-    /// Returns true only when a previously ingested hashed document looks complete.
-    /// This prevents dedup from masking retries after partial ingest failures.
-    private func isCompleteRememberIngest(
-        documentId: UInt64,
-        expectedChunkCount: Int,
-        embeddingIdentity: EmbeddingIdentity?
-    ) async -> Bool {
-        let metas = await wax.frameMetas()
-        guard metas.contains(where: {
-            $0.id == documentId &&
-                $0.role == .document &&
-                $0.status == .active &&
-                $0.supersededBy == nil
-        }) else {
-            return false
-        }
-
-        guard expectedChunkCount > 0 else { return true }
-
-        let chunkMetas = metas.filter {
-            $0.role == .chunk &&
-                $0.parentId == documentId &&
-                $0.status == .active &&
-                $0.supersededBy == nil
-        }
-
-        guard chunkMetas.count == expectedChunkCount else { return false }
-
-        var indices = Set<Int>()
-        indices.reserveCapacity(expectedChunkCount)
-        for chunk in chunkMetas {
-            guard chunk.chunkCount == UInt32(expectedChunkCount) else { return false }
-            guard let chunkIndex = chunk.chunkIndex else { return false }
-            let index = Int(chunkIndex)
-            guard (0..<expectedChunkCount).contains(index) else { return false }
-            guard indices.insert(index).inserted else { return false }
-        }
-        guard indices.count == expectedChunkCount else { return false }
-
-        if let identity = embeddingIdentity {
-            for chunk in chunkMetas {
-                let entries = chunk.metadata?.entries ?? [:]
-                if let provider = identity.provider, entries["wax.embedding.provider"] != provider {
-                    return false
-                }
-                if let model = identity.model, entries["wax.embedding.model"] != model {
-                    return false
-                }
-                if let dimensions = identity.dimensions,
-                   entries["wax.embedding.dimension"] != String(dimensions) {
-                    return false
-                }
-                if let normalized = identity.normalized,
-                   entries["wax.embedding.normalized"] != String(normalized) {
-                    return false
-                }
-            }
-        }
-
-        return true
+    private static func rememberDedupEmbeddingIdentity(
+        from identity: EmbeddingIdentity?
+    ) -> RememberDedupEmbeddingIdentity? {
+        guard let identity else { return nil }
+        return RememberDedupEmbeddingIdentity(
+            provider: identity.provider,
+            model: identity.model,
+            dimensions: identity.dimensions,
+            normalized: identity.normalized
+        )
     }
 
     /// Optimized batch embedding preparation with cache-aware batching.

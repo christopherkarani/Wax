@@ -112,3 +112,79 @@ import Wax
         try await orchestrator.close()
     }
 }
+
+@Test func rememberDedupProbeFindsCompleteScopedDocument() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = true
+        config.chunking = .tokenCount(targetTokens: 6, overlapTokens: 0)
+
+        let content = "Scoped duplicate content must remain complete to short-circuit remember."
+        let hash = ContentHasher.hash(Data(content.utf8)).hexString
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember(content, metadata: ["scope": "alpha"])
+        try await orchestrator.flush()
+        try await orchestrator.close()
+
+        let wax = try await Wax.open(at: url)
+        let probe = await wax.rememberDedupProbe(
+            contentHash: hash,
+            metadata: [
+                "scope": "alpha",
+                "wax.content.hash": hash,
+            ],
+            expectedChunkCount: chunks.count,
+            embeddingIdentity: nil
+        )
+
+        #expect(probe != nil)
+        #expect(probe?.isComplete == true)
+        try await wax.close()
+    }
+}
+
+@Test func rememberDedupProbeKeepsPartialScopedDocumentRetryable() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let docHash = ContentHasher.hash(Data("partial".utf8)).hexString
+
+        let docId = try await wax.put(
+            Data("partial".utf8),
+            options: FrameMetaSubset(
+                role: .document,
+                metadata: Metadata([
+                    "scope": "beta",
+                    "wax.content.hash": docHash,
+                ])
+            )
+        )
+        _ = try await wax.put(
+            Data("chunk 0".utf8),
+            options: FrameMetaSubset(
+                role: .chunk,
+                parentId: docId,
+                chunkIndex: 0,
+                chunkCount: 2,
+                metadata: Metadata(["scope": "beta"])
+            )
+        )
+        try await wax.commit()
+
+        let probe = await wax.rememberDedupProbe(
+            contentHash: docHash,
+            metadata: [
+                "scope": "beta",
+                "wax.content.hash": docHash,
+            ],
+            expectedChunkCount: 2,
+            embeddingIdentity: nil
+        )
+
+        #expect(probe != nil)
+        #expect(probe?.isComplete == false)
+        try await wax.close()
+    }
+}

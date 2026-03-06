@@ -88,6 +88,51 @@ package struct PendingEmbeddingSnapshot: Equatable, Sendable {
     }
 }
 
+package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
+    package var provider: String?
+    package var model: String?
+    package var dimensions: Int?
+    package var normalized: Bool?
+
+    package init(
+        provider: String? = nil,
+        model: String? = nil,
+        dimensions: Int? = nil,
+        normalized: Bool? = nil
+    ) {
+        self.provider = provider
+        self.model = model
+        self.dimensions = dimensions
+        self.normalized = normalized
+    }
+
+    fileprivate func matches(metadataEntries: [String: String]) -> Bool {
+        if let provider, metadataEntries["wax.embedding.provider"] != provider {
+            return false
+        }
+        if let model, metadataEntries["wax.embedding.model"] != model {
+            return false
+        }
+        if let dimensions, metadataEntries["wax.embedding.dimension"] != String(dimensions) {
+            return false
+        }
+        if let normalized, metadataEntries["wax.embedding.normalized"] != String(normalized) {
+            return false
+        }
+        return true
+    }
+}
+
+package struct RememberDedupProbe: Equatable, Sendable {
+    package var documentId: UInt64
+    package var isComplete: Bool
+
+    package init(documentId: UInt64, isComplete: Bool) {
+        self.documentId = documentId
+        self.isComplete = isComplete
+    }
+}
+
 /// Primary handle for interacting with a `.wax` memory file.
 ///
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
@@ -1634,6 +1679,93 @@ package actor Wax {
     package func frameMetas() async -> [FrameMeta] {
         await withReadLock {
             toc.frames
+        }
+    }
+
+    package func rememberDedupProbe(
+        contentHash: String,
+        metadata: [String: String],
+        expectedChunkCount: Int,
+        embeddingIdentity: RememberDedupEmbeddingIdentity?
+    ) async -> RememberDedupProbe? {
+        await withReadLock {
+            struct ChunkCoverage {
+                var count = 0
+                var indices: Set<Int> = []
+                var indicesAreValid = true
+                var chunkCountsMatch = true
+                var embeddingIdentityMatches = true
+
+                mutating func record(
+                    _ chunk: FrameMeta,
+                    expectedChunkCount: Int,
+                    embeddingIdentity: RememberDedupEmbeddingIdentity?
+                ) {
+                    count += 1
+                    guard expectedChunkCount > 0 else { return }
+
+                    guard let chunkCount = chunk.chunkCount, Int(chunkCount) == expectedChunkCount else {
+                        chunkCountsMatch = false
+                        return
+                    }
+                    guard let chunkIndex = chunk.chunkIndex else {
+                        indicesAreValid = false
+                        return
+                    }
+
+                    let index = Int(chunkIndex)
+                    guard (0..<expectedChunkCount).contains(index) else {
+                        indicesAreValid = false
+                        return
+                    }
+                    guard indices.insert(index).inserted else {
+                        indicesAreValid = false
+                        return
+                    }
+
+                    if let embeddingIdentity,
+                       embeddingIdentity.matches(metadataEntries: chunk.metadata?.entries ?? [:]) == false {
+                        embeddingIdentityMatches = false
+                    }
+                }
+
+                func isComplete(expectedChunkCount: Int) -> Bool {
+                    guard expectedChunkCount > 0 else { return true }
+                    guard count == expectedChunkCount else { return false }
+                    guard indices.count == expectedChunkCount else { return false }
+                    return indicesAreValid && chunkCountsMatch && embeddingIdentityMatches
+                }
+            }
+
+            var chunkCoverageByDocument: [UInt64: ChunkCoverage] = [:]
+
+            for meta in toc.frames.reversed() {
+                guard meta.status == .active, meta.supersededBy == nil else { continue }
+
+                if meta.role == .chunk, let parentId = meta.parentId {
+                    var coverage = chunkCoverageByDocument[parentId] ?? ChunkCoverage()
+                    coverage.record(
+                        meta,
+                        expectedChunkCount: expectedChunkCount,
+                        embeddingIdentity: embeddingIdentity
+                    )
+                    chunkCoverageByDocument[parentId] = coverage
+                    continue
+                }
+
+                guard meta.role == .document else { continue }
+                guard let entries = meta.metadata?.entries else { continue }
+                guard entries["wax.content.hash"] == contentHash else { continue }
+                guard entries == metadata else { continue }
+
+                let coverage = chunkCoverageByDocument[meta.id] ?? ChunkCoverage()
+                return RememberDedupProbe(
+                    documentId: meta.id,
+                    isComplete: coverage.isComplete(expectedChunkCount: expectedChunkCount)
+                )
+            }
+
+            return nil
         }
     }
 
