@@ -1388,15 +1388,13 @@ package actor MemoryOrchestrator {
     }
 
     private func loadPersistedAccessStatsIfNeeded() async throws {
-        let metas = await wax.frameMetas()
-        let candidates = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil, meta.role == .system else { return false }
-            if meta.kind == Self.accessStatsFrameKind {
-                return true
-            }
-            return meta.metadata?.entries[Self.accessStatsMarkerKey] == Self.accessStatsMarkerValue
+        guard let latest = await wax.latestCommittedActiveSystemFrameMeta(
+            kind: Self.accessStatsFrameKind,
+            fallbackMetadataKey: Self.accessStatsMarkerKey,
+            fallbackMetadataValue: Self.accessStatsMarkerValue
+        ) else {
+            return
         }
-        guard let latest = candidates.max(by: { $0.timestamp < $1.timestamp }) else { return }
 
         let payload = try await wax.frameContent(frameId: latest.id)
         do {

@@ -1710,6 +1710,30 @@ package actor Wax {
         }
     }
 
+    package func latestCommittedActiveSystemFrameMeta(
+        kind: String,
+        fallbackMetadataKey: String,
+        fallbackMetadataValue: String
+    ) async -> FrameMeta? {
+        await withReadLock {
+            var latest: FrameMeta?
+
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil, frame.role == .system else {
+                    continue
+                }
+                guard frame.kind == kind
+                    || frame.metadata?.entries[fallbackMetadataKey] == fallbackMetadataValue else {
+                    continue
+                }
+                guard latest?.timestamp ?? .min < frame.timestamp else { continue }
+                latest = frame
+            }
+
+            return latest
+        }
+    }
+
     package func committedPayloadLivenessBytes() async -> (
         totalPayloadBytes: UInt64,
         deadPayloadBytes: UInt64
