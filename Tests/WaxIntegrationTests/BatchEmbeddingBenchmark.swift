@@ -1,7 +1,11 @@
 #if canImport(WaxVectorSearchMiniLM) && canImport(XCTest)
 import Foundation
 import XCTest
+import WaxCore
 import WaxVectorSearchMiniLM
+#if canImport(CoreML)
+@preconcurrency import CoreML
+#endif
 @testable import Wax
 @testable import WaxVectorSearch
 
@@ -12,12 +16,39 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     private var isEnabled: Bool {
         ProcessInfo.processInfo.environment["WAX_BENCHMARK_MINILM"] == "1"
     }
+
+    private var timeoutDuration: Duration {
+        let seconds = max(
+            BenchmarkScale.current().timeout,
+            ProcessInfo.processInfo.environment["WAX_BENCHMARK_MINILM_TIMEOUT_SECS"].flatMap(Double.init) ?? 90
+        )
+        return .milliseconds(Int64((seconds * 1000).rounded()))
+    }
+
+    private func withBenchmarkTimeout<T: Sendable>(
+        _ operation: StaticString,
+        _ body: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await AsyncTimeout.run(timeout: timeoutDuration, operation: operation, body)
+    }
+
+    private func makeBenchmarkEmbedder() async throws -> MiniLMEmbedder {
+        let configuration = MLModelConfiguration()
+        // XCTest/CLI contexts are prone to CoreML/ANE compile stalls; keep this benchmark bounded and deterministic.
+        configuration.computeUnits = .cpuOnly
+        configuration.allowLowPrecisionAccumulationOnGPU = true
+        return try await MiniLMEmbedder.make(
+            config: .init(batchSize: 256, modelConfiguration: configuration),
+            timeout: timeoutDuration,
+            skipPrewarm: true
+        )
+    }
     
     /// Test batch embedding vs sequential embedding performance
     func testBatchVsSequentialEmbedding() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding benchmark.") }
-        
-        let embedder = try MiniLMEmbedder()
+
+        let embedder = try await makeBenchmarkEmbedder()
         let textCount = 32
         let iterations = 3
         
@@ -31,18 +62,22 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         print("")
         
         // Warm up
-        _ = try await embedder.embed(texts[0])
-        _ = try await embedder.embed(batch: texts)
+        _ = try await withBenchmarkTimeout("BatchEmbeddingBenchmark.batchWarmup") {
+            _ = try await embedder.embed(texts[0])
+            return try await embedder.embed(batch: texts)
+        }
         
         // Benchmark SEQUENTIAL embedding (old approach)
         var sequentialTimes: [Double] = []
         for _ in 0..<iterations {
             let start = CFAbsoluteTimeGetCurrent()
-            
-            for text in texts {
-                _ = try await embedder.embed(text)
+
+            try await withBenchmarkTimeout("BatchEmbeddingBenchmark.sequentialEmbedIteration") {
+                for text in texts {
+                    _ = try await embedder.embed(text)
+                }
             }
-            
+
             let end = CFAbsoluteTimeGetCurrent()
             sequentialTimes.append(end - start)
         }
@@ -52,7 +87,9 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         for _ in 0..<iterations {
             let start = CFAbsoluteTimeGetCurrent()
             
-            _ = try await embedder.embed(batch: texts)
+            _ = try await withBenchmarkTimeout("BatchEmbeddingBenchmark.batchEmbed") {
+                try await embedder.embed(batch: texts)
+            }
             
             let end = CFAbsoluteTimeGetCurrent()
             batchTimes.append(end - start)
@@ -81,8 +118,8 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     /// Test batch embedding with varying batch sizes
     func testBatchEmbeddingScaling() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding scaling benchmark.") }
-        
-        let embedder = try MiniLMEmbedder()
+
+        let embedder = try await makeBenchmarkEmbedder()
         let batchSizes = [8, 16, 32, 64]
         
         // Generate test texts
@@ -95,14 +132,18 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         print("   ─────────────────────────────────────")
         
         // Warm up
-        _ = try await embedder.embed(allTexts[0])
-        _ = try await embedder.embed(batch: Array(allTexts.prefix(batchSizes.max() ?? 1)))
+        _ = try await withBenchmarkTimeout("BatchEmbeddingBenchmark.scalingWarmup") {
+            _ = try await embedder.embed(allTexts[0])
+            return try await embedder.embed(batch: Array(allTexts.prefix(batchSizes.max() ?? 1)))
+        }
         
         for batchSize in batchSizes {
             let texts = Array(allTexts.prefix(batchSize))
             
             let start = CFAbsoluteTimeGetCurrent()
-            _ = try await embedder.embed(batch: texts)
+            _ = try await withBenchmarkTimeout("BatchEmbeddingBenchmark.scalingBatchEmbed") {
+                try await embedder.embed(batch: texts)
+            }
             let end = CFAbsoluteTimeGetCurrent()
             
             let totalMs = (end - start) * 1000
@@ -141,14 +182,25 @@ final class BatchEmbeddingBenchmark: XCTestCase {
                 config.chunking = .tokenCount(targetTokens: 500, overlapTokens: 50)
                 config.embeddingCacheCapacity = 256  // Enable embedding cache
                 
-                let orchestrator = try await MemoryOrchestrator.openMiniLM(at: url, config: config)
+                let embedder = try await makeBenchmarkEmbedder()
+                let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
                 
                 let start = CFAbsoluteTimeGetCurrent()
-                
-                for document in documents {
-                    try await orchestrator.remember(document)
+
+                do {
+                    for document in documents {
+                        try await withBenchmarkTimeout("BatchEmbeddingBenchmark.orchestratorRemember") {
+                            try await orchestrator.remember(document)
+                        }
+                    }
+
+                    try await withBenchmarkTimeout("BatchEmbeddingBenchmark.orchestratorFlush") {
+                        try await orchestrator.flush()
+                    }
+                } catch {
+                    try? await orchestrator.close()
+                    throw error
                 }
-                try await orchestrator.flush()
                 
                 let end = CFAbsoluteTimeGetCurrent()
                 times.append(end - start)

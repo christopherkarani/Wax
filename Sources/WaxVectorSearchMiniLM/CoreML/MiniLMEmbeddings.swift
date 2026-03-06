@@ -1,7 +1,8 @@
 import Foundation
 #if canImport(CoreML)
-import CoreML
+@preconcurrency import CoreML
 import Accelerate
+import WaxCore
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
 @available(macOS 15.0, iOS 18.0, *)
@@ -27,23 +28,27 @@ package final class MiniLMEmbeddings {
         var modelURLProvider: (@Sendable () -> URL?)?
         var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
         var usesBundleFallback: Bool
+        var blockingModelLoadDelay: Duration?
 
         static let `default` = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: nil,
-            usesBundleFallback: true
+            usesBundleFallback: true,
+            blockingModelLoadDelay: nil
         )
 
         static let missingModel = Overrides(
             modelURLProvider: { nil },
             tokenizerFactory: nil,
-            usesBundleFallback: false
+            usesBundleFallback: false,
+            blockingModelLoadDelay: nil
         )
 
         static let missingTokenizer = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: { throw InitError.tokenizerLoadFailed("override requested failure") },
-            usesBundleFallback: true
+            usesBundleFallback: true,
+            blockingModelLoadDelay: nil
         )
     }
 
@@ -59,6 +64,16 @@ package final class MiniLMEmbeddings {
 
     package convenience init(configuration: MLModelConfiguration? = nil) throws {
         try self.init(configuration: configuration, overrides: .default)
+    }
+
+    package static func make(
+        configuration: MLModelConfiguration? = nil,
+        overrides: Overrides = .default,
+        timeout: Duration
+    ) async throws -> MiniLMEmbeddings {
+        try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM model load") {
+            try MiniLMEmbeddings(configuration: configuration, overrides: overrides)
+        }
     }
 
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
@@ -216,6 +231,8 @@ private extension MiniLMEmbeddings {
     }
 
     static func loadModel(configuration: MLModelConfiguration, overrides: Overrides) throws -> all_MiniLM_L6_v2 {
+        applyBlockingLoadDelay(overrides)
+
         if let modelURLProvider = overrides.modelURLProvider {
             guard let modelURL = modelURLProvider() else {
                 throw InitError.missingModelResource
@@ -237,6 +254,16 @@ private extension MiniLMEmbeddings {
         } catch {
             throw InitError.modelLoadFailed(error.localizedDescription)
         }
+    }
+
+    static func applyBlockingLoadDelay(_ overrides: Overrides) {
+        guard let delay = overrides.blockingModelLoadDelay else { return }
+        let components = delay.components
+        let seconds = TimeInterval(components.seconds)
+        let attoseconds = TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+        let interval = max(0, seconds + attoseconds)
+        guard interval > 0 else { return }
+        Thread.sleep(forTimeInterval: interval)
     }
 
     struct ModelCacheKey: Hashable {

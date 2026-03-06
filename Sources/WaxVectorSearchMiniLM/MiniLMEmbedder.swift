@@ -39,6 +39,12 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         }
     }
 
+    private init(model: MiniLMEmbeddings, batchSize: Int) {
+        self.model = model
+        self.batchSize = max(1, batchSize)
+        logComputeUnits()
+    }
+
     package init() throws {
         self.model = try MiniLMEmbeddings()
         self.batchSize = Self.maximumBatchSize
@@ -46,9 +52,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     package init(model: MiniLMEmbeddings) {
-        self.model = model
-        self.batchSize = Self.maximumBatchSize
-        logComputeUnits()
+        self.init(model: model, batchSize: Self.maximumBatchSize)
     }
 
     package init(config: Config) throws {
@@ -61,6 +65,27 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration, overrides: overrides)
         self.batchSize = max(1, config.batchSize)
         logComputeUnits()
+    }
+
+    package static func make(
+        config: Config = Config(),
+        overrides: MiniLMEmbeddings.Overrides = .default,
+        timeout: Duration,
+        skipPrewarm: Bool = false,
+        prewarmBatchSize: Int = 1
+    ) async throws -> MiniLMEmbedder {
+        let model = try await MiniLMEmbeddings.make(
+            configuration: config.modelConfiguration,
+            overrides: overrides,
+            timeout: timeout
+        )
+        let embedder = MiniLMEmbedder(model: model, batchSize: max(1, config.batchSize))
+        if !skipPrewarm {
+            try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder prewarm") {
+                try await embedder.prewarm(batchSize: prewarmBatchSize)
+            }
+        }
+        return embedder
     }
 
     // MARK: - Diagnostics
