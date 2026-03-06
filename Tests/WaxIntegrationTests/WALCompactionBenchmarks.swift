@@ -58,6 +58,20 @@ final class WALCompactionBenchmarks: XCTestCase {
         print("🧪 WAL compaction baseline JSON written to \(config.outputPath)")
 
         XCTAssertEqual(results.count, workloads.count)
+        guard let largeHybrid = results.first(where: { $0.workload.name == "large_hybrid_10k" }) else {
+            XCTFail("missing large_hybrid_10k workload result")
+            return
+        }
+        XCTAssertLessThanOrEqual(
+            largeHybrid.commitLatencyMs.p95Ms,
+            160.0,
+            "large_hybrid_10k commit p95 regression: current=\(largeHybrid.commitLatencyMs.p95Ms.formatMs) budget=160.00ms"
+        )
+        XCTAssertLessThanOrEqual(
+            largeHybrid.commitLatencyMs.p99Ms,
+            200.0,
+            "large_hybrid_10k commit p99 regression: current=\(largeHybrid.commitLatencyMs.p99Ms.formatMs) budget=200.00ms"
+        )
     }
 
     func testProactivePressureGuardrails() async throws {

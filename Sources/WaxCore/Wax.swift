@@ -116,6 +116,7 @@ package actor Wax {
     private var surrogateIndex: [UInt64: UInt64]? = nil
     private var wal: WALRingWriter
     private var pendingMutations: [PendingMutation]
+    private var pendingMutationSummary: PendingMutationSummary
     private var stagedLexIndex: StagedLexIndex?
     private var stagedVecIndex: StagedVecIndex?
     private var stagedLexIndexStamp: UInt64?
@@ -175,6 +176,7 @@ package actor Wax {
         self.toc = toc
         self.wal = wal
         self.pendingMutations = pendingMutations
+        self.pendingMutationSummary = PendingMutationSummary.from(pendingMutations)
         self.stagedLexIndex = stagedLexIndex
         self.stagedVecIndex = stagedVecIndex
         self.stagedLexIndexStamp = stagedLexIndexStamp
@@ -217,11 +219,7 @@ package actor Wax {
     }
 
     private func canAutoCommitForWalPressureLocked() -> Bool {
-        let hasPendingEmbedding = pendingMutations.contains { mutation in
-            if case .putEmbedding = mutation.entry { return true }
-            return false
-        }
-        return !(hasPendingEmbedding && stagedVecIndex == nil)
+        !(pendingMutationSummary.hasPendingEmbedding && stagedVecIndex == nil)
     }
 
     private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
@@ -793,6 +791,24 @@ package actor Wax {
         Int64(Date().timeIntervalSince1970 * 1000)
     }
 
+    private func appendPendingMutation(sequence: UInt64, entry: WALEntry) {
+        let mutation = PendingMutation(sequence: sequence, entry: entry)
+        pendingMutations.append(mutation)
+        pendingMutationSummary.record(mutation)
+    }
+
+    private func clearPendingMutations() {
+        pendingMutations.removeAll(keepingCapacity: true)
+        pendingMutationSummary = PendingMutationSummary()
+    }
+
+    private func orderedPendingMutationsLocked() -> [PendingMutation] {
+        if pendingMutationSummary.isOrderedBySequence {
+            return pendingMutations
+        }
+        return pendingMutations.sorted { $0.sequence < $1.sequence }
+    }
+
     private func putLocked(
         _ content: Data,
         options: FrameMetaSubset,
@@ -800,10 +816,7 @@ package actor Wax {
         compression: CanonicalEncoding
     ) async throws -> UInt64 {
         let committedCount = UInt64(toc.frames.count)
-        let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
-            if case .putFrame = mutation.entry { return count + 1 }
-            return count
-        }
+        let pendingPutCount = pendingMutationSummary.putFrameCount
         let frameId = committedCount + UInt64(pendingPutCount)
 
         let canonicalChecksum = SHA256Checksum.digest(content)
@@ -850,7 +863,7 @@ package actor Wax {
         }
 
         dataEnd += UInt64(storedBytes.count)
-        pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+        appendPendingMutation(sequence: seq, entry: entry)
         dirty = true
         return frameId
     }
@@ -883,10 +896,7 @@ package actor Wax {
         compression: CanonicalEncoding
     ) async throws -> [UInt64] {
         let committedCount = UInt64(toc.frames.count)
-        let pendingPutCount = pendingMutations.reduce(0) { count, mutation in
-            if case .putFrame = mutation.entry { return count + 1 }
-            return count
-        }
+        let pendingPutCount = pendingMutationSummary.putFrameCount
         let baseFrameId = committedCount + UInt64(pendingPutCount)
         let defaultTimestampMs = Int64(Date().timeIntervalSince1970 * 1000)
 
@@ -965,7 +975,7 @@ package actor Wax {
                     return try wal.append(payload: walPayload)
                 }
                 dataEnd += UInt64(frame.storedBytes.count)
-                pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+                appendPendingMutation(sequence: seq, entry: entry)
                 frameIds.append(putFrame.frameId)
             }
             dirty = true
@@ -1033,7 +1043,7 @@ package actor Wax {
         // Update state
         dataEnd = currentOffset
         for (index, entry) in entries.enumerated() {
-            pendingMutations.append(PendingMutation(sequence: sequences[index], entry: entry))
+            appendPendingMutation(sequence: sequences[index], entry: entry)
         }
         dirty = true
 
@@ -1157,7 +1167,7 @@ package actor Wax {
 
             // Update state
             for (index, entry) in entries.enumerated() {
-                pendingMutations.append(PendingMutation(sequence: sequences[index], entry: entry))
+                appendPendingMutation(sequence: sequences[index], entry: entry)
             }
             dirty = true
         }
@@ -1203,7 +1213,7 @@ package actor Wax {
             let seq = try await io.run {
                 try wal.append(payload: payload)
             }
-            pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+            appendPendingMutation(sequence: seq, entry: entry)
             dirty = true
         }
     }
@@ -1215,6 +1225,9 @@ package actor Wax {
 
     package func pendingEmbeddingMutations(since sequence: UInt64?) async -> PendingEmbeddingSnapshot {
         await withReadLock {
+            guard pendingMutationSummary.hasPendingEmbedding else {
+                return PendingEmbeddingSnapshot(embeddings: [], latestSequence: nil)
+            }
             var embeddings: [PutEmbedding] = []
             embeddings.reserveCapacity(pendingMutations.count)
             var latestSequence: UInt64?
@@ -1237,7 +1250,7 @@ package actor Wax {
             let seq = try await io.run {
                 try wal.append(payload: payload)
             }
-            pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+            appendPendingMutation(sequence: seq, entry: entry)
             dirty = true
         }
     }
@@ -1274,7 +1287,7 @@ package actor Wax {
             let seq = try await io.run {
                 try wal.append(payload: payload)
             }
-            pendingMutations.append(PendingMutation(sequence: seq, entry: entry))
+            appendPendingMutation(sequence: seq, entry: entry)
             dirty = true
         }
     }
@@ -1307,11 +1320,10 @@ package actor Wax {
             let bytesLength = UInt64(byteCount)
 
             if let stagedLexIndex {
-                let stagedChecksum = SHA256Checksum.digest(stagedLexIndex.bytes)
                 if stagedLexIndex.docCount == docCount,
                    stagedLexIndex.version == version,
                    UInt64(stagedLexIndex.bytes.count) == bytesLength,
-                   stagedChecksum == checksum {
+                   stagedLexIndex.checksum == checksum {
                     return
                 }
             }
@@ -1326,7 +1338,12 @@ package actor Wax {
                 return
             }
 
-            stagedLexIndex = StagedLexIndex(bytes: bytes, docCount: docCount, version: version)
+            stagedLexIndex = StagedLexIndex(
+                bytes: bytes,
+                docCount: docCount,
+                version: version,
+                checksum: checksum
+            )
             stagedLexIndexStampCounter &+= 1
             stagedLexIndexStamp = stagedLexIndexStampCounter
             dirty = true
@@ -1373,29 +1390,35 @@ package actor Wax {
                 }
             }
 
-            let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
-            var pendingEmbeddingMaxSequence: UInt64?
-            for mutation in ordered {
-                guard case .putEmbedding(let embedding) = mutation.entry else { continue }
-                guard embedding.dimension == dimension else {
+            let pendingEmbeddingMaxSequence = pendingMutationSummary.latestPendingEmbeddingSequence
+            if pendingMutationSummary.hasPendingEmbedding {
+                let matchesDimension = !pendingMutationSummary.pendingEmbeddingHasMixedDimensions
+                    && pendingMutationSummary.pendingEmbeddingDimension == dimension
+                guard matchesDimension else {
+                    let actualDimension: String
+                    if pendingMutationSummary.pendingEmbeddingHasMixedDimensions {
+                        actualDimension = "mixed"
+                    } else if let pendingDimension = pendingMutationSummary.pendingEmbeddingDimension {
+                        actualDimension = String(pendingDimension)
+                    } else {
+                        actualDimension = "none"
+                    }
                     throw WaxError.invalidToc(
-                        reason: "pending embedding dimension mismatch vs staged vec index: expected \(dimension), got \(embedding.dimension)"
+                        reason: "pending embedding dimension mismatch vs staged vec index: expected \(dimension), got \(actualDimension)"
                     )
                 }
-                pendingEmbeddingMaxSequence = mutation.sequence
             }
 
             let checksum = SHA256Checksum.digest(bytes)
             let bytesLength = UInt64(byteCount)
 
             if let stagedVecIndex {
-                let stagedChecksum = SHA256Checksum.digest(stagedVecIndex.bytes)
                 if stagedVecIndex.vectorCount == vectorCount,
                    stagedVecIndex.dimension == dimension,
                    stagedVecIndex.similarity == similarity,
                    stagedVecIndex.pendingEmbeddingMaxSequence == pendingEmbeddingMaxSequence,
                    UInt64(stagedVecIndex.bytes.count) == bytesLength,
-                   stagedChecksum == checksum {
+                   stagedVecIndex.checksum == checksum {
                     return
                 }
             }
@@ -1417,7 +1440,8 @@ package actor Wax {
                 vectorCount: vectorCount,
                 dimension: dimension,
                 similarity: similarity,
-                pendingEmbeddingMaxSequence: pendingEmbeddingMaxSequence
+                pendingEmbeddingMaxSequence: pendingEmbeddingMaxSequence,
+                checksum: checksum
             )
             stagedVecIndexStampCounter &+= 1
             stagedVecIndexStamp = stagedVecIndexStampCounter
@@ -1435,18 +1459,11 @@ package actor Wax {
         guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
 
         if stagedVecIndex == nil {
-            let hasPendingEmbedding = pendingMutations.contains { mutation in
-                if case .putEmbedding = mutation.entry { return true }
-                return false
-            }
-            if hasPendingEmbedding {
+            if pendingMutationSummary.hasPendingEmbedding {
                 throw WaxError.io("vector index must be staged before committing embeddings")
             }
         } else if let stagedVecIndex {
-            let latestPendingEmbeddingSequence = pendingMutations.reduce(nil as UInt64?) { current, mutation in
-                guard case .putEmbedding = mutation.entry else { return current }
-                return mutation.sequence
-            }
+            let latestPendingEmbeddingSequence = pendingMutationSummary.latestPendingEmbeddingSequence
             if latestPendingEmbeddingSequence != stagedVecIndex.pendingEmbeddingMaxSequence {
                 throw WaxError.io(
                     "vector index is stale relative to pending embeddings; restage vector index before commit"
@@ -1472,12 +1489,11 @@ package actor Wax {
             let lexLength = UInt64(byteCount)
             dataEnd += lexLength
 
-            let checksum = SHA256Checksum.digest(staged.bytes)
             toc.indexes.lex = LexIndexManifest(
                 docCount: staged.docCount,
                 bytesOffset: lexOffset,
                 bytesLength: lexLength,
-                checksum: checksum,
+                checksum: staged.checksum,
                 version: staged.version
             )
             let segmentId = nextSegmentId()
@@ -1485,7 +1501,7 @@ package actor Wax {
                 segmentId: segmentId,
                 bytesOffset: lexOffset,
                 bytesLength: lexLength,
-                checksum: checksum,
+                checksum: staged.checksum,
                 compression: .none,
                 kind: .lex
             )
@@ -1508,13 +1524,12 @@ package actor Wax {
             let vecLength = UInt64(byteCount)
             dataEnd += vecLength
 
-            let checksum = SHA256Checksum.digest(staged.bytes)
             toc.indexes.vec = VecIndexManifest(
                 vectorCount: staged.vectorCount,
                 dimension: staged.dimension,
                 bytesOffset: vecOffset,
                 bytesLength: vecLength,
-                checksum: checksum,
+                checksum: staged.checksum,
                 similarity: staged.similarity
             )
             let segmentId = nextSegmentId()
@@ -1522,7 +1537,7 @@ package actor Wax {
                 segmentId: segmentId,
                 bytesOffset: vecOffset,
                 bytesLength: vecLength,
-                checksum: checksum,
+                checksum: staged.checksum,
                 compression: .none,
                 kind: .vec
             )
@@ -1593,7 +1608,7 @@ package actor Wax {
             wal.recordCheckpoint()
         }
 
-        pendingMutations.removeAll()
+        clearPendingMutations()
         stagedLexIndex = nil
         stagedVecIndex = nil
         stagedLexIndexStamp = nil
@@ -2371,7 +2386,7 @@ package actor Wax {
         var maxSeq = committedSeq
 
         let stagedVecDimension = stagedVecIndex?.dimension
-        let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
+        let ordered = orderedPendingMutationsLocked()
         var newFrames: [FrameMeta] = []
 
         func withFrame(_ frameId: UInt64, _ update: (inout FrameMeta) throws -> Void) throws {
@@ -2447,13 +2462,16 @@ package actor Wax {
         }
 
         if !newFrames.isEmpty {
-            var all = toc.frames
-            all.append(contentsOf: newFrames)
-            let dataStart = header.walOffset + header.walSize
-            var candidate = toc
-            candidate.frames = all
-            try Self.validateTocRanges(candidate, dataStart: dataStart, dataEnd: dataEnd)
+            let originalCount = toc.frames.count
+            // Validate after appending in place so commit does not clone the full frame array first.
             toc.frames.append(contentsOf: newFrames)
+            let dataStart = header.walOffset + header.walSize
+            do {
+                try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: dataEnd)
+            } catch {
+                toc.frames.removeLast(toc.frames.count - originalCount)
+                throw error
+            }
         }
 
         return maxSeq
@@ -2469,6 +2487,7 @@ package actor Wax {
         var bytes: Data
         var docCount: UInt64
         var version: UInt32
+        var checksum: Data
     }
 
     private struct StagedVecIndex {
@@ -2477,6 +2496,49 @@ package actor Wax {
         var dimension: UInt32
         var similarity: VecSimilarity
         var pendingEmbeddingMaxSequence: UInt64?
+        var checksum: Data
+    }
+
+    private struct PendingMutationSummary {
+        var putFrameCount: UInt64 = 0
+        var hasPendingEmbedding = false
+        var latestPendingEmbeddingSequence: UInt64?
+        var pendingEmbeddingDimension: UInt32?
+        var pendingEmbeddingHasMixedDimensions = false
+        var isOrderedBySequence = true
+
+        private var lastSequence: UInt64?
+
+        mutating func record(_ mutation: PendingMutation) {
+            if let lastSequence, mutation.sequence <= lastSequence {
+                isOrderedBySequence = false
+            }
+            self.lastSequence = mutation.sequence
+
+            switch mutation.entry {
+            case .putFrame:
+                putFrameCount &+= 1
+            case .putEmbedding(let embedding):
+                hasPendingEmbedding = true
+                latestPendingEmbeddingSequence = mutation.sequence
+                if let pendingEmbeddingDimension, pendingEmbeddingDimension != embedding.dimension {
+                    pendingEmbeddingHasMixedDimensions = true
+                } else {
+                    pendingEmbeddingDimension = embedding.dimension
+                }
+            case .deleteFrame, .supersedeFrame:
+                break
+            }
+        }
+
+        static func from(_ mutations: [PendingMutation]) -> PendingMutationSummary {
+            var summary = PendingMutationSummary()
+            summary.putFrameCount = 0
+            for mutation in mutations {
+                summary.record(mutation)
+            }
+            return summary
+        }
     }
 
     private func nextSegmentId() -> UInt64 {
