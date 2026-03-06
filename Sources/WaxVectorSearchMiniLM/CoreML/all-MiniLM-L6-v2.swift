@@ -51,7 +51,11 @@ public class all_MiniLM_L6_v2Output : MLFeatureProvider {
 
     /// var_554 as multidimensional array of 16-bit floats
     public var var_554: MLMultiArray {
-        provider.featureValue(for: "var_554")!.multiArrayValue!
+        guard let feature = provider.featureValue(for: "var_554"),
+              let multiArray = feature.multiArrayValue else {
+            fatalError("Model output 'var_554' is missing or has unexpected type")
+        }
+        return multiArray
     }
 
     /// var_554 as multidimensional array of 16-bit floats
@@ -93,7 +97,10 @@ public class all_MiniLM_L6_v2 {
         }
         #endif
         let bundle = Bundle(for: self)
-        return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc")!
+        guard let url = bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") else {
+            fatalError("Could not find all-MiniLM-L6-v2.mlmodelc in bundle")
+        }
+        return url
     }
 
     /**
