@@ -86,25 +86,34 @@ package struct WaxTOC: Equatable, Sendable {
         )
     }
 
-    package func encode() throws -> Data {
+    package func encode(cachedFramesPayload: Data? = nil) throws -> Data {
         guard tocVersion == 1 else {
             throw WaxError.encodingError(reason: "unsupported toc_version \(tocVersion)")
         }
         guard frames.count <= Constants.maxArrayCount else {
             throw WaxError.encodingError(reason: "frame count \(frames.count) exceeds limit \(Constants.maxArrayCount)")
         }
-        for (index, frame) in frames.enumerated() {
-            let expected = UInt64(index)
-            guard frame.id == expected else {
-                throw WaxError.encodingError(reason: "frame id not dense: found \(frame.id), expected \(expected)")
-            }
-        }
 
         var encoder = BinaryEncoder()
         encoder.encode(tocVersion)
-        try encoder.encode(frames) { encoder, frame in
-            var mutable = frame
-            try mutable.encode(to: &encoder)
+
+        if let cachedFramesPayload {
+            guard frames.count <= Int(UInt32.max) else {
+                throw WaxError.encodingError(reason: "frame count \(frames.count) exceeds UInt32.max")
+            }
+            encoder.encode(UInt32(frames.count))
+            encoder.appendRawBytes(cachedFramesPayload)
+        } else {
+            for (index, frame) in frames.enumerated() {
+                let expected = UInt64(index)
+                guard frame.id == expected else {
+                    throw WaxError.encodingError(reason: "frame id not dense: found \(frame.id), expected \(expected)")
+                }
+            }
+            try encoder.encode(frames) { encoder, frame in
+                var mutable = frame
+                try mutable.encode(to: &encoder)
+            }
         }
 
         var indexes = indexes

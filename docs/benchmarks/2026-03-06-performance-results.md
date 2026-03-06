@@ -7,6 +7,8 @@
 **Performance sweep commit:** `3ff3246e91f4a232c6587611445db6a1e612a59a`  
 **MiniLM benchmark-fix commit:** `bd65ceaef8cfd3e3d6a68c0d51c69caa71d060de`
 
+This report now includes a follow-up WAL optimization pass from the same machine after the original sweep. The updated WAL numbers below supersede the earlier March 6 WAL figures from `3ff3246e`.
+
 ## Top Stats
 
 | Area | Result | Gain vs prompt baseline |
@@ -17,8 +19,8 @@
 | **Warm hybrid with previews p99** | **6.5 ms** | **88.7% lower, 8.83x faster** |
 | **MemoryOrchestrator ingest avg** | **0.445 s** | **77.8% lower, 4.50x faster** |
 | **Ingest text-only avg** | **0.082 s** | **74.4% lower, 3.90x faster** |
-| **WAL `large_hybrid_10k` commit p95** | **97.40 ms** | **50.6% lower, 2.02x faster** |
-| **WAL `large_hybrid_10k` commit p99** | **100.30 ms** | **59.1% lower, 2.44x faster** |
+| **WAL `large_hybrid_10k` commit p95** | **34.25 ms** | **82.6% lower, 5.75x faster** |
+| **WAL `large_hybrid_10k` commit p99** | **40.03 ms** | **83.7% lower, 6.12x faster** |
 
 ## Scope
 
@@ -26,9 +28,12 @@ This report covers:
 
 1. The required March 6 benchmark sweep captured on commit `3ff3246e`
 2. The MiniLM `BatchEmbeddingBenchmark` hang fix captured on commit `bd65ceae`
-3. Deltas against the prompt baseline supplied at the start of the optimization pass
+3. A follow-up WAL frame-section TOC encoding cache optimization validated on the same machine
+4. Deltas against the prompt baseline supplied at the start of the optimization pass
 
 The required sweep was mostly green on `3ff3246e`. One warm-hybrid run failed its tight p99 guard at `7.5 ms`; the immediate rerun on the same commit passed at `6.5 ms`. The report uses the passing rerun as the final measured value and retains the failed run in the evidence section.
+
+The follow-up WAL pass replaced full frame-section re-encoding on append-only commits with a cached frame-section payload that is invalidated when committed frames are mutated (for example, delete/supersede). The first attempted follow-up optimization, append-only TOC range validation, was rejected because it worsened p95/p99 tails and was reverted before the validated cache pass landed.
 
 ## Summary Table
 
@@ -44,8 +49,8 @@ The required sweep was mostly green on `3ff3246e`. One warm-hybrid run failed it
 | Cold open mean | `1.50 s` | `8.8 ms` | `99.4%` lower | `170.5x` |
 | Cold open p95 | `2.65 s` | `9.2 ms` | `99.7%` lower | `288.0x` |
 | Cold open p99 | `2.98 s` | `9.2 ms` | `99.7%` lower | `323.9x` |
-| WAL `large_hybrid_10k` commit p95 | `197 ms` | `97.40 ms` | `50.6%` lower | `2.02x` |
-| WAL `large_hybrid_10k` commit p99 | `245 ms` | `100.30 ms` | `59.1%` lower | `2.44x` |
+| WAL `large_hybrid_10k` commit p95 | `197 ms` | `34.25 ms` | `82.6%` lower | `5.75x` |
+| WAL `large_hybrid_10k` commit p99 | `245 ms` | `40.03 ms` | `83.7%` lower | `6.12x` |
 
 ## Required Benchmark Sweep
 
@@ -98,14 +103,14 @@ All values below are from the passing rerun on the same commit.
 
 | Workload | Writes | Mode | commit p50 | commit p95 | commit p99 | put p95 | autoCommits | checkpoints | reopen p95 |
 |---|---:|---|---:|---:|---:|---:|---:|---:|---:|
-| `small_text` | `500` | text | `10.10 ms` | `11.11 ms` | `11.14 ms` | `0.03 ms` | `0` | `10` | `2.39 ms` |
-| `small_hybrid` | `500` | hybrid | `11.96 ms` | `13.39 ms` | `13.44 ms` | `0.08 ms` | `0` | `10` | `4.23 ms` |
-| `medium_text` | `5,000` | text | `20.37 ms` | `29.78 ms` | `30.44 ms` | `0.02 ms` | `0` | `50` | `21.71 ms` |
-| `medium_hybrid` | `5,000` | hybrid | `32.23 ms` | `55.43 ms` | `62.06 ms` | `0.08 ms` | `0` | `50` | `41.42 ms` |
-| `large_text_10k` | `10,000` | text | `32.02 ms` | `54.29 ms` | `55.96 ms` | `0.02 ms` | `0` | `50` | `45.56 ms` |
-| `large_hybrid_10k` | `10,000` | hybrid | `55.62 ms` | `97.40 ms` | `100.30 ms` | `0.09 ms` | `0` | `50` | `81.93 ms` |
-| `sustained_write_text` | `30,000` | text | `140.48 ms` | `140.48 ms` | `140.48 ms` | `0.02 ms` | `31` | `32` | `126.18 ms` |
-| `sustained_write_hybrid` | `10,000` | hybrid | `54.82 ms` | `95.73 ms` | `97.98 ms` | `0.08 ms` | `0` | `157` | `79.72 ms` |
+| `small_text` | `500` | text | `9.12 ms` | `11.94 ms` | `13.38 ms` | `0.03 ms` | `0` | `10` | `2.41 ms` |
+| `small_hybrid` | `500` | hybrid | `9.68 ms` | `10.63 ms` | `10.75 ms` | `0.08 ms` | `0` | `10` | `4.39 ms` |
+| `medium_text` | `5,000` | text | `12.25 ms` | `14.81 ms` | `14.85 ms` | `0.02 ms` | `0` | `50` | `22.77 ms` |
+| `medium_hybrid` | `5,000` | hybrid | `13.49 ms` | `18.29 ms` | `18.70 ms` | `0.09 ms` | `0` | `50` | `42.05 ms` |
+| `large_text_10k` | `10,000` | text | `16.01 ms` | `23.04 ms` | `23.52 ms` | `0.02 ms` | `0` | `50` | `45.07 ms` |
+| `large_hybrid_10k` | `10,000` | hybrid | `20.37 ms` | `34.25 ms` | `40.03 ms` | `0.09 ms` | `0` | `50` | `83.17 ms` |
+| `sustained_write_text` | `30,000` | text | `47.05 ms` | `47.05 ms` | `47.05 ms` | `0.03 ms` | `31` | `32` | `128.26 ms` |
+| `sustained_write_hybrid` | `10,000` | hybrid | `18.38 ms` | `24.46 ms` | `26.54 ms` | `0.08 ms` | `0` | `157` | `82.51 ms` |
 
 ## MiniLM Benchmark Fix
 
@@ -191,6 +196,15 @@ Key files:
 /tmp/wax-perf-20260306-head-3ff3246e/status.txt
 ```
 
+### Follow-up WAL Optimization Logs
+
+```text
+/tmp/wax-perf-20260306-065553-wal-tail/wal_compaction_head.log
+/tmp/wax-perf-20260306-065553-wal-tail/wal_compaction_red.log
+/tmp/wax-perf-20260306-065553-wal-tail/wal_compaction_post_incremental_ranges.log
+/tmp/wax-perf-20260306-065553-wal-tail/wal_compaction_post_frame_cache.log
+```
+
 ### MiniLM Fix Logs
 
 ```text
@@ -202,4 +216,5 @@ Key files:
 
 1. The MiniLM benchmark fix did not recompile the CoreML model. The fix was to bound initialization and force a deterministic CPU-only benchmark path in XCTest context.
 2. The warm-hybrid lane remains very fast, but its p99 guard is still sensitive to runner noise. The report keeps both the failing `7.5 ms` run and the passing `6.5 ms` rerun in evidence.
-3. The main March 6 optimization sweep is represented by commit `3ff3246e`; the MiniLM benchmark fix landed afterward on `bd65ceae`.
+3. The WAL frame-section cache pass materially outperformed both the original March 6 WAL sweep and the rejected append-only validation experiment on the same runner.
+4. The main March 6 optimization sweep is represented by commit `3ff3246e`; the MiniLM benchmark fix landed afterward on `bd65ceae`.

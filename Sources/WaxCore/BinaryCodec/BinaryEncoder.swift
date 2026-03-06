@@ -215,6 +215,10 @@ package struct BinaryEncoder {
         data.append(value)
     }
 
+    package mutating func appendRawBytes(_ value: Data) {
+        data.append(value)
+    }
+
     // MARK: - Padding
 
     package mutating func pad(to size: Int) {

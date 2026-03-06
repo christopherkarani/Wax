@@ -117,6 +117,7 @@ package actor Wax {
     private var wal: WALRingWriter
     private var pendingMutations: [PendingMutation]
     private var pendingMutationSummary: PendingMutationSummary
+    private var encodedCommittedFramePayloadCache: Data?
     private var stagedLexIndex: StagedLexIndex?
     private var stagedVecIndex: StagedVecIndex?
     private var stagedLexIndexStamp: UInt64?
@@ -151,6 +152,7 @@ package actor Wax {
         toc: WaxTOC,
         wal: WALRingWriter,
         pendingMutations: [PendingMutation],
+        encodedCommittedFramePayloadCache: Data?,
         stagedLexIndex: StagedLexIndex?,
         stagedVecIndex: StagedVecIndex?,
         stagedLexIndexStamp: UInt64?,
@@ -177,6 +179,7 @@ package actor Wax {
         self.wal = wal
         self.pendingMutations = pendingMutations
         self.pendingMutationSummary = PendingMutationSummary.from(pendingMutations)
+        self.encodedCommittedFramePayloadCache = encodedCommittedFramePayloadCache
         self.stagedLexIndex = stagedLexIndex
         self.stagedVecIndex = stagedVecIndex
         self.stagedLexIndexStamp = stagedLexIndexStamp
@@ -495,6 +498,7 @@ package actor Wax {
             toc: created.toc,
             wal: created.wal,
             pendingMutations: [],
+            encodedCommittedFramePayloadCache: Data(),
             stagedLexIndex: nil,
             stagedVecIndex: nil,
             stagedLexIndexStamp: nil,
@@ -750,6 +754,7 @@ package actor Wax {
             toc: opened.toc,
             wal: opened.wal,
             pendingMutations: opened.pendingMutations,
+            encodedCommittedFramePayloadCache: nil,
             stagedLexIndex: nil,
             stagedVecIndex: nil,
             stagedLexIndexStamp: nil,
@@ -1471,7 +1476,12 @@ package actor Wax {
             }
         }
 
-        let appliedWalSeq = try applyPendingMutationsIntoTOC()
+        let applied = try applyPendingMutationsIntoTOC()
+        let appliedWalSeq = applied.maxSequence
+        let cachedFramesPayload = try encodedCommittedFramePayloadForCommit(
+            appendedFrames: applied.appendedFrames,
+            invalidated: applied.modifiedCommittedFrames
+        )
 
         let file = self.file
         if let staged = stagedLexIndex {
@@ -1544,7 +1554,7 @@ package actor Wax {
             toc.segmentCatalog.entries.append(entry)
         }
 
-        let tocBytes = try toc.encode()
+        let tocBytes = try toc.encode(cachedFramesPayload: cachedFramesPayload)
         let tocChecksum = tocBytes.suffix(32)
         toc.tocChecksum = Data(tocChecksum)
 
@@ -2381,13 +2391,20 @@ package actor Wax {
         selectedHeaderPageIndex = nextIndex
     }
 
-    private func applyPendingMutationsIntoTOC() throws -> UInt64 {
+    private struct AppliedPendingMutations {
+        var maxSequence: UInt64
+        var appendedFrames: [FrameMeta]
+        var modifiedCommittedFrames: Bool
+    }
+
+    private func applyPendingMutationsIntoTOC() throws -> AppliedPendingMutations {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
         let stagedVecDimension = stagedVecIndex?.dimension
         let ordered = orderedPendingMutationsLocked()
         var newFrames: [FrameMeta] = []
+        var modifiedCommittedFrames = false
 
         func withFrame(_ frameId: UInt64, _ update: (inout FrameMeta) throws -> Void) throws {
             let committedCount = toc.frames.count
@@ -2396,6 +2413,7 @@ package actor Wax {
                 throw WaxError.invalidToc(reason: "mutation references unknown frameId \(frameId) (known < \(maxKnown))")
             }
             if frameId < UInt64(committedCount) {
+                modifiedCommittedFrames = true
                 try update(&toc.frames[Int(frameId)])
             } else {
                 let index = Int(frameId - UInt64(committedCount))
@@ -2474,7 +2492,11 @@ package actor Wax {
             }
         }
 
-        return maxSeq
+        return AppliedPendingMutations(
+            maxSequence: maxSeq,
+            appendedFrames: newFrames,
+            modifiedCommittedFrames: modifiedCommittedFrames
+        )
     }
 
     private struct DataRange {
@@ -2546,6 +2568,37 @@ package actor Wax {
             return maxId &+ 1
         }
         return 0
+    }
+
+    private func encodedCommittedFramePayloadForCommit(
+        appendedFrames: [FrameMeta],
+        invalidated: Bool
+    ) throws -> Data {
+        if invalidated {
+            encodedCommittedFramePayloadCache = nil
+        }
+
+        if encodedCommittedFramePayloadCache == nil {
+            encodedCommittedFramePayloadCache = try Self.encodeFramePayloads(toc.frames)
+            return encodedCommittedFramePayloadCache ?? Data()
+        }
+
+        if !appendedFrames.isEmpty {
+            encodedCommittedFramePayloadCache?.append(try Self.encodeFramePayloads(appendedFrames))
+        }
+
+        return encodedCommittedFramePayloadCache ?? Data()
+    }
+
+    private static func encodeFramePayloads(_ frames: [FrameMeta]) throws -> Data {
+        guard !frames.isEmpty else { return Data() }
+
+        var encoder = BinaryEncoder()
+        for frame in frames {
+            var mutable = frame
+            try mutable.encode(to: &encoder)
+        }
+        return encoder.data
     }
 
     private static func validateTocRanges(_ toc: WaxTOC, dataStart: UInt64, dataEnd: UInt64) throws {

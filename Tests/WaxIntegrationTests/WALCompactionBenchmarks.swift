@@ -62,6 +62,10 @@ final class WALCompactionBenchmarks: XCTestCase {
             XCTFail("missing large_hybrid_10k workload result")
             return
         }
+        guard let sustainedHybrid = results.first(where: { $0.workload.name == "sustained_write_hybrid" }) else {
+            XCTFail("missing sustained_write_hybrid workload result")
+            return
+        }
         XCTAssertLessThanOrEqual(
             largeHybrid.commitLatencyMs.p95Ms,
             160.0,
@@ -71,6 +75,11 @@ final class WALCompactionBenchmarks: XCTestCase {
             largeHybrid.commitLatencyMs.p99Ms,
             200.0,
             "large_hybrid_10k commit p99 regression: current=\(largeHybrid.commitLatencyMs.p99Ms.formatMs) budget=200.00ms"
+        )
+        XCTAssertLessThanOrEqual(
+            sustainedHybrid.commitLatencyMs.p95Ms,
+            90.0,
+            "sustained_write_hybrid commit p95 regression: current=\(sustainedHybrid.commitLatencyMs.p95Ms.formatMs) budget=90.00ms"
         )
     }
 

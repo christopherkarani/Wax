@@ -203,6 +203,30 @@ import Testing
     try await wax.close()
 }
 
+@Test func deleteThenAppendStillCommitsAfterReopen() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let first = try await wax.put(Data("first".utf8))
+    try await wax.commit()
+
+    try await wax.delete(frameId: first)
+    try await wax.commit()
+
+    let second = try await wax.put(Data("second".utf8))
+    try await wax.commit()
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    let firstMeta = try await reopened.frameMeta(frameId: first)
+    let secondMeta = try await reopened.frameMeta(frameId: second)
+    #expect(firstMeta.status == .deleted)
+    #expect(secondMeta.status == .active)
+    #expect((await reopened.stats()).frameCount == 2)
+    try await reopened.close()
+}
+
 @Test func supersedeSurvivesReopenRecovery() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
