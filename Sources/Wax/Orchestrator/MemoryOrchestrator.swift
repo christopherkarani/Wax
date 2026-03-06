@@ -1095,11 +1095,24 @@ package actor MemoryOrchestrator {
                 )
             }
         }
-        if let task = scheduledLiveSetMaintenanceTask {
-            await task.value
-        }
+        let sourceURL = await wax.fileURL()
+        let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
         await session.close()
         try await wax.close()
+        if let maintenanceReport {
+            do {
+                try Self.promoteValidatedLiveSetCandidateIfNeeded(
+                    maintenanceReport,
+                    sourceURL: sourceURL
+                )
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "close-time live-set candidate promotion",
+                    fallback: "source store left unchanged; validated candidate retained"
+                )
+            }
+        }
     }
 
     func enrichmentStatsForTesting() async -> EnrichmentPipeline.Stats? {
@@ -1153,6 +1166,44 @@ package actor MemoryOrchestrator {
         if scheduledLiveSetMaintenanceQueued {
             enqueueScheduledLiveSetMaintenance()
         }
+    }
+
+    private func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
+        let schedule = config.liveSetRewriteSchedule
+        guard schedule.enabled else {
+            if let task = scheduledLiveSetMaintenanceTask {
+                await task.value
+            }
+            return lastScheduledLiveSetMaintenanceReport
+        }
+
+        if schedule.promoteValidatedCandidateOnClose {
+            do {
+                let report = try await runScheduledLiveSetMaintenanceNow()
+                lastScheduledLiveSetMaintenanceReport = report
+                return report
+            } catch {
+                let report = ScheduledLiveSetMaintenanceReport(
+                    outcome: .rewriteFailed,
+                    triggeredByFlush: false,
+                    flushCount: flushCount,
+                    deadPayloadBytes: 0,
+                    totalPayloadBytes: 0,
+                    deadPayloadFraction: 0,
+                    candidateURL: nil,
+                    rewriteReport: nil,
+                    rollbackPerformed: false,
+                    notes: ["close-time maintenance failed: \(error)"]
+                )
+                lastScheduledLiveSetMaintenanceReport = report
+                return report
+            }
+        }
+
+        if let task = scheduledLiveSetMaintenanceTask {
+            await task.value
+        }
+        return lastScheduledLiveSetMaintenanceReport
     }
 
     // MARK: - Math helpers

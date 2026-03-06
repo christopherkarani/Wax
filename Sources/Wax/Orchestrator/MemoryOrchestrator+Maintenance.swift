@@ -614,6 +614,39 @@ package extension MemoryOrchestrator {
         }
     }
 
+    static func promoteValidatedLiveSetCandidateIfNeeded(
+        _ report: ScheduledLiveSetMaintenanceReport,
+        sourceURL: URL
+    ) throws {
+        guard report.outcome == .rewriteSucceeded else { return }
+        guard let candidateURL = report.candidateURL?.standardizedFileURL else { return }
+
+        let sourceURL = sourceURL.standardizedFileURL
+        guard candidateURL != sourceURL else { return }
+        guard FileManager.default.fileExists(atPath: candidateURL.path) else { return }
+
+        let backupName = "\(sourceURL.lastPathComponent).pre-liveset-\(UUID().uuidString)"
+        _ = try FileManager.default.replaceItemAt(
+            sourceURL,
+            withItemAt: candidateURL,
+            backupItemName: backupName,
+            options: []
+        )
+
+        let backupURL = sourceURL.deletingLastPathComponent().appendingPathComponent(backupName)
+        if FileManager.default.fileExists(atPath: backupURL.path) {
+            try? FileManager.default.removeItem(at: backupURL)
+        }
+
+        if let footerSlice = try FooterScanner.findLastValidFooter(in: sourceURL) {
+            let repairedEnd = footerSlice.footerOffset + Constants.footerSize
+            let file = try FDFile.open(at: sourceURL)
+            defer { try? file.close() }
+            try file.truncate(to: repairedEnd)
+            try file.fsync()
+        }
+    }
+
     private static func durationMs(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1_000_000_000_000_000

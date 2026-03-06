@@ -33,7 +33,7 @@ package struct OrchestratorConfig: Sendable {
 
     /// When true, rejects text embedding providers that report `executionMode == .mayUseNetwork`.
     package var requireOnDeviceProviders: Bool = true
-    package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .disabled
+    package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
 
     package init() {}
 

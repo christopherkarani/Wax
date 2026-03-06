@@ -142,7 +142,8 @@ func scheduledLiveSetRewriteCreatesValidatedCandidateWhenThresholdMet() async th
             minIntervalMs: 0,
             verifyDeep: false,
             destinationDirectory: maintenanceDir,
-            keepLatestCandidates: 2
+            keepLatestCandidates: 2,
+            promoteValidatedCandidateOnClose: true
         )
 
         let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
@@ -238,6 +239,68 @@ func scheduledLiveSetRewriteFlushTriggerRunsDeferredFromCommitPath() async throw
     }
 }
 
+@Test
+func scheduledLiveSetRewritePromotesValidatedCandidateOnCloseAndShrinksSource() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let maintenanceDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: maintenanceDir) }
+
+        try await seedDeadPayloadStore(at: sourceURL)
+        let beforeSizes = try fileSizes(at: sourceURL)
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.liveSetRewriteSchedule = LiveSetRewriteSchedule(
+            enabled: true,
+            checkEveryFlushes: 1,
+            minDeadPayloadBytes: 64 * 1024,
+            minDeadPayloadFraction: 0.05,
+            minimumCompactionGainBytes: 0,
+            minimumIdleMs: 0,
+            minIntervalMs: 0,
+            verifyDeep: false,
+            destinationDirectory: maintenanceDir,
+            keepLatestCandidates: 2
+        )
+
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        try await orchestrator.close()
+
+        let afterSizes = try fileSizes(at: sourceURL)
+        #expect(afterSizes.logical < beforeSizes.logical)
+        #expect(afterSizes.allocated <= beforeSizes.allocated)
+
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let directoryContents = try FileManager.default.contentsOfDirectory(
+            at: maintenanceDir,
+            includingPropertiesForKeys: nil
+        )
+        let candidates = directoryContents.filter {
+            $0.lastPathComponent.hasPrefix("\(baseName)-liveset-") && $0.pathExtension == "wax"
+        }
+        #expect(candidates.isEmpty)
+
+        let reopened = try await MemoryOrchestrator(at: sourceURL, config: config)
+        let report = try await reopened.runScheduledLiveSetMaintenanceNow()
+        #expect(report.outcome == .belowThreshold)
+        try await reopened.close()
+
+        let reopenedWax = try await Wax.open(at: sourceURL)
+        let frames = await reopenedWax.frameMetas()
+        #expect(frames.count == 3)
+        #expect(frames.filter { $0.status == .active && $0.supersededBy == nil }.count == 1)
+        #expect(frames.filter { $0.status == .deleted }.count == 1)
+        try await reopenedWax.close()
+    }
+}
+
+@Test
+func orchestratorDefaultConfigEnablesAutomaticLiveSetRewriteSchedule() {
+    let schedule = OrchestratorConfig.default.liveSetRewriteSchedule
+    #expect(schedule.enabled)
+}
+
 private func waitForScheduledReport(
     _ orchestrator: MemoryOrchestrator,
     timeoutMs: Int
@@ -282,6 +345,15 @@ private func seedDeadPayloadStore(at url: URL) async throws {
 
     try await wax.commit()
     try await wax.close()
+}
+
+private func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {
+    let freshURL = URL(fileURLWithPath: url.path).standardizedFileURL
+    let values = try freshURL.resourceValues(forKeys: [.fileSizeKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey])
+    let logical = UInt64(max(0, values.fileSize ?? 0))
+    let allocatedValue = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0
+    let allocated = UInt64(max(0, allocatedValue))
+    return (logical: logical, allocated: allocated)
 }
 
 private func durationMs(_ duration: Duration) -> Double {

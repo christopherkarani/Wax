@@ -11,6 +11,7 @@ package struct LiveSetRewriteSchedule: Sendable, Equatable {
     package var verifyDeep: Bool
     package var destinationDirectory: URL?
     package var keepLatestCandidates: Int
+    package var promoteValidatedCandidateOnClose: Bool
 
     package init(
         enabled: Bool = false,
@@ -22,7 +23,8 @@ package struct LiveSetRewriteSchedule: Sendable, Equatable {
         minIntervalMs: Int = 5 * 60_000,
         verifyDeep: Bool = false,
         destinationDirectory: URL? = nil,
-        keepLatestCandidates: Int = 2
+        keepLatestCandidates: Int = 2,
+        promoteValidatedCandidateOnClose: Bool = false
     ) {
         self.enabled = enabled
         self.checkEveryFlushes = checkEveryFlushes
@@ -34,7 +36,22 @@ package struct LiveSetRewriteSchedule: Sendable, Equatable {
         self.verifyDeep = verifyDeep
         self.destinationDirectory = destinationDirectory
         self.keepLatestCandidates = keepLatestCandidates
+        self.promoteValidatedCandidateOnClose = promoteValidatedCandidateOnClose
     }
 
     package static let disabled = LiveSetRewriteSchedule()
+
+    package static let conservativeAutomatic = LiveSetRewriteSchedule(
+        enabled: true,
+        checkEveryFlushes: 32,
+        minDeadPayloadBytes: 64 * 1024 * 1024,
+        minDeadPayloadFraction: 0.25,
+        minimumCompactionGainBytes: 0,
+        minimumIdleMs: 15_000,
+        minIntervalMs: 5 * 60_000,
+        verifyDeep: false,
+        destinationDirectory: nil,
+        keepLatestCandidates: 2,
+        promoteValidatedCandidateOnClose: true
+    )
 }
