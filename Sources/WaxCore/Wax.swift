@@ -93,6 +93,7 @@ public struct PendingEmbeddingSnapshot: Equatable, Sendable {
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
 /// All mutable state is isolated within this actor for thread safety.
 public actor Wax {
+    #if DEBUG
     private enum CrashInjectionCheckpoint: String {
         case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
         case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
@@ -101,6 +102,7 @@ public actor Wax {
 
         static let envKey = "WAX_CRASH_INJECT_CHECKPOINT"
     }
+    #endif
 
     private let url: URL
     private let io: BlockingIOExecutor
@@ -1523,17 +1525,23 @@ public actor Wax {
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
+        #endif
 
         try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
+        #endif
 
         try await io.run {
             try file.fsync()
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
+        #endif
 
         header.footerOffset = footerOffset
         header.fileGeneration = footer.generation
@@ -1545,7 +1553,9 @@ public actor Wax {
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
+        #endif
         try await io.run {
             try file.fsync()
             wal.recordCheckpoint()
@@ -2264,16 +2274,14 @@ public actor Wax {
 
     // MARK: - Internal helpers
 
+    #if DEBUG
     private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
         let env = ProcessInfo.processInfo.environment
         guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
-        // SIGKILL is delivered asynchronously and may be delayed or masked in sandboxed
-        // environments (containers, test harnesses). The fatalError below is a safety net
-        // for those cases; it should never be reached in normal crash-injection runs but
-        // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
+    #endif
 
     private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {
         var snapshotPage = header

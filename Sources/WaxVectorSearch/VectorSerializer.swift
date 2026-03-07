@@ -114,7 +114,11 @@ public enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
             let vectorLength = Int(header.payloadLength)
-            let expectedVectorBytes = Int(header.vectorCount) * Int(header.dimension) * MemoryLayout<Float>.stride
+            let (partial, overflow1) = Int(header.vectorCount).multipliedReportingOverflow(by: Int(header.dimension))
+            let (expectedVectorBytes, overflow2) = partial.multipliedReportingOverflow(by: MemoryLayout<Float>.stride)
+            guard !overflow1, !overflow2 else {
+                throw WaxError.invalidToc(reason: "vec vector size overflow: \(header.vectorCount) x \(header.dimension)")
+            }
             guard vectorLength == expectedVectorBytes else {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
@@ -134,7 +138,10 @@ public enum VectorSerializer {
             guard frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
             }
-            let expectedFrameIdBytes = Int(header.vectorCount) * MemoryLayout<UInt64>.stride
+            let (expectedFrameIdBytes, overflow3) = Int(header.vectorCount).multipliedReportingOverflow(by: MemoryLayout<UInt64>.stride)
+            guard !overflow3 else {
+                throw WaxError.invalidToc(reason: "vec frameId size overflow: \(header.vectorCount)")
+            }
             guard Int(frameIdLength) == expectedFrameIdBytes else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }

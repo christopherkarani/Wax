@@ -38,26 +38,25 @@ struct EntityUpsertCommand: AsyncParsableCommand {
             .filter { !$0.isEmpty } ?? []
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            let entityID = try await memory.upsertEntity(
+                key: EntityKey(trimmedKey),
+                kind: trimmedKind,
+                aliases: aliases,
+                commit: commit
+            )
 
-        let entityID = try await memory.upsertEntity(
-            key: EntityKey(trimmedKey),
-            kind: trimmedKind,
-            aliases: aliases,
-            commit: commit
-        )
-
-        switch store.format {
-        case .json:
-            printJSON([
-                "status": "ok",
-                "entity_id": entityID.rawValue,
-                "key": trimmedKey,
-                "committed": commit,
-            ])
-        case .text:
-            print("Entity upserted: \(trimmedKey) (id \(entityID.rawValue), committed: \(commit))")
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "entity_id": entityID.rawValue,
+                    "key": trimmedKey,
+                    "committed": commit,
+                ])
+            case .text:
+                print("Entity upserted: \(trimmedKey) (id \(entityID.rawValue), committed: \(commit))")
+            }
         }
     }
 }
@@ -86,31 +85,30 @@ struct EntityResolveCommand: AsyncParsableCommand {
         }
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            let matches = try await memory.resolveEntities(matchingAlias: trimmedAlias, limit: limit)
 
-        let matches = try await memory.resolveEntities(matchingAlias: trimmedAlias, limit: limit)
-
-        switch store.format {
-        case .json:
-            let entities: [[String: Any]] = matches.map { match in
-                [
-                    "id": match.id,
-                    "key": match.key.rawValue,
-                    "kind": match.kind,
-                ]
-            }
-            printJSON([
-                "count": matches.count,
-                "entities": entities,
-            ])
-        case .text:
-            if matches.isEmpty {
-                print("No entities found for alias '\(trimmedAlias)'.")
-            } else {
-                print("Found \(matches.count) entit\(matches.count == 1 ? "y" : "ies"):")
-                for match in matches {
-                    print("  [\(match.id)] \(match.key.rawValue) (\(match.kind))")
+            switch store.format {
+            case .json:
+                let entities: [[String: Any]] = matches.map { match in
+                    [
+                        "id": match.id,
+                        "key": match.key.rawValue,
+                        "kind": match.kind,
+                    ]
+                }
+                printJSON([
+                    "count": matches.count,
+                    "entities": entities,
+                ])
+            case .text:
+                if matches.isEmpty {
+                    print("No entities found for alias '\(trimmedAlias)'.")
+                } else {
+                    print("Found \(matches.count) entit\(matches.count == 1 ? "y" : "ies"):")
+                    for match in matches {
+                        print("  [\(match.id)] \(match.key.rawValue) (\(match.kind))")
+                    }
                 }
             }
         }

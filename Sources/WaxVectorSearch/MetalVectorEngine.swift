@@ -492,6 +492,14 @@ public actor MetalVectorEngine {
             computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
 
             let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
+            // Metal threadgroup memory is typically limited to ~32-48KB on Apple GPUs.
+            guard threadgroupMemorySize <= 32_768 else {
+                computeEncoder.endEncoding()
+                throw WaxError.capacityExceeded(
+                    limit: UInt64(32_768 / MemoryLayout<Float>.stride),
+                    requested: UInt64(dimensions)
+                )
+            }
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
 
             let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline

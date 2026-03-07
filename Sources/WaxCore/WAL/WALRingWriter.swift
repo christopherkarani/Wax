@@ -507,4 +507,7 @@ public final class WALRingWriter {
     }
 }
 
+// SAFETY: WALRingWriter has no internal locking. It is safe to use as Sendable
+// only because all access is serialized through the Wax actor's BlockingIOExecutor.
+// Do not access WALRingWriter from multiple isolation domains without external synchronization.
 extension WALRingWriter: @unchecked Sendable {}

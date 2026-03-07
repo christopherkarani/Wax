@@ -41,6 +41,7 @@ private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32, _ mode: mod
     #endif
 }
 
+#if DEBUG
 enum FDFileReadFault: Sendable, Equatable {
     case eintr(retries: Int = 1)
     case eio
@@ -65,9 +66,11 @@ struct FDFileFaultPlan: Sendable, Equatable {
         self.pwrite = pwrite
     }
 }
+#endif
 
 /// POSIX file descriptor-backed file with offset-based I/O.
 public final class FDFile {
+    #if DEBUG
     private enum ReadDirective {
         case none
         case fail(errno: Int32)
@@ -134,11 +137,19 @@ public final class FDFile {
             }
         }
     }
+    #endif
 
     private let fd: Int32
     private let url: URL
-    private var isClosed = false
+    private let lock = NSLock()
+    private var _isClosed = false
+    private var isClosed: Bool {
+        get { lock.withLock { _isClosed } }
+        set { lock.withLock { _isClosed = newValue } }
+    }
+    #if DEBUG
     private var faultInjectionState: FaultInjectionState?
+    #endif
 
     private init(fd: Int32, url: URL) {
         self.fd = fd
@@ -171,6 +182,7 @@ public final class FDFile {
         return FDFile(fd: fd, url: url)
     }
 
+    #if DEBUG
     func installFaultPlan(_ plan: FDFileFaultPlan) {
         faultInjectionState = FaultInjectionState(plan: plan)
     }
@@ -178,6 +190,7 @@ public final class FDFile {
     func clearFaultPlan() {
         faultInjectionState = nil
     }
+    #endif
 
     // MARK: - Read/Write
 
@@ -417,6 +430,7 @@ public final class FDFile {
     }
 
     private func preadWithFaults(base: UnsafeMutableRawPointer, length: Int, offset: off_t) -> Int {
+        #if DEBUG
         let requestedLength: Int
         switch faultInjectionState?.nextReadDirective() ?? .none {
         case .none:
@@ -428,9 +442,13 @@ public final class FDFile {
             requestedLength = min(length, maxBytes)
         }
         return pread(fd, base, requestedLength, offset)
+        #else
+        return pread(fd, base, length, offset)
+        #endif
     }
 
     private func pwriteWithFaults(base: UnsafeRawPointer, length: Int, offset: off_t) -> Int {
+        #if DEBUG
         let requestedLength: Int
         switch faultInjectionState?.nextWriteDirective() ?? .none {
         case .none:
@@ -442,6 +460,9 @@ public final class FDFile {
             requestedLength = min(length, maxBytes)
         }
         return pwrite(fd, base, requestedLength, offset)
+        #else
+        return pwrite(fd, base, length, offset)
+        #endif
     }
 
     private static func stringError() -> String {
@@ -460,7 +481,12 @@ public final class MappedWritableRegion: @unchecked Sendable {
     private let basePointer: UnsafeMutableRawPointer
     private let mappedLength: Int
     public let buffer: UnsafeMutableRawBufferPointer
-    private var isClosed = false
+    private let lock = NSLock()
+    private var _isClosed = false
+    private var isClosed: Bool {
+        get { lock.withLock { _isClosed } }
+        set { lock.withLock { _isClosed = newValue } }
+    }
 
     init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeMutableRawBufferPointer) {
         self.basePointer = basePointer

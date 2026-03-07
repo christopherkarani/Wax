@@ -113,7 +113,9 @@ kernel void topKReduceDistances(
     uint baseIndex = tgId * tgSize;
     uint index = baseIndex + tid;
     if (index < vectorCount) {
-        sharedEntries[tid] = TopKEntry{distances[index], index};
+        float d = distances[index];
+        // Treat NaN distances as infinitely far (e.g. from zero-magnitude vectors)
+        sharedEntries[tid] = TopKEntry{isnan(d) ? INFINITY : d, index};
     } else {
         sharedEntries[tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
     }

@@ -44,4 +44,21 @@ enum StoreSession {
         }
         return try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
     }
+
+    /// Opens a store, runs the given closure, and ensures `close()` is awaited before returning.
+    static func withOpen<T>(
+        at url: URL,
+        noEmbedder: Bool = false,
+        body: (MemoryOrchestrator) async throws -> T
+    ) async throws -> T {
+        let memory = try await open(at: url, noEmbedder: noEmbedder)
+        do {
+            let result = try await body(memory)
+            try await memory.close()
+            return result
+        } catch {
+            try? await memory.close()
+            throw error
+        }
+    }
 }

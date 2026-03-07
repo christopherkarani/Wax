@@ -39,36 +39,35 @@ struct SearchCommand: AsyncParsableCommand {
         }
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: store.noEmbedder)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder) { memory in
+            let hits = try await memory.search(query: query, mode: searchMode, topK: topK, frameFilter: nil)
 
-        let hits = try await memory.search(query: query, mode: searchMode, topK: topK, frameFilter: nil)
-
-        switch store.format {
-        case .json:
-            let items: [[String: Any]] = hits.enumerated().map { index, hit in
-                [
-                    "rank": index + 1,
-                    "frameId": hit.frameId,
-                    "score": Double(hit.score),
-                    "sources": hit.sources.map { $0.rawValue },
-                    "preview": hit.previewText ?? "",
-                ]
-            }
-            printJSON([
-                "count": items.count,
-                "items": items,
-            ])
-        case .text:
-            if hits.isEmpty {
-                print("No results.")
-            } else {
-                for (index, hit) in hits.enumerated() {
-                    let sources = hit.sources.map { $0.rawValue }.joined(separator: ",")
-                    let preview = hit.previewText ?? ""
-                    print(
-                        "\(index + 1). frame=\(hit.frameId) score=\(String(format: "%.4f", hit.score)) sources=[\(sources)] \(preview)"
-                    )
+            switch store.format {
+            case .json:
+                let items: [[String: Any]] = hits.enumerated().map { index, hit in
+                    [
+                        "rank": index + 1,
+                        "frameId": hit.frameId,
+                        "score": Double(hit.score),
+                        "sources": hit.sources.map { $0.rawValue },
+                        "preview": hit.previewText ?? "",
+                    ]
+                }
+                printJSON([
+                    "count": items.count,
+                    "items": items,
+                ])
+            case .text:
+                if hits.isEmpty {
+                    print("No results.")
+                } else {
+                    for (index, hit) in hits.enumerated() {
+                        let sources = hit.sources.map { $0.rawValue }.joined(separator: ",")
+                        let preview = hit.previewText ?? ""
+                        print(
+                            "\(index + 1). frame=\(hit.frameId) score=\(String(format: "%.4f", hit.score)) sources=[\(sources)] \(preview)"
+                        )
+                    }
                 }
             }
         }

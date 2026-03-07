@@ -46,7 +46,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3"),
-        .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+        .package(url: "https://github.com/rensbreur/SwiftTUI.git", exact: "1.0.2"),
         .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
     ],
     targets: [

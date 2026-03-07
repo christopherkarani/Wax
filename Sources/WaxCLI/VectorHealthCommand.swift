@@ -89,55 +89,52 @@ private extension VectorHealthCommand {
 
     func checkPrimaryStore() async throws -> PrimaryStoreCheck {
         let url = try StoreSession.resolveURL(storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: false)
-        defer { Task { try? await memory.close() } }
-
-        let stats = await memory.runtimeStats()
-        return PrimaryStoreCheck(
-            path: stats.storeURL.path,
-            vectorSearchEnabled: stats.vectorSearchEnabled,
-            embedderIdentity: stats.embedderIdentity
-        )
+        return try await StoreSession.withOpen(at: url, noEmbedder: false) { memory in
+            let stats = await memory.runtimeStats()
+            return PrimaryStoreCheck(
+                path: stats.storeURL.path,
+                vectorSearchEnabled: stats.vectorSearchEnabled,
+                embedderIdentity: stats.embedderIdentity
+            )
+        }
     }
 
     func runSemanticProbe() async throws -> SemanticProbeResult {
         let probeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-vector-health-\(UUID().uuidString).wax")
-        let memory = try await StoreSession.open(at: probeURL, noEmbedder: false)
-        defer {
-            Task { try? await memory.close() }
-            try? FileManager.default.removeItem(at: probeURL)
+        let result = try await StoreSession.withOpen(at: probeURL, noEmbedder: false) { memory in
+            let expectedDocument = "An automobile needs periodic maintenance and tire rotation."
+            try await memory.remember(expectedDocument, metadata: ["probe": "vector-health"])
+            try await memory.remember(
+                "Bananas are a tropical fruit often eaten in smoothies.",
+                metadata: ["probe": "vector-health"]
+            )
+            try await memory.flush()
+
+            let hits = try await memory.search(
+                query: "car service",
+                mode: .hybrid(alpha: 0.5),
+                topK: 3,
+                frameFilter: nil
+            )
+
+            let topHit = hits.first
+            let vectorSourceSeen = hits.contains(where: { $0.sources.contains(.vector) })
+            let expectedDocMatched = hits.contains {
+                ($0.previewText ?? "").localizedCaseInsensitiveContains("automobile")
+            }
+            let topPreview = topHit?.previewText ?? ""
+            let topSources = (topHit?.sources ?? []).map(\.rawValue)
+
+            return SemanticProbeResult(
+                passed: vectorSourceSeen && expectedDocMatched,
+                vectorSourceSeen: vectorSourceSeen,
+                expectedDocMatched: expectedDocMatched,
+                topPreview: topPreview,
+                topSources: topSources
+            )
         }
-
-        let expectedDocument = "An automobile needs periodic maintenance and tire rotation."
-        try await memory.remember(expectedDocument, metadata: ["probe": "vector-health"])
-        try await memory.remember(
-            "Bananas are a tropical fruit often eaten in smoothies.",
-            metadata: ["probe": "vector-health"]
-        )
-        try await memory.flush()
-
-        let hits = try await memory.search(
-            query: "car service",
-            mode: .hybrid(alpha: 0.5),
-            topK: 3,
-            frameFilter: nil
-        )
-
-        let topHit = hits.first
-        let vectorSourceSeen = hits.contains(where: { $0.sources.contains(.vector) })
-        let expectedDocMatched = hits.contains {
-            ($0.previewText ?? "").localizedCaseInsensitiveContains("automobile")
-        }
-        let topPreview = topHit?.previewText ?? ""
-        let topSources = (topHit?.sources ?? []).map(\.rawValue)
-
-        return SemanticProbeResult(
-            passed: vectorSourceSeen && expectedDocMatched,
-            vectorSourceSeen: vectorSourceSeen,
-            expectedDocMatched: expectedDocMatched,
-            topPreview: topPreview,
-            topSources: topSources
-        )
+        try? FileManager.default.removeItem(at: probeURL)
+        return result
     }
 }

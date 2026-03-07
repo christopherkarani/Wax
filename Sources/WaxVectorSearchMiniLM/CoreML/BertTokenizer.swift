@@ -381,12 +381,9 @@ private extension BertTokenizer {
     }
 
     static func loadVocab() throws -> VocabData {
-        vocabCache.lock.lock()
-        if let cached = vocabCache.data {
-            vocabCache.lock.unlock()
+        if let cached = vocabCache.lock.withLock({ vocabCache.data }) {
             return cached
         }
-        vocabCache.lock.unlock()
 
         guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw WaxError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
@@ -402,15 +399,14 @@ private extension BertTokenizer {
             idsToTokens[i] = token
         }
         let loaded = VocabData(vocab: vocab, idsToTokens: idsToTokens)
-        vocabCache.lock.lock()
-        if let cached = vocabCache.data {
-            vocabCache.lock.unlock()
-            return cached
+        return vocabCache.lock.withLock {
+            if let cached = vocabCache.data {
+                return cached
+            }
+            vocabCache.data = loaded
+            vocabCache.loadCount += 1
+            return loaded
         }
-        vocabCache.data = loaded
-        vocabCache.loadCount += 1
-        vocabCache.lock.unlock()
-        return loaded
     }
 
     static func selectSequenceLength(
@@ -432,17 +428,14 @@ private extension BertTokenizer {
 #if DEBUG
 extension BertTokenizer {
     static func _resetVocabCacheForTests() {
-        vocabCache.lock.lock()
-        vocabCache.data = nil
-        vocabCache.loadCount = 0
-        vocabCache.lock.unlock()
+        vocabCache.lock.withLock {
+            vocabCache.data = nil
+            vocabCache.loadCount = 0
+        }
     }
 
     static func _vocabLoadCountForTests() -> Int {
-        vocabCache.lock.lock()
-        let count = vocabCache.loadCount
-        vocabCache.lock.unlock()
-        return count
+        vocabCache.lock.withLock { vocabCache.loadCount }
     }
 }
 #endif

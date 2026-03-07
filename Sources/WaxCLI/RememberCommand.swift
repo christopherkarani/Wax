@@ -32,40 +32,39 @@ struct RememberCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: store.noEmbedder)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder) { memory in
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw CLIError("Content must not be empty")
+            }
 
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw CLIError("Content must not be empty")
-        }
+            var meta: [String: String] = [:]
+            for (key, value) in metadata {
+                meta[key] = value
+            }
 
-        var meta: [String: String] = [:]
-        for (key, value) in metadata {
-            meta[key] = value
-        }
+            let before = await memory.runtimeStats()
+            try await memory.remember(trimmed, metadata: meta)
 
-        let before = await memory.runtimeStats()
-        try await memory.remember(trimmed, metadata: meta)
+            // CLI is single-shot: auto-flush so frames are immediately searchable.
+            try await memory.flush()
 
-        // CLI is single-shot: auto-flush so frames are immediately searchable.
-        try await memory.flush()
+            let after = await memory.runtimeStats()
+            let totalBefore = before.frameCount + before.pendingFrames
+            let totalAfter = after.frameCount + after.pendingFrames
+            let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
 
-        let after = await memory.runtimeStats()
-        let totalBefore = before.frameCount + before.pendingFrames
-        let totalAfter = after.frameCount + after.pendingFrames
-        let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
-
-        switch store.format {
-        case .json:
-            printJSON([
-                "status": "ok",
-                "framesAdded": added,
-                "frameCount": after.frameCount,
-                "pendingFrames": after.pendingFrames,
-            ])
-        case .text:
-            print("Remembered. \(added) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending).")
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "framesAdded": added,
+                    "frameCount": after.frameCount,
+                    "pendingFrames": after.pendingFrames,
+                ])
+            case .text:
+                print("Remembered. \(added) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending).")
+            }
         }
     }
 }
