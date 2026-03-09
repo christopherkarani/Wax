@@ -36,6 +36,7 @@ let context = try await memory.recall(query: "communication preferences")
 
 ---
 
+
 ## Performance
 
 <div align="center">
