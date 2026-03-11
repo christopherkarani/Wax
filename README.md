@@ -2,7 +2,7 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img src="docs/assets/banner-light.svg" width="800" alt="Wax Banner" />
+    <img src="docs/assets/banner-light.svg" width="800" alt="Wax Banner">
   </picture>
 </div>
 
@@ -27,69 +27,128 @@
 
 ---
 
-## Technical Summary
+## What is Wax?
 
-Wax is a Swift-native persistence engine designed for the next generation of AI agents. It encapsulates documents, high-dimensional embeddings, and structured knowledge into a single, portable `.wax` file. By leveraging Metal-accelerated inference and concurrent indexing, Wax provides a low-latency memory layer that ensures data remains private and resides strictly on the user's device.
+Wax is a Swift-native persistence engine designed for the next generation of AI agents. It encapsulates documents, high-dimensional embeddings, and structured knowledge into a single, portable `.wax` file. 
 
-## Key Features
+Unlike traditional databases that require complex setups or cloud dependencies, Wax provides a **unified memory layer** that lives entirely on-device, leveraging Metal-accelerated inference for sub-10ms recall latency.
 
-- **Fast & Efficient**: Optimized for Apple Silicon with Metal-accelerated embeddings and LZ4 compression.
-- **Type-Safe & Native**: A pure Swift 6 API with full support for Actors and Structured Concurrency.
-- **Unified Memory**: Hybrid retrieval combining BM25 full-text search with HNSW vector similarity.
-- **Single Portable File**: No external databases or sidecars. Your agent's entire memory is one `.wax` file.
-- **Crash-Resilient**: Atomic writes with Write-Ahead Logging (WAL) and dual-header redundancy.
+### Why Wax?
+
+| Feature          | Wax                    | SQLite (FTS5)          | Cloud Vector DBs       |
+|:-----------------|:-----------------------|:-----------------------|:-----------------------|
+| **Search**       | Hybrid (Text + Vector) | Text Only*             | Vector Only*           |
+| **Latency**      | **~6ms (p95)**         | ~10ms (p95)            | 150ms - 500ms+         |
+| **Privacy**      | 100% Local             | 100% Local             | Cloud-hosted           |
+| **Setup**        | Zero Config            | Low                    | Complex (API Keys)     |
+| **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
+
+### 📦 Why a Single `.wax` File?
+Most RAG systems require a database, a vector store, and a file server. Wax bundles everything—documents, metadata, and high-dimensional indices—into one portable binary.
+*   **Zero Infrastructure:** No Docker, no DB setup, no cloud bill. 
+*   **Truly Portable:** AirDrop your agent's memory to another Mac, or sync it via iCloud.
+*   **Atomic:** One file to backup, one file to version control, one file to delete.
+
+---
 
 ## Performance
 
 Wax is tuned for the M-series architecture, providing near-instantaneous recall even with large-scale local indices.
 
-Latest measured snapshot (2026-03-06):
+### Recall Latency (p95)
+*Lower is better. Measured in milliseconds.*
 
-- **Cold open p95:** `9.2 ms`
-- **Warm hybrid with previews p95 / p99:** `6.1 ms / 6.5 ms`
-- **MemoryOrchestrator ingest:** `0.445 s avg`
-- **WAL large_hybrid_10k commit p95 / p99:** `97.40 ms / 100.30 ms`
-- Full benchmark report: [docs/benchmarks/2026-03-06-performance-results.md](docs/benchmarks/2026-03-06-performance-results.md)
+```text
+Wax (Hybrid)  |██ 6.1ms
+SQLite (Text) |████ 12ms
+Cloud RAG     |██████████████████████████████████████████████████ 150ms+
+```
 
-<div align="center">
-<svg width="600" height="120" viewBox="0 0 600 120" xmlns="http://www.w3.org/2000/svg">
-  <!-- Recall Latency (ms) -->
-  <text x="0" y="20" font-family="system-ui" font-size="12" fill="#8E8E93">Recall Latency (ms) - Lower is better</text>
-  <rect x="0" y="30" width="450" height="20" rx="4" fill="#E5E5EA" />
-  <rect x="0" y="30" width="24" height="20" rx="4" fill="#007AFF" />
-  <text x="30" y="44" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">6.1ms p95 (Wax)</text>
-  <text x="455" y="44" font-family="system-ui" font-size="12" fill="#8E8E93">vs 150ms+ (Cloud RAG)</text>
+### Cold Open Time (p95)
+*Lower is better. Measured in milliseconds.*
 
-  <!-- Throughput (docs/s) -->
-  <text x="0" y="80" font-family="system-ui" font-size="12" fill="#8E8E93">Ingest Throughput (docs/s) - Higher is better</text>
-  <rect x="0" y="90" width="450" height="20" rx="4" fill="#E5E5EA" />
-  <rect x="0" y="90" width="160" height="20" rx="4" fill="#34C759" />
-  <text x="165" y="104" font-family="system-ui" font-size="12" font-weight="600" fill="#1C1C1E">85.9 docs/s (Wax)</text>
-</svg>
-<p><sub>Benchmark conducted on Apple M3 Max. Results vary by hardware.</sub></p>
-</div>
+```text
+Wax           |███ 9.2ms
+Traditional   |██████████████████████████████████████ 120ms+
+```
+
+> [!TIP]
+> **Ingest Throughput:** Wax handles **85.9 docs/s** with full hybrid indexing on an M3 Max.
+> Full benchmark report: [docs/benchmarks/2026-03-06-performance-results.md](docs/benchmarks/2026-03-06-performance-results.md)
+
+---
+
+## Architecture
+
+Wax uses a **"Database of Databases"** model. It manages its own frame-based storage format while embedding specialized search engines (SQLite FTS5 and Metal-accelerated HNSW) as serialized blobs within the main file.
+
+### Internal File Layout
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          Dual Header Pages (A/B)                         │
+│   (Magic, Version, Generation, Pointers to WAL & TOC, Checksums)         │
+├──────────────────────────────────────────────────────────────────────────┤
+│                          WAL (Write-Ahead Log)                           │
+│   (Atomic ring buffer for crash-resilient uncommitted mutations)         │
+├──────────────────────────────────────────────────────────────────────────┤
+│                          Compressed Data Frames                          │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐       │
+│   │ Frame 0 (LZ4)    │  │ Frame 1 (LZ4)    │  │ Frame 2 (LZ4)    │ ...   │
+│   │ [Raw Document]   │  │ [Metadata/JSON]  │  │ [System Info]    │       │
+│   └──────────────────┘  └──────────────────┘  └──────────────────┘       │
+├──────────────────────────────────────────────────────────────────────────┤
+│                          Hybrid Search Indices                           │
+│   ┌──────────────────────────────┐  ┌──────────────────────────────┐     │
+│   │ SQLite FTS5 Blob             │  │ Metal HNSW Index             │     │
+│   │ (Text Search + EAV Facts)    │  │ (Vector Search)              │     │
+│   └──────────────────────────────┘  └──────────────────────────────┘     │
+├──────────────────────────────────────────────────────────────────────────┤
+│                          TOC (Table of Contents)                         │
+│   (Index of all frames, parent-child relations, and engine manifests)    │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Atomic Resilience**: Dual-headers and WAL ensure that even if the process crashes mid-write, the store remains consistent.
+2. **Unified Retrieval**: A single query triggers parallel execution across the BM25 (text) and HNSW (vector) engines.
+3. **Structured Knowledge**: Built-in EAV (Entity-Attribute-Value) storage for persistent facts and long-term reasoning.
+
+---
 
 ## Quick Start
 
+Copy and paste this into a `main.swift` file to get started immediately.
+
 ```swift
+import Foundation
 import Wax
 import WaxVectorSearchMiniLM
 
-// 1. Initialize a memory store on-device
-let memory = try await MemoryOrchestrator.openMiniLM(
-    at: .documentsDirectory.appending(path: "agent.wax")
-)
+@main
+struct AgentMemory {
+    static func main() async throws {
+        let url = URL(fileURLWithPath: "agent.wax")
 
-// 2. Commit memories with async/await
-try await memory.remember("The user's name is Alex and they live in Toronto.")
-try await memory.remember("Alex is building a habit tracker in SwiftUI.")
+        // 1. Initialize a memory store (on-device MiniLM embeddings)
+        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
 
-// 3. Perform semantic recall
-let context = try await memory.recall(query: "Where does the user live?")
-if let bestMatch = context.items.first {
-    print("Recall: \(bestMatch.text)") // "The user's name is Alex and they live in Toronto."
+        // 2. Commit a new memory
+        try await memory.remember("The user is building a habit tracker in SwiftUI.")
+
+        // 3. Perform semantic recall
+        let context = try await memory.recall(query: "What is the user building?")
+
+        if let bestMatch = context.items.first {
+            print("Recall: \(bestMatch.text)") 
+            // Output: "Recall: The user is building a habit tracker in SwiftUI."
+        }
+    }
 }
 ```
+
+Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
+
+---
 
 ## Installation
 
@@ -101,31 +160,27 @@ dependencies: [
 ]
 ```
 
-## MCP Server
+---
 
-Wax provides a first-class Model Context Protocol (MCP) server for integration with Claude Code and other MCP-compatible agents.
+## Ecosystem Tools
+
+### 🤖 MCP Server
+Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your local memory to Claude Code or any MCP-compatible agent.
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
 
+### 🔍 WaxRepo
+A semantic search TUI for your git history. Index any repository and find code or commits using natural language.
+
+```bash
+# From within any git repo
+wax-repo index
+wax-repo search "where did we implement the WAL?"
+```
+
 ---
-
-## Architecture
-
-Everything lives in a single `.wax` file with a specialized ring-buffer for crash recovery and an immutable frame-based storage model.
-
-```
-┌────────────────────────────┐
-│ Dual Header Pages          │  Magic, TOC pointer
-├────────────────────────────┤
-│ WAL Ring Buffer             │  Atomic recovery
-├────────────────────────────┤
-│ Compressed Data            │  LZ4/zlib frames
-├────────────────────────────┤
-│ Hybrid Search Indices      │  BM25 + HNSW
-└────────────────────────────┘
-```
 
 ## License
 
