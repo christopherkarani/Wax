@@ -1,16 +1,16 @@
 import Foundation
 
-public struct LiveSetRewriteOptions: Sendable, Equatable {
+package struct LiveSetRewriteOptions: Sendable, Equatable {
     /// Allow replacing an existing destination file.
-    public var overwriteDestination: Bool
+    package var overwriteDestination: Bool
 
     /// Replace payload bytes for non-live frames (deleted/superseded) with empty payloads.
-    public var dropNonLivePayloads: Bool
+    package var dropNonLivePayloads: Bool
 
     /// Run `Wax.verify(deep:)` on the rewritten file before returning.
-    public var verifyDeep: Bool
+    package var verifyDeep: Bool
 
-    public init(
+    package init(
         overwriteDestination: Bool = false,
         dropNonLivePayloads: Bool = true,
         verifyDeep: Bool = false

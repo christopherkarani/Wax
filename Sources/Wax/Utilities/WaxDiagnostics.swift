@@ -14,7 +14,7 @@ enum WaxDiagnostics {
         #if canImport(os)
         let logger = Logger(subsystem: "com.wax.framework", category: "diagnostics")
         logger.error(
-            "\(context, privacy: .public): \(String(describing: error), privacy: .public); fallback: \(fallback, privacy: .public) [\(fileID, privacy: .public):\(line)]"
+            "\(context, privacy: .public): \(String(describing: error), privacy: .private); fallback: \(fallback, privacy: .public) [\(fileID, privacy: .public):\(line)]"
         )
         #else
         let msg = "\(context): \(String(describing: error)); fallback: \(fallback) [\(fileID):\(line)]\n"

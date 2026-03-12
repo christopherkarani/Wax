@@ -1,6 +1,7 @@
 #include "wax_compression_shims.h"
 
 #include <lz4.h>
+#include <string.h>
 #include <zlib.h>
 
 int32_t wax_lz4_compress(
@@ -114,6 +115,27 @@ int32_t wax_deflate_decompress(
         src,
         (uLong)src_len
     );
+    if (zrc == Z_DATA_ERROR) {
+        // Fallback for raw DEFLATE payloads (no zlib wrapper) produced by
+        // some platform codecs for "deflate"/zlib algorithm selections.
+        z_stream stream;
+        memset(&stream, 0, sizeof(stream));
+        stream.next_in = (Bytef *)src;
+        stream.avail_in = (uInt)src_len;
+        stream.next_out = dst;
+        stream.avail_out = (uInt)(*inout_dst_len);
+
+        if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
+            return -3;
+        }
+        const int raw_rc = inflate(&stream, Z_FINISH);
+        const int end_rc = inflateEnd(&stream);
+        if (raw_rc == Z_STREAM_END && end_rc == Z_OK) {
+            *inout_dst_len = (size_t)stream.total_out;
+            return 0;
+        }
+        return -3;
+    }
     if (zrc != Z_OK) {
         return -3;
     }

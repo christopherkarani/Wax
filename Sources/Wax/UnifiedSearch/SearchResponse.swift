@@ -1,13 +1,13 @@
 /// Unified search response.
-public struct SearchResponse: Sendable, Equatable {
-    public enum Source: String, Sendable, Equatable, CaseIterable {
+package struct SearchResponse: Sendable, Equatable {
+    package enum Source: String, Sendable, Equatable, CaseIterable {
         case text
         case vector
         case timeline
         case structuredMemory
     }
 
-    public enum RankingTieBreakReason: String, Sendable, Equatable {
+    package enum RankingTieBreakReason: String, Sendable, Equatable {
         case topResult
         case rerankComposite
         case fusedScore
@@ -15,13 +15,13 @@ public struct SearchResponse: Sendable, Equatable {
         case frameID
     }
 
-    public struct RankingLaneContribution: Sendable, Equatable {
-        public var source: Source
-        public var weight: Float
-        public var rank: Int
-        public var rrfScore: Float
+    package struct RankingLaneContribution: Sendable, Equatable {
+        package var source: Source
+        package var weight: Float
+        package var rank: Int
+        package var rrfScore: Float
 
-        public init(source: Source, weight: Float, rank: Int, rrfScore: Float) {
+        package init(source: Source, weight: Float, rank: Int, rrfScore: Float) {
             self.source = source
             self.weight = weight
             self.rank = rank
@@ -29,12 +29,12 @@ public struct SearchResponse: Sendable, Equatable {
         }
     }
 
-    public struct RankingDiagnostics: Sendable, Equatable {
-        public var bestLaneRank: Int?
-        public var laneContributions: [RankingLaneContribution]
-        public var tieBreakReason: RankingTieBreakReason
+    package struct RankingDiagnostics: Sendable, Equatable {
+        package var bestLaneRank: Int?
+        package var laneContributions: [RankingLaneContribution]
+        package var tieBreakReason: RankingTieBreakReason
 
-        public init(
+        package init(
             bestLaneRank: Int?,
             laneContributions: [RankingLaneContribution],
             tieBreakReason: RankingTieBreakReason = .topResult
@@ -45,14 +45,14 @@ public struct SearchResponse: Sendable, Equatable {
         }
     }
 
-    public struct Result: Sendable, Equatable {
-        public var frameId: UInt64
-        public var score: Float
-        public var previewText: String?
-        public var sources: [Source]
-        public var rankingDiagnostics: RankingDiagnostics?
+    package struct Result: Sendable, Equatable {
+        package var frameId: UInt64
+        package var score: Float
+        package var previewText: String?
+        package var sources: [Source]
+        package var rankingDiagnostics: RankingDiagnostics?
 
-        public init(
+        package init(
             frameId: UInt64,
             score: Float,
             previewText: String? = nil,
@@ -67,9 +67,9 @@ public struct SearchResponse: Sendable, Equatable {
         }
     }
 
-    public var results: [Result]
+    package var results: [Result]
 
-    public init(results: [Result]) {
+    package init(results: [Result]) {
         self.results = results
     }
 }

@@ -3,30 +3,30 @@ import WaxCore
 import WaxVectorSearch
 
 /// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
-public actor MemoryOrchestrator {
+package actor MemoryOrchestrator {
     /// Policy controlling when to compute query embeddings for vector search.
-    public enum QueryEmbeddingPolicy: Sendable, Equatable {
+    package enum QueryEmbeddingPolicy: Sendable, Equatable {
         case never
         case ifAvailable
         case always
     }
 
     /// Direct search mode for raw candidate retrieval.
-    public enum DirectSearchMode: Sendable, Equatable {
+    package enum DirectSearchMode: Sendable, Equatable {
         case text
         case hybrid(alpha: Float)
 
-        public static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
+        package static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
     }
 
     /// Stable search hit DTO for MCP and other raw-search callers.
-    public struct MemorySearchHit: Sendable, Equatable {
-        public var frameId: UInt64
-        public var score: Float
-        public var previewText: String?
-        public var sources: [SearchResponse.Source]
+    package struct MemorySearchHit: Sendable, Equatable {
+        package var frameId: UInt64
+        package var score: Float
+        package var previewText: String?
+        package var sources: [SearchResponse.Source]
 
-        public init(frameId: UInt64, score: Float, previewText: String?, sources: [SearchResponse.Source]) {
+        package init(frameId: UInt64, score: Float, previewText: String?, sources: [SearchResponse.Source]) {
             self.frameId = frameId
             self.score = score
             self.previewText = previewText
@@ -35,18 +35,18 @@ public actor MemoryOrchestrator {
     }
 
     /// Runtime stats DTO exposed to external callers.
-    public struct RuntimeStats: Sendable, Equatable {
-        public var frameCount: UInt64
-        public var pendingFrames: UInt64
-        public var generation: UInt64
-        public var wal: WaxWALStats
-        public var storeURL: URL
-        public var vectorSearchEnabled: Bool
-        public var structuredMemoryEnabled: Bool
-        public var accessStatsScoringEnabled: Bool
-        public var embedderIdentity: EmbeddingIdentity?
+    package struct RuntimeStats: Sendable, Equatable {
+        package var frameCount: UInt64
+        package var pendingFrames: UInt64
+        package var generation: UInt64
+        package var wal: WaxWALStats
+        package var storeURL: URL
+        package var vectorSearchEnabled: Bool
+        package var structuredMemoryEnabled: Bool
+        package var accessStatsScoringEnabled: Bool
+        package var embedderIdentity: EmbeddingIdentity?
 
-        public init(
+        package init(
             frameCount: UInt64,
             pendingFrames: UInt64,
             generation: UInt64,
@@ -69,15 +69,15 @@ public actor MemoryOrchestrator {
         }
     }
 
-    public struct SessionRuntimeStats: Sendable, Equatable {
-        public var active: Bool
-        public var sessionId: UUID?
-        public var sessionFrameCount: Int
-        public var sessionTokenEstimate: Int
-        public var pendingFramesStoreWide: UInt64
-        public var countsIncludePending: Bool
+    package struct SessionRuntimeStats: Sendable, Equatable {
+        package var active: Bool
+        package var sessionId: UUID?
+        package var sessionFrameCount: Int
+        package var sessionTokenEstimate: Int
+        package var pendingFramesStoreWide: UInt64
+        package var countsIncludePending: Bool
 
-        public init(
+        package init(
             active: Bool,
             sessionId: UUID?,
             sessionFrameCount: Int,
@@ -94,14 +94,14 @@ public actor MemoryOrchestrator {
         }
     }
 
-    public struct HandoffRecord: Sendable, Equatable {
-        public var frameId: UInt64
-        public var timestampMs: Int64
-        public var content: String
-        public var project: String?
-        public var pendingTasks: [String]
+    package struct HandoffRecord: Sendable, Equatable {
+        package var frameId: UInt64
+        package var timestampMs: Int64
+        package var content: String
+        package var project: String?
+        package var pendingTasks: [String]
 
-        public init(frameId: UInt64, timestampMs: Int64, content: String, project: String?, pendingTasks: [String]) {
+        package init(frameId: UInt64, timestampMs: Int64, content: String, project: String?, pendingTasks: [String]) {
             self.frameId = frameId
             self.timestampMs = timestampMs
             self.content = content
@@ -114,6 +114,7 @@ public actor MemoryOrchestrator {
     private static let accessStatsLabel = "wax.internal"
     private static let accessStatsMarkerKey = "wax.internal.kind"
     private static let accessStatsMarkerValue = "access_stats"
+    private static let contentHashMetadataKey = "wax.content.hash"
 
     let wax: Wax
     let config: OrchestratorConfig
@@ -122,8 +123,11 @@ public actor MemoryOrchestrator {
     let session: WaxSession
     private let embedder: (any EmbeddingProvider)?
     private let embeddingCache: EmbeddingMemoizer?
+    private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
+    private var hasEnsuredMemoryBinding = false
+    private var queryEmbeddingCircuitOpen = false
 
     private var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -133,7 +137,14 @@ public actor MemoryOrchestrator {
     var scheduledLiveSetMaintenanceQueued = false
     var scheduledLiveSetMaintenanceLastCompletedAt: ContinuousClock.Instant?
 
-    public init(
+    package init(
+        at url: URL,
+        config: OrchestratorConfig = .default
+    ) async throws {
+        try await self.init(at: url, config: config, embedder: nil)
+    }
+
+    package init(
         at url: URL,
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil
@@ -170,8 +181,16 @@ public actor MemoryOrchestrator {
         // vector index exists. This lets the simple `MemoryOrchestrator(at:)` initializer
         // work out-of-the-box with text-only search instead of throwing an error.
         var resolvedConfig = config
+        let existingMemoryBinding = await wax.memoryBinding()
         if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             resolvedConfig.enableVectorSearch = false
+        }
+        if let identity = embedder?.identity,
+           let binding = existingMemoryBinding,
+           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
+            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+            try? await wax.close()
+            throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
         }
 
         self.config = resolvedConfig
@@ -181,8 +200,10 @@ public actor MemoryOrchestrator {
             capacity: resolvedConfig.embeddingCacheCapacity,
             enabled: embedder != nil
         )
+        self.enrichmentPipeline = resolvedConfig.enableAsyncEnrichment ? EnrichmentPipeline() : nil
+        self.hasEnsuredMemoryBinding = existingMemoryBinding != nil
 
-        let preference: VectorEnginePreference = resolvedConfig.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference = resolvedConfig.vectorEnginePreference
         let sessionConfig = WaxSession.Config(
             enableTextSearch: resolvedConfig.enableTextSearch,
             enableVectorSearch: resolvedConfig.enableVectorSearch,
@@ -195,6 +216,15 @@ public actor MemoryOrchestrator {
 
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
+        if let enrichmentPipeline {
+            await enrichmentPipeline.start { task in
+                EnrichmentResult(
+                    frameId: task.frameId,
+                    keywords: KeywordExtractor.extract(from: task.text),
+                    entities: []
+                )
+            }
+        }
         if resolvedConfig.enableAccessStatsScoring {
             try await loadPersistedAccessStatsIfNeeded()
         }
@@ -203,17 +233,17 @@ public actor MemoryOrchestrator {
 
     // MARK: - Session tagging (v1)
 
-    public func startSession() -> UUID {
+    package func startSession() -> UUID {
         let id = UUID()
         currentSessionId = id
         return id
     }
 
-    public func endSession() {
+    package func endSession() {
         currentSessionId = nil
     }
 
-    public func activeSessionId() -> UUID? {
+    package func activeSessionId() -> UUID? {
         currentSessionId
     }
 
@@ -230,27 +260,43 @@ public actor MemoryOrchestrator {
     ///   (WAL guarantees crash safety), but the ingested content may be incomplete.
     ///   Callers requiring all-or-nothing semantics should validate post-ingest or
     ///   implement their own rollback by superseding the document frame on failure.
-    public func remember(_ content: String, metadata: [String: String] = [:]) async throws {
+    package func remember(_ content: String, metadata: [String: String] = [:]) async throws {
         lastWriteActivityAt = .now
+        let contentData = Data(content.utf8)
+        let contentHash = ContentHasher.hash(contentData).hexString
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        let localEmbedder = embedder
 
         var docMeta = Metadata(metadata)
+        docMeta.entries[Self.contentHashMetadataKey] = contentHash
         if docMeta.entries["session_id"] == nil, let session = currentSessionId {
             docMeta.entries["session_id"] = session.uuidString
         }
         let effectiveSessionId = docMeta.entries["session_id"]
+        if let existingProbe = await wax.rememberDedupProbe(
+            contentHash: contentHash,
+            metadata: docMeta.entries,
+            expectedChunkCount: chunks.count,
+            embeddingIdentity: Self.rememberDedupEmbeddingIdentity(from: localEmbedder?.identity)
+        ), existingProbe.isComplete {
+            return
+        }
 
         let chunkCount = chunks.count
         let localSession = session
-        let localEmbedder = embedder
         let cache = embeddingCache
         let batchSize = max(1, config.ingestBatchSize)
         let useVectorSearch = config.enableVectorSearch
-        let fileManager = FileManager.default
+        let bindingForEmbedderIdentity: MemoryBinding?
+        if let identity = localEmbedder?.identity {
+            bindingForEmbedderIdentity = MemoryBindingCompatibility.binding(from: identity)
+        } else {
+            bindingForEmbedderIdentity = nil
+        }
 
         guard !chunks.isEmpty else {
             _ = try await localSession.put(
-                Data(content.utf8),
+                contentData,
                 options: FrameMetaSubset(
                     role: .document,
                     metadata: docMeta
@@ -261,6 +307,78 @@ public actor MemoryOrchestrator {
 
         if useVectorSearch, localEmbedder == nil {
             throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+        }
+
+        if chunkCount == 1 {
+            let chunk = chunks[0]
+            let chunkData = Data(chunk.utf8)
+
+            var chunkMeta = Metadata(metadata)
+            if let effectiveSessionId {
+                chunkMeta.entries["session_id"] = effectiveSessionId
+            }
+
+            let chunkEmbedding: [Float]?
+            if useVectorSearch {
+                guard let localEmbedder else {
+                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                }
+                chunkEmbedding = try await Self.embedOne(
+                    chunk,
+                    embedder: localEmbedder,
+                    cache: cache
+                )
+            } else {
+                chunkEmbedding = nil
+            }
+
+            let docId = try await localSession.put(
+                contentData,
+                options: FrameMetaSubset(
+                    role: .document,
+                    metadata: docMeta
+                )
+            )
+
+            var option = FrameMetaSubset()
+            option.role = .chunk
+            option.parentId = docId
+            option.chunkIndex = 0
+            option.chunkCount = 1
+            option.searchText = chunk
+            option.metadata = chunkMeta
+
+            if let chunkEmbedding {
+                guard let localEmbedder else {
+                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                }
+                let frameId = try await localSession.put(
+                    chunkData,
+                    embedding: chunkEmbedding,
+                    identity: localEmbedder.identity,
+                    options: option
+                )
+                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
+                if config.enableTextSearch {
+                    try await localSession.indexText(frameId: frameId, text: chunk)
+                }
+                if let enrichmentPipeline {
+                    try await enrichmentPipeline.enqueue(
+                        EnrichmentTask(frameId: frameId, text: chunk)
+                    )
+                }
+            } else {
+                let frameId = try await localSession.put(chunkData, options: option)
+                if config.enableTextSearch {
+                    try await localSession.indexText(frameId: frameId, text: chunk)
+                }
+                if let enrichmentPipeline {
+                    try await enrichmentPipeline.enqueue(
+                        EnrichmentTask(frameId: frameId, text: chunk)
+                    )
+                }
+            }
+            return
         }
 
         struct IngestBatchResult {
@@ -277,15 +395,8 @@ public actor MemoryOrchestrator {
 
         let parallelism = max(1, config.ingestConcurrency)
 
-        let stagingDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("wax-ingest-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: stagingDirectory) }
-        if useVectorSearch {
-            try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
-        }
-
-        var stagedEmbeddingFiles: [Int: URL] = [:]
-        stagedEmbeddingFiles.reserveCapacity(batchRanges.count)
+        var preparedEmbeddingsByBatch: [Int: [[Float]]] = [:]
+        preparedEmbeddingsByBatch.reserveCapacity(batchRanges.count)
         var preparedBatchCount = 0
 
         try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
@@ -327,9 +438,7 @@ public actor MemoryOrchestrator {
                 inFlight -= 1
 
                 if let embeddings = result.embeddings {
-                    let fileURL = stagingDirectory.appendingPathComponent("batch-\(result.index).emb")
-                    try Self.writeEmbeddings(embeddings, to: fileURL)
-                    stagedEmbeddingFiles[result.index] = fileURL
+                    preparedEmbeddingsByBatch[result.index] = embeddings
                 }
                 preparedBatchCount += 1
 
@@ -345,14 +454,13 @@ public actor MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared batches, got \(preparedBatchCount)"
             )
         }
-        if useVectorSearch, stagedEmbeddingFiles.count != batchRanges.count {
+        if useVectorSearch, preparedEmbeddingsByBatch.count != batchRanges.count {
             throw WaxError.io(
-                "ingest batching incomplete: expected \(batchRanges.count) staged embedding batches, got \(stagedEmbeddingFiles.count)"
+                "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
-
         let docId = try await localSession.put(
-            Data(content.utf8),
+            contentData,
             options: FrameMetaSubset(
                 role: .document,
                 metadata: docMeta
@@ -381,19 +489,26 @@ public actor MemoryOrchestrator {
             }
 
             if useVectorSearch {
-                guard let fileURL = stagedEmbeddingFiles[entry.index] else {
-                    throw WaxError.io("missing staged embeddings for batch \(entry.index)")
+                guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
+                    throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
                 }
-                let embeddings = try Self.readEmbeddings(from: fileURL)
                 let frameIds = try await localSession.putBatch(
                     contents: batchContents,
                     embeddings: embeddings,
                     identity: localEmbedder?.identity,
                     options: options
                 )
+                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
 
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                }
+                if let enrichmentPipeline {
+                    for (offset, frameId) in frameIds.enumerated() {
+                        try await enrichmentPipeline.enqueue(
+                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                        )
+                    }
                 }
             } else {
                 let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
@@ -401,8 +516,36 @@ public actor MemoryOrchestrator {
                 if config.enableTextSearch {
                     try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
                 }
+                if let enrichmentPipeline {
+                    for (offset, frameId) in frameIds.enumerated() {
+                        try await enrichmentPipeline.enqueue(
+                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                        )
+                    }
+                }
             }
         }
+    }
+
+    private static func rememberDedupEmbeddingIdentity(
+        from identity: EmbeddingIdentity?
+    ) -> RememberDedupEmbeddingIdentity? {
+        guard let identity else { return nil }
+        return RememberDedupEmbeddingIdentity(
+            provider: identity.provider,
+            model: identity.model,
+            dimensions: identity.dimensions,
+            normalized: identity.normalized
+        )
+    }
+
+    private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
+        guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
+#if DEBUG
+        Self._recordMemoryBindingEnsureCallForTests()
+#endif
+        try await wax.setMemoryBindingIfMissing(binding)
+        hasEnsuredMemoryBinding = true
     }
 
     /// Optimized batch embedding preparation with cache-aware batching.
@@ -412,6 +555,9 @@ public actor MemoryOrchestrator {
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [[Float]] {
+#if DEBUG
+        Self._recordBatchPreparationPathCallForTests()
+#endif
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
         let cacheKeys: [UInt64]? = if cache != nil {
             chunks.map {
@@ -504,35 +650,80 @@ public actor MemoryOrchestrator {
 
     // MARK: - Recall (Fast RAG)
 
-    public func recall(query: String) async throws -> RAGContext {
+    package func recall(query: String) async throws -> RAGContext {
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
         return try await buildRecallContext(query: query, embedding: embedding)
     }
 
-    public func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
+    package func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
         let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
         return try await buildRecallContext(query: query, embedding: embedding, frameFilter: frameFilter)
     }
 
-    public func recall(query: String, embedding: [Float]) async throws -> RAGContext {
+    package func recall(query: String, embedding: [Float]) async throws -> RAGContext {
         return try await buildRecallContext(query: query, embedding: embedding)
     }
 
-    public func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
+    package func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
         let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
         return try await buildRecallContext(query: query, embedding: embedding)
     }
 
+    package func recall(
+        query: String,
+        embeddingPolicy: QueryEmbeddingPolicy,
+        frameFilter: FrameFilter?,
+        timeRange: SearchTimeRange?,
+        topK: Int?,
+        mode: DirectSearchMode?
+    ) async throws -> RAGContext {
+        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
+
+        let searchModeOverride: SearchMode? = if let mode {
+            switch mode {
+            case .text:
+                .textOnly
+            case .hybrid(let alpha):
+                if embedding == nil {
+                    .textOnly
+                } else {
+                    .hybrid(alpha: Self.clampHybridAlpha(alpha))
+                }
+            }
+        } else {
+            nil
+        }
+
+        return try await buildRecallContext(
+            query: query,
+            embedding: embedding,
+            frameFilter: frameFilter,
+            timeRange: timeRange,
+            searchTopK: topK,
+            searchMode: searchModeOverride
+        )
+    }
+
     /// Shared recall implementation: builds the RAG context and records frame accesses.
-    /// All public recall() overloads funnel through here so that `ragConfigForRecall()` and
+    /// All package recall() overloads funnel through here so that `ragConfigForRecall()` and
     /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
     private func buildRecallContext(
         query: String,
         embedding: [Float]?,
-        frameFilter: FrameFilter? = nil
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
+        searchTopK: Int? = nil,
+        searchMode: SearchMode? = nil
     ) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
-        let recallConfig = ragConfigForRecall()
+        let preference = config.vectorEnginePreference
+        var recallConfig = ragConfigForRecall()
+        if let searchTopK {
+            recallConfig.searchTopK = max(1, searchTopK)
+        }
+        if let searchMode {
+            recallConfig.searchMode = searchMode
+        }
+        let resolvedTimeRange = timeRange ?? extractTemporalTimeRange(from: query, anchorMs: recallConfig.deterministicNowMs)
         let context = try await ragBuilder.build(
             query: query,
             embedding: embedding,
@@ -540,6 +731,7 @@ public actor MemoryOrchestrator {
             wax: wax,
             session: session,
             frameFilter: frameFilter,
+            timeRange: resolvedTimeRange,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
@@ -554,17 +746,18 @@ public actor MemoryOrchestrator {
     ///   - mode: Text-only or hybrid retrieval.
     ///   - topK: Maximum number of hits to return.
     /// - Returns: Ranked raw hits.
-    public func search(
+    package func search(
         query: String,
         mode: DirectSearchMode = .default,
         topK: Int = 10,
-        frameFilter: FrameFilter? = nil
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil
     ) async throws -> [MemorySearchHit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard topK > 0 else { return [] }
 
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference = config.vectorEnginePreference
 
         let policy: QueryEmbeddingPolicy = switch mode {
         case .text:
@@ -589,8 +782,10 @@ public actor MemoryOrchestrator {
             query: trimmed,
             embedding: embedding,
             vectorEnginePreference: preference,
+            vectorSearchTimeout: config.vectorSearchTimeout,
             mode: searchMode,
             topK: topK,
+            timeRange: timeRange,
             frameFilter: frameFilter,
             previewMaxBytes: config.rag.previewMaxBytes
         )
@@ -609,7 +804,7 @@ public actor MemoryOrchestrator {
     }
 
     /// Returns lightweight store/runtime stats useful for operators and MCP tools.
-    public func runtimeStats() async -> RuntimeStats {
+    package func runtimeStats() async -> RuntimeStats {
         let stats = await wax.stats()
         let walStats = await wax.walStats()
         let storeURL = await wax.fileURL()
@@ -627,7 +822,7 @@ public actor MemoryOrchestrator {
         )
     }
 
-    public func sessionRuntimeStats() async throws -> SessionRuntimeStats {
+    package func sessionRuntimeStats() async throws -> SessionRuntimeStats {
         let pendingFramesStoreWide = await wax.stats().pendingFrames
         guard let sessionId = currentSessionId else {
             return SessionRuntimeStats(
@@ -640,13 +835,12 @@ public actor MemoryOrchestrator {
             )
         }
 
-        let metas = await wax.frameMetas()
-        let matching = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil else { return false }
-            return meta.metadata?.entries["session_id"] == sessionId.uuidString
-        }
+        let frameIds = await wax.activeFrameIDs(
+            matchingMetadataKey: "session_id",
+            value: sessionId.uuidString
+        )
 
-        guard !matching.isEmpty else {
+        guard !frameIds.isEmpty else {
             return SessionRuntimeStats(
                 active: true,
                 sessionId: sessionId,
@@ -657,7 +851,6 @@ public actor MemoryOrchestrator {
             )
         }
 
-        let frameIds = matching.map(\.id)
         let contentMap = try await wax.frameContents(frameIds: frameIds)
         let texts: [String] = frameIds.compactMap { frameId in
             guard let data = contentMap[frameId] else { return nil }
@@ -670,7 +863,7 @@ public actor MemoryOrchestrator {
         return SessionRuntimeStats(
             active: true,
             sessionId: sessionId,
-            sessionFrameCount: matching.count,
+            sessionFrameCount: frameIds.count,
             sessionTokenEstimate: totalTokens,
             pendingFramesStoreWide: pendingFramesStoreWide,
             countsIncludePending: false
@@ -685,11 +878,35 @@ public actor MemoryOrchestrator {
         return recallConfig
     }
 
-    public func rememberHandoff(
+    private func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> SearchTimeRange? {
+        guard let anchorMs else { return nil }
+        let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
+        let normalizer = TemporalNormalizer(anchor: anchor)
+        let words = query
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return nil }
+
+        for window in stride(from: min(4, words.count), through: 1, by: -1) {
+            guard words.count >= window else { continue }
+            for i in 0...(words.count - window) {
+                let candidate = words[i..<(i + window)].joined(separator: " ")
+                guard let resolution = try? normalizer.resolve(candidate) else { continue }
+                let range = resolution.asTimeRange
+                return SearchTimeRange(after: range.afterMs, before: range.beforeMs)
+            }
+        }
+        return nil
+    }
+
+    package func rememberHandoff(
         content: String,
         project: String? = nil,
         pendingTasks: [String] = [],
-        sessionId: UUID? = nil
+        sessionId: UUID? = nil,
+        commit: Bool = true
     ) async throws -> UInt64 {
         let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         let pending = pendingTasks
@@ -734,30 +951,15 @@ public actor MemoryOrchestrator {
         if config.enableTextSearch {
             try await session.indexText(frameId: frameId, text: text)
         }
-        // Ensure latestHandoff() can observe this frame immediately via committed metadata/content views.
-        try await session.commit()
+        // Ensure latestHandoff() can observe this frame immediately when commit=true.
+        if commit {
+            try await session.commit()
+        }
         return frameId
     }
 
-    public func latestHandoff(project: String? = nil) async throws -> HandoffRecord? {
-        let metas = await wax.frameMetas()
-        let filtered = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil else { return false }
-            let hasHandoffKind = meta.kind == "handoff" || meta.metadata?.entries["kind"] == "handoff"
-            let hasHandoffLabel = meta.labels.contains("handoff")
-            guard hasHandoffKind || hasHandoffLabel else { return false }
-            if let project, !project.isEmpty {
-                return meta.metadata?.entries["project"] == project
-            }
-            return true
-        }
-
-        guard let latest = filtered.max(by: { lhs, rhs in
-            if lhs.timestamp == rhs.timestamp {
-                return lhs.id < rhs.id
-            }
-            return lhs.timestamp < rhs.timestamp
-        }) else {
+    package func latestHandoff(project: String? = nil) async throws -> HandoffRecord? {
+        guard let latest = await wax.latestCommittedActiveHandoffMeta(project: project) else {
             return nil
         }
 
@@ -779,7 +981,7 @@ public actor MemoryOrchestrator {
         )
     }
 
-    public func upsertEntity(
+    package func upsertEntity(
         key: EntityKey,
         kind: String,
         aliases: [String] = [],
@@ -794,10 +996,11 @@ public actor MemoryOrchestrator {
         return entityID
     }
 
-    public func assertFact(
+    package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
+        relation: VersionRelation = .sets,
         validFromMs: Int64? = nil,
         validToMs: Int64? = nil,
         evidence: [StructuredEvidence] = [],
@@ -811,6 +1014,7 @@ public actor MemoryOrchestrator {
             subject: subject,
             predicate: predicate,
             object: object,
+            relation: relation,
             valid: valid,
             system: system,
             evidence: evidence
@@ -821,7 +1025,7 @@ public actor MemoryOrchestrator {
         return factID
     }
 
-    public func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
+    package func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
         try ensureStructuredMemoryEnabled()
         let timestamp = atMs ?? Int64(Date().timeIntervalSince1970 * 1000)
         try await session.retractFact(factId: factId, atMs: timestamp)
@@ -830,7 +1034,7 @@ public actor MemoryOrchestrator {
         }
     }
 
-    public func facts(
+    package func facts(
         about subject: EntityKey? = nil,
         predicate: PredicateKey? = nil,
         asOfMs: Int64 = Int64.max,
@@ -845,14 +1049,26 @@ public actor MemoryOrchestrator {
         )
     }
 
-    public func resolveEntities(matchingAlias alias: String, limit: Int = 10) async throws -> [StructuredEntityMatch] {
+    package func resolveEntities(matchingAlias alias: String, limit: Int = 10) async throws -> [StructuredEntityMatch] {
         try ensureStructuredMemoryEnabled()
         return try await session.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
     // MARK: - Persistence lifecycle
 
-    public func flush() async throws {
+    package func flush() async throws {
+        if let enrichmentPipeline {
+            let drained = try await enrichmentPipeline.waitUntilIdle(
+                bestEffortTimeout: config.enrichmentFlushDrainTimeout
+            )
+            if !drained {
+                WaxDiagnostics.logSwallowed(
+                    WaxError.io("enrichment drain timed out before flush"),
+                    context: "enrichment flush drain timeout",
+                    fallback: "continuing flush with pending enrichment work"
+                )
+            }
+        }
         if config.enableAccessStatsScoring {
             try await persistAccessStatsIfNeeded()
         }
@@ -861,16 +1077,45 @@ public actor MemoryOrchestrator {
         enqueueScheduledLiveSetMaintenance()
     }
 
-    public func close() async throws {
+    package func close() async throws {
         try await flush()
-        if let task = scheduledLiveSetMaintenanceTask {
-            await task.value
+        if let enrichmentPipeline {
+            do {
+                try await enrichmentPipeline.stop(timeout: config.enrichmentStopTimeout)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "enrichment stop during close",
+                    fallback: "continuing close after cancelling enrichment worker"
+                )
+            }
         }
+        let sourceURL = await wax.fileURL()
+        let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
         await session.close()
         try await wax.close()
+        if let maintenanceReport {
+            do {
+                try Self.promoteValidatedLiveSetCandidateIfNeeded(
+                    maintenanceReport,
+                    sourceURL: sourceURL
+                )
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "close-time live-set candidate promotion",
+                    fallback: "source store left unchanged; validated candidate retained"
+                )
+            }
+        }
     }
 
-    public func scheduledLiveSetMaintenanceReport() -> ScheduledLiveSetMaintenanceReport? {
+    func enrichmentStatsForTesting() async -> EnrichmentPipeline.Stats? {
+        guard let enrichmentPipeline else { return nil }
+        return await enrichmentPipeline.stats
+    }
+
+    package func scheduledLiveSetMaintenanceReport() -> ScheduledLiveSetMaintenanceReport? {
         lastScheduledLiveSetMaintenanceReport
     }
 
@@ -916,6 +1161,44 @@ public actor MemoryOrchestrator {
         if scheduledLiveSetMaintenanceQueued {
             enqueueScheduledLiveSetMaintenance()
         }
+    }
+
+    private func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
+        let schedule = config.liveSetRewriteSchedule
+        guard schedule.enabled else {
+            if let task = scheduledLiveSetMaintenanceTask {
+                await task.value
+            }
+            return lastScheduledLiveSetMaintenanceReport
+        }
+
+        if schedule.promoteValidatedCandidateOnClose {
+            do {
+                let report = try await runScheduledLiveSetMaintenanceNow()
+                lastScheduledLiveSetMaintenanceReport = report
+                return report
+            } catch {
+                let report = ScheduledLiveSetMaintenanceReport(
+                    outcome: .rewriteFailed,
+                    triggeredByFlush: false,
+                    flushCount: flushCount,
+                    deadPayloadBytes: 0,
+                    totalPayloadBytes: 0,
+                    deadPayloadFraction: 0,
+                    candidateURL: nil,
+                    rewriteReport: nil,
+                    rollbackPerformed: false,
+                    notes: ["close-time maintenance failed: \(error)"]
+                )
+                lastScheduledLiveSetMaintenanceReport = report
+                return report
+            }
+        }
+
+        if let task = scheduledLiveSetMaintenanceTask {
+            await task.value
+        }
+        return lastScheduledLiveSetMaintenanceReport
     }
 
     // MARK: - Math helpers
@@ -1005,6 +1288,52 @@ public actor MemoryOrchestrator {
     }
 
     #if DEBUG
+    private final class DebugCounterState: @unchecked Sendable {
+        let lock = NSLock()
+        var batchPreparationPathCallCount: Int = 0
+        var memoryBindingEnsureCallCount: Int = 0
+    }
+
+    private static let debugCounterState = DebugCounterState()
+
+    package static func _recordBatchPreparationPathCallForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.batchPreparationPathCallCount += 1
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _resetBatchPreparationPathCallCountForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.batchPreparationPathCallCount = 0
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _batchPreparationPathCallCountForTests() -> Int {
+        debugCounterState.lock.lock()
+        let count = debugCounterState.batchPreparationPathCallCount
+        debugCounterState.lock.unlock()
+        return count
+    }
+
+    package static func _recordMemoryBindingEnsureCallForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.memoryBindingEnsureCallCount += 1
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _resetMemoryBindingEnsureCallCountForTests() {
+        debugCounterState.lock.lock()
+        debugCounterState.memoryBindingEnsureCallCount = 0
+        debugCounterState.lock.unlock()
+    }
+
+    package static func _memoryBindingEnsureCallCountForTests() -> Int {
+        debugCounterState.lock.lock()
+        let count = debugCounterState.memoryBindingEnsureCallCount
+        debugCounterState.lock.unlock()
+        return count
+    }
+
     package static func _writeEmbeddingsForTesting(_ embeddings: [[Float]], to url: URL) throws {
         try writeEmbeddings(embeddings, to: url)
     }
@@ -1020,7 +1349,25 @@ public actor MemoryOrchestrator {
             return nil
         case .ifAvailable:
             guard config.enableVectorSearch, let embedder else { return nil }
-            return try await Self.embedOne(query, embedder: embedder, cache: embeddingCache)
+            guard !queryEmbeddingCircuitOpen else { return nil }
+            do {
+                return try await Self.embedOne(
+                    query,
+                    embedder: embedder,
+                    cache: embeddingCache,
+                    timeout: config.queryEmbeddingTimeout
+                )
+            } catch {
+                if error is AsyncTimeout.TimeoutError {
+                    queryEmbeddingCircuitOpen = true
+                }
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "query embedding",
+                    fallback: "text-only search for this query"
+                )
+                return nil
+            }
         case .always:
             guard config.enableVectorSearch else {
                 throw WaxError.io("query embedding requested but vector search is disabled")
@@ -1028,14 +1375,30 @@ public actor MemoryOrchestrator {
             guard let embedder else {
                 throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
             }
-            return try await Self.embedOne(query, embedder: embedder, cache: embeddingCache)
+            guard !queryEmbeddingCircuitOpen else {
+                throw WaxError.io("query embedding disabled after timeout; restart to retry")
+            }
+            do {
+                return try await Self.embedOne(
+                    query,
+                    embedder: embedder,
+                    cache: embeddingCache,
+                    timeout: config.queryEmbeddingTimeout
+                )
+            } catch {
+                if error is AsyncTimeout.TimeoutError {
+                    queryEmbeddingCircuitOpen = true
+                }
+                throw error
+            }
         }
     }
 
     private static func embedOne(
         _ text: String,
         embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?
+        cache: EmbeddingMemoizer?,
+        timeout: Duration? = nil
     ) async throws -> [Float] {
         let key = EmbeddingKey.make(
             text: text,
@@ -1047,7 +1410,14 @@ public actor MemoryOrchestrator {
             return cached
         }
 
-        var vector = try await embedder.embed(text)
+        var vector: [Float]
+        if let timeout {
+            vector = try await AsyncTimeout.run(timeout: timeout, operation: "embedder.embed") {
+                try await embedder.embed(text)
+            }
+        } else {
+            vector = try await embedder.embed(text)
+        }
         if embedder.normalize {
             vector = normalizedL2(vector)
         }
@@ -1129,15 +1499,13 @@ public actor MemoryOrchestrator {
     }
 
     private func loadPersistedAccessStatsIfNeeded() async throws {
-        let metas = await wax.frameMetas()
-        let candidates = metas.filter { meta in
-            guard meta.status == .active, meta.supersededBy == nil, meta.role == .system else { return false }
-            if meta.kind == Self.accessStatsFrameKind {
-                return true
-            }
-            return meta.metadata?.entries[Self.accessStatsMarkerKey] == Self.accessStatsMarkerValue
+        guard let latest = await wax.latestCommittedActiveSystemFrameMeta(
+            kind: Self.accessStatsFrameKind,
+            fallbackMetadataKey: Self.accessStatsMarkerKey,
+            fallbackMetadataValue: Self.accessStatsMarkerValue
+        ) else {
+            return
         }
-        guard let latest = candidates.max(by: { $0.timestamp < $1.timestamp }) else { return }
 
         let payload = try await wax.frameContent(frameId: latest.id)
         do {

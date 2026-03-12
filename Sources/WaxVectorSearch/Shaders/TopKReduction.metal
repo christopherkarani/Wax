@@ -113,17 +113,19 @@ kernel void topKReduceDistances(
     uint baseIndex = tgId * tgSize;
     uint index = baseIndex + tid;
     if (index < vectorCount) {
-        float d = distances[index];
-        // Treat NaN distances as infinitely far (e.g. from zero-magnitude vectors)
-        sharedEntries[tid] = TopKEntry{isnan(d) ? INFINITY : d, index};
+        sharedEntries[tid] = TopKEntry{distances[index], index};
     } else {
         sharedEntries[tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    uint actualCount = min(tgSize, vectorCount - baseIndex);
-    
+
+    uint actualCount = (baseIndex < vectorCount) ? min(tgSize, vectorCount - baseIndex) : 0;
+    if (actualCount == 0) {
+        if (tid < k) outEntries[tgId * k + tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
+        return;
+    }
+
     if (k <= 64 && actualCount > k * 4) {
         partialHeapTopK(sharedEntries, actualCount, k, tid, tgSize);
     } else {
@@ -154,9 +156,13 @@ kernel void topKReduceEntries(
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    uint actualCount = min(tgSize, entryCount - baseIndex);
-    
+
+    uint actualCount = (baseIndex < entryCount) ? min(tgSize, entryCount - baseIndex) : 0;
+    if (actualCount == 0) {
+        if (tid < k) outEntries[tgId * k + tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
+        return;
+    }
+
     if (k <= 64 && actualCount > k * 4) {
         partialHeapTopK(sharedEntries, actualCount, k, tid, tgSize);
     } else {

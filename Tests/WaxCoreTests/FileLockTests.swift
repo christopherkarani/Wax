@@ -53,10 +53,15 @@ import Glibc
             }
         }
 
+        let runningAsRoot = geteuid() == 0
+
         do {
-            _ = try FileLock.acquire(at: url, mode: .exclusive)
-            #expect(Bool(false))
+            let lock = try FileLock.acquire(at: url, mode: .exclusive)
+            try lock.release()
+            // Root in containerized Linux can bypass mode bits and still acquire.
+            #expect(runningAsRoot)
         } catch let error as WaxError {
+            #expect(!runningAsRoot)
             guard case .io = error else {
                 #expect(Bool(false))
                 return

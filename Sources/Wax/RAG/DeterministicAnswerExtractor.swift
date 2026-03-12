@@ -7,12 +7,12 @@ import Foundation
 /// - Important: This is a deterministic heuristic extractor for offline pipelines.
 ///   It is intentionally lightweight and predictable, but not a substitute for
 ///   full language-model reasoning.
-public struct DeterministicAnswerExtractor: Sendable {
+package struct DeterministicAnswerExtractor: Sendable {
     private let analyzer = QueryAnalyzer()
 
-    public init() {}
+    package init() {}
 
-    public func extractAnswer(query: String, items: [RAGContext.Item]) -> String {
+    package func extractAnswer(query: String, items: [RAGContext.Item]) -> String {
         let normalizedItems = items
             .map { (item: $0, text: Self.cleanText($0.text)) }
             .filter { !$0.text.isEmpty }

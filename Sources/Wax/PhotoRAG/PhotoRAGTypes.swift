@@ -1,13 +1,13 @@
 import Foundation
 
 /// Controls how much context is assembled for downstream models/agents.
-public struct ContextBudget: Sendable, Equatable {
-    public var maxTextTokens: Int
-    public var maxImages: Int
-    public var maxRegions: Int
-    public var maxOCRLinesPerItem: Int
+package struct ContextBudget: Sendable, Equatable {
+    package var maxTextTokens: Int
+    package var maxImages: Int
+    package var maxRegions: Int
+    package var maxOCRLinesPerItem: Int
 
-    public init(
+    package init(
         maxTextTokens: Int = 1_200,
         maxImages: Int = 6,
         maxRegions: Int = 8,
@@ -19,44 +19,44 @@ public struct ContextBudget: Sendable, Equatable {
         self.maxOCRLinesPerItem = max(0, maxOCRLinesPerItem)
     }
 
-    public static let `default` = ContextBudget()
+    package static let `default` = ContextBudget()
 }
 
 /// Optional filters applied during photo recall.
-public struct PhotoFilters: Sendable, Equatable {
-    public init() {}
+package struct PhotoFilters: Sendable, Equatable {
+    package init() {}
 
-    public static let none = PhotoFilters()
+    package static let none = PhotoFilters()
 }
 
 /// A GPS coordinate used for location-based photo queries.
-public struct PhotoCoordinate: Sendable, Equatable {
+package struct PhotoCoordinate: Sendable, Equatable {
     /// Latitude in degrees (-90 to 90).
-    public var latitude: Double
+    package var latitude: Double
     /// Longitude in degrees (-180 to 180).
-    public var longitude: Double
+    package var longitude: Double
 
-    public init(latitude: Double, longitude: Double) {
+    package init(latitude: Double, longitude: Double) {
         self.latitude = min(90, max(-90, latitude))
         self.longitude = min(180, max(-180, longitude))
     }
 }
 
 /// A location-radius query for finding photos near a GPS coordinate.
-public struct PhotoLocationQuery: Sendable, Equatable {
+package struct PhotoLocationQuery: Sendable, Equatable {
     /// Center point of the search area.
-    public var center: PhotoCoordinate
+    package var center: PhotoCoordinate
     /// Search radius in meters from the center point.
-    public var radiusMeters: Double
+    package var radiusMeters: Double
 
-    public init(center: PhotoCoordinate, radiusMeters: Double) {
+    package init(center: PhotoCoordinate, radiusMeters: Double) {
         self.center = center
         self.radiusMeters = max(0, radiusMeters)
     }
 }
 
 /// Scope of a Photos library sync operation.
-public enum PhotoScope: Sendable, Equatable {
+package enum PhotoScope: Sendable, Equatable {
     /// Sync all photos in the library.
     case fullLibrary
     /// Sync only the specified asset identifiers.
@@ -66,31 +66,31 @@ public enum PhotoScope: Sendable, Equatable {
 /// A Sendable wrapper for query-time images.
 ///
 /// The framework decodes this into a `CGImage` internally for embedding.
-public struct PhotoQueryImage: Sendable, Equatable {
-    public enum Format: Sendable, Equatable {
+package struct PhotoQueryImage: Sendable, Equatable {
+    package enum Format: Sendable, Equatable {
         case jpeg
         case png
         case heic
         case other(uti: String)
     }
 
-    public var data: Data
-    public var format: Format
+    package var data: Data
+    package var format: Format
 
-    public init(data: Data, format: Format) {
+    package init(data: Data, format: Format) {
         self.data = data
         self.format = format
     }
 }
 
 /// A Sendable wrapper for returning image pixels as part of a RAG context.
-public struct PhotoPixel: Sendable, Equatable {
-    public var data: Data
-    public var format: PhotoQueryImage.Format
-    public var width: Int
-    public var height: Int
+package struct PhotoPixel: Sendable, Equatable {
+    package var data: Data
+    package var format: PhotoQueryImage.Format
+    package var width: Int
+    package var height: Int
 
-    public init(data: Data, format: PhotoQueryImage.Format, width: Int, height: Int) {
+    package init(data: Data, format: PhotoQueryImage.Format, width: Int, height: Int) {
         self.data = data
         self.format = format
         self.width = max(0, width)
@@ -99,13 +99,13 @@ public struct PhotoPixel: Sendable, Equatable {
 }
 
 /// Normalized rectangle in [0, 1] coordinates with **top-left** origin.
-public struct PhotoNormalizedRect: Sendable, Equatable {
-    public var x: Double
-    public var y: Double
-    public var width: Double
-    public var height: Double
+package struct PhotoNormalizedRect: Sendable, Equatable {
+    package var x: Double
+    package var y: Double
+    package var width: Double
+    package var height: Double
 
-    public init(x: Double, y: Double, width: Double, height: Double) {
+    package init(x: Double, y: Double, width: Double, height: Double) {
         self.x = x
         self.y = y
         self.width = width
@@ -113,16 +113,16 @@ public struct PhotoNormalizedRect: Sendable, Equatable {
     }
 }
 
-public struct PhotoQuery: Sendable, Equatable {
-    public var text: String?
-    public var image: PhotoQueryImage?
-    public var timeRange: ClosedRange<Date>?
-    public var location: PhotoLocationQuery?
-    public var filters: PhotoFilters
-    public var resultLimit: Int
-    public var contextBudget: ContextBudget
+package struct PhotoQuery: Sendable, Equatable {
+    package var text: String?
+    package var image: PhotoQueryImage?
+    package var timeRange: ClosedRange<Date>?
+    package var location: PhotoLocationQuery?
+    package var filters: PhotoFilters
+    package var resultLimit: Int
+    package var contextBudget: ContextBudget
 
-    public init(
+    package init(
         text: String? = nil,
         image: PhotoQueryImage? = nil,
         timeRange: ClosedRange<Date>? = nil,
@@ -141,56 +141,56 @@ public struct PhotoQuery: Sendable, Equatable {
     }
 }
 
-public struct PhotoRAGContext: Sendable, Equatable {
-    public struct Diagnostics: Sendable, Equatable {
-        public var usedTextTokens: Int
-        public var degradedResultCount: Int
-        public var clarifyingQuestion: String?
+package struct PhotoRAGContext: Sendable, Equatable {
+    package struct Diagnostics: Sendable, Equatable {
+        package var usedTextTokens: Int
+        package var degradedResultCount: Int
+        package var clarifyingQuestion: String?
 
-        public init(usedTextTokens: Int = 0, degradedResultCount: Int = 0, clarifyingQuestion: String? = nil) {
+        package init(usedTextTokens: Int = 0, degradedResultCount: Int = 0, clarifyingQuestion: String? = nil) {
             self.usedTextTokens = max(0, usedTextTokens)
             self.degradedResultCount = max(0, degradedResultCount)
             self.clarifyingQuestion = clarifyingQuestion
         }
     }
 
-    public var query: PhotoQuery
-    public var items: [PhotoRAGItem]
-    public var diagnostics: Diagnostics
+    package var query: PhotoQuery
+    package var items: [PhotoRAGItem]
+    package var diagnostics: Diagnostics
 
-    public init(query: PhotoQuery, items: [PhotoRAGItem], diagnostics: Diagnostics = .init()) {
+    package init(query: PhotoQuery, items: [PhotoRAGItem], diagnostics: Diagnostics = .init()) {
         self.query = query
         self.items = items
         self.diagnostics = diagnostics
     }
 }
 
-public struct PhotoRAGItem: Sendable, Equatable {
-    public enum Evidence: Sendable, Equatable {
+package struct PhotoRAGItem: Sendable, Equatable {
+    package enum Evidence: Sendable, Equatable {
         case vector
         case text(snippet: String?)
         case region(bbox: PhotoNormalizedRect)
         case timeline
     }
 
-    public struct RegionContext: Sendable, Equatable {
-        public var bbox: PhotoNormalizedRect
-        public var crop: PhotoPixel?
+    package struct RegionContext: Sendable, Equatable {
+        package var bbox: PhotoNormalizedRect
+        package var crop: PhotoPixel?
 
-        public init(bbox: PhotoNormalizedRect, crop: PhotoPixel? = nil) {
+        package init(bbox: PhotoNormalizedRect, crop: PhotoPixel? = nil) {
             self.bbox = bbox
             self.crop = crop
         }
     }
 
-    public var assetID: String
-    public var score: Float
-    public var evidence: [Evidence]
-    public var summaryText: String
-    public var thumbnail: PhotoPixel?
-    public var regions: [RegionContext]
+    package var assetID: String
+    package var score: Float
+    package var evidence: [Evidence]
+    package var summaryText: String
+    package var thumbnail: PhotoPixel?
+    package var regions: [RegionContext]
 
-    public init(
+    package init(
         assetID: String,
         score: Float,
         evidence: [Evidence],

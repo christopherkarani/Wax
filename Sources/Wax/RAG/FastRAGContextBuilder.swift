@@ -3,8 +3,8 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-public struct FastRAGContextBuilder: Sendable {
-    public init() {}
+package struct FastRAGContextBuilder: Sendable {
+    package init() {}
 
     /// Build a deterministic RAG context: at most one expansion + ranked snippets.
     /// - Parameters:
@@ -12,13 +12,14 @@ public struct FastRAGContextBuilder: Sendable {
     ///   - embedding: optional caller-supplied embedding (no query-time embedding inside Wax)
     ///   - wax: Wax handle
     ///   - config: Fast RAG configuration
-    public func build(
+    package func build(
         query: String,
         embedding: [Float]? = nil,
         vectorEnginePreference: VectorEnginePreference = .auto,
         wax: Wax,
         session: WaxSession? = nil,
         frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
         accessStatsManager: AccessStatsManager? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
@@ -32,6 +33,7 @@ public struct FastRAGContextBuilder: Sendable {
             vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
             topK: clamped.searchTopK,
+            timeRange: timeRange,
             frameFilter: frameFilter,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
@@ -51,7 +53,7 @@ public struct FastRAGContextBuilder: Sendable {
             )
             : response.results
         let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
-            await accessStatsManager.getStats(frameIds: rankedResults.map(\.frameId))
+            await accessStatsManager.getStats(frameIds: rankedResults.map { $0.frameId })
         } else {
             [:]
         }
@@ -73,7 +75,7 @@ public struct FastRAGContextBuilder: Sendable {
             && clamped.maxSurrogates > 0
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
-        let sourceFrameIds = rankedResults.map(\.frameId)
+        let sourceFrameIds = rankedResults.map { $0.frameId }
         async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
@@ -99,7 +101,7 @@ public struct FastRAGContextBuilder: Sendable {
                             kind: .expanded,
                             frameId: result.frameId,
                             score: result.score,
-                            sources: result.sources,
+                            sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: expanded
                         )
                     )
@@ -238,7 +240,7 @@ public struct FastRAGContextBuilder: Sendable {
                             kind: .surrogate,
                             frameId: surrogateFrameId,
                             score: result.score,
-                            sources: result.sources,
+                            sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: capped
                         )
                     )
@@ -325,7 +327,7 @@ public struct FastRAGContextBuilder: Sendable {
                             kind: .snippet,
                             frameId: result.frameId,
                             score: result.score,
-                            sources: result.sources,
+                            sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: capped
                         )
                     )

@@ -5,31 +5,23 @@ import Darwin
 import Glibc
 #endif
 
-public enum LockMode: Sendable {
+package enum LockMode: Sendable {
     case shared
     case exclusive
 }
 
 /// Advisory whole-file lock backed by `flock`.
-public final class FileLock {
+package final class FileLock {
     private let fd: Int32
     private let url: URL
-    private let lock = NSLock()
-    private var _mode: LockMode
-    public private(set) var mode: LockMode {
-        get { lock.withLock { _mode } }
-        set { lock.withLock { _mode = newValue } }
-    }
-    private var _isReleased = false
-    private var isReleased: Bool {
-        get { lock.withLock { _isReleased } }
-        set { lock.withLock { _isReleased = newValue } }
-    }
+    package private(set) var mode: LockMode
+    private var isReleased = false
+    private let releaseLock = NSLock()
 
     private init(fd: Int32, url: URL, mode: LockMode) {
         self.fd = fd
         self.url = url
-        self._mode = mode
+        self.mode = mode
     }
 
     deinit {
@@ -43,7 +35,7 @@ public final class FileLock {
         }
     }
 
-    public static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
+    package static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
         let fd = try openFile(at: url, mode: mode)
         do {
             _ = try lock(fd: fd, mode: mode, nonBlocking: false)
@@ -54,7 +46,7 @@ public final class FileLock {
         }
     }
 
-    public static func tryAcquire(at url: URL, mode: LockMode) throws -> FileLock? {
+    package static func tryAcquire(at url: URL, mode: LockMode) throws -> FileLock? {
         let fd = try openFile(at: url, mode: mode)
         do {
             let acquired = try lock(fd: fd, mode: mode, nonBlocking: true)
@@ -69,39 +61,42 @@ public final class FileLock {
         }
     }
 
-    public func upgrade() throws {
+    package func upgrade() throws {
         try ensureActive()
         if mode == .exclusive { return }
         _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false)
         mode = .exclusive
     }
 
-    public func downgrade() throws {
+    package func downgrade() throws {
         try ensureActive()
         if mode == .shared { return }
         _ = try Self.lock(fd: fd, mode: .shared, nonBlocking: false)
         mode = .shared
     }
 
-    public func release() throws {
-        if isReleased { return }
-        var unlockError: WaxError?
-        while true {
-            if flock(fd, LOCK_UN) == 0 { break }
-            if errno == EINTR { continue }
-            unlockError = WaxError.lockUnavailable("unlock failed: \(stringError())")
-            break
-        }
+    package func release() throws {
+        try releaseLock.withLock {
+            if isReleased { return }
 
-        var closeError: WaxError?
-        if close(fd) != 0, errno != EINTR {
-            closeError = WaxError.io("close failed: \(stringError())")
-        }
+            var unlockError: WaxError?
+            while true {
+                if flock(fd, LOCK_UN) == 0 { break }
+                if errno == EINTR { continue }
+                unlockError = WaxError.lockUnavailable("unlock failed: \(stringError())")
+                break
+            }
 
-        isReleased = true
+            var closeError: WaxError?
+            if close(fd) != 0, errno != EINTR {
+                closeError = WaxError.io("close failed: \(stringError())")
+            }
 
-        if let error = unlockError ?? closeError {
-            throw error
+            isReleased = true
+
+            if let error = unlockError ?? closeError {
+                throw error
+            }
         }
     }
 

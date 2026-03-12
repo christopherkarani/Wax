@@ -2,24 +2,24 @@ import Crypto
 import Foundation
 
 /// Simple SHA-256 wrapper used by Wax codecs.
-public struct SHA256Checksum {
+package struct SHA256Checksum {
     private var hasher: SHA256 = .init()
 
-    public init() {}
+    package init() {}
 
-    public mutating func update(_ data: Data) {
+    package mutating func update(_ data: Data) {
         hasher.update(data: data)
     }
 
-    public mutating func update(_ bytes: UnsafeRawBufferPointer) {
+    package mutating func update(_ bytes: UnsafeRawBufferPointer) {
         hasher.update(bufferPointer: bytes)
     }
 
-    public mutating func finalize() -> Data {
+    package mutating func finalize() -> Data {
         Data(hasher.finalize())
     }
 
-    public static func digest(_ data: Data) -> Data {
+    package static func digest(_ data: Data) -> Data {
         Data(SHA256.hash(data: data))
     }
 }

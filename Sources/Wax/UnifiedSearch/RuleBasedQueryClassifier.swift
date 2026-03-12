@@ -4,8 +4,8 @@
 /// - no Foundation Models
 /// - no network calls
 /// - no model downloads
-public enum RuleBasedQueryClassifier {
-    public static func classify(_ query: String) -> QueryType {
+package enum RuleBasedQueryClassifier {
+    package static func classify(_ query: String) -> QueryType {
         let q = query.lowercased()
 
         if q.contains("when")

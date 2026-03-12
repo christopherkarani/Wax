@@ -31,22 +31,23 @@ struct RememberCommand: AsyncParsableCommand {
     var metadata: [(String, String)] = []
 
     func runAsync() async throws {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw CLIError("Content must not be empty")
+        }
+
+        var meta: [String: String] = [:]
+        for (key, value) in metadata {
+            meta[key] = value
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
-        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder) { memory in
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                throw CLIError("Content must not be empty")
-            }
-
-            var meta: [String: String] = [:]
-            for (key, value) in metadata {
-                meta[key] = value
-            }
-
+        // Respect `--no-embedder`; for write-heavy usage we skip prewarm to reduce cold-start latency.
+        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder, skipPrewarm: true) { memory in
             let before = await memory.runtimeStats()
             try await memory.remember(trimmed, metadata: meta)
 
-            // CLI is single-shot: auto-flush so frames are immediately searchable.
+            // CLI is single-shot: auto-flush so frames are immediately searchable via FTS.
             try await memory.flush()
 
             let after = await memory.runtimeStats()

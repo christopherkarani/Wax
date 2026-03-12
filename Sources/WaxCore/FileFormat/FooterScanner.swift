@@ -1,23 +1,23 @@
 import Foundation
 
-public struct FooterSlice: Equatable, Sendable {
-    public let footerOffset: UInt64
-    public let tocOffset: UInt64
-    public let footer: WaxFooter
-    public let tocBytes: Data
+package struct FooterSlice: Equatable, Sendable {
+    package let footerOffset: UInt64
+    package let tocOffset: UInt64
+    package let footer: WaxFooter
+    package let tocBytes: Data
 }
 
 /// Scans for the most recent valid Wax footer.
-public enum FooterScanner {
-    public struct Limits: Sendable {
-        public var maxTocBytes: UInt64 = Constants.maxTocBytes
-        public var maxFooterScanBytes: UInt64 = Constants.maxFooterScanBytes
+package enum FooterScanner {
+    package struct Limits: Sendable {
+        package var maxTocBytes: UInt64 = Constants.maxTocBytes
+        package var maxFooterScanBytes: UInt64 = Constants.maxFooterScanBytes
 
-        public init() {}
+        package init() {}
     }
 
     /// Bounded scan over an in-memory buffer. Intended for tests and small buffers.
-    public static func findLastValidFooter(in bytes: Data, limits: Limits = .init()) -> FooterSlice? {
+    package static func findLastValidFooter(in bytes: Data, limits: Limits = .init()) -> FooterSlice? {
         let footerSize = WaxFooter.size
         guard bytes.count >= footerSize else { return nil }
 
@@ -69,7 +69,7 @@ public enum FooterScanner {
     }
 
     /// Bounded scan over a file. Only the final `limits.maxFooterScanBytes` are searched.
-    public static func findLastValidFooter(in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+    package static func findLastValidFooter(in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 
@@ -98,7 +98,7 @@ public enum FooterScanner {
         )
     }
 
-    public static func findFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+    package static func findFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 

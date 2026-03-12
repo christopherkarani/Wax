@@ -1,6 +1,6 @@
 import Foundation
 
-public enum VideoMetadataKey: String, Sendable, CaseIterable {
+package enum VideoMetadataKey: String, Sendable, CaseIterable {
     case source = "video.source"
     case sourceID = "video.source_id"
     case fileURL = "video.file_url"

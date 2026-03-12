@@ -1,42 +1,42 @@
 import Foundation
 
-public struct QueryIntent: OptionSet, Sendable, Equatable {
-    public let rawValue: Int
+package struct QueryIntent: OptionSet, Sendable, Equatable {
+    package let rawValue: Int
 
-    public init(rawValue: Int) {
+    package init(rawValue: Int) {
         self.rawValue = rawValue
     }
 
-    public static let asksLocation = QueryIntent(rawValue: 1 << 0)
-    public static let asksDate = QueryIntent(rawValue: 1 << 1)
-    public static let asksOwnership = QueryIntent(rawValue: 1 << 2)
-    public static let multiHop = QueryIntent(rawValue: 1 << 3)
+    package static let asksLocation = QueryIntent(rawValue: 1 << 0)
+    package static let asksDate = QueryIntent(rawValue: 1 << 1)
+    package static let asksOwnership = QueryIntent(rawValue: 1 << 2)
+    package static let multiHop = QueryIntent(rawValue: 1 << 3)
 }
 
 /// Query characteristics that influence tier selection.
-public struct QuerySignals: Sendable, Equatable {
+package struct QuerySignals: Sendable, Equatable {
     /// Query contains specific entities (names, dates, numbers)
-    public var hasSpecificEntities: Bool
+    package var hasSpecificEntities: Bool
     
     /// Number of words in the query
-    public var wordCount: Int
+    package var wordCount: Int
     
     /// Query contains quoted phrases (exact match intent)
-    public var hasQuotedPhrases: Bool
+    package var hasQuotedPhrases: Bool
     
     /// Estimated specificity score (0.0 = vague, 1.0 = very specific)
-    public var specificityScore: Float
+    package var specificityScore: Float
 }
 
 /// Analyzes queries to extract signals for tier selection.
-public struct QueryAnalyzer: Sendable {
-    public init() {}
+package struct QueryAnalyzer: Sendable {
+    package init() {}
     
     /// Analyze a query to extract signals that influence tier selection.
     ///
     /// Specific queries (with entities, quotes) should use fuller tiers,
     /// while vague queries can use more compressed tiers.
-    public func analyze(query: String) -> QuerySignals {
+    package func analyze(query: String) -> QuerySignals {
         let words = query.split { $0.isWhitespace || $0.isPunctuation }
         
         // Check for specific entities (numbers, capitalized words)
@@ -76,7 +76,7 @@ public struct QueryAnalyzer: Sendable {
     }
 
     /// Normalize query text into deterministic lexical terms for matching/reranking.
-    public func normalizedTerms(query: String) -> [String] {
+    package func normalizedTerms(query: String) -> [String] {
         query
             .lowercased()
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
@@ -86,7 +86,7 @@ public struct QueryAnalyzer: Sendable {
     }
 
     /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
-    public func entityTerms(query: String) -> Set<String> {
+    package func entityTerms(query: String) -> Set<String> {
         let original = query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
@@ -139,7 +139,7 @@ public struct QueryAnalyzer: Sendable {
     }
 
     /// Four-digit year cues extracted from text (for timeline disambiguation).
-    public func yearTerms(in text: String) -> Set<String> {
+    package func yearTerms(in text: String) -> Set<String> {
         Set(
             text
                 .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
@@ -157,7 +157,7 @@ public struct QueryAnalyzer: Sendable {
     /// - `Month D, YYYY` and `Month D YYYY` (full + abbreviated months)
     /// - `D Month YYYY` and `D Mon YYYY`
     /// - ISO-like `YYYY-MM-DD`, plus `/` or `.` separators and 1-2 digit month/day
-    public func dateLiterals(in text: String) -> [String] {
+    package func dateLiterals(in text: String) -> [String] {
         let full = Self.captureMatches(regex: Self.fullMonthDateRegex, text: text, captureGroup: 0)
         let abbreviated = Self.captureMatches(regex: Self.abbreviatedMonthDateRegex, text: text, captureGroup: 0)
         let dayFirst = Self.captureMatches(regex: Self.dayFirstMonthDateRegex, text: text, captureGroup: 0)
@@ -185,7 +185,7 @@ public struct QueryAnalyzer: Sendable {
     }
 
     /// Normalized date keys in ISO form (YYYY-MM-DD) across supported date literal formats.
-    public func normalizedDateKeys(in text: String) -> Set<String> {
+    package func normalizedDateKeys(in text: String) -> Set<String> {
         let literals = dateLiterals(in: text)
         var keys: Set<String> = []
         keys.reserveCapacity(literals.count)
@@ -200,11 +200,11 @@ public struct QueryAnalyzer: Sendable {
     }
 
     /// True when any supported date literal is present.
-    public func containsDateLiteral(_ text: String) -> Bool {
+    package func containsDateLiteral(_ text: String) -> Bool {
         !dateLiterals(in: text).isEmpty
     }
 
-    public func detectIntent(query: String) -> QueryIntent {
+    package func detectIntent(query: String) -> QueryIntent {
         let lower = query.lowercased()
         let terms = Set(normalizedTerms(query: query))
 

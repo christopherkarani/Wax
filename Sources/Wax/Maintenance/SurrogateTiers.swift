@@ -6,23 +6,23 @@ import Foundation
 /// - `full`: Maximum fidelity (~100 tokens)
 /// - `gist`: Balanced compression (~25 tokens)
 /// - `micro`: Entity + topic only (~8 tokens)
-public struct SurrogateTiers: Sendable, Equatable, Codable, Hashable {
+package struct SurrogateTiers: Sendable, Equatable, Codable, Hashable {
     /// Full surrogate - highest fidelity, most tokens
-    public var full: String
+    package var full: String
     
     /// Gist surrogate - balanced compression
-    public var gist: String
+    package var gist: String
     
     /// Micro surrogate - minimal, entity + topic only
-    public var micro: String
+    package var micro: String
     
     /// Algorithm version for cache invalidation
-    public var version: Int
+    package var version: Int
     
     /// Generation timestamp (milliseconds since epoch)
-    public var generatedAtMs: Int64
+    package var generatedAtMs: Int64
     
-    public init(
+    package init(
         full: String,
         gist: String,
         micro: String,

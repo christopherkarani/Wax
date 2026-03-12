@@ -1,14 +1,18 @@
 import Foundation
 
-public final class NativeBpeTokenizer: @unchecked Sendable {
-    public enum Encoding: String, Sendable {
+package final class NativeBpeTokenizer: @unchecked Sendable {
+    package enum Encoding: String, Sendable {
         case cl100kBase = "cl100k_base"
     }
 
     private static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
 
-    private static let cl100kBaseRegex: Result<NSRegularExpression, Error> = {
-        Result { try NSRegularExpression(pattern: cl100kBasePattern, options: []) }
+    private static let cl100kBaseRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(pattern: cl100kBasePattern, options: [])
+        } catch {
+            preconditionFailure("Invalid cl100k_base regex: \(error)")
+        }
     }()
 
     private final class LockedCache<Key: Hashable & Sendable, Value: Sendable>: @unchecked Sendable {
@@ -33,18 +37,18 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     private let regex: NSRegularExpression
     private let bpeCache = LockedCache<Data, [UInt32]>()
 
-    public init(encoding: Encoding = .cl100kBase) throws {
+    package init(encoding: Encoding = .cl100kBase) throws {
         let (encoder, decoder) = try Self.loadEncoding(encoding)
         self.encoder = encoder
         self.decoder = decoder
-        self.regex = try Self.cl100kBaseRegex.get()
+        self.regex = Self.cl100kBaseRegex
     }
 
-    public static func preload(encoding: Encoding = .cl100kBase) throws -> NativeBpeTokenizer {
+    package static func preload(encoding: Encoding = .cl100kBase) throws -> NativeBpeTokenizer {
         try NativeBpeTokenizer(encoding: encoding)
     }
 
-    public func encode(_ text: String) -> [UInt32] {
+    package func encode(_ text: String) -> [UInt32] {
         guard !text.isEmpty else { return [] }
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         var tokens: [UInt32] = []
@@ -77,7 +81,7 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
         return tokens
     }
 
-    public func decode(_ tokens: [UInt32]) -> String {
+    package func decode(_ tokens: [UInt32]) -> String {
         guard !tokens.isEmpty else { return "" }
         var data = Data()
         data.reserveCapacity(tokens.count * 2)
@@ -265,6 +269,6 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
     }
 }
 
-public enum NativeBpeError: Error, Sendable {
+package enum NativeBpeError: Error, Sendable {
     case missingResource(encoding: String)
 }

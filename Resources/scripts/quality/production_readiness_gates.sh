@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
 run_and_capture() {
@@ -91,7 +91,7 @@ run_full() {
   assert_no_skips "$mcp_log_file"
   assert_full_pass_rate "$mcp_log_file"
 
-  bash "$ROOT_DIR/scripts/quality/check_corruption_assertions.sh"
+  bash "$ROOT_DIR/Resources/scripts/quality/check_corruption_assertions.sh"
 }
 
 run_soak_smoke() {

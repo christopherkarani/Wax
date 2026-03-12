@@ -1,3 +1,3 @@
-@_exported import WaxCore
-@_exported import WaxTextSearch
-@_exported import WaxVectorSearch
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch

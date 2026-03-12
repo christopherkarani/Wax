@@ -1,16 +1,16 @@
 @preconcurrency import Dispatch
 
-public struct WaxOptions: Sendable {
-    public var walFsyncPolicy: WALFsyncPolicy
-    public var walProactiveCommitThresholdPercent: UInt8?
-    public var walProactiveCommitMaxWalSizeBytes: UInt64?
-    public var walProactiveCommitMinPendingBytes: UInt64
-    public var walReplayStateSnapshotEnabled: Bool
-    public var ioQueueLabel: String
-    public var ioQueueQosClass: DispatchQoS.QoSClass
-    public var ioQueueRelativePriority: Int
+package struct WaxOptions: Sendable {
+    package var walFsyncPolicy: WALFsyncPolicy
+    package var walProactiveCommitThresholdPercent: UInt8?
+    package var walProactiveCommitMaxWalSizeBytes: UInt64?
+    package var walProactiveCommitMinPendingBytes: UInt64
+    package var walReplayStateSnapshotEnabled: Bool
+    package var ioQueueLabel: String
+    package var ioQueueQosClass: DispatchQoS.QoSClass
+    package var ioQueueRelativePriority: Int
 
-    public var ioQueueQos: DispatchQoS {
+    package var ioQueueQos: DispatchQoS {
         get {
             DispatchQoS(
                 qosClass: ioQueueQosClass,
@@ -23,7 +23,7 @@ public struct WaxOptions: Sendable {
         }
     }
 
-    public init(
+    package init(
         walFsyncPolicy: WALFsyncPolicy = .onCommit,
         walProactiveCommitThresholdPercent: UInt8? = 80,
         walProactiveCommitMaxWalSizeBytes: UInt64? = 4 * 1024 * 1024,

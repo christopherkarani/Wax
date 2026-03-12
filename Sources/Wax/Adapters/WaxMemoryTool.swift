@@ -3,34 +3,34 @@ import Foundation
 import FoundationModels
 
 @available(macOS 26.0, iOS 26.0, *)
-public struct WaxMemoryTool: Tool, Sendable {
-    public let name: String = "waxMemory"
-    public let description: String = """
+package struct WaxMemoryTool: Tool, Sendable {
+    package let name: String = "waxMemory"
+    package let description: String = """
 Manage persistent memory in Wax.
 Use action=remember to store content, action=recall to retrieve context, and action=search for ranked hits.
 """
 
     private let memory: MemoryOrchestrator
-    public let config: WaxMemoryToolConfig
+    package let config: WaxMemoryToolConfig
 
     @Generable
-    public struct Arguments {
+    package struct Arguments {
         @Guide(description: "Action to perform: remember, recall, or search.")
-        public var action: String
+        package var action: String
 
         @Guide(description: "Memory content to store. Required for action=remember.")
-        public var content: String?
+        package var content: String?
 
         @Guide(description: "Query text used by recall/search. Required for action=recall or action=search.")
-        public var query: String?
+        package var query: String?
 
         @Guide(description: "Optional number of results for action=search.")
-        public var topK: Int?
+        package var topK: Int?
 
         @Guide(description: "Optional hybrid alpha [0,1] for action=search. Higher favors text search.")
-        public var alpha: Float?
+        package var alpha: Float?
 
-        public init(
+        package init(
             action: String = "",
             content: String? = nil,
             query: String? = nil,
@@ -45,7 +45,7 @@ Use action=remember to store content, action=recall to retrieve context, and act
         }
     }
 
-    public init(
+    package init(
         memory: MemoryOrchestrator,
         config: WaxMemoryToolConfig = .default
     ) {
@@ -53,7 +53,7 @@ Use action=remember to store content, action=recall to retrieve context, and act
         self.config = config
     }
 
-    public func call(arguments: Arguments) async throws -> some PromptRepresentable {
+    package func call(arguments: Arguments) async throws -> some PromptRepresentable {
         guard let action = WaxMemoryToolAction.parse(arguments.action) else {
             return output(
                 status: "error",
@@ -151,7 +151,7 @@ Use action=remember to store content, action=recall to retrieve context, and act
 }
 
 @available(macOS 26.0, iOS 26.0, *)
-public extension MemoryOrchestrator {
+package extension MemoryOrchestrator {
     /// Creates a Foundation Models tool that can remember and retrieve Wax memory.
     func foundationModelsMemoryTool(config: WaxMemoryToolConfig = .default) -> WaxMemoryTool {
         WaxMemoryTool(memory: self, config: config)

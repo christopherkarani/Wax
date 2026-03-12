@@ -49,13 +49,15 @@ struct SearchCommand: ParsableCommand {
         }
 
         let store = try await RepoStore(storeURL: storePath, textOnly: textOnly)
-        let viewModel = SearchViewModel(store: store, topK: topK)
+        let viewModel = await MainActor.run { SearchViewModel(store: store, topK: topK) }
 
         if let query {
             await viewModel.updateQuery(query)
         }
 
-        Application(rootView: SearchView(viewModel: viewModel)).start()
+        await MainActor.run {
+            Application(rootView: SearchView(viewModel: viewModel)).start()
+        }
     }
 }
 

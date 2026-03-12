@@ -13,6 +13,7 @@ struct StatsCommand: AsyncParsableCommand {
     func runAsync() async throws {
         // Stats does not need the embedder; force noEmbedder to skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
+        let compiled = StoreSession.miniLMCompiled
         try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
             let stats = await memory.runtimeStats()
             let sessionStats = try await memory.sessionRuntimeStats()
@@ -45,6 +46,7 @@ struct StatsCommand: AsyncParsableCommand {
                     "diskBytes": diskBytes,
                     "storePath": stats.storeURL.path,
                     "vectorSearchEnabled": stats.vectorSearchEnabled,
+                    "miniLMCompiled": compiled,
                     "features": [
                         "structuredMemoryEnabled": stats.structuredMemoryEnabled,
                         "accessStatsScoringEnabled": stats.accessStatsScoringEnabled,
@@ -74,6 +76,7 @@ struct StatsCommand: AsyncParsableCommand {
                 print("Frames: \(stats.frameCount) (\(stats.pendingFrames) pending)")
                 print("Generation: \(stats.generation)")
                 print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
+                print("MiniLM compiled: \(compiled ? "yes" : "no")")
                 print("Vector search: \(stats.vectorSearchEnabled ? "enabled" : "disabled")")
                 if let identity = stats.embedderIdentity {
                     let provider = identity.provider ?? "unknown"

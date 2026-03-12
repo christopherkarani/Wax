@@ -1,22 +1,22 @@
 import Foundation
 
-public struct LiveSetRewriteReport: Sendable, Equatable {
-    public var sourceURL: URL
-    public var destinationURL: URL
-    public var frameCount: Int
-    public var activeFrameCount: Int
-    public var droppedPayloadFrames: Int
-    public var deletedFrameCount: Int
-    public var supersededFrameCount: Int
-    public var copiedLexIndex: Bool
-    public var copiedVecIndex: Bool
-    public var logicalBytesBefore: UInt64
-    public var logicalBytesAfter: UInt64
-    public var allocatedBytesBefore: UInt64
-    public var allocatedBytesAfter: UInt64
-    public var durationMs: Double
+package struct LiveSetRewriteReport: Sendable, Equatable {
+    package var sourceURL: URL
+    package var destinationURL: URL
+    package var frameCount: Int
+    package var activeFrameCount: Int
+    package var droppedPayloadFrames: Int
+    package var deletedFrameCount: Int
+    package var supersededFrameCount: Int
+    package var copiedLexIndex: Bool
+    package var copiedVecIndex: Bool
+    package var logicalBytesBefore: UInt64
+    package var logicalBytesAfter: UInt64
+    package var allocatedBytesBefore: UInt64
+    package var allocatedBytesAfter: UInt64
+    package var durationMs: Double
 
-    public init(
+    package init(
         sourceURL: URL,
         destinationURL: URL,
         frameCount: Int,

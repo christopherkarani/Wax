@@ -9,7 +9,7 @@ struct UnifiedSearchEngineOverrides {
     var structuredEngine: FTS5SearchEngine?
 }
 
-public extension Wax {
+package extension Wax {
     func search(_ request: SearchRequest) async throws -> SearchResponse {
         try await search(request, engineOverrides: nil)
     }
@@ -148,7 +148,27 @@ extension Wax {
             if isMetalEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
                 queryEmbedding = VectorMath.normalizeL2(queryEmbedding)
             }
-            return try await vectorEngine.search(vector: queryEmbedding, topK: candidateLimit)
+            let vectorToSearch = queryEmbedding
+            if let timeout = request.vectorSearchTimeout {
+                do {
+                    return try await AsyncTimeout.run(timeout: timeout, operation: "vector search") {
+                        try await vectorEngine.search(vector: vectorToSearch, topK: candidateLimit)
+                    }
+                } catch let error as AsyncTimeout.TimeoutError {
+                    // Hybrid/text modes can degrade to non-vector lanes; vectorOnly should fail hard.
+                    if request.mode == .vectorOnly {
+                        throw error
+                    }
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "unified search vector lane timeout",
+                        fallback: "fall back to non-vector lanes"
+                    )
+                    return []
+                }
+            } else {
+                return try await vectorEngine.search(vector: queryEmbedding, topK: candidateLimit)
+            }
         }()
 
         async let structuredFrameIdsAsync: [UInt64] = {

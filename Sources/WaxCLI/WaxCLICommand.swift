@@ -1,4 +1,5 @@
 import ArgumentParser
+import Dispatch
 import Foundation
 
 @main
@@ -73,13 +74,7 @@ extension WaxCLI.MCP {
                 arguments.append(contentsOf: ["--license-key", key])
             }
 
-            // Construct a scoped environment instead of inheriting all parent env vars
-            // to avoid leaking credentials (AWS keys, tokens, etc.) to the child process.
-            let parentEnv = ProcessInfo.processInfo.environment
-            let allowedKeys: Set<String> = ["PATH", "HOME", "USER", "LANG", "TERM", "SHELL",
-                                             "TMPDIR", "XDG_RUNTIME_DIR", "DYLD_LIBRARY_PATH",
-                                             "WAX_LICENSE_KEY"]
-            var env = parentEnv.filter { allowedKeys.contains($0.key) }
+            var env = ProcessInfo.processInfo.environment
             env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
 
             let status = try ProcessRunner.run(
@@ -204,7 +199,7 @@ extension WaxCLI.MCP {
                 allowNonZeroExit: true
             )
             if removeStatus != EXIT_SUCCESS && removeStatus != 1 {
-                fputs("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)\n", stderr)
+                writeStderr("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)")
             }
 
             let addStatus = try ProcessRunner.run(
@@ -254,8 +249,13 @@ extension WaxCLI.MCP {
                     failures.append("wax-mcp is not executable at \(resolvedServer)")
                 }
             } catch {
-                failures.append("wax-mcp binary not found: \(error.localizedDescription)")
-                resolvedServer = serverPath
+                // Default path failed — try well-known locations for wax-mcp.
+                do {
+                    resolvedServer = try resolveToolPath("wax-mcp")
+                } catch {
+                    failures.append("wax-mcp binary not found at '\(serverPath)' or in common locations")
+                    resolvedServer = serverPath
+                }
             }
 
             do {
@@ -293,25 +293,22 @@ extension WaxCLI.MCP {
                 let request = initRequest + initializedNotification + listRequest
 
                 do {
-                    let output = try ProcessRunner.runCaptured(
+                    // NOTE: `wax-mcp` can shut down on stdin EOF; if we close stdin immediately (as with a
+                    // one-shot captured run), the server may exit before background request handlers flush
+                    // responses. Keep stdin open until we observe the tools/list response.
+                    let output = try ProcessRunner.runMCPSmokeCheck(
                         command: resolvedServer,
                         arguments: arguments,
                         environment: env,
-                        input: request
+                        input: request,
+                        expectedToolName: "wax_remember"
                     )
-                    if output.status != EXIT_SUCCESS {
+                    if output.timedOut {
+                        failures.append("Smoke check timed out waiting for tools/list response")
+                    } else if output.status != EXIT_SUCCESS {
                         failures.append("Smoke check failed with exit code \(output.status)")
-                    } else {
-                        // The server emits one JSON-RPC response per request (newline-delimited).
-                        // id:1 → initialize response, id:2 → tools/list response.
-                        // We check the tools/list response specifically to avoid false positives
-                        // from the initialize response containing the tool name incidentally.
-                        let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: true)
-                        let toolsListResponse = lines.first(where: { $0.contains(#""id":2"#) || $0.contains(#""id": 2"#) })
-                        let responseToCheck = toolsListResponse.map(String.init) ?? String(output.stdout)
-                        if !responseToCheck.contains(#""name":"wax_remember""#) {
-                            failures.append("Smoke check response missing wax_remember tool")
-                        }
+                    } else if !output.foundExpectedTool {
+                        failures.append("Smoke check response missing wax_remember tool")
                     }
                 } catch {
                     failures.append("Smoke check failed: \(error.localizedDescription)")
@@ -362,6 +359,14 @@ private struct CapturedProcessOutput {
     let status: Int32
     let stdout: String
     let stderr: String
+}
+
+private struct MCPSmokeCheckOutput {
+    let status: Int32
+    let stdout: String
+    let stderr: String
+    let foundExpectedTool: Bool
+    let timedOut: Bool
 }
 
 private enum ProcessRunner {
@@ -437,6 +442,142 @@ private enum ProcessRunner {
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
         return CapturedProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    static func runMCPSmokeCheck(
+        command: String,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        input: String,
+        expectedToolName: String,
+        timeoutSeconds: TimeInterval = 5
+    ) throws -> MCPSmokeCheckOutput {
+        final class SmokeCheckState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stdoutAll = Data()
+            private var stderrAll = Data()
+            private var stdoutPending = Data()
+            private var toolsListResponse: String?
+            private var foundExpectedTool = false
+            private var signaled = false
+            fileprivate let semaphore = DispatchSemaphore(value: 0)
+
+            func signalOnce() {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !signaled else { return }
+                signaled = true
+                semaphore.signal()
+            }
+
+            func appendStdout(_ data: Data, expectedToolName: String) {
+                lock.lock()
+                stdoutAll.append(data)
+                stdoutPending.append(data)
+
+                while let newlineIndex = stdoutPending.firstIndex(of: UInt8(ascii: "\n")) {
+                    let lineData = stdoutPending[..<newlineIndex]
+                    stdoutPending = stdoutPending[(newlineIndex + 1)...]
+                    guard !lineData.isEmpty else { continue }
+                    guard let line = String(data: lineData, encoding: .utf8) else { continue }
+
+                    if toolsListResponse == nil,
+                       (line.contains(#""id":2"#) || line.contains(#""id": 2"#))
+                    {
+                        toolsListResponse = line
+                        foundExpectedTool = line.contains(#""name":"\#(expectedToolName)""#)
+                        lock.unlock()
+                        signalOnce()
+                        return
+                    }
+                }
+
+                lock.unlock()
+            }
+
+            func appendStderr(_ data: Data) {
+                lock.lock()
+                stderrAll.append(data)
+                lock.unlock()
+            }
+
+            func snapshot() -> (stdout: Data, stderr: Data, toolsListResponse: String?, foundExpectedTool: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
+                return (stdoutAll, stderrAll, toolsListResponse, foundExpectedTool)
+            }
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [command] + arguments
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let stdinPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = stdinPipe
+
+        let state = SmokeCheckState()
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                state.signalOnce()
+                return
+            }
+            state.appendStdout(data, expectedToolName: expectedToolName)
+        }
+
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { return }
+            state.appendStderr(data)
+        }
+
+        try process.run()
+
+        if let data = input.data(using: .utf8) {
+            stdinPipe.fileHandleForWriting.write(data)
+        }
+
+        let waitResult = state.semaphore.wait(timeout: .now() + timeoutSeconds)
+        let timedOut = waitResult == .timedOut
+
+        // Close stdin to request graceful shutdown; also stop active readers.
+        try? stdinPipe.fileHandleForWriting.close()
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+        // Wait for clean exit.
+        process.waitUntilExit()
+
+        // Drain any remaining output.
+        if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
+            state.appendStdout(data, expectedToolName: expectedToolName)
+        }
+        if let data = try? stderrPipe.fileHandleForReading.readToEnd() {
+            state.appendStderr(data)
+        }
+
+        let snapshot = state.snapshot()
+        let stdout = String(data: snapshot.stdout, encoding: .utf8) ?? ""
+        let stderr = String(data: snapshot.stderr, encoding: .utf8) ?? ""
+
+        var foundExpectedTool = snapshot.foundExpectedTool
+        if snapshot.toolsListResponse == nil {
+            foundExpectedTool = stdout.contains(#""name":"\#(expectedToolName)""#)
+        }
+
+        return MCPSmokeCheckOutput(
+            status: process.terminationStatus,
+            stdout: stdout,
+            stderr: stderr,
+            foundExpectedTool: foundExpectedTool,
+            timedOut: timedOut
+        )
     }
 }
 

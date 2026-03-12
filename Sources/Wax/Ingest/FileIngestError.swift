@@ -1,7 +1,7 @@
 import Foundation
 
 /// Errors that can occur while ingesting a local text file.
-public enum FileIngestError: Error, Sendable, Equatable {
+package enum FileIngestError: Error, Sendable, Equatable {
     case fileNotFound(url: URL)
     case loadFailed(url: URL)
     case unsupportedTextEncoding(url: URL)
@@ -9,7 +9,7 @@ public enum FileIngestError: Error, Sendable, Equatable {
 }
 
 extension FileIngestError: LocalizedError {
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case let .fileNotFound(url):
             return "File not found: \(url.path)"

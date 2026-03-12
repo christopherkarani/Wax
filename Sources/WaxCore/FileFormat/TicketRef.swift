@@ -1,13 +1,13 @@
 import Foundation
 
-public struct TicketRef: Equatable, Sendable {
-    public var issuer: String
-    public var seqNo: UInt64
-    public var expiresInSecs: UInt64
-    public var capacityBytes: UInt64
-    public var verified: UInt8
+package struct TicketRef: Equatable, Sendable {
+    package var issuer: String
+    package var seqNo: UInt64
+    package var expiresInSecs: UInt64
+    package var capacityBytes: UInt64
+    package var verified: UInt8
 
-    public init(
+    package init(
         issuer: String,
         seqNo: UInt64,
         expiresInSecs: UInt64,
@@ -21,13 +21,13 @@ public struct TicketRef: Equatable, Sendable {
         self.verified = verified
     }
 
-    public static func emptyV1() -> TicketRef {
+    package static func emptyV1() -> TicketRef {
         TicketRef(issuer: "", seqNo: 0, expiresInSecs: 0, capacityBytes: 0, verified: 0)
     }
 }
 
 extension TicketRef: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         guard verified <= 1 else {
             throw WaxError.encodingError(reason: "ticket verified must be 0 or 1 (got \(verified))")
         }
@@ -38,7 +38,7 @@ extension TicketRef: BinaryCodable {
         encoder.encode(verified)
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> TicketRef {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> TicketRef {
         let issuer = try decoder.decode(String.self)
         let seqNo = try decoder.decode(UInt64.self)
         let expiresInSecs = try decoder.decode(UInt64.self)

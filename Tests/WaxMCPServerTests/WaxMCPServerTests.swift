@@ -3,7 +3,7 @@ import Testing
 
 #if MCPServer
 import MCP
-@testable import WaxMCPServer
+@testable import wax_mcp
 import Wax
 
 @Test
@@ -129,6 +129,272 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
         )
         #expect(statsResult.isError != true)
         #expect(firstText(in: statsResult).contains("\"frameCount\""))
+    }
+}
+
+@Test
+func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
+    try await withMemory { memory in
+        let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let queryToken = "rememberautoquery\(seed.prefix(8))"
+        let marker = "rememberautomarker\(seed.suffix(8))"
+        let markerNeedle = String(marker.prefix(14))
+
+        let rememberResult = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: ["content": .string("\(queryToken) \(marker)")]
+            ),
+            memory: memory
+        )
+        #expect(rememberResult.isError != true)
+        let rememberJSON = try parseJSONText(in: rememberResult)
+        #expect((rememberJSON["committed"] as? Bool) == true)
+
+        let statsResult = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(statsResult.isError != true)
+        let statsJSON = try parseJSONText(in: statsResult)
+        #expect((statsJSON["pendingFrames"] as? Int ?? -1) == 0)
+
+        let recallResult = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
+            memory: memory
+        )
+        #expect(recallResult.isError != true)
+        #expect(firstText(in: recallResult).contains(markerNeedle))
+    }
+}
+
+@Test
+func rememberCommitFalseBatchesUntilFlush() async throws {
+    try await withMemory { memory in
+        let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let queryToken = "rememberbatchquery\(seed.prefix(8))"
+        let marker = "rememberbatchmarker\(seed.suffix(8))"
+        let markerNeedle = String(marker.prefix(14))
+
+        let rememberResult = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": .string("\(queryToken) \(marker)"),
+                    "commit": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(rememberResult.isError != true)
+        let rememberJSON = try parseJSONText(in: rememberResult)
+        #expect((rememberJSON["committed"] as? Bool) == false)
+
+        let statsBeforeFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(statsBeforeFlush.isError != true)
+        let statsBeforeFlushJSON = try parseJSONText(in: statsBeforeFlush)
+        #expect((statsBeforeFlushJSON["pendingFrames"] as? Int ?? 0) > 0)
+
+        let flushResult = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_flush", arguments: [:]),
+            memory: memory
+        )
+        #expect(flushResult.isError != true)
+
+        let statsAfterFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(statsAfterFlush.isError != true)
+        let statsAfterFlushJSON = try parseJSONText(in: statsAfterFlush)
+        #expect((statsAfterFlushJSON["pendingFrames"] as? Int ?? -1) == 0)
+
+        let recallAfterFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
+            memory: memory
+        )
+        #expect(recallAfterFlush.isError != true)
+        #expect(firstText(in: recallAfterFlush).contains(markerNeedle))
+    }
+}
+
+@Test
+func handoffCommitFalseBatchesAndLatestOnlySeesCommittedFrames() async throws {
+    try await withMemory { memory in
+        let project = "handoff-batch-project-\(UUID().uuidString)"
+        let marker = "handoff-batch-marker-\(UUID().uuidString)"
+
+        let handoffResult = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_handoff",
+                arguments: [
+                    "content": .string(marker),
+                    "project": .string(project),
+                    "commit": false,
+                ]
+            ),
+            memory: memory
+        )
+        #expect(handoffResult.isError != true)
+        let handoffJSON = try parseJSONText(in: handoffResult)
+        #expect((handoffJSON["committed"] as? Bool) == false)
+
+        let statsBeforeFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(statsBeforeFlush.isError != true)
+        let statsBeforeFlushJSON = try parseJSONText(in: statsBeforeFlush)
+        #expect((statsBeforeFlushJSON["pendingFrames"] as? Int ?? 0) > 0)
+
+        let latestBeforeFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_handoff_latest", arguments: ["project": .string(project)]),
+            memory: memory
+        )
+        #expect(latestBeforeFlush.isError != true)
+        let latestBeforeFlushJSON = try parseJSONText(in: latestBeforeFlush)
+        #expect((latestBeforeFlushJSON["found"] as? Bool) == false)
+
+        let flushResult = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_flush", arguments: [:]),
+            memory: memory
+        )
+        #expect(flushResult.isError != true)
+
+        let latestAfterFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_handoff_latest", arguments: ["project": .string(project)]),
+            memory: memory
+        )
+        #expect(latestAfterFlush.isError != true)
+        let latestAfterFlushJSON = try parseJSONText(in: latestAfterFlush)
+        #expect((latestAfterFlushJSON["found"] as? Bool) == true)
+        #expect((latestAfterFlushJSON["content"] as? String)?.contains(marker) == true)
+    }
+}
+
+@Test
+func recallAndSearchSupportMetadataExactFilters() async throws {
+    try await withMemory { memory in
+        let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let queryToken = "metadatafilterquery\(seed.prefix(8))"
+        let blockedMarker = "metadatablocked\(seed.suffix(8))"
+        let allowedMarker = "metadataallowed\(seed.dropFirst(8).prefix(8))"
+        let blockedNeedle = String(blockedMarker.prefix(12))
+        let allowedNeedle = String(allowedMarker.prefix(12))
+
+        let blockedRemember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": .string("\(queryToken) \(blockedMarker)"),
+                    "metadata": .object(["group": .string("blocked")]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(blockedRemember.isError != true)
+
+        let allowedRemember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": .string("\(queryToken) \(allowedMarker)"),
+                    "metadata": .object(["group": .string("allowed")]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(allowedRemember.isError != true)
+
+        let flushResult = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_flush", arguments: [:]),
+            memory: memory
+        )
+        #expect(flushResult.isError != true)
+
+        let baselineSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: ["query": .string(queryToken), "mode": .string("text"), "topK": .int(10)]
+            ),
+            memory: memory
+        )
+        #expect(baselineSearch.isError != true)
+        #expect(firstText(in: baselineSearch).contains(blockedNeedle))
+
+        let filteredSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: [
+                    "query": .string(queryToken),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                    "filters": .object([
+                        "metadata": .object([
+                            "exact": .object(["group": .string("allowed")]),
+                        ]),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(filteredSearch.isError != true)
+        #expect(firstText(in: filteredSearch).contains(allowedNeedle))
+        #expect(!firstText(in: filteredSearch).contains(blockedNeedle))
+
+        let baselineRecall = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(10)]),
+            memory: memory
+        )
+        #expect(baselineRecall.isError != true)
+        #expect(firstText(in: baselineRecall).contains(blockedNeedle))
+
+        let filteredRecall = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: [
+                    "query": .string(queryToken),
+                    "limit": .int(10),
+                    "filters": .object([
+                        "metadata": .object([
+                            "exact": .object(["group": .string("allowed")]),
+                        ]),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(filteredRecall.isError != true)
+        #expect(firstText(in: filteredRecall).contains(allowedNeedle))
+        #expect(!firstText(in: filteredRecall).contains(blockedNeedle))
+    }
+}
+
+@Test
+func recallValidatesModeAndSearchControls() async throws {
+    try await withMemory { memory in
+        let invalidMode = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: ["query": "mode-validation", "mode": "invalid-mode"]
+            ),
+            memory: memory
+        )
+        #expect(invalidMode.isError == true)
+        #expect(firstText(in: invalidMode).contains("mode"))
+
+        let invalidTopK = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: ["query": "topk-validation", "search_top_k": 0]
+            ),
+            memory: memory
+        )
+        #expect(invalidTopK.isError == true)
+        #expect(firstText(in: invalidTopK).contains("search_top_k"))
     }
 }
 
