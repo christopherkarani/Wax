@@ -73,7 +73,13 @@ extension WaxCLI.MCP {
                 arguments.append(contentsOf: ["--license-key", key])
             }
 
-            var env = ProcessInfo.processInfo.environment
+            // Construct a scoped environment instead of inheriting all parent env vars
+            // to avoid leaking credentials (AWS keys, tokens, etc.) to the child process.
+            let parentEnv = ProcessInfo.processInfo.environment
+            let allowedKeys: Set<String> = ["PATH", "HOME", "USER", "LANG", "TERM", "SHELL",
+                                             "TMPDIR", "XDG_RUNTIME_DIR", "DYLD_LIBRARY_PATH",
+                                             "WAX_LICENSE_KEY"]
+            var env = parentEnv.filter { allowedKeys.contains($0.key) }
             env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
 
             let status = try ProcessRunner.run(

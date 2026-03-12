@@ -93,7 +93,10 @@ public class all_MiniLM_L6_v2 {
         }
         #endif
         let bundle = Bundle(for: self)
-        return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc")!
+        guard let url = bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") else {
+            fatalError("all-MiniLM-L6-v2.mlmodelc not found in bundle \(bundle.bundlePath)")
+        }
+        return url
     }
 
     /**

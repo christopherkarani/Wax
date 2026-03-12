@@ -7,12 +7,8 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
 
     private static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
 
-    private static let cl100kBaseRegex: NSRegularExpression = {
-        do {
-            return try NSRegularExpression(pattern: cl100kBasePattern, options: [])
-        } catch {
-            preconditionFailure("Invalid cl100k_base regex: \(error)")
-        }
+    private static let cl100kBaseRegex: Result<NSRegularExpression, Error> = {
+        Result { try NSRegularExpression(pattern: cl100kBasePattern, options: []) }
     }()
 
     private final class LockedCache<Key: Hashable & Sendable, Value: Sendable>: @unchecked Sendable {
@@ -41,7 +37,7 @@ public final class NativeBpeTokenizer: @unchecked Sendable {
         let (encoder, decoder) = try Self.loadEncoding(encoding)
         self.encoder = encoder
         self.decoder = decoder
-        self.regex = Self.cl100kBaseRegex
+        self.regex = try Self.cl100kBaseRegex.get()
     }
 
     public static func preload(encoding: Encoding = .cl100kBase) throws -> NativeBpeTokenizer {

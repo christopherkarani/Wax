@@ -35,9 +35,11 @@ enum FTS5Serializer {
             throw WaxError.io("sqlite3_malloc64 failed")
         }
         data.withUnsafeBytes { raw in
-            if let base = raw.baseAddress {
-                memcpy(buffer, base, size)
+            guard let base = raw.baseAddress else {
+                // Non-empty Data should always have a baseAddress; this is a defensive check.
+                return
             }
+            memcpy(buffer, base, size)
         }
         let flags = UInt32(SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE)
         let rc = sqlite3_deserialize(

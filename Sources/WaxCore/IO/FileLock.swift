@@ -14,13 +14,22 @@ public enum LockMode: Sendable {
 public final class FileLock {
     private let fd: Int32
     private let url: URL
-    public private(set) var mode: LockMode
-    private var isReleased = false
+    private let lock = NSLock()
+    private var _mode: LockMode
+    public private(set) var mode: LockMode {
+        get { lock.withLock { _mode } }
+        set { lock.withLock { _mode = newValue } }
+    }
+    private var _isReleased = false
+    private var isReleased: Bool {
+        get { lock.withLock { _isReleased } }
+        set { lock.withLock { _isReleased = newValue } }
+    }
 
     private init(fd: Int32, url: URL, mode: LockMode) {
         self.fd = fd
         self.url = url
-        self.mode = mode
+        self._mode = mode
     }
 
     deinit {
