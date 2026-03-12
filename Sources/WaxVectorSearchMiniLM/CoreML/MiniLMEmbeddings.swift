@@ -23,6 +23,27 @@ public final class MiniLMEmbeddings {
         }
     }
 
+    /// Errors produced during embedding generation.
+    public enum EncodeError: LocalizedError, Sendable {
+        case tokenizationFailed(String)
+        case predictionFailed(String)
+        case invalidSequenceLength
+        case decodingFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .tokenizationFailed(let details):
+                return "Failed to tokenize input text: \(details)"
+            case .predictionFailed(let details):
+                return "Core ML prediction failed: \(details)"
+            case .invalidSequenceLength:
+                return "Tokenized input produced an invalid sequence length."
+            case .decodingFailed:
+                return "Failed to decode embedding tensor into float vectors."
+            }
+        }
+    }
+
     public struct Overrides: Sendable {
         var modelURLProvider: (@Sendable () -> URL?)?
         var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
@@ -103,67 +124,139 @@ public final class MiniLMEmbeddings {
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
     public func encode(sentence: String) async -> [Float]? {
-        guard let batchInputs = try? tokenizer.buildBatchInputs(
-            sentences: [sentence],
-            sequenceLengthBuckets: Self.sequenceLengthBuckets
-        ), batchInputs.sequenceLength > 0 else { return nil }
+        try? await encodeThrowing(sentence: sentence)
+    }
 
-        guard let output = try? model.prediction(
-            input_ids: batchInputs.inputIds,
-            attention_mask: batchInputs.attentionMask
-        ) else {
-            return nil
+    /// Encode a single sentence to a 384-dimensional embedding vector.
+    /// - Parameter sentence: Input sentence to embed.
+    /// - Returns: A 384-dimensional embedding vector.
+    /// - Throws: ``EncodeError`` when tokenization, model prediction, or tensor decoding fails.
+    public func encodeThrowing(sentence: String) async throws -> [Float] {
+        let batchInputs: BatchInputs
+        do {
+            batchInputs = try tokenizer.buildBatchInputs(
+                sentences: [sentence],
+                sequenceLengthBuckets: Self.sequenceLengthBuckets
+            )
+        } catch {
+            throw EncodeError.tokenizationFailed(error.localizedDescription)
         }
 
-        return Self.decodeEmbeddings(
+        guard batchInputs.sequenceLength > 0 else {
+            throw EncodeError.invalidSequenceLength
+        }
+
+        let output: all_MiniLM_L6_v2Output
+        do {
+            output = try model.prediction(
+                input_ids: batchInputs.inputIds,
+                attention_mask: batchInputs.attentionMask
+            )
+        } catch {
+            throw EncodeError.predictionFailed(error.localizedDescription)
+        }
+
+        guard let vector = Self.decodeEmbeddings(
             output.var_554,
             batchSize: 1,
             outputDimension: outputDimension
-        )?.first
+        )?.first else {
+            throw EncodeError.decodingFailed
+        }
+
+        return vector
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
     public func encode(batch sentences: [String]) async -> [[Float]]? {
         var reuse: BatchInputBuffers?
-        return encode(batch: sentences, reuseBuffers: &reuse)
+        return try? encodeThrowing(batch: sentences, reuseBuffers: &reuse)
     }
 
     public func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
     ) -> [[Float]]? {
+        try? encodeThrowing(batch: sentences, reuseBuffers: &reuseBuffers)
+    }
+
+    /// Encode a batch of sentences into embedding vectors.
+    /// - Parameters:
+    ///   - sentences: Input sentences to embed.
+    ///   - reuseBuffers: Optional reusable tokenization buffers to reduce allocation churn.
+    /// - Returns: One embedding vector per input sentence in the same order.
+    /// - Throws: ``EncodeError`` when tokenization, model prediction, or tensor decoding fails.
+    public func encodeThrowing(
+        batch sentences: [String],
+        reuseBuffers: inout BatchInputBuffers?
+    ) throws -> [[Float]] {
         guard !sentences.isEmpty else { return [] }
 
-        guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
-            sentences: sentences,
-            sequenceLengthBuckets: Self.sequenceLengthBuckets,
-            reuse: &reuseBuffers
-        ), batchInputs.sequenceLength > 0 else { return [] }
-
-        guard let output = try? model.prediction(
-            input_ids: batchInputs.inputIds,
-            attention_mask: batchInputs.attentionMask
-        ) else {
-            return nil
+        let batchInputs: BatchInputs
+        do {
+            batchInputs = try tokenizer.buildBatchInputsWithReuse(
+                sentences: sentences,
+                sequenceLengthBuckets: Self.sequenceLengthBuckets,
+                reuse: &reuseBuffers
+            )
+        } catch {
+            throw EncodeError.tokenizationFailed(error.localizedDescription)
         }
 
-        return Self.decodeEmbeddings(
+        guard batchInputs.sequenceLength > 0 else {
+            throw EncodeError.invalidSequenceLength
+        }
+
+        let output: all_MiniLM_L6_v2Output
+        do {
+            output = try model.prediction(
+                input_ids: batchInputs.inputIds,
+                attention_mask: batchInputs.attentionMask
+            )
+        } catch {
+            throw EncodeError.predictionFailed(error.localizedDescription)
+        }
+
+        guard let vectors = Self.decodeEmbeddings(
             output.var_554,
             batchSize: sentences.count,
             outputDimension: outputDimension
-        )
+        ) else {
+            throw EncodeError.decodingFailed
+        }
+
+        return vectors
     }
 
     /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
     public func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
-        let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
-        let output = try? model.prediction(input: inputFeatures)
+        try? generateEmbeddingsThrowing(inputIds: inputIds, attentionMask: attentionMask)
+    }
 
-        guard let embeddings = output?.var_554 else {
-            return nil
+    /// Generate an embedding from pre-tokenized tensors.
+    /// - Parameters:
+    ///   - inputIds: Token IDs tensor.
+    ///   - attentionMask: Attention mask tensor.
+    /// - Returns: A single embedding vector for the tokenized input.
+    /// - Throws: ``EncodeError`` when prediction or decoding fails.
+    public func generateEmbeddingsThrowing(inputIds: MLMultiArray, attentionMask: MLMultiArray) throws -> [Float] {
+        let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
+        let output: all_MiniLM_L6_v2Output
+        do {
+            output = try model.prediction(input: inputFeatures)
+        } catch {
+            throw EncodeError.predictionFailed(error.localizedDescription)
         }
 
-        return Self.decodeEmbeddings(embeddings, batchSize: 1, outputDimension: outputDimension)?.first
+        guard let vector = Self.decodeEmbeddings(
+            output.var_554,
+            batchSize: 1,
+            outputDimension: outputDimension
+        )?.first else {
+            throw EncodeError.decodingFailed
+        }
+
+        return vector
     }
 
 }
