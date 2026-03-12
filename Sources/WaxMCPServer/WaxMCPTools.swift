@@ -757,7 +757,9 @@ enum WaxMCPTools {
             case "\r": result += "\\r"
             case "\t": result += "\\t"
             default:
-                let scalar = char.unicodeScalars.first!
+                guard let scalar = char.unicodeScalars.first else {
+                    continue
+                }
                 if scalar.value < 0x20 {
                     result += String(format: "\\u%04x", scalar.value)
                 } else {
