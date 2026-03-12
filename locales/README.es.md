@@ -2,84 +2,151 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/banner-dark.svg">
-    <img src="../docs/assets/banner-light.svg" width="800" alt="Wax Banner" />
+    <img src="../docs/assets/banner-light.svg" width="800" alt="Wax Banner">
   </picture>
 </div>
 
-<p align="center">
-  [English](../README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [中文](README.zh-CN.md)
-</p>
-<!-- HEADER:END -->
-
 <div style="height: 16px;"></div>
 
+<p align="center">
+  <strong>Wax es una capa de memoria de alto rendimiento en un solo archivo para agentes de IA en plataformas Apple.</strong><br/>
+  En el dispositivo, privado y portable — sin servidor, sin nube, cero infraestructura.
+</p>
 
+<p align="center">
+  <a href="https://github.com/christopherkarani/Wax/releases"><img src="https://img.shields.io/github/v/release/christopherkarani/Wax?style=flat-square&logo=swift&logoColor=white&label=Swift" alt="Swift" /></a>
+  <a href="https://developer.apple.com/ios/"><img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-lightgrey?style=flat-square" alt="Platforms" /></a>
+  <a href="https://github.com/christopherkarani/Wax/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/christopherkarani/Wax/stargazers"><img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat-square&logo=github" alt="Stars" /></a>
+</p>
 
-<!-- NAV:START -->
-<!-- NAV:END -->
-
-<!-- BADGES:START -->
-
-<!-- BADGES:END -->
+<p align="center">
+  [English](../README.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português](README.pt.md) | [中文](README.zh-CN.md)
+</p>
+<!-- HEADER:END -->
 
 ---
 
 ## ¿Qué es Wax?
 
-La mayoría de apps de IA en iOS pierden la memoria en cuanto el usuario las cierra. Wax soluciona eso.
+Wax es un motor de persistencia nativo en Swift diseñado para la próxima generación de agentes de IA. Encapsula documentos, embeddings de alta dimensión y conocimiento estructurado en un único archivo portable `.wax`.
 
-Wax es un sistema de memoria de IA portable que empaqueta documentos, embeddings, índices de búsqueda y metadatos en un único archivo `.wax`. En lugar de combinar Core Data, FAISS, Pinecone o levantar servidores de bases vectoriales, Wax te da memoria persistente, buscable y privada para tus agentes, totalmente en dispositivo.
+A diferencia de las bases de datos tradicionales que requieren configuraciones complejas o dependencias en la nube, Wax proporciona una **capa de memoria unificada** que reside completamente en el dispositivo, aprovechando la inferencia acelerada por Metal para una latencia de recuperación inferior a 10 ms.
 
-El resultado es una capa de memoria nativa en Swift y sin infraestructura, que da memoria a largo plazo a los agentes de IA en cualquier lugar: sin llamadas de red, sin claves API y sin compromisos de privacidad.
+### ¿Por qué Wax?
 
+| Característica   | Wax                    | SQLite (FTS5)          | Vector DBs en la Nube  |
+|:-----------------|:-----------------------|:-----------------------|:-----------------------|
+| **Búsqueda**     | Híbrida (Texto + Vec)  | Solo Texto*            | Solo Vector*           |
+| **Latencia**     | **~6ms (p95)**         | ~10ms (p95)            | 150ms - 500ms+         |
+| **Privacidad**   | 100% Local             | 100% Local             | Alojado en la nube     |
+| **Configuración**| Cero Config            | Baja                   | Compleja (Claves API)  |
+| **Arquitectura** | Nativo Apple Silicon   | Genérico               | Varía                  |
 
-## ¿Qué son los Smart Frames?
+### 📦 ¿Por qué un solo archivo `.wax`?
+La mayoría de los sistemas RAG requieren una base de datos, un almacén de vectores y un servidor de archivos. Wax agrupa todo —documentos, metadatos e índices de alta dimensión— en un solo binario portable.
+*   **Cero Infraestructura:** Sin Docker, sin configuración de BD, sin facturas de nube.
+*   **Verdaderamente Portable:** Envía la memoria de tu agente por AirDrop a otro Mac o sincronízala a través de iCloud.
+*   **Atómico:** Un archivo para respaldar, un archivo para control de versiones, un archivo para eliminar.
 
-Wax organiza la memoria de IA como una **secuencia append-only de Smart Frames**, inspirada en codificación de video.
+---
 
-Un Smart Frame es una unidad inmutable que guarda contenido junto con marcas de tiempo, checksums, embeddings y metadatos. Los frames admiten surrogates por niveles: texto completo, resumen o micro-resumen, para balancear recall y velocidad al consultar.
+## Rendimiento
 
-Este diseño basado en frames permite:
+Wax está optimizado para la arquitectura de la serie M, proporcionando una recuperación casi instantánea incluso con índices locales a gran escala.
 
-- Escrituras append-only sin modificar ni corromper datos existentes
-- Inspección tipo timeline de cómo evoluciona el conocimiento
-- Seguridad ante fallos con frames inmutables confirmados y WAL
-- Compresión eficiente con LZ4/zlib
-- Redundancia de doble header para mayor resiliencia ante corrupción
+### Latencia de recuperación (p95)
+*Menor es mejor. Medido en milisegundos.*
 
+```text
+Wax (Híbrido) |██ 6.1ms
+SQLite (Texto) |████ 12ms
+RAG en la nube |██████████████████████████████████████████████████ 150ms+
+```
 
-## Conceptos clave
+### Tiempo de apertura en frío (p95)
+*Menor es mejor. Medido en milisegundos.*
 
-- **Recuperación híbrida**: búsqueda BM25 por palabras clave fusionada con similitud vectorial HNSW. Recupera la memoria correcta incluso con redacción distinta.
+```text
+Wax           |███ 9.2ms
+Tradicional   |██████████████████████████████████████ 120ms+
+```
 
-- **Embeddings on-device**: MiniLM en local con CoreML y Metal. Sin llamadas API, sin latencia extra, sin costo extra.
+> [!TIP]
+> **Rendimiento de ingesta:** Wax maneja **85.9 docs/s** con indexación híbrida completa en un M3 Max.
+> Informe completo de benchmarks: [docs/benchmarks/2026-03-06-performance-results.md](../docs/benchmarks/2026-03-06-performance-results.md)
 
-- **Presupuestos de tokens**: define un límite estricto. Wax recorta y comprime contexto automáticamente para encajar siempre.
+---
 
-- **Grafo de conocimiento**: triples entidad-relación con versionado de hechos. Puedes afirmar, retractar y consultar conocimiento estructurado junto con memoria no estructurada.
+## Arquitectura
 
-- **Session handoffs**: ciclo de sesión de primera clase con `handoff` / `handoff-latest` para continuidad entre conversaciones.
+Wax utiliza un modelo de **"Base de datos de bases de datos"**. Gestiona su propio formato de almacenamiento basado en tramas mientras integra motores de búsqueda especializados (SQLite FTS5 e HNSW acelerado por Metal) como blobs serializados dentro del archivo principal.
 
-- **Archivo único portable**: toda la memoria vive en un archivo `.wax`. Respáldalo, sincronízalo, muévelo.
+### Diseño interno del archivo
 
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    Páginas de encabezado duales (A/B)                    │
+│   (Magic, Versión, Generación, Punteros a WAL y TOC, Checksums)          │
+├──────────────────────────────────────────────────────────────────────────┤
+│                       WAL (Write-Ahead Log)                              │
+│ (Búfer circular atómico para mutaciones no confirmadas resilientes)      │
+├──────────────────────────────────────────────────────────────────────────┤
+│                       Tramas de datos comprimidos                        │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐       │
+│   │ Trama 0 (LZ4)    │  │ Trama 1 (LZ4)    │  │ Trama 2 (LZ4)    │ ...   │
+│   │ [Doc original]   │  │ [Metadatos/JSON] │  │ [Info sistema]   │       │
+│   └──────────────────┘  └──────────────────┘  └──────────────────┘       │
+├──────────────────────────────────────────────────────────────────────────┤
+│                       Índices de búsqueda híbrida                        │
+│   ┌──────────────────────────────┐  ┌──────────────────────────────┐     │
+│   │ Blob SQLite FTS5             │  │ Índice Metal HNSW            │     │
+│   │ (Búsqueda texto + Datos EAV) │  │ (Búsqueda vectorial)         │     │
+│   └──────────────────────────────┘  └──────────────────────────────┘     │
+├──────────────────────────────────────────────────────────────────────────┤
+│                       TOC (Tabla de contenidos)                          │
+│ (Índice de tramas, relaciones padre-hijo y manifiestos del motor)        │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
-## Casos de uso
+1. **Resiliencia atómica**: Los encabezados duales y el WAL aseguran que incluso si el proceso falla durante la escritura, el almacén permanezca consistente.
+2. **Recuperación unificada**: Una sola consulta activa la ejecución paralela en los motores BM25 (texto) e HNSW (vector).
+3. **Conocimiento estructurado**: Almacenamiento EAV (Entidad-Atributo-Valor) integrado para hechos persistentes y razonamiento a largo plazo.
 
-- **Agentes conversacionales** que recuerdan preferencias, historial y hechos entre sesiones
-- **Apps de notas** con búsqueda semántica ("encuentra todo lo que escribí sobre WWDC")
-- **Asistentes personales** que aprenden hábitos sin enviar datos fuera del dispositivo
-- **Pipelines RAG** totalmente on-device para apps sensibles u offline-first
-- **Agentes Claude Code / MCP** con memoria persistente vía servidor MCP
-- **Video RAG** para indexar transcripciones y subtítulos con búsqueda de video en lenguaje natural
+---
 
+## Inicio rápido
 
-## SDKs y CLI
+Copia y pega esto en un archivo `main.swift` para comenzar de inmediato.
 
-| Paquete | Instalación | Descripción |
-|---|---|---|
-| **Swift SDK** | Swift Package Manager | Librería principal para apps iOS y macOS |
-| **MCP Server** | `npx -y waxmcp@latest mcp install` | Integración con Claude Code / MCP |
-| **CLI** | `npx -y waxmcp@latest` | Comandos de terminal para remember, recall, search |
+```swift
+import Foundation
+import Wax
+import WaxVectorSearchMiniLM
+
+@main
+struct AgentMemory {
+    static func main() async throws {
+        let url = URL(fileURLWithPath: "agent.wax")
+
+        // 1. Inicializa un almacén de memoria (embeddings MiniLM en el dispositivo)
+        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
+
+        // 2. Registra una nueva memoria
+        try await memory.remember("El usuario está construyendo un rastreador de hábitos en SwiftUI.")
+
+        // 3. Realiza una recuperación semántica
+        let context = try await memory.recall(query: "¿Qué está construyendo el usuario?")
+
+        if let bestMatch = context.items.first {
+            print("Recuperación: \(bestMatch.text)") 
+            // Salida: "Recuperación: El usuario está construyendo un rastreador de hábitos en SwiftUI."
+        }
+    }
+}
+```
+
+¿Buscas almacenar hechos persistentes y razonamiento a largo plazo? Consulta [Memoria Estructurada](../Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
 
 ---
 
@@ -88,229 +155,37 @@ Este diseño basado en frames permite:
 ### Swift Package Manager
 
 ```swift
-// Package.swift
 dependencies: [
     .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8")
-],
-targets: [
-    .target(
-        name: "MyApp",
-        dependencies: [
-            .product(name: "Wax", package: "Wax"),
-            .product(name: "WaxVectorSearchMiniLM", package: "Wax")
-        ]
-    )
 ]
 ```
 
-O en Xcode: **File > Add Package Dependencies** y pega la URL del repositorio.
+---
 
-### MCP Server (Claude Code)
+## Herramientas del ecosistema
+
+### 🤖 Servidor MCP
+Wax proporciona un servidor **Model Context Protocol (MCP)** de primer nivel. Conecta tu memoria local a Claude Code o cualquier agente compatible con MCP.
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-### Módulos
+### 🔍 WaxRepo
+Una TUI de búsqueda semántica para tu historial de git. Indexa cualquier repositorio y encuentra código o commits utilizando lenguaje natural.
 
-| Módulo | Propósito |
-|---|---|
-| `Wax` | Orquestador completo con búsqueda híbrida, RAG y grafo de conocimiento |
-| `WaxCore` | Almacenamiento de frames, WAL y motor de commit de bajo nivel |
-| `WaxTextSearch` | Búsqueda de texto BM25 (GRDB + FTS5) |
-| `WaxVectorSearch` | Búsqueda por similitud vectorial HNSW (USearch) |
-| `WaxVectorSearchMiniLM` | Proveedor MiniLM on-device |
-
----
-
-## Inicio rápido
-
-```swift
-import Wax
-import WaxVectorSearchMiniLM
-
-// 1. Abre (o crea) una memoria
-let memory = try await MemoryOrchestrator.openMiniLM(
-    at: .documentsDirectory.appending(path: "agent.wax")
-)
-
-// 2. Guarda recuerdos
-try await memory.remember("User prefers concise answers and hates bullet points.")
-try await memory.remember("The user's name is Alex and they live in Toronto.")
-try await memory.remember("Alex is building a habit tracker in SwiftUI.")
-
-// 3. Recupera contexto relevante semánticamente
-let context = try await memory.recall(query: "how should I address the user?")
-print(context.items.map(\.text))
-// ["The user's name is Alex and they live in Toronto.",
-//  "User prefers concise answers and hates bullet points."]
+```bash
+# Desde cualquier repositorio git
+wax-repo index
+wax-repo search "¿dónde implementamos el WAL?"
 ```
-
-### Grafo de conocimiento
-
-```swift
-// Crear entidades
-try await memory.upsertEntity(key: "person:alex", kind: "person", aliases: ["Alex", "the user"])
-
-// Afirmar hechos
-try await memory.assertFact(subject: "person:alex", predicate: "lives_in", object: "Toronto")
-try await memory.assertFact(subject: "person:alex", predicate: "building", object: "habit tracker")
-
-// Consultar hechos
-let facts = try await memory.facts(subject: "person:alex")
-```
-
-### Handoffs de sesión
-
-```swift
-// Fin de sesión: guardar contexto para la próxima
-try await memory.rememberHandoff(
-    summary: "Helped Alex debug a SwiftUI layout issue",
-    project: "habit-tracker",
-    pendingTasks: ["Fix the tab bar animation", "Add onboarding flow"]
-)
-
-// Inicio de la siguiente sesión: retomar donde quedaste
-if let handoff = try await memory.latestHandoff(project: "habit-tracker") {
-    print(handoff.summary)
-    print(handoff.pendingTasks)
-}
-```
-
----
-
-## Integración con Claude Code
-
-Después de instalar el servidor MCP, agrega esto en tu `CLAUDE.md` para que Claude Code use Wax como memoria:
-
-<details>
-<summary><strong>Snippet de CLAUDE.md</strong> (haz clic para expandir)</summary>
-
-```markdown
-## Rules
-
-1. **Session start** — call `wax_handoff_latest` to resume prior context
-2. **Before answering** — call `wax_recall` to check what you already know
-3. **When you learn something durable** — call `wax_remember`
-4. **When corrected** — call `wax_forget` with what changed
-5. **Session end** — call `wax_handoff` with summary + pending tasks
-
-## Tools
-
-| Tool | When |
-|------|------|
-| `wax_remember` | User states a preference, makes a decision, or you learn a stable pattern |
-| `wax_recall` | Before answering anything that might have prior context |
-| `wax_forget` | User corrects you or facts become outdated |
-| `wax_context` | Need the full picture of a specific entity |
-| `wax_reflect` | Audit what you know — entity counts, top predicates, memory health |
-| `wax_handoff` | Session ending. Pass `pending_tasks` array for continuity |
-| `wax_handoff_latest` | Session starting. Loads last handoff |
-```
-
-</details>
-
----
-
-## Arquitectura
-
-<div align="center">
-<img src="https://raw.githubusercontent.com/christopherkarani/Wax/main/Resources/website/static/img/architecture.svg" width="800" alt="Wax Architecture" />
-</div>
-
----
-
-## Rendimiento
-
-<div align="center">
-<img src="Resources/website/static/img/benchmarks.svg" width="800" alt="Wax Performance Benchmarks" />
-</div>
-
----
-
-## Formato de archivo
-
-Todo vive en un único archivo `.wax`:
-
-```
-┌────────────────────────────┐
-│ Header Pages (dual)        │  Magic, version, TOC pointer
-├────────────────────────────┤
-│ WAL Ring Buffer             │  Crash recovery
-├────────────────────────────┤
-│ Data Segments              │  LZ4/zlib compressed frames
-├────────────────────────────┤
-│ Text Index                 │  FTS5 full-text (BM25)
-├────────────────────────────┤
-│ Vector Index               │  HNSW embeddings (USearch)
-├────────────────────────────┤
-│ Knowledge Graph            │  Entity-fact triples
-├────────────────────────────┤
-│ TOC (Footer)               │  Segment offsets + checksums
-└────────────────────────────┘
-```
-
-Sin archivos sidecar `.wal`, `.lock`, `.shm` ni similares.
-
----
-
-## Comparación
-
-| | Wax | ChromaDB | Pinecone | Core Data + FAISS |
-|---|---|---|---|---|
-| On-device | Yes | No | No | Yes |
-| Sin servidor | Yes | No | No | Yes |
-| Búsqueda híbrida | Yes | Yes | Yes | Manual |
-| Presupuesto de tokens | Yes | No | No | No |
-| Grafo de conocimiento | Yes | No | No | No |
-| Archivo único | Yes | No | No | No |
-| API Swift nativa | Yes | No | No | Partial |
-| Servidor MCP | Yes | No | No | No |
-| Privacidad (datos en dispositivo) | Yes | No | No | Yes |
-
----
-
-## Requisitos
-
-| | Mínimo |
-|---|---|
-| Swift | 6.1+ |
-| iOS | 18.0 |
-| macOS | 15.0 |
-| Xcode | 16.0 |
-
-Se recomienda Apple Silicon para embeddings acelerados por Metal. En Intel Mac hay fallback a CPU automáticamente.
-
----
-
-## Hoja de ruta
-
-- [ ] Sincronización CloudKit (opt-in, cifrada)
-- [ ] Soporte de documentos `.wax` en iCloud Drive
-- [ ] Clustering y deduplicación de memoria
-- [ ] Modelos de embedding cuantizados para menor huella
-- [ ] Plantilla de Instruments para perfilado de memoria
-
----
-
-## Contribuir
-
-Se aceptan issues y PRs. Si estás construyendo algo con Wax, abre una [Discussion](https://github.com/christopherkarani/Wax/discussions): nos encantaría verlo.
-
----
-
-## Historial de estrellas
-
-[![Star History Chart](https://api.star-history.com/svg?repos=christopherkarani/wax&type=date&legend=top-left)](https://www.star-history.com/#christopherkarani/wax&type=date&legend=top-left)
 
 ---
 
 ## Licencia
 
-Apache License 2.0. Consulta [LICENSE](LICENSE) para más detalles.
-
----
+Wax se lanza bajo la Licencia Apache 2.0. Consulta [LICENSE](../LICENSE) para más detalles.
 
 <div align="center">
-<sub>Hecho para desarrolladores que creen que los datos de usuario pertenecen al dispositivo del usuario.</sub>
+<sub>Construido para desarrolladores que creen que los datos pertenecen al dispositivo del usuario.</sub>
 </div>

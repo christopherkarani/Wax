@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  [English](README.md) | [Español](locales/README.es.md) | [日本語](locales/README.ja.md) | [中文](locales/README.zh-CN.md)
+  [English](README.md) | [Español](locales/README.es.md) | [Français](locales/README.fr.md) | [日本語](locales/README.ja.md) | [한국어](locales/README.ko.md) | [Português](locales/README.pt.md) | [中文](locales/README.zh-CN.md)
 </p>
 <!-- HEADER:END -->
 
