@@ -16,6 +16,7 @@ package final class FileLock {
     private let url: URL
     package private(set) var mode: LockMode
     private var isReleased = false
+    private let releaseLock = NSLock()
 
     private init(fd: Int32, url: URL, mode: LockMode) {
         self.fd = fd
@@ -75,24 +76,27 @@ package final class FileLock {
     }
 
     package func release() throws {
-        if isReleased { return }
-        var unlockError: WaxError?
-        while true {
-            if flock(fd, LOCK_UN) == 0 { break }
-            if errno == EINTR { continue }
-            unlockError = WaxError.lockUnavailable("unlock failed: \(stringError())")
-            break
-        }
+        try releaseLock.withLock {
+            if isReleased { return }
 
-        var closeError: WaxError?
-        if close(fd) != 0, errno != EINTR {
-            closeError = WaxError.io("close failed: \(stringError())")
-        }
+            var unlockError: WaxError?
+            while true {
+                if flock(fd, LOCK_UN) == 0 { break }
+                if errno == EINTR { continue }
+                unlockError = WaxError.lockUnavailable("unlock failed: \(stringError())")
+                break
+            }
 
-        isReleased = true
+            var closeError: WaxError?
+            if close(fd) != 0, errno != EINTR {
+                closeError = WaxError.io("close failed: \(stringError())")
+            }
 
-        if let error = unlockError ?? closeError {
-            throw error
+            isReleased = true
+
+            if let error = unlockError ?? closeError {
+                throw error
+            }
         }
     }
 

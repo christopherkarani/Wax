@@ -119,9 +119,13 @@ kernel void topKReduceDistances(
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    uint actualCount = min(tgSize, vectorCount - baseIndex);
-    
+
+    uint actualCount = (baseIndex < vectorCount) ? min(tgSize, vectorCount - baseIndex) : 0;
+    if (actualCount == 0) {
+        if (tid < k) outEntries[tgId * k + tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
+        return;
+    }
+
     if (k <= 64 && actualCount > k * 4) {
         partialHeapTopK(sharedEntries, actualCount, k, tid, tgSize);
     } else {
@@ -152,9 +156,13 @@ kernel void topKReduceEntries(
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    uint actualCount = min(tgSize, entryCount - baseIndex);
-    
+
+    uint actualCount = (baseIndex < entryCount) ? min(tgSize, entryCount - baseIndex) : 0;
+    if (actualCount == 0) {
+        if (tid < k) outEntries[tgId * k + tid] = TopKEntry{INFINITY, 0xFFFFFFFFu};
+        return;
+    }
+
     if (k <= 64 && actualCount > k * 4) {
         partialHeapTopK(sharedEntries, actualCount, k, tid, tgSize);
     } else {

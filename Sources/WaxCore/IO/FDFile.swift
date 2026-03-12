@@ -137,7 +137,8 @@ package final class FDFile {
 
     private let fd: Int32
     private let url: URL
-    private var isClosed = false
+    package private(set) var isClosed = false
+    private let closeLock = NSLock()
     private var faultInjectionState: FaultInjectionState?
 
     private init(fd: Int32, url: URL) {
@@ -357,17 +358,13 @@ package final class FDFile {
     }
 
     package func close() throws {
-        if isClosed { return }
-        let result = posixClose(fd)
-        if result == 0 {
-            isClosed = true
-            return
+        try closeLock.withLock {
+            if isClosed { return }
+            let result = posixClose(fd)
+            if result == 0 { isClosed = true; return }
+            if errno == EINTR { isClosed = true; return }
+            throw WaxError.io("close failed: \(Self.stringError())")
         }
-        if errno == EINTR {
-            isClosed = true
-            return
-        }
-        throw WaxError.io("close failed: \(stringError())")
     }
 
     package var fileDescriptor: Int32 { fd }
@@ -461,6 +458,7 @@ package final class MappedWritableRegion: @unchecked Sendable {
     private let mappedLength: Int
     package let buffer: UnsafeMutableRawBufferPointer
     private var isClosed = false
+    private let closeLock = NSLock()
 
     init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeMutableRawBufferPointer) {
         self.basePointer = basePointer
@@ -469,9 +467,11 @@ package final class MappedWritableRegion: @unchecked Sendable {
     }
 
     package func close() {
-        if isClosed { return }
-        _ = munmap(basePointer, mappedLength)
-        isClosed = true
+        closeLock.withLock {
+            if isClosed { return }
+            _ = munmap(basePointer, mappedLength)
+            isClosed = true
+        }
     }
 
     package func copyBytes(from data: Data) {

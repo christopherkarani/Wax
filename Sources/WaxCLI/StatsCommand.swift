@@ -13,82 +13,81 @@ struct StatsCommand: AsyncParsableCommand {
     func runAsync() async throws {
         // Stats does not need the embedder; force noEmbedder to skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
-
-        let stats = await memory.runtimeStats()
-        let sessionStats = try await memory.sessionRuntimeStats()
         let compiled = StoreSession.miniLMCompiled
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            let stats = await memory.runtimeStats()
+            let sessionStats = try await memory.sessionRuntimeStats()
 
-        let diskBytes: UInt64 = {
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: stats.storeURL.path),
-                  let size = attrs[FileAttributeKey.size] as? NSNumber
-            else {
-                return 0
-            }
-            return size.uint64Value
-        }()
+            let diskBytes: UInt64 = {
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: stats.storeURL.path),
+                      let size = attrs[FileAttributeKey.size] as? NSNumber
+                else {
+                    return 0
+                }
+                return size.uint64Value
+            }()
 
-        switch store.format {
-        case .json:
-            var embedder: Any = NSNull()
-            if let identity = stats.embedderIdentity {
-                embedder = [
-                    "provider": identity.provider ?? "",
-                    "model": identity.model ?? "",
-                    "dimensions": identity.dimensions ?? 0,
-                    "normalized": identity.normalized ?? false,
-                ] as [String: Any]
-            }
+            switch store.format {
+            case .json:
+                var embedder: Any = NSNull()
+                if let identity = stats.embedderIdentity {
+                    embedder = [
+                        "provider": identity.provider ?? "",
+                        "model": identity.model ?? "",
+                        "dimensions": identity.dimensions ?? 0,
+                        "normalized": identity.normalized ?? false,
+                    ] as [String: Any]
+                }
 
-            printJSON([
-                "frameCount": stats.frameCount,
-                "pendingFrames": stats.pendingFrames,
-                "generation": stats.generation,
-                "diskBytes": diskBytes,
-                "storePath": stats.storeURL.path,
-                "vectorSearchEnabled": stats.vectorSearchEnabled,
-                "miniLMCompiled": compiled,
-                "features": [
-                    "structuredMemoryEnabled": stats.structuredMemoryEnabled,
-                    "accessStatsScoringEnabled": stats.accessStatsScoringEnabled,
-                ],
-                "embedder": embedder,
-                "wal": [
-                    "walSize": stats.wal.walSize,
-                    "writePos": stats.wal.writePos,
-                    "checkpointPos": stats.wal.checkpointPos,
-                    "pendingBytes": stats.wal.pendingBytes,
-                    "committedSeq": stats.wal.committedSeq,
-                    "lastSeq": stats.wal.lastSeq,
-                    "wrapCount": stats.wal.wrapCount,
-                    "checkpointCount": stats.wal.checkpointCount,
-                ],
-                "session": [
-                    "active": sessionStats.active,
-                    "session_id": sessionStats.sessionId?.uuidString ?? NSNull(),
-                    "sessionFrameCount": sessionStats.sessionFrameCount,
-                    "sessionTokenEstimate": sessionStats.sessionTokenEstimate,
-                    "pendingFramesStoreWide": sessionStats.pendingFramesStoreWide,
-                    "countsIncludePending": sessionStats.countsIncludePending,
-                ],
-            ])
-        case .text:
-            print("Store: \(stats.storeURL.path)")
-            print("Frames: \(stats.frameCount) (\(stats.pendingFrames) pending)")
-            print("Generation: \(stats.generation)")
-            print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
-            print("MiniLM compiled: \(compiled ? "yes" : "no")")
-            print("Vector search: \(stats.vectorSearchEnabled ? "enabled" : "disabled")")
-            if let identity = stats.embedderIdentity {
-                let provider = identity.provider ?? "unknown"
-                let model = identity.model ?? "unknown"
-                let dims = identity.dimensions.map { String($0) } ?? "?"
-                print("Embedder: \(provider)/\(model) (\(dims)d)")
-            } else {
-                print("Embedder: none")
+                printJSON([
+                    "frameCount": stats.frameCount,
+                    "pendingFrames": stats.pendingFrames,
+                    "generation": stats.generation,
+                    "diskBytes": diskBytes,
+                    "storePath": stats.storeURL.path,
+                    "vectorSearchEnabled": stats.vectorSearchEnabled,
+                    "miniLMCompiled": compiled,
+                    "features": [
+                        "structuredMemoryEnabled": stats.structuredMemoryEnabled,
+                        "accessStatsScoringEnabled": stats.accessStatsScoringEnabled,
+                    ],
+                    "embedder": embedder,
+                    "wal": [
+                        "walSize": stats.wal.walSize,
+                        "writePos": stats.wal.writePos,
+                        "checkpointPos": stats.wal.checkpointPos,
+                        "pendingBytes": stats.wal.pendingBytes,
+                        "committedSeq": stats.wal.committedSeq,
+                        "lastSeq": stats.wal.lastSeq,
+                        "wrapCount": stats.wal.wrapCount,
+                        "checkpointCount": stats.wal.checkpointCount,
+                    ],
+                    "session": [
+                        "active": sessionStats.active,
+                        "session_id": sessionStats.sessionId?.uuidString ?? NSNull(),
+                        "sessionFrameCount": sessionStats.sessionFrameCount,
+                        "sessionTokenEstimate": sessionStats.sessionTokenEstimate,
+                        "pendingFramesStoreWide": sessionStats.pendingFramesStoreWide,
+                        "countsIncludePending": sessionStats.countsIncludePending,
+                    ],
+                ])
+            case .text:
+                print("Store: \(stats.storeURL.path)")
+                print("Frames: \(stats.frameCount) (\(stats.pendingFrames) pending)")
+                print("Generation: \(stats.generation)")
+                print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
+                print("MiniLM compiled: \(compiled ? "yes" : "no")")
+                print("Vector search: \(stats.vectorSearchEnabled ? "enabled" : "disabled")")
+                if let identity = stats.embedderIdentity {
+                    let provider = identity.provider ?? "unknown"
+                    let model = identity.model ?? "unknown"
+                    let dims = identity.dimensions.map { String($0) } ?? "?"
+                    print("Embedder: \(provider)/\(model) (\(dims)d)")
+                } else {
+                    print("Embedder: none")
+                }
+                print("WAL: \(stats.wal.pendingBytes) bytes pending, seq \(stats.wal.committedSeq)-\(stats.wal.lastSeq)")
             }
-            print("WAL: \(stats.wal.pendingBytes) bytes pending, seq \(stats.wal.committedSeq)-\(stats.wal.lastSeq)")
         }
     }
 }
@@ -104,21 +103,20 @@ struct FlushCommand: AsyncParsableCommand {
     func runAsync() async throws {
         // Flush does not need the embedder; skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            try await memory.flush()
+            let stats = await memory.runtimeStats()
 
-        try await memory.flush()
-        let stats = await memory.runtimeStats()
-
-        switch store.format {
-        case .json:
-            printJSON([
-                "status": "ok",
-                "frameCount": stats.frameCount,
-                "message": "Flushed. \(stats.frameCount) frames now searchable.",
-            ])
-        case .text:
-            print("Flushed. \(stats.frameCount) frames now searchable.")
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "frameCount": stats.frameCount,
+                    "message": "Flushed. \(stats.frameCount) frames now searchable.",
+                ])
+            case .text:
+                print("Flushed. \(stats.frameCount) frames now searchable.")
+            }
         }
     }
 }

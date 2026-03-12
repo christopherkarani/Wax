@@ -43,28 +43,27 @@ struct FactAssertCommand: AsyncParsableCommand {
         let object = parseObjectValue(trimmedObject)
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            let factID = try await memory.assertFact(
+                subject: EntityKey(trimmedSubject),
+                predicate: PredicateKey(trimmedPredicate),
+                object: object,
+                relation: parsedRelation,
+                validFromMs: nil,
+                validToMs: nil,
+                commit: commit
+            )
 
-        let factID = try await memory.assertFact(
-            subject: EntityKey(trimmedSubject),
-            predicate: PredicateKey(trimmedPredicate),
-            object: object,
-            relation: parsedRelation,
-            validFromMs: nil,
-            validToMs: nil,
-            commit: commit
-        )
-
-        switch store.format {
-        case .json:
-            printJSON([
-                "status": "ok",
-                "fact_id": factID.rawValue,
-                "committed": commit,
-            ])
-        case .text:
-            print("Fact asserted (id \(factID.rawValue), committed: \(commit)).")
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "fact_id": factID.rawValue,
+                    "committed": commit,
+                ])
+            case .text:
+                print("Fact asserted (id \(factID.rawValue), committed: \(commit)).")
+            }
         }
     }
 }
@@ -85,24 +84,23 @@ struct FactRetractCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            try await memory.retractFact(
+                factId: FactRowID(rawValue: factID),
+                atMs: nil,
+                commit: commit
+            )
 
-        try await memory.retractFact(
-            factId: FactRowID(rawValue: factID),
-            atMs: nil,
-            commit: commit
-        )
-
-        switch store.format {
-        case .json:
-            printJSON([
-                "status": "ok",
-                "fact_id": factID,
-                "committed": commit,
-            ])
-        case .text:
-            print("Fact \(factID) retracted (committed: \(commit)).")
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "fact_id": factID,
+                    "committed": commit,
+                ])
+            case .text:
+                print("Fact \(factID) retracted (committed: \(commit)).")
+            }
         }
     }
 }
@@ -133,41 +131,40 @@ struct FactsQueryCommand: AsyncParsableCommand {
         let predicateKey = predicate.map { PredicateKey($0) }
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let memory = try await StoreSession.open(at: url, noEmbedder: true)
-        defer { Task { try? await memory.close() } }
+        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+            let result = try await memory.facts(
+                about: subjectKey,
+                predicate: predicateKey,
+                asOfMs: Int64.max,
+                limit: limit
+            )
 
-        let result = try await memory.facts(
-            about: subjectKey,
-            predicate: predicateKey,
-            asOfMs: Int64.max,
-            limit: limit
-        )
-
-        switch store.format {
-        case .json:
-            let hits: [[String: Any]] = result.hits.map { hit in
-                [
-                    "fact_id": hit.factId.rawValue,
-                    "subject": hit.fact.subject.rawValue,
-                    "predicate": hit.fact.predicate.rawValue,
-                    "object": factValueToJSON(hit.fact.object),
-                    "is_open_ended": hit.isOpenEnded,
-                    "evidence_count": hit.evidence.count,
-                ]
-            }
-            printJSON([
-                "count": result.hits.count,
-                "truncated": result.wasTruncated,
-                "hits": hits,
-            ])
-        case .text:
-            if result.hits.isEmpty {
-                print("No facts found.")
-            } else {
-                print("Found \(result.hits.count) fact(s)\(result.wasTruncated ? " (truncated)" : ""):")
-                for hit in result.hits {
-                    let objStr = factValueToText(hit.fact.object)
-                    print("  [\(hit.factId.rawValue)] \(hit.fact.subject.rawValue) -[\(hit.fact.predicate.rawValue)]-> \(objStr)")
+            switch store.format {
+            case .json:
+                let hits: [[String: Any]] = result.hits.map { hit in
+                    [
+                        "fact_id": hit.factId.rawValue,
+                        "subject": hit.fact.subject.rawValue,
+                        "predicate": hit.fact.predicate.rawValue,
+                        "object": factValueToJSON(hit.fact.object),
+                        "is_open_ended": hit.isOpenEnded,
+                        "evidence_count": hit.evidence.count,
+                    ]
+                }
+                printJSON([
+                    "count": result.hits.count,
+                    "truncated": result.wasTruncated,
+                    "hits": hits,
+                ])
+            case .text:
+                if result.hits.isEmpty {
+                    print("No facts found.")
+                } else {
+                    print("Found \(result.hits.count) fact(s)\(result.wasTruncated ? " (truncated)" : ""):")
+                    for hit in result.hits {
+                        let objStr = factValueToText(hit.fact.object)
+                        print("  [\(hit.factId.rawValue)] \(hit.fact.subject.rawValue) -[\(hit.fact.predicate.rawValue)]-> \(objStr)")
+                    }
                 }
             }
         }
