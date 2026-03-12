@@ -25,15 +25,13 @@ package enum VectorSerializer {
     package enum VecEncoding: UInt8, Sendable {
         case uSearch = 1
         case metal = 2
+        case flat = 3
     }
 
-    /// Returns the on-disk encoding (USearch or Metal) without fully decoding the payload.
-    /// Throws if the header is malformed.
     package static func detectEncoding(from data: Data) throws -> VecEncoding {
         guard data.count >= 8 else {
             throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
         }
-        // Bytes 0..3 magic, 4..5 version, 6 encoding
         let magic = data.prefix(4)
         guard magic == VecSegmentHeaderV1.magic else {
             throw WaxError.invalidToc(reason: "vec segment magic mismatch")
@@ -71,13 +69,47 @@ package enum VectorSerializer {
         return data
     }
 
+    package static func serializeFlatVectors(
+        _ vectors: [Float],
+        frameIds: [UInt64],
+        metric: VectorMetric,
+        dimensions: Int
+    ) throws -> Data {
+        guard dimensions > 0 else {
+            throw WaxError.invalidToc(reason: "dimensions must be > 0")
+        }
+        guard vectors.count == frameIds.count * dimensions else {
+            throw WaxError.invalidToc(reason: "flat vector payload mismatch")
+        }
+
+        let vectorBytes = vectors.count * MemoryLayout<Float>.stride
+        let frameIdBytes = frameIds.count * MemoryLayout<UInt64>.stride
+        var header = VecSegmentHeaderV1(
+            similarity: metric.toVecSimilarity(),
+            dimension: UInt32(dimensions),
+            vectorCount: UInt64(frameIds.count),
+            payloadLength: UInt64(vectorBytes)
+        )
+        header.encoding = VecEncoding.flat.rawValue
+
+        var encoder = BinaryEncoder()
+        header.encode(to: &encoder)
+        var data = encoder.data
+        data.append(vectors.withUnsafeBufferPointer { Data(buffer: $0) })
+
+        var frameIdBytesLE = UInt64(frameIdBytes).littleEndian
+        withUnsafeBytes(of: &frameIdBytesLE) { data.append(contentsOf: $0) }
+        data.append(frameIds.withUnsafeBufferPointer { Data(buffer: $0) })
+        return data
+    }
+
     package static func decodeUSearchPayload(from data: Data) throws -> (info: SegmentInfo, payload: Data) {
         let payload = try decodeVecSegment(from: data)
         switch payload {
         case .uSearch(let info, let bytes):
             return (info, bytes)
         case .metal:
-            throw WaxError.invalidToc(reason: "vec segment encoding is metal; USearch payload unavailable")
+            throw WaxError.invalidToc(reason: "vec segment encoding is not usearch; USearch payload unavailable")
         }
     }
 
@@ -109,7 +141,7 @@ package enum VectorSerializer {
             }
             let payload = data.suffix(Int(header.payloadLength))
             return .uSearch(info: info, payload: payload)
-        case VecEncoding.metal.rawValue:
+        case VecEncoding.metal.rawValue, VecEncoding.flat.rawValue:
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
@@ -156,28 +188,20 @@ package enum VectorSerializer {
         }
     }
 
-    /// Loads the index directly from an in-memory buffer.
-    /// This is ~10-100x faster than the file-based approach.
     package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
-        // Use buffer-based loading (no temp file I/O)
         try index.deserializeFromData(payload)
     }
 
-    // MARK: - Private
-
-    /// Serializes the index directly to an in-memory buffer.
-    /// This is ~10-100x faster than the file-based approach.
     private static func saveUSearchPayload(_ index: USearchIndex) throws -> Data {
-        // Use buffer-based saving (no temp file I/O)
         try index.serializeToData()
     }
 
     private struct VecSegmentHeaderV1 {
         static let encodedSize: Int = 36
-        static let magic = Data([0x4D, 0x56, 0x32, 0x56]) // "MV2V"
+        static let magic = Data([0x4D, 0x56, 0x32, 0x56])
 
         var version: UInt16 = 1
-        var encoding: UInt8 = 1 // 1 = usearch
+        var encoding: UInt8 = 1
         var similarity: VecSimilarity
         var dimension: UInt32
         var vectorCount: UInt64
@@ -203,7 +227,7 @@ package enum VectorSerializer {
 
         static func decode(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {
             let header = try decodeAnyEncoding(from: &decoder)
-            guard header.encoding == 1 else {
+            guard header.encoding == VecEncoding.uSearch.rawValue else {
                 throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
             }
             return header
@@ -221,7 +245,9 @@ package enum VectorSerializer {
             }
 
             let encoding = try decoder.decode(UInt8.self)
-            guard encoding == 1 || encoding == 2 else {
+            guard encoding == VecEncoding.uSearch.rawValue
+                || encoding == VecEncoding.metal.rawValue
+                || encoding == VecEncoding.flat.rawValue else {
                 throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encoding)")
             }
 

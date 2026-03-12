@@ -203,7 +203,7 @@ package actor MemoryOrchestrator {
         self.enrichmentPipeline = resolvedConfig.enableAsyncEnrichment ? EnrichmentPipeline() : nil
         self.hasEnsuredMemoryBinding = existingMemoryBinding != nil
 
-        let preference: VectorEnginePreference = resolvedConfig.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference = resolvedConfig.vectorEnginePreference
         let sessionConfig = WaxSession.Config(
             enableTextSearch: resolvedConfig.enableTextSearch,
             enableVectorSearch: resolvedConfig.enableVectorSearch,
@@ -715,7 +715,7 @@ package actor MemoryOrchestrator {
         searchTopK: Int? = nil,
         searchMode: SearchMode? = nil
     ) async throws -> RAGContext {
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference = config.vectorEnginePreference
         var recallConfig = ragConfigForRecall()
         if let searchTopK {
             recallConfig.searchTopK = max(1, searchTopK)
@@ -757,7 +757,7 @@ package actor MemoryOrchestrator {
         guard !trimmed.isEmpty else { return [] }
         guard topK > 0 else { return [] }
 
-        let preference: VectorEnginePreference = config.useMetalVectorSearch ? .metalPreferred : .cpuOnly
+        let preference = config.vectorEnginePreference
 
         let policy: QueryEmbeddingPolicy = switch mode {
         case .text:

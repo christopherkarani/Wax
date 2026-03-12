@@ -4,45 +4,7 @@ import WaxTextSearch
 import WaxVectorSearch
 
 package actor WaxSession {
-    private enum ConcreteVectorEngine: Sendable {
-        case usearch(USearchVectorEngine)
-        #if canImport(Metal)
-        case metal(MetalVectorEngine)
-        #endif
-
-        var erased: any VectorSearchEngine {
-            switch self {
-            case .usearch(let engine):
-                return engine
-            #if canImport(Metal)
-            case .metal(let engine):
-                return engine
-            #endif
-            }
-        }
-
-        func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
-            switch self {
-            case .usearch(let engine):
-                try await engine.addBatch(frameIds: frameIds, vectors: vectors)
-            #if canImport(Metal)
-            case .metal(let engine):
-                try await engine.addBatch(frameIds: frameIds, vectors: vectors)
-            #endif
-            }
-        }
-
-        func stageForCommit(into wax: Wax) async throws {
-            switch self {
-            case .usearch(let engine):
-                try await engine.stageForCommit(into: wax)
-            #if canImport(Metal)
-            case .metal(let engine):
-                try await engine.stageForCommit(into: wax)
-            #endif
-            }
-        }
-    }
+    private typealias ConcreteVectorEngine = LoadedVectorSearchEngine
 
     package enum Mode: Sendable, Equatable {
         case readOnly
@@ -515,6 +477,9 @@ package actor WaxSession {
         if let configured = config.vectorDimensions {
             return configured
         }
+        if let staged = await wax.readStagedVecIndexBytes() {
+            return Int(staged.dimension)
+        }
         if let manifest = await wax.committedVecIndexManifest() {
             return Int(manifest.dimension)
         }
@@ -527,22 +492,12 @@ package actor WaxSession {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> ConcreteVectorEngine {
-        #if canImport(Metal)
-        if preference != .cpuOnly, MetalVectorEngine.isAvailable {
-            do {
-                let metal = try await MetalVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
-                return .metal(metal)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "metal vector engine load",
-                    fallback: "use CPU vector engine"
-                )
-            }
-        }
-        #endif
-        let usearch = try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions)
-        return .usearch(usearch)
+        try await LoadedVectorSearchEngine.load(
+            from: wax,
+            metric: metric,
+            dimensions: dimensions,
+            preference: preference
+        )
     }
 
     private func mergeOptions(

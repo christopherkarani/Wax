@@ -13,27 +13,20 @@ package struct OrchestratorConfig: Sendable {
     package var ingestConcurrency: Int = 1
     package var ingestBatchSize: Int = 32
     package var embeddingCacheCapacity: Int = 2_048
-    /// Best-effort wait budget for draining async enrichment during `flush()`.
-    /// When exceeded, flush proceeds and logs a diagnostic.
     package var enrichmentFlushDrainTimeout: Duration = .seconds(30)
-    /// Maximum wait for stopping async enrichment during `close()`.
-    /// When exceeded, close continues and logs a diagnostic.
     package var enrichmentStopTimeout: Duration = .seconds(10)
-    /// Prefer Metal-backed vector search when available.
-    ///
-    /// The actual engine selection still checks `MetalVectorEngine.isAvailable` at runtime.
-    /// This avoids doing Metal device discovery during static initialization.
-    package var useMetalVectorSearch: Bool = true
-    /// Best-effort timeout for computing a query embedding during recall/search.
-    /// When exceeded, Wax falls back to text-only retrieval for that query (when allowed).
+    package var vectorEnginePreference: VectorEnginePreference = .auto
     package var queryEmbeddingTimeout: Duration? = .seconds(10)
-    /// Best-effort timeout for vector-engine search during unified search.
-    /// When exceeded, Wax falls back to non-vector lanes when possible.
     package var vectorSearchTimeout: Duration? = .seconds(10)
 
-    /// When true, rejects text embedding providers that report `executionMode == .mayUseNetwork`.
     package var requireOnDeviceProviders: Bool = true
     package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
+
+    @available(*, deprecated, message: "Use vectorEnginePreference instead")
+    package var useMetalVectorSearch: Bool {
+        get { vectorEnginePreference != .cpuOnly }
+        set { vectorEnginePreference = newValue ? .auto : .cpuOnly }
+    }
 
     package init() {}
 

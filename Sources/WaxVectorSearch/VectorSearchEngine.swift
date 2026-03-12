@@ -3,7 +3,9 @@ import WaxCore
 
 package enum VectorEnginePreference: Sendable, Equatable {
     case auto
+    @available(*, deprecated, renamed: "auto")
     case metalPreferred
+    case gpuOnly
     case cpuOnly
 }
 
