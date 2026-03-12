@@ -77,7 +77,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.24.0"),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
+        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.1.3"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
@@ -122,6 +123,11 @@ let package = Package(
             dependencies: [
                 "WaxCore",
                 .product(name: "USearch", package: "USearch"),
+                .product(
+                    name: "MetalANNS",
+                    package: "MetalANNS",
+                    condition: .when(platforms: [.macOS, .iOS])
+                ),
             ],
             resources: [.process("Shaders")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]

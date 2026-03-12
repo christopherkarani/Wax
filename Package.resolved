@@ -1,13 +1,22 @@
 {
-  "originHash" : "f73a847e1422c034fa7841d67336eb05f8a39094d5fc5b0bab8daa8cc0e8a7c5",
+  "originHash" : "1af8ea1dec2d082ef9ffd1f2eb3279096db19d5d608d3a7ae0b9b090a1d95519",
   "pins" : [
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/groue/GRDB.swift.git",
       "state" : {
-        "revision" : "2cf6c756e1e5ef6901ebae16576a7e4e4b834622",
-        "version" : "6.29.3"
+        "revision" : "36e30a6f1ef10e4194f6af0cff90888526f0c115",
+        "version" : "7.10.0"
+      }
+    },
+    {
+      "identity" : "metalanns",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/christopherkarani/MetalANNS.git",
+      "state" : {
+        "revision" : "ea4586fff3f89fd655529927688aa910a85ed641",
+        "version" : "0.1.3"
       }
     },
     {

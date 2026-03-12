@@ -34,8 +34,8 @@ final class BatchEmbeddingBenchmark: XCTestCase {
 
     private func makeBenchmarkEmbedder() async throws -> MiniLMEmbedder {
         let configuration = MLModelConfiguration()
-        // XCTest contexts need a bounded path, but pure CPU under-represents batch throughput.
-        configuration.computeUnits = .cpuAndGPU
+        // XCTest/CLI contexts are prone to CoreML/ANE compile stalls and GPU crashes; keep this benchmark bounded and deterministic.
+        configuration.computeUnits = .cpuOnly
         configuration.allowLowPrecisionAccumulationOnGPU = true
         return try await MiniLMEmbedder.make(
             config: .init(batchSize: 256, modelConfiguration: configuration),
