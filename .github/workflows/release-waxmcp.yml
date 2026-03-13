@@ -20,8 +20,8 @@ jobs:
         include:
           - runs-on: macos-14
             platform: darwin-x64
-            triple: ""
-            source-build: false
+            triple: x86_64-apple-macosx14.0
+            source-build: true
           - runs-on: macos-14
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0

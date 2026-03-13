@@ -1,0 +1,5 @@
+<svg width="800" height="200" viewBox="0 0 800 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="800" height="200" fill="#F2F2F7"/>
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="700" fill="#1C1C1E">Wax</text>
+  <text x="50%" y="65%" dominant-baseline="middle" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#3A3A3C">Single-file memory layer for Apple-native AI</text>
+</svg>
