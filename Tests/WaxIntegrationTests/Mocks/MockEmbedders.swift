@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 import Wax
 
@@ -72,6 +71,9 @@ struct WrongDimensionTextEmbedder: EmbeddingProvider, Sendable {
     }
 }
 
+#if canImport(CoreGraphics)
+import CoreGraphics
+
 struct DeterministicMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -96,4 +98,41 @@ struct DeterministicMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
         _ = image
         return [0, 1, 0, 0]
     }
+}
+#endif
+
+// MARK: - Hanging Mocks
+
+/// An embedder that never completes its `embed` call (used to verify timeout/fallback logic).
+actor HangingCountingEmbedder: EmbeddingProvider {
+    let dimensions: Int
+    let normalize: Bool
+    let identity: EmbeddingIdentity?
+    private var calls: Int = 0
+
+    init(
+        dimensions: Int = 2,
+        normalize: Bool = false,
+        identity: EmbeddingIdentity? = EmbeddingIdentity(
+            provider: "Mock",
+            model: "HangingCounting",
+            dimensions: 2,
+            normalized: false
+        )
+    ) {
+        self.dimensions = dimensions
+        self.normalize = normalize
+        self.identity = identity
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        calls += 1
+        // Sleep "forever" (cancellable) to simulate a hung provider without triggering
+        // Swift's checked-continuation misuse diagnostics in tests.
+        try await Task.sleep(for: .seconds(60))
+        return Array(repeating: 0, count: dimensions)
+    }
+
+    func callCount() -> Int { calls }
 }

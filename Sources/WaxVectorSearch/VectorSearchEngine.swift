@@ -1,13 +1,15 @@
 import Foundation
 import WaxCore
 
-public enum VectorEnginePreference: Sendable, Equatable {
+package enum VectorEnginePreference: Sendable, Equatable {
     case auto
+    @available(*, deprecated, renamed: "auto")
     case metalPreferred
+    case gpuOnly
     case cpuOnly
 }
 
-public protocol VectorSearchEngine: Sendable {
+package protocol VectorSearchEngine: Sendable {
     var dimensions: Int { get }
 
     func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)]

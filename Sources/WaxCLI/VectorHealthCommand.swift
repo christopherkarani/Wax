@@ -102,7 +102,10 @@ private extension VectorHealthCommand {
     func runSemanticProbe() async throws -> SemanticProbeResult {
         let probeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-vector-health-\(UUID().uuidString).wax")
-        let result = try await StoreSession.withOpen(at: probeURL, noEmbedder: false) { memory in
+        defer {
+            try? FileManager.default.removeItem(at: probeURL)
+        }
+        return try await StoreSession.withOpen(at: probeURL, noEmbedder: false) { memory in
             let expectedDocument = "An automobile needs periodic maintenance and tire rotation."
             try await memory.remember(expectedDocument, metadata: ["probe": "vector-health"])
             try await memory.remember(
@@ -134,7 +137,5 @@ private extension VectorHealthCommand {
                 topSources: topSources
             )
         }
-        try? FileManager.default.removeItem(at: probeURL)
-        return result
     }
 }

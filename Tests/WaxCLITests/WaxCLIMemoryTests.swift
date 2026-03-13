@@ -107,6 +107,37 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func latestHandoffPrefersLatestProjectScopedRecord() async throws {
+        try await withCLIMemory { memory in
+            let _ = try await memory.rememberHandoff(
+                content: "Initial wax-cli handoff.",
+                project: "wax-cli",
+                pendingTasks: ["stage baseline"]
+            )
+            let _ = try await memory.rememberHandoff(
+                content: "Different project handoff.",
+                project: "other-project",
+                pendingTasks: ["ignore for scoped lookup"]
+            )
+            let _ = try await memory.rememberHandoff(
+                content: "Latest wax-cli handoff.",
+                project: "wax-cli",
+                pendingTasks: ["ship benchmark"]
+            )
+            try await memory.flush()
+
+            let scoped = try await memory.latestHandoff(project: "wax-cli")
+            let unfiltered = try await memory.latestHandoff()
+            let emptyProject = try await memory.latestHandoff(project: "")
+
+            #expect(scoped?.content.contains("Latest wax-cli handoff.") == true)
+            #expect(scoped?.pendingTasks == ["ship benchmark"])
+            #expect(scoped?.project == "wax-cli")
+            #expect(unfiltered?.frameId == scoped?.frameId)
+            #expect(emptyProject?.frameId == unfiltered?.frameId)
+        }
+    }
+
     @Test func entityUpsertAndResolveRoundTrip() async throws {
         try await withCLIMemory { memory in
             let entityID = try await memory.upsertEntity(

@@ -1,17 +1,18 @@
 import Foundation
 #if canImport(CoreML)
-import CoreML
+@preconcurrency import CoreML
 import Accelerate
+import WaxCore
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
 @available(macOS 15.0, iOS 18.0, *)
-public final class MiniLMEmbeddings {
-    public enum InitError: LocalizedError, Sendable {
+package final class MiniLMEmbeddings {
+    package enum InitError: LocalizedError, Sendable {
         case missingModelResource
         case modelLoadFailed(String)
         case tokenizerLoadFailed(String)
 
-        public var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case .missingModelResource:
                 return "Could not find a Core ML model resource in the MiniLMAll bundle."
@@ -23,63 +24,56 @@ public final class MiniLMEmbeddings {
         }
     }
 
-    /// Errors produced during embedding generation.
-    public enum EncodeError: LocalizedError, Sendable {
-        case tokenizationFailed(String)
-        case predictionFailed(String)
-        case invalidSequenceLength
-        case decodingFailed
-
-        public var errorDescription: String? {
-            switch self {
-            case .tokenizationFailed(let details):
-                return "Failed to tokenize input text: \(details)"
-            case .predictionFailed(let details):
-                return "Core ML prediction failed: \(details)"
-            case .invalidSequenceLength:
-                return "Tokenized input produced an invalid sequence length."
-            case .decodingFailed:
-                return "Failed to decode embedding tensor into float vectors."
-            }
-        }
-    }
-
-    public struct Overrides: Sendable {
+    package struct Overrides: Sendable {
         var modelURLProvider: (@Sendable () -> URL?)?
         var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
         var usesBundleFallback: Bool
+        var blockingModelLoadDelay: Duration?
 
         static let `default` = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: nil,
-            usesBundleFallback: true
+            usesBundleFallback: true,
+            blockingModelLoadDelay: nil
         )
 
         static let missingModel = Overrides(
             modelURLProvider: { nil },
             tokenizerFactory: nil,
-            usesBundleFallback: false
+            usesBundleFallback: false,
+            blockingModelLoadDelay: nil
         )
 
         static let missingTokenizer = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: { throw InitError.tokenizerLoadFailed("override requested failure") },
-            usesBundleFallback: true
+            usesBundleFallback: true,
+            blockingModelLoadDelay: nil
         )
     }
 
-    public let model: all_MiniLM_L6_v2
-    public let tokenizer: BertTokenizer
-    public let inputDimension: Int = 512
-    public let outputDimension: Int = 384
+    package let model: all_MiniLM_L6_v2
+    package let tokenizer: BertTokenizer
+    package let inputDimension: Int = 512
+    package let outputDimension: Int = 384
     private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
 
-    public var computeUnits: MLComputeUnits {
+    package var computeUnits: MLComputeUnits {
         model.model.configuration.computeUnits
     }
 
-    public convenience init(configuration: MLModelConfiguration? = nil) throws {
+    package convenience init(configuration: MLModelConfiguration? = nil) throws {
         try self.init(configuration: configuration, overrides: .default)
+    }
+
+    package static func make(
+        configuration: MLModelConfiguration? = nil,
+        overrides: Overrides = .default,
+        timeout: Duration
+    ) async throws -> MiniLMEmbeddings {
+        try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM model load") {
+            try MiniLMEmbeddings(configuration: configuration, overrides: overrides)
+        }
     }
 
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
@@ -123,146 +117,111 @@ public final class MiniLMEmbeddings {
     // MARK: - Dense Embeddings
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
-    public func encode(sentence: String) async -> [Float]? {
-        try? await encodeThrowing(sentence: sentence)
-    }
+    package func encode(sentence: String) async -> [Float]? {
+        guard let batchInputs = try? tokenizer.buildBatchInputs(
+            sentences: [sentence],
+            sequenceLengthBuckets: Self.sequenceLengthBuckets
+        ), batchInputs.sequenceLength > 0 else { return nil }
 
-    /// Encode a single sentence to a 384-dimensional embedding vector.
-    /// - Parameter sentence: Input sentence to embed.
-    /// - Returns: A 384-dimensional embedding vector.
-    /// - Throws: ``EncodeError`` when tokenization, model prediction, or tensor decoding fails.
-    public func encodeThrowing(sentence: String) async throws -> [Float] {
-        let batchInputs: BatchInputs
-        do {
-            batchInputs = try tokenizer.buildBatchInputs(
-                sentences: [sentence],
-                sequenceLengthBuckets: Self.sequenceLengthBuckets
-            )
-        } catch {
-            throw EncodeError.tokenizationFailed(error.localizedDescription)
+        guard let output = try? model.prediction(
+            input_ids: batchInputs.inputIds,
+            attention_mask: batchInputs.attentionMask
+        ) else {
+            return nil
         }
 
-        guard batchInputs.sequenceLength > 0 else {
-            throw EncodeError.invalidSequenceLength
-        }
-
-        let output: all_MiniLM_L6_v2Output
-        do {
-            output = try model.prediction(
-                input_ids: batchInputs.inputIds,
-                attention_mask: batchInputs.attentionMask
-            )
-        } catch {
-            throw EncodeError.predictionFailed(error.localizedDescription)
-        }
-
-        guard let vector = Self.decodeEmbeddings(
+        return Self.decodeEmbeddings(
             output.var_554,
             batchSize: 1,
             outputDimension: outputDimension
-        )?.first else {
-            throw EncodeError.decodingFailed
-        }
-
-        return vector
+        )?.first
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    public func encode(batch sentences: [String]) async -> [[Float]]? {
+    package func encode(batch sentences: [String]) async -> [[Float]]? {
         var reuse: BatchInputBuffers?
-        return try? encodeThrowing(batch: sentences, reuseBuffers: &reuse)
+        return encode(batch: sentences, reuseBuffers: &reuse)
     }
 
-    public func encode(
+    package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
     ) -> [[Float]]? {
-        try? encodeThrowing(batch: sentences, reuseBuffers: &reuseBuffers)
-    }
-
-    /// Encode a batch of sentences into embedding vectors.
-    /// - Parameters:
-    ///   - sentences: Input sentences to embed.
-    ///   - reuseBuffers: Optional reusable tokenization buffers to reduce allocation churn.
-    /// - Returns: One embedding vector per input sentence in the same order.
-    /// - Throws: ``EncodeError`` when tokenization, model prediction, or tensor decoding fails.
-    public func encodeThrowing(
-        batch sentences: [String],
-        reuseBuffers: inout BatchInputBuffers?
-    ) throws -> [[Float]] {
         guard !sentences.isEmpty else { return [] }
 
-        let batchInputs: BatchInputs
-        do {
-            batchInputs = try tokenizer.buildBatchInputsWithReuse(
-                sentences: sentences,
-                sequenceLengthBuckets: Self.sequenceLengthBuckets,
-                reuse: &reuseBuffers
-            )
-        } catch {
-            throw EncodeError.tokenizationFailed(error.localizedDescription)
+        guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
+            sentences: sentences,
+            sequenceLengthBuckets: Self.sequenceLengthBuckets,
+            reuse: &reuseBuffers
+        ), batchInputs.sequenceLength > 0 else { return [] }
+
+        guard let output = try? model.prediction(
+            input_ids: batchInputs.inputIds,
+            attention_mask: batchInputs.attentionMask
+        ) else {
+            return nil
         }
 
-        guard batchInputs.sequenceLength > 0 else {
-            throw EncodeError.invalidSequenceLength
-        }
-
-        let output: all_MiniLM_L6_v2Output
-        do {
-            output = try model.prediction(
-                input_ids: batchInputs.inputIds,
-                attention_mask: batchInputs.attentionMask
-            )
-        } catch {
-            throw EncodeError.predictionFailed(error.localizedDescription)
-        }
-
-        guard let vectors = Self.decodeEmbeddings(
+        return Self.decodeEmbeddings(
             output.var_554,
             batchSize: sentences.count,
             outputDimension: outputDimension
-        ) else {
-            throw EncodeError.decodingFailed
-        }
-
-        return vectors
+        )
     }
 
     /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
-    public func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
-        try? generateEmbeddingsThrowing(inputIds: inputIds, attentionMask: attentionMask)
-    }
-
-    /// Generate an embedding from pre-tokenized tensors.
-    /// - Parameters:
-    ///   - inputIds: Token IDs tensor.
-    ///   - attentionMask: Attention mask tensor.
-    /// - Returns: A single embedding vector for the tokenized input.
-    /// - Throws: ``EncodeError`` when prediction or decoding fails.
-    public func generateEmbeddingsThrowing(inputIds: MLMultiArray, attentionMask: MLMultiArray) throws -> [Float] {
+    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
         let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
-        let output: all_MiniLM_L6_v2Output
-        do {
-            output = try model.prediction(input: inputFeatures)
-        } catch {
-            throw EncodeError.predictionFailed(error.localizedDescription)
+        let output = try? model.prediction(input: inputFeatures)
+
+        guard let embeddings = output?.var_554 else {
+            return nil
         }
 
-        guard let vector = Self.decodeEmbeddings(
-            output.var_554,
-            batchSize: 1,
-            outputDimension: outputDimension
-        )?.first else {
-            throw EncodeError.decodingFailed
-        }
-
-        return vector
+        return Self.decodeEmbeddings(embeddings, batchSize: 1, outputDimension: outputDimension)?.first
     }
 
 }
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbeddings {
+    @inline(__always)
+    static func floatFromFloat16Bits(_ bits: UInt16) -> Float {
+        let sign = UInt32(bits & 0x8000) << 16
+        let exponent = UInt32((bits & 0x7C00) >> 10)
+        let mantissa = UInt32(bits & 0x03FF)
+
+        let resultBits: UInt32
+        if exponent == 0 {
+            if mantissa == 0 {
+                resultBits = sign
+            } else {
+                // Normalize subnormal half-precision values.
+                var normalizedMantissa = mantissa
+                var adjustedExponent: Int32 = -14
+                while (normalizedMantissa & 0x0400) == 0 {
+                    normalizedMantissa <<= 1
+                    adjustedExponent -= 1
+                }
+                normalizedMantissa &= 0x03FF
+                let exponentBits = UInt32(adjustedExponent + 127) << 23
+                let mantissaBits = normalizedMantissa << 13
+                resultBits = sign | exponentBits | mantissaBits
+            }
+        } else if exponent == 0x1F {
+            // Preserve Inf/NaN payloads.
+            let exponentBits = UInt32(0xFF) << 23
+            let mantissaBits = mantissa << 13
+            resultBits = sign | exponentBits | mantissaBits
+        } else {
+            let exponentBits = UInt32(Int32(exponent) - 15 + 127) << 23
+            let mantissaBits = mantissa << 13
+            resultBits = sign | exponentBits | mantissaBits
+        }
+
+        return Float(bitPattern: resultBits)
+    }
+
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
         if let compiledURL = Bundle.module.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
             let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
@@ -272,6 +231,8 @@ private extension MiniLMEmbeddings {
     }
 
     static func loadModel(configuration: MLModelConfiguration, overrides: Overrides) throws -> all_MiniLM_L6_v2 {
+        applyBlockingLoadDelay(overrides)
+
         if let modelURLProvider = overrides.modelURLProvider {
             guard let modelURL = modelURLProvider() else {
                 throw InitError.missingModelResource
@@ -293,6 +254,16 @@ private extension MiniLMEmbeddings {
         } catch {
             throw InitError.modelLoadFailed(error.localizedDescription)
         }
+    }
+
+    static func applyBlockingLoadDelay(_ overrides: Overrides) {
+        guard let delay = overrides.blockingModelLoadDelay else { return }
+        let components = delay.components
+        let seconds = TimeInterval(components.seconds)
+        let attoseconds = TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+        let interval = max(0, seconds + attoseconds)
+        guard interval > 0 else { return }
+        Thread.sleep(forTimeInterval: interval)
     }
 
     struct ModelCacheKey: Hashable {
@@ -360,26 +331,20 @@ private extension MiniLMEmbeddings {
                 }
             }
             
-            #if arch(arm64)
             if isContiguous && dataType == .float16 {
-                let float16Ptr = embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
+                let float16BitsPtr = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
                 return (0..<batch).map { row in
                     let start = row * dim
                     return (0..<dim).map { col in
-                        Float(float16Ptr[start + col])
+                        floatFromFloat16Bits(float16BitsPtr[start + col])
                     }
                 }
             }
-            #endif
         }
 
-        #if arch(arm64)
-        let float16Ptr: UnsafeMutablePointer<Float16>? = dataType == .float16
-            ? embeddings.dataPointer.bindMemory(to: Float16.self, capacity: elementCount)
+        let float16BitsPtr: UnsafeMutablePointer<UInt16>? = dataType == .float16
+            ? embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
             : nil
-        #else
-        let float16Ptr: UnsafeMutablePointer<Float>? = nil
-        #endif
         let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
             ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
             : nil
@@ -388,15 +353,9 @@ private extension MiniLMEmbeddings {
             if let floatPtr {
                 return floatPtr[index]
             }
-            #if arch(arm64)
-            if let float16Ptr {
-                return Float(float16Ptr[index])
+            if let float16BitsPtr {
+                return floatFromFloat16Bits(float16BitsPtr[index])
             }
-            #else
-            if dataType == .float16 {
-                return 0
-            }
-            #endif
             return 0
         }
 
@@ -484,7 +443,7 @@ private extension MiniLMEmbeddings {
 
 @available(macOS 15.0, iOS 18.0, *)
 @_spi(Testing)
-public extension MiniLMEmbeddings {
+package extension MiniLMEmbeddings {
     static func _decodeEmbeddingsForTesting(
         _ embeddings: MLMultiArray,
         batchSize: Int,

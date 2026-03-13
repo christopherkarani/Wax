@@ -4,8 +4,8 @@ import Foundation
 import WaxVectorSearchMiniLM
 #endif
 
-public enum WaxPrewarm {
-    public static func tokenizer() async {
+package enum WaxPrewarm {
+    package static func tokenizer() async {
         do {
             _ = try await TokenCounter.shared()
         } catch {
@@ -18,7 +18,7 @@ public enum WaxPrewarm {
     }
 
     #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-    public static func miniLM(sampleText: String = "hello") async throws {
+    package static func miniLM(sampleText: String = "hello") async throws {
         let embedder = try MiniLMEmbedder()
         try await embedder.prewarm()
     }

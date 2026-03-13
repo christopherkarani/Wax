@@ -36,4 +36,5 @@ func openMiniLMThrowsWhenTokenizerMissing() async throws {
         }
     }
 }
+
 #endif

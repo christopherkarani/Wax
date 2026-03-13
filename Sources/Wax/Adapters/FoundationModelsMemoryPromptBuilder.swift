@@ -1,18 +1,18 @@
 import Foundation
 
 /// Formats recalled Wax context into a prompt block suitable for Foundation Models requests.
-public struct FoundationModelsMemoryPromptBuilder: Sendable, Equatable {
-    public var maxItems: Int
-    public var includeScores: Bool
+package struct FoundationModelsMemoryPromptBuilder: Sendable, Equatable {
+    package var maxItems: Int
+    package var includeScores: Bool
 
-    public init(maxItems: Int = 8, includeScores: Bool = false) {
+    package init(maxItems: Int = 8, includeScores: Bool = false) {
         self.maxItems = maxItems
         self.includeScores = includeScores
     }
 
-    public static let `default` = FoundationModelsMemoryPromptBuilder()
+    package static let `default` = FoundationModelsMemoryPromptBuilder()
 
-    public func build(userPrompt: String, context: RAGContext) -> String {
+    package func build(userPrompt: String, context: RAGContext) -> String {
         let cleanedPrompt = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let promptBody = cleanedPrompt.isEmpty ? userPrompt : cleanedPrompt
 
@@ -57,8 +57,8 @@ public struct FoundationModelsMemoryPromptBuilder: Sendable, Equatable {
 }
 
 /// Configuration for memory-augmented Foundation Models chat.
-public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
-    public enum PersistencePolicy: Sendable, Equatable {
+package struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
+    package enum PersistencePolicy: Sendable, Equatable {
         case none
         case userOnly
         case assistantOnly
@@ -73,13 +73,13 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
         }
     }
 
-    public var persistencePolicy: PersistencePolicy
-    public var queryEmbeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy
-    public var promptBuilder: FoundationModelsMemoryPromptBuilder
-    public var userMetadata: [String: String]
-    public var assistantMetadata: [String: String]
+    package var persistencePolicy: PersistencePolicy
+    package var queryEmbeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy
+    package var promptBuilder: FoundationModelsMemoryPromptBuilder
+    package var userMetadata: [String: String]
+    package var assistantMetadata: [String: String]
 
-    public init(
+    package init(
         persistencePolicy: PersistencePolicy = .userAndAssistant,
         queryEmbeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = .ifAvailable,
         promptBuilder: FoundationModelsMemoryPromptBuilder = .default,
@@ -99,5 +99,5 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
         self.assistantMetadata = assistantMetadata
     }
 
-    public static let `default` = FoundationModelsMemorySessionConfig()
+    package static let `default` = FoundationModelsMemorySessionConfig()
 }

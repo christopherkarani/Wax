@@ -1,28 +1,34 @@
 import Foundation
 import WaxVectorSearch
 
-public struct OrchestratorConfig: Sendable {
-    public var enableTextSearch: Bool = true
-    public var enableVectorSearch: Bool = true
-    public var enableStructuredMemory: Bool = false
-    public var enableAccessStatsScoring: Bool = false
+package struct OrchestratorConfig: Sendable {
+    package var enableTextSearch: Bool = true
+    package var enableVectorSearch: Bool = true
+    package var enableStructuredMemory: Bool = false
+    package var enableAccessStatsScoring: Bool = false
+    package var enableAsyncEnrichment: Bool = false
 
-    public var rag: FastRAGConfig = .init()
-    public var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
-    public var ingestConcurrency: Int = 1
-    public var ingestBatchSize: Int = 32
-    public var embeddingCacheCapacity: Int = 2_048
-    /// Prefer Metal-backed vector search when available.
-    ///
-    /// The actual engine selection still checks `MetalVectorEngine.isAvailable` at runtime.
-    /// This avoids doing Metal device discovery during static initialization.
-    public var useMetalVectorSearch: Bool = true
+    package var rag: FastRAGConfig = .init()
+    package var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
+    package var ingestConcurrency: Int = 1
+    package var ingestBatchSize: Int = 32
+    package var embeddingCacheCapacity: Int = 2_048
+    package var enrichmentFlushDrainTimeout: Duration = .seconds(30)
+    package var enrichmentStopTimeout: Duration = .seconds(10)
+    package var vectorEnginePreference: VectorEnginePreference = .auto
+    package var queryEmbeddingTimeout: Duration? = .seconds(10)
+    package var vectorSearchTimeout: Duration? = .seconds(10)
 
-    /// When true, rejects text embedding providers that report `executionMode == .mayUseNetwork`.
-    public var requireOnDeviceProviders: Bool = true
-    public var liveSetRewriteSchedule: LiveSetRewriteSchedule = .disabled
+    package var requireOnDeviceProviders: Bool = true
+    package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
 
-    public init() {}
+    @available(*, deprecated, message: "Use vectorEnginePreference instead")
+    package var useMetalVectorSearch: Bool {
+        get { vectorEnginePreference != .cpuOnly }
+        set { vectorEnginePreference = newValue ? .auto : .cpuOnly }
+    }
 
-    public static let `default` = OrchestratorConfig()
+    package init() {}
+
+    package static let `default` = OrchestratorConfig()
 }

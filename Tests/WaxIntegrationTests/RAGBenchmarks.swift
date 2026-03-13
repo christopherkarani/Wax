@@ -448,6 +448,38 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         }
     }
 
+    func testMemoryOrchestratorIngestLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
+        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let iterations = max(3, min(5, scale.iterations))
+
+        let stats = try await timedSamples(label: "memory_orchestrator_ingest", iterations: iterations, warmup: 0) {
+            let url = Self.makeTempURL()
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            var config = OrchestratorConfig.default
+            config.rag.searchTopK = scale.searchTopK
+            config.rag.searchMode = .hybrid(alpha: 0.7)
+            config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
+
+            let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+
+            for index in 0..<scale.documentCount {
+                let content = factory.makeDocument(index: index)
+                try await orchestrator.remember(content)
+            }
+            try await orchestrator.flush()
+            try await orchestrator.close()
+        }
+        BenchmarkRegressionGuard.assertMeanBudget(
+            label: "memory_orchestrator_ingest",
+            stats: stats,
+            meanBudget: 1.75
+        )
+    }
+
     func testMemoryOrchestratorRecallPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
@@ -565,9 +597,15 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             _ = try await fixture.wax.search(requestWithPreviews)
             _ = try await fixture.wax.search(requestNoPreviews)
 
-            _ = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
+            let previewStats = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
                 _ = try await fixture.wax.search(requestWithPreviews)
             }
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "unified_search_hybrid_warm_previews",
+                stats: previewStats,
+                p95Budget: 0.0070,
+                p99Budget: 0.0073
+            )
             _ = try await timedSamples(label: "unified_search_hybrid_warm_no_previews", iterations: 30, warmup: 5) {
                 _ = try await fixture.wax.search(requestNoPreviews)
             }
@@ -642,11 +680,60 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             _ = try await BenchmarkFixture.build(at: url, scale: scale, includeVectors: true)
 
             // Measure open/close only: footer scan + WAL scan + engine cache hydration.
-            _ = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
+            let stats = try await timedSamples(label: "wax_open_close_cold", iterations: iterations, warmup: 0) {
                 let wax = try await Wax.open(at: url)
                 try await wax.close()
             }
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "wax_open_close_cold",
+                stats: stats,
+                p95Budget: 1.15,
+                p99Budget: 1.20
+            )
         }
+    }
+
+    func testDedupThroughputWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let corpus = BenchmarkDedupHarness.makeCorpus(
+            total: max(1_000, scale.documentCount * 4),
+            uniqueModulo: max(64, scale.documentCount / 4)
+        )
+        let expectedUnique = max(64, scale.documentCount / 4)
+        let label = "dedup_throughput_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let uniqueCount = BenchmarkDedupHarness.deduplicate(corpus: corpus)
+            XCTAssertEqual(uniqueCount, expectedUnique)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
+    }
+
+    func testTemporalParsingWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let queries = BenchmarkTemporalHarness.makeQueries(count: max(1_000, scale.documentCount * 3))
+        let label = "temporal_parsing_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let resolved = BenchmarkTemporalHarness.parseAll(queries)
+            XCTAssertEqual(resolved, queries.count)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
+    }
+
+    func testEnrichmentDrainWarmLatencySamples() async throws {
+        guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
+        let scale = self.scale
+        let tasks = BenchmarkEnrichmentHarness.makeTasks(count: max(1_000, scale.documentCount * 2))
+        let label = "enrichment_drain_warm"
+
+        let stats = try await timedSamples(label: label, iterations: 30, warmup: 5) {
+            let processed = BenchmarkEnrichmentHarness.drain(tasks)
+            XCTAssertEqual(processed, tasks.count)
+        }
+        BenchmarkRegressionGuard.assertP95NoRegression(label: label, stats: stats)
     }
 
     func testIncrementalStageAndCommitLatencySamples() async throws {
@@ -746,8 +833,16 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 commitSamples.append(commitSeconds)
             }
 
-            BenchmarkStats(samples: stageSamples).report(label: "stage_for_commit_incremental_batch64")
-            BenchmarkStats(samples: commitSamples).report(label: "wax_commit_incremental_batch64")
+            let stageStats = BenchmarkStats(samples: stageSamples)
+            stageStats.report(label: "stage_for_commit_incremental_batch64")
+            let commitStats = BenchmarkStats(samples: commitSamples)
+            commitStats.report(label: "wax_commit_incremental_batch64")
+            BenchmarkRegressionGuard.assertTailBudget(
+                label: "wax_commit_incremental_batch64",
+                stats: commitStats,
+                p95Budget: 0.14,
+                p99Budget: 0.17
+            )
 
             await session.close()
             try await wax.close()

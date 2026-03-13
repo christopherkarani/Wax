@@ -1,19 +1,19 @@
 import Foundation
 
-public struct TimelineQuery: Sendable, Equatable {
-    public enum Order: Sendable, Equatable {
+package struct TimelineQuery: Sendable, Equatable {
+    package enum Order: Sendable, Equatable {
         case chronological
         case reverseChronological
     }
 
-    public var limit: Int
-    public var order: Order
-    public var after: Int64?
-    public var before: Int64?
-    public var includeDeleted: Bool
-    public var includeSuperseded: Bool
+    package var limit: Int
+    package var order: Order
+    package var after: Int64?
+    package var before: Int64?
+    package var includeDeleted: Bool
+    package var includeSuperseded: Bool
 
-    public init(
+    package init(
         limit: Int,
         order: Order = .reverseChronological,
         after: Int64? = nil,
@@ -29,13 +29,13 @@ public struct TimelineQuery: Sendable, Equatable {
         self.includeSuperseded = includeSuperseded
     }
 
-    public func contains(_ timestamp: Int64) -> Bool {
+    package func contains(_ timestamp: Int64) -> Bool {
         if let after, timestamp < after { return false }
         if let before, timestamp >= before { return false }
         return true
     }
 
-    public static func filter(frames: [FrameMeta], query: TimelineQuery) -> [FrameMeta] {
+    package static func filter(frames: [FrameMeta], query: TimelineQuery) -> [FrameMeta] {
         let filtered = frames
             .filter { query.contains($0.timestamp) }
             .filter { query.includeDeleted || $0.status != .deleted }

@@ -5,14 +5,14 @@ import Foundation
 
 /// High-performance vector math operations.
 /// Uses Accelerate vDSP on Apple platforms; falls back to scalar loops on Linux.
-public enum VectorMath {
+package enum VectorMath {
 
     // MARK: - L2 Normalization
 
     /// Normalizes a vector to unit length (L2 norm = 1).
     /// Returns the original vector if it's empty or has zero magnitude.
     @inlinable
-    public static func normalizeL2(_ vector: [Float]) -> [Float] {
+    package static func normalizeL2(_ vector: [Float]) -> [Float] {
         guard !vector.isEmpty else { return vector }
 
         #if canImport(Accelerate)
@@ -36,7 +36,7 @@ public enum VectorMath {
 
     /// Normalizes a vector in-place to unit length (L2 norm = 1).
     @inlinable
-    public static func normalizeL2InPlace(_ vector: inout [Float]) {
+    package static func normalizeL2InPlace(_ vector: inout [Float]) {
         guard !vector.isEmpty else { return }
 
         #if canImport(Accelerate)
@@ -59,7 +59,7 @@ public enum VectorMath {
 
     /// Computes the dot product of two vectors.
     @inlinable
-    public static func dotProduct(_ a: [Float], _ b: [Float]) -> Float {
+    package static func dotProduct(_ a: [Float], _ b: [Float]) -> Float {
         precondition(a.count == b.count, "Vector dimensions must match")
         guard !a.isEmpty else { return 0 }
 
@@ -77,13 +77,13 @@ public enum VectorMath {
     /// Computes cosine similarity between two vectors.
     /// Assumes vectors are already normalized for best performance.
     @inlinable
-    public static func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+    package static func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         dotProduct(a, b)
     }
 
     /// Computes cosine similarity, normalizing vectors first if needed.
     @inlinable
-    public static func cosineSimilarityNormalized(_ a: [Float], _ b: [Float]) -> Float {
+    package static func cosineSimilarityNormalized(_ a: [Float], _ b: [Float]) -> Float {
         let normA = normalizeL2(a)
         let normB = normalizeL2(b)
         return dotProduct(normA, normB)
@@ -93,7 +93,7 @@ public enum VectorMath {
 
     /// Computes squared Euclidean distance between two vectors.
     @inlinable
-    public static func squaredEuclideanDistance(_ a: [Float], _ b: [Float]) -> Float {
+    package static func squaredEuclideanDistance(_ a: [Float], _ b: [Float]) -> Float {
         precondition(a.count == b.count, "Vector dimensions must match")
         guard !a.isEmpty else { return 0 }
 
@@ -113,7 +113,7 @@ public enum VectorMath {
 
     /// Computes Euclidean distance between two vectors.
     @inlinable
-    public static func euclideanDistance(_ a: [Float], _ b: [Float]) -> Float {
+    package static func euclideanDistance(_ a: [Float], _ b: [Float]) -> Float {
         sqrt(squaredEuclideanDistance(a, b))
     }
 
@@ -121,7 +121,7 @@ public enum VectorMath {
 
     /// Computes the L2 magnitude (length) of a vector.
     @inlinable
-    public static func magnitude(_ vector: [Float]) -> Float {
+    package static func magnitude(_ vector: [Float]) -> Float {
         guard !vector.isEmpty else { return 0 }
 
         #if canImport(Accelerate)
@@ -135,7 +135,7 @@ public enum VectorMath {
 
     /// Returns true if the vector is approximately unit length.
     @inlinable
-    public static func isNormalizedL2(_ vector: [Float], tolerance: Float = 1e-3) -> Bool {
+    package static func isNormalizedL2(_ vector: [Float], tolerance: Float = 1e-3) -> Bool {
         guard !vector.isEmpty else { return false }
         let length = magnitude(vector)
         return abs(length - 1.0) <= tolerance
@@ -145,7 +145,7 @@ public enum VectorMath {
 
     /// Adds two vectors element-wise.
     @inlinable
-    public static func add(_ a: [Float], _ b: [Float]) -> [Float] {
+    package static func add(_ a: [Float], _ b: [Float]) -> [Float] {
         precondition(a.count == b.count, "Vector dimensions must match")
         guard !a.isEmpty else { return [] }
 
@@ -160,7 +160,7 @@ public enum VectorMath {
 
     /// Subtracts vector b from vector a element-wise.
     @inlinable
-    public static func subtract(_ a: [Float], _ b: [Float]) -> [Float] {
+    package static func subtract(_ a: [Float], _ b: [Float]) -> [Float] {
         precondition(a.count == b.count, "Vector dimensions must match")
         guard !a.isEmpty else { return [] }
 
@@ -177,7 +177,7 @@ public enum VectorMath {
 
     /// Multiplies a vector by a scalar.
     @inlinable
-    public static func scale(_ vector: [Float], by scalar: Float) -> [Float] {
+    package static func scale(_ vector: [Float], by scalar: Float) -> [Float] {
         guard !vector.isEmpty else { return vector }
 
         #if canImport(Accelerate)

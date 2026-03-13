@@ -179,6 +179,31 @@ import Testing
     }
 }
 
+@Test func closeIsIdempotent() throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fdfile-idempotent-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: tmp.path, contents: Data([0x42]))
+    let file = try FDFile.open(at: tmp)
+    try file.close()
+    try file.close()
+    #expect(file.isClosed)
+    try? FileManager.default.removeItem(at: tmp)
+}
+
+@Test func concurrentCloseDoesNotDoubleFault() async throws {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fdfile-concurrent-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: tmp.path, contents: Data([0x42]))
+    let file = try FDFile.open(at: tmp)
+    await withTaskGroup(of: Void.self) { group in
+        for _ in 0..<100 {
+            group.addTask { try? file.close() }
+        }
+    }
+    #expect(file.isClosed)
+    try? FileManager.default.removeItem(at: tmp)
+}
+
 @Test func writeAllHandlesInjectedShortWrite() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)

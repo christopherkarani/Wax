@@ -20,7 +20,7 @@ public extension EmbeddingProvider {
     var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
 
-public protocol BatchEmbeddingProvider: EmbeddingProvider {
+package protocol BatchEmbeddingProvider: EmbeddingProvider {
     func embed(batch texts: [String]) async throws -> [[Float]]
 }
 

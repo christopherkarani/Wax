@@ -10,20 +10,20 @@ import WaxCore
 #if canImport(CoreML)
 import CoreML
 
-public struct BatchInputs {
-    public let inputIds: MLMultiArray
-    public let attentionMask: MLMultiArray
-    public let sequenceLength: Int
-    public let lengths: [Int]
+package struct BatchInputs {
+    package let inputIds: MLMultiArray
+    package let attentionMask: MLMultiArray
+    package let sequenceLength: Int
+    package let lengths: [Int]
 }
 
-public struct BatchInputBuffers: @unchecked Sendable {
-    public var inputIds: MLMultiArray
-    public var attentionMask: MLMultiArray
-    public let batchSize: Int
-    public let sequenceLength: Int
+package struct BatchInputBuffers: @unchecked Sendable {
+    package var inputIds: MLMultiArray
+    package var attentionMask: MLMultiArray
+    package let batchSize: Int
+    package let sequenceLength: Int
 
-    public init(batchSize: Int, sequenceLength: Int) throws {
+    package init(batchSize: Int, sequenceLength: Int) throws {
         self.batchSize = batchSize
         self.sequenceLength = sequenceLength
         self.inputIds = try MLMultiArray(
@@ -37,7 +37,7 @@ public struct BatchInputBuffers: @unchecked Sendable {
     }
 }
 
-public final class BertTokenizer: @unchecked Sendable {
+package final class BertTokenizer: @unchecked Sendable {
     private static let sharedBasicTokenizer = BasicTokenizer()
 
     /// Thread-safe container for vocab cache state, replacing `nonisolated(unsafe)` statics.
@@ -57,7 +57,7 @@ public final class BertTokenizer: @unchecked Sendable {
     private let vocab: [String: Int]
     private let ids_to_tokens: [Int: String]
 
-    public init() throws {
+    package init() throws {
         let sharedVocab = try BertTokenizer.loadVocab()
         self.vocab = sharedVocab.vocab
         self.ids_to_tokens = sharedVocab.idsToTokens
@@ -65,7 +65,7 @@ public final class BertTokenizer: @unchecked Sendable {
         self.wordpieceTokenizer = WordpieceTokenizer(vocab: sharedVocab.vocab)
     }
 
-    public func buildModelTokens(sentence: String) throws -> [Int] {
+    package func buildModelTokens(sentence: String) throws -> [Int] {
         var tokens = try tokenizeToIds(text: sentence)
 
         let clsSepTokenCount = 2 // Account for [CLS] and [SEP] tokens
@@ -89,12 +89,12 @@ public final class BertTokenizer: @unchecked Sendable {
     }
 
     /// - Note: This is lossy due to potential unknown tokens in source text
-    public func detokenize(tokens: [String]) -> String {
+    package func detokenize(tokens: [String]) -> String {
         let decodedString = convertWordpieceToBasicTokenList(tokens)
         return decodedString
     }
 
-    public func buildModelInputs(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray) {
+    package func buildModelInputs(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray) {
         let inputIds = try MLMultiArray.from(inputTokens, dims: 2)
         let maskValue = 1
 
@@ -107,7 +107,7 @@ public final class BertTokenizer: @unchecked Sendable {
         return (inputIds, attentionMask)
     }
 
-    public func buildBatchInputs(
+    package func buildBatchInputs(
         sentences: [String],
         maxSequenceLength: Int? = nil,
         sequenceLengthBuckets: [Int]? = nil
@@ -192,7 +192,7 @@ public final class BertTokenizer: @unchecked Sendable {
         )
     }
 
-    public func buildBatchInputsWithReuse(
+    package func buildBatchInputsWithReuse(
         sentences: [String],
         maxSequenceLength: Int? = nil,
         sequenceLengthBuckets: [Int]? = nil,
@@ -290,7 +290,7 @@ public final class BertTokenizer: @unchecked Sendable {
        - The second `MLMultiArray` is the attention mask.
        - The third `MLMultiArray` contains token type IDs.
     */
-    public func buildModelInputsWithTypeIds(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
+    package func buildModelInputsWithTypeIds(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
         let (inputIds, attentionMask) = try buildModelInputs(from: inputTokens)
         
         var encounteredSep = false
@@ -307,7 +307,7 @@ public final class BertTokenizer: @unchecked Sendable {
         return (inputIds, attentionMask, tokenTypeIds)
     }
 
-    public func tokenize(text: String) -> [String] {
+    package func tokenize(text: String) -> [String] {
         var tokens: [String] = []
         for token in basicTokenizer.tokenize(text: text) {
             for subToken in wordpieceTokenizer.tokenize(word: token) {
@@ -317,7 +317,7 @@ public final class BertTokenizer: @unchecked Sendable {
         return tokens
     }
 
-    public func convertTokensToIds(tokens: [String]) throws -> [Int] {
+    package func convertTokensToIds(tokens: [String]) throws -> [Int] {
         return try tokens.map { token in
             guard let id = vocab[token] else {
                 throw WaxError.io("Unknown token in vocabulary: \(token)")
@@ -381,9 +381,12 @@ private extension BertTokenizer {
     }
 
     static func loadVocab() throws -> VocabData {
-        if let cached = vocabCache.lock.withLock({ vocabCache.data }) {
+        vocabCache.lock.lock()
+        if let cached = vocabCache.data {
+            vocabCache.lock.unlock()
             return cached
         }
+        vocabCache.lock.unlock()
 
         guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw WaxError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
@@ -399,14 +402,15 @@ private extension BertTokenizer {
             idsToTokens[i] = token
         }
         let loaded = VocabData(vocab: vocab, idsToTokens: idsToTokens)
-        return vocabCache.lock.withLock {
-            if let cached = vocabCache.data {
-                return cached
-            }
-            vocabCache.data = loaded
-            vocabCache.loadCount += 1
-            return loaded
+        vocabCache.lock.lock()
+        if let cached = vocabCache.data {
+            vocabCache.lock.unlock()
+            return cached
         }
+        vocabCache.data = loaded
+        vocabCache.loadCount += 1
+        vocabCache.lock.unlock()
+        return loaded
     }
 
     static func selectSequenceLength(
@@ -428,14 +432,17 @@ private extension BertTokenizer {
 #if DEBUG
 extension BertTokenizer {
     static func _resetVocabCacheForTests() {
-        vocabCache.lock.withLock {
-            vocabCache.data = nil
-            vocabCache.loadCount = 0
-        }
+        vocabCache.lock.lock()
+        vocabCache.data = nil
+        vocabCache.loadCount = 0
+        vocabCache.lock.unlock()
     }
 
     static func _vocabLoadCountForTests() -> Int {
-        vocabCache.lock.withLock { vocabCache.loadCount }
+        vocabCache.lock.lock()
+        let count = vocabCache.loadCount
+        vocabCache.lock.unlock()
+        return count
     }
 }
 #endif

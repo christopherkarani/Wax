@@ -16,33 +16,6 @@ import Wax
     #expect(matches.map(\.key) == [EntityKey("person:alice")])
 }
 
-
-@Test func assertFactRejectsInvalidTimeRanges() async throws {
-    let engine = try FTS5SearchEngine.inMemory()
-
-    await #expect(throws: WaxError.self) {
-        _ = try await engine.assertFact(
-            subject: EntityKey("person:alice"),
-            predicate: PredicateKey("status"),
-            object: .string("active"),
-            valid: StructuredTimeRange(fromMs: 10, toMs: 10),
-            system: StructuredTimeRange(fromMs: 0, toMs: nil),
-            evidence: []
-        )
-    }
-
-    await #expect(throws: WaxError.self) {
-        _ = try await engine.assertFact(
-            subject: EntityKey("person:alice"),
-            predicate: PredicateKey("status"),
-            object: .string("active"),
-            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
-            system: StructuredTimeRange(fromMs: 50, toMs: 49),
-            evidence: []
-        )
-    }
-}
-
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(

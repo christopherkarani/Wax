@@ -1,12 +1,12 @@
 import Foundation
 
-public actor AsyncMutex {
+package actor AsyncMutex {
     private var isLocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    public init() {}
+    package init() {}
 
-    public func lock() async {
+    package func lock() async {
         if !isLocked {
             isLocked = true
             return
@@ -17,7 +17,7 @@ public actor AsyncMutex {
         }
     }
 
-    public func unlock() {
+    package func unlock() {
         if waiters.isEmpty {
             isLocked = false
             return
@@ -26,7 +26,7 @@ public actor AsyncMutex {
         next.resume()
     }
 
-    public func withLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+    package func withLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await lock()
         defer { unlock() }
         return try await body()

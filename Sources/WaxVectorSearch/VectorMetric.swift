@@ -2,12 +2,12 @@ import Foundation
 import USearch
 import WaxCore
 
-public enum VectorMetric: Sendable, Equatable {
+package enum VectorMetric: Sendable, Equatable {
     case cosine
     case dot
     case l2
 
-    public init?(vecSimilarity: VecSimilarity) {
+    package init?(vecSimilarity: VecSimilarity) {
         switch vecSimilarity {
         case .cosine:
             self = .cosine
@@ -18,7 +18,7 @@ public enum VectorMetric: Sendable, Equatable {
         }
     }
 
-    public func toUSearchMetric() -> USearchMetric {
+    package func toUSearchMetric() -> USearchMetric {
         switch self {
         case .cosine:
             return .cos
@@ -29,7 +29,7 @@ public enum VectorMetric: Sendable, Equatable {
         }
     }
 
-    public func score(fromDistance d: Float) -> Float {
+    package func score(fromDistance d: Float) -> Float {
         guard d.isFinite else { return 0 }
         switch self {
         case .cosine:

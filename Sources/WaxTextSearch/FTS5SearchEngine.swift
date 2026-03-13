@@ -2,7 +2,7 @@ import Foundation
 @preconcurrency import GRDB
 import WaxCore
 
-public actor FTS5SearchEngine {
+package actor FTS5SearchEngine {
     private static let maxResults = 10_000
     /// Upper bound on queued writes before forcing a flush to SQLite.
     ///
@@ -38,7 +38,7 @@ public actor FTS5SearchEngine {
         try? FileManager.default.removeItem(at: url)
     }
 
-    public static func inMemory() throws -> FTS5SearchEngine {
+    package static func inMemory() throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
         let queue = try DatabaseQueue(configuration: config)
@@ -48,7 +48,7 @@ public actor FTS5SearchEngine {
         return FTS5SearchEngine(dbQueue: queue, io: io, backingStoreDirectory: nil, docCount: 0, dirty: false)
     }
 
-    public static func deserialize(from data: Data) throws -> FTS5SearchEngine {
+    package static func deserialize(from data: Data) throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
         let storeDirectory = FileManager.default.temporaryDirectory
@@ -77,19 +77,19 @@ public actor FTS5SearchEngine {
         )
     }
 
-    public static func load(from wax: Wax) async throws -> FTS5SearchEngine {
+    package static func load(from wax: Wax) async throws -> FTS5SearchEngine {
         if let bytes = try await wax.readCommittedLexIndexBytes() {
             return try FTS5SearchEngine.deserialize(from: bytes)
         }
         return try FTS5SearchEngine.inMemory()
     }
 
-    public func count() async throws -> Int {
+    package func count() async throws -> Int {
         try await flushPendingOpsIfNeeded()
         return Int(docCount)
     }
 
-    public func index(frameId: UInt64, text: String) async throws {
+    package func index(frameId: UInt64, text: String) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             try await remove(frameId: frameId)
@@ -102,7 +102,7 @@ public actor FTS5SearchEngine {
 
     /// Batch index multiple frames in a single database transaction.
     /// This amortizes transaction overhead and actor hops across all documents.
-    public func indexBatch(frameIds: [UInt64], texts: [String]) async throws {
+    package func indexBatch(frameIds: [UInt64], texts: [String]) async throws {
         guard !frameIds.isEmpty else { return }
         guard frameIds.count == texts.count else {
             throw WaxError.encodingError(reason: "indexBatch: frameIds.count != texts.count")
@@ -120,13 +120,13 @@ public actor FTS5SearchEngine {
         try await flushPendingOpsIfThresholdExceeded()
     }
 
-    public func remove(frameId: UInt64) async throws {
+    package func remove(frameId: UInt64) async throws {
         let frameIdValue = try Self.toInt64(frameId)
         enqueuePendingOp(frameIdValue: frameIdValue, op: .delete)
         try await flushPendingOpsIfThresholdExceeded()
     }
 
-    public func search(query: String, topK: Int) async throws -> [TextSearchResult] {
+    package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
         try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -161,7 +161,7 @@ public actor FTS5SearchEngine {
 
     // MARK: - Structured Memory
 
-    public func upsertEntity(
+    package func upsertEntity(
         key: EntityKey,
         kind: String,
         aliases: [String],
@@ -182,7 +182,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
+    package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         try await flushPendingOpsIfNeeded()
         let normalized = StructuredMemoryCanonicalizer.normalizedAlias(alias)
         guard !normalized.isEmpty else { return [] }
@@ -212,18 +212,19 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func assertFact(
+    package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,
         object: FactValue,
+        relation: VersionRelation = .sets,
         valid: StructuredTimeRange,
         system: StructuredTimeRange,
         evidence: [StructuredEvidence]
     ) async throws -> FactRowID {
-        if let validToMs = valid.toMs, validToMs <= valid.fromMs {
+        guard valid.toMs == nil || valid.toMs! > valid.fromMs else {
             throw WaxError.encodingError(reason: "valid_to_ms must be greater than valid_from_ms")
         }
-        if let systemToMs = system.toMs, systemToMs <= system.fromMs {
+        guard system.toMs == nil || system.toMs! > system.fromMs else {
             throw WaxError.encodingError(reason: "system_to_ms must be greater than system_from_ms")
         }
 
@@ -239,6 +240,7 @@ public actor FTS5SearchEngine {
                 subject: subject,
                 predicate: predicate,
                 object: object,
+                relation: relation,
                 valid: valid,
                 system: system,
                 evidence: evidence,
@@ -260,13 +262,13 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func retractFact(factId: FactRowID, atMs: Int64) async throws {
+    package func retractFact(factId: FactRowID, atMs: Int64) async throws {
         enqueueStructuredOp(.retractFact(factId: factId, atMs: atMs))
         try await flushPendingStructuredOpsIfThresholdExceeded()
         try await flushPendingStructuredOpsIfNeeded()
     }
 
-    public func facts(
+    package func facts(
         about subject: EntityKey?,
         predicate: PredicateKey?,
         asOf: StructuredMemoryAsOf,
@@ -395,7 +397,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func evidenceFrameIds(
+    package func evidenceFrameIds(
         subjectKeys: [EntityKey],
         asOf: StructuredMemoryAsOf,
         maxFacts: Int,
@@ -483,7 +485,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func serialize(compact: Bool = false) async throws -> Data {
+    package func serialize(compact: Bool = false) async throws -> Data {
         try await flushPendingOpsIfNeeded()
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -500,7 +502,7 @@ public actor FTS5SearchEngine {
         }
     }
 
-    public func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
+    package func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         let blob = try await serialize(compact: compact)
@@ -519,6 +521,7 @@ public actor FTS5SearchEngine {
             subject: EntityKey,
             predicate: PredicateKey,
             object: FactValue,
+            relation: VersionRelation,
             valid: StructuredTimeRange,
             system: StructuredTimeRange,
             evidence: [StructuredEvidence],
@@ -662,13 +665,17 @@ public actor FTS5SearchEngine {
                         object_blob,
                         object_time_ms,
                         object_entity_id,
+                        version_relation,
                         qualifiers_hash,
                         fact_hash,
                         created_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """)
                 let selectFactIdStmt = try db.makeStatement(sql: """
                     SELECT fact_id FROM sm_fact WHERE fact_hash = ?
+                    """)
+                let updateFactRelationStmt = try db.makeStatement(sql: """
+                    UPDATE sm_fact SET version_relation = ? WHERE fact_id = ?
                     """)
                 let insertSpanStmt = try db.makeStatement(sql: """
                     INSERT OR IGNORE INTO sm_fact_span(
@@ -702,6 +709,19 @@ public actor FTS5SearchEngine {
                 let selectOpenSpanStmt = try db.makeStatement(sql: """
                     SELECT span_id, system_from_ms FROM sm_fact_span
                     WHERE fact_id = ? AND system_to_ms IS NULL
+                    """)
+                let selectOpenSpanForSubjectPredicateStmt = try db.makeStatement(sql: """
+                    SELECT s.span_id AS span_id,
+                           s.system_from_ms AS system_from_ms
+                    FROM sm_fact_span s
+                    JOIN sm_fact f ON f.fact_id = s.fact_id
+                    WHERE f.subject_entity_id = ?
+                      AND f.predicate_id = ?
+                      AND s.system_to_ms IS NULL
+                    """)
+                let closeSpanByIDStmt = try db.makeStatement(sql: """
+                    UPDATE sm_fact_span SET system_to_ms = ?
+                    WHERE span_id = ? AND system_to_ms IS NULL
                     """)
                 let retractSpanStmt = try db.makeStatement(sql: """
                     UPDATE sm_fact_span SET system_to_ms = ?
@@ -745,6 +765,7 @@ public actor FTS5SearchEngine {
                         let subject,
                         let predicate,
                         let object,
+                        let relation,
                         let valid,
                         let system,
                         let evidence,
@@ -752,6 +773,19 @@ public actor FTS5SearchEngine {
                     ):
                         let subjectId = try ensureEntityId(key: subject, kind: "", nowMs: system.fromMs)
                         let predicateId = try ensurePredicateId(key: predicate, nowMs: system.fromMs)
+
+                        if relation.supersedes {
+                            let openSpans = try Row.fetchAll(
+                                selectOpenSpanForSubjectPredicateStmt,
+                                arguments: [subjectId, predicateId]
+                            )
+                            for row in openSpans {
+                                let spanId: Int64 = row["span_id"] ?? 0
+                                let systemFrom: Int64 = row["system_from_ms"] ?? 0
+                                let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
+                                try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
+                            }
+                        }
 
                         let objectColumns = try FactObjectColumns.from(
                             object: object,
@@ -771,6 +805,7 @@ public actor FTS5SearchEngine {
                             objectColumns.blobValue,
                             objectColumns.timeValue,
                             objectColumns.entityId,
+                            Int(relation.rawValue),
                             nil,
                             factHash,
                             system.fromMs,
@@ -780,6 +815,7 @@ public actor FTS5SearchEngine {
                               let factId: Int64 = factRow["fact_id"] else {
                             throw WaxError.io("missing fact_id after insert")
                         }
+                        try updateFactRelationStmt.execute(arguments: [Int(relation.rawValue), factId])
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
                             factId: FactRowID(rawValue: factId),

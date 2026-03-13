@@ -1,7 +1,7 @@
 import Foundation
 
-public struct ScheduledLiveSetMaintenanceReport: Sendable, Equatable {
-    public enum Outcome: String, Sendable, Equatable {
+package struct ScheduledLiveSetMaintenanceReport: Sendable, Equatable {
+    package enum Outcome: String, Sendable, Equatable {
         case disabled
         case cadenceSkipped
         case cooldownSkipped
@@ -13,18 +13,18 @@ public struct ScheduledLiveSetMaintenanceReport: Sendable, Equatable {
         case validationFailedRolledBack
     }
 
-    public var outcome: Outcome
-    public var triggeredByFlush: Bool
-    public var flushCount: UInt64
-    public var deadPayloadBytes: UInt64
-    public var totalPayloadBytes: UInt64
-    public var deadPayloadFraction: Double
-    public var candidateURL: URL?
-    public var rewriteReport: LiveSetRewriteReport?
-    public var rollbackPerformed: Bool
-    public var notes: [String]
+    package var outcome: Outcome
+    package var triggeredByFlush: Bool
+    package var flushCount: UInt64
+    package var deadPayloadBytes: UInt64
+    package var totalPayloadBytes: UInt64
+    package var deadPayloadFraction: Double
+    package var candidateURL: URL?
+    package var rewriteReport: LiveSetRewriteReport?
+    package var rollbackPerformed: Bool
+    package var notes: [String]
 
-    public init(
+    package init(
         outcome: Outcome,
         triggeredByFlush: Bool,
         flushCount: UInt64,

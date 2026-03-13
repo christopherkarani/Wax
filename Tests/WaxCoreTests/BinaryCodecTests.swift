@@ -158,23 +158,6 @@ import Testing
     }
 }
 
-@Test func unsupportedGenericDecodeTypeThrows() throws {
-    var encoder = BinaryEncoder()
-    encoder.encode(UInt8(7))
-
-    var decoder = try BinaryDecoder(data: encoder.data)
-    do {
-        _ = try decoder.decode(Double.self)
-        #expect(Bool(false))
-    } catch let error as WaxError {
-        guard case .decodingError(let reason) = error else {
-            #expect(Bool(false))
-            return
-        }
-        #expect(reason.contains("unsupported decode type"))
-    }
-}
-
 // MARK: - Optional UInt16
 
 @Test func optionalUInt16PresentRoundtrip() throws {

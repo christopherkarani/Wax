@@ -45,7 +45,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_handoff",
-            description: "Store a cross-session handoff note for later retrieval. Call wax_flush to persist.",
+            description: "Store a cross-session handoff note for later retrieval. Commit by default; set commit=false to batch with wax_flush.",
             inputSchema: waxHandoff
         ),
         Tool(
@@ -103,6 +103,10 @@ enum ToolSchemas {
                 "description": "Optional metadata map. Scalar values are coerced to strings.",
                 "additionalProperties": true,
             ],
+            "commit": [
+                "type": "boolean",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+            ],
         ],
         required: ["content"]
     )
@@ -123,6 +127,24 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional session UUID for scoped recall.",
             ],
+            "mode": [
+                "type": "string",
+                "description": "Optional search mode override for recall retrieval.",
+                "enum": ["text", "hybrid"],
+            ],
+            "alpha": [
+                "type": "number",
+                "description": "Optional hybrid alpha in [0,1]. Only valid when mode=hybrid.",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            ],
+            "search_top_k": [
+                "type": "integer",
+                "description": "Optional retrieval top-k for recall search stage. Defaults to limit. Legacy alias: topK.",
+                "minimum": 1,
+                "maximum": 200,
+            ],
+            "filters": searchFilters,
         ],
         required: ["query"]
     )
@@ -148,6 +170,13 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional session UUID for scoped search.",
             ],
+            "alpha": [
+                "type": "number",
+                "description": "Optional hybrid alpha in [0,1]. Only valid when mode=hybrid.",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            ],
+            "filters": searchFilters,
         ],
         required: ["query"]
     )
@@ -176,8 +205,40 @@ enum ToolSchemas {
                 "description": "Optional list of pending tasks.",
                 "items": ["type": "string"],
             ],
+            "commit": [
+                "type": "boolean",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+            ],
         ],
         required: ["content"]
+    )
+
+    static let searchFilters: Value = objectSchema(
+        properties: [
+            "metadata": [
+                "type": "object",
+                "description": "Exact metadata entry matches as a flat object, or wrapped as {\"exact\": {...}}. Scalar values are coerced to strings.",
+                "additionalProperties": true,
+            ],
+            "labels": [
+                "type": "array",
+                "description": "Frame labels that must all be present.",
+                "items": ["type": "string"],
+            ],
+            "time_after_ms": [
+                "type": "integer",
+                "description": "Optional inclusive lower bound timestamp (ms since epoch).",
+            ],
+            "time_before_ms": [
+                "type": "integer",
+                "description": "Optional exclusive upper bound timestamp (ms since epoch).",
+            ],
+            "include_surrogates": [
+                "type": "boolean",
+                "description": "Whether surrogate frames can be included. Default: false.",
+            ],
+        ],
+        required: []
     )
 
     static let waxHandoffLatest: Value = objectSchema(

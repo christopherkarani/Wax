@@ -16,35 +16,35 @@ private enum FrameMetaValidation {
     }
 }
 
-public struct FrameMeta: Equatable, Sendable {
-    public var id: UInt64
-    public var timestamp: Int64
-    public var anchorTs: Int64?
-    public var kind: String?
-    public var track: String?
-    public var payloadOffset: UInt64
-    public var payloadLength: UInt64
-    public var checksum: Data
-    public var uri: String?
-    public var title: String?
-    public var canonicalEncoding: CanonicalEncoding
-    public var canonicalLength: UInt64?
-    public var storedChecksum: Data?
-    public var metadata: Metadata?
-    public var searchText: String?
-    public var tags: [TagPair]
-    public var labels: [String]
-    public var contentDates: [String]
-    public var role: FrameRole
-    public var parentId: UInt64?
-    public var chunkIndex: UInt32?
-    public var chunkCount: UInt32?
-    public var chunkManifest: Data?
-    public var status: FrameStatus
-    public var supersedes: UInt64?
-    public var supersededBy: UInt64?
+package struct FrameMeta: Equatable, Sendable {
+    package var id: UInt64
+    package var timestamp: Int64
+    package var anchorTs: Int64?
+    package var kind: String?
+    package var track: String?
+    package var payloadOffset: UInt64
+    package var payloadLength: UInt64
+    package var checksum: Data
+    package var uri: String?
+    package var title: String?
+    package var canonicalEncoding: CanonicalEncoding
+    package var canonicalLength: UInt64?
+    package var storedChecksum: Data?
+    package var metadata: Metadata?
+    package var searchText: String?
+    package var tags: [TagPair]
+    package var labels: [String]
+    package var contentDates: [String]
+    package var role: FrameRole
+    package var parentId: UInt64?
+    package var chunkIndex: UInt32?
+    package var chunkCount: UInt32?
+    package var chunkManifest: Data?
+    package var status: FrameStatus
+    package var supersedes: UInt64?
+    package var supersededBy: UInt64?
 
-    public init(
+    package init(
         id: UInt64,
         timestamp: Int64,
         anchorTs: Int64? = nil,
@@ -102,7 +102,7 @@ public struct FrameMeta: Equatable, Sendable {
 }
 
 extension FrameMeta: BinaryEncodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         do {
             try FrameMetaValidation.validateInvariants(
                 payloadLength: payloadLength,
@@ -152,7 +152,7 @@ extension FrameMeta: BinaryEncodable {
 }
 
 extension FrameMeta: BinaryDecodable {
-    public static func decode(from decoder: inout BinaryDecoder) throws -> FrameMeta {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> FrameMeta {
         let id = try decoder.decode(UInt64.self)
         let timestamp = try decoder.decode(Int64.self)
         let anchorTs = try decoder.decodeOptional(Int64.self)
@@ -251,7 +251,7 @@ extension FrameMeta: BinaryDecodable {
 }
 
 extension FrameMeta {
-    public static func fromPut(_ put: PutFrame) throws -> FrameMeta {
+    package static func fromPut(_ put: PutFrame) throws -> FrameMeta {
         guard put.canonicalChecksum.count == 32 else {
             throw WaxError.encodingError(reason: "canonical_checksum must be 32 bytes")
         }

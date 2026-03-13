@@ -1,11 +1,11 @@
 /// Hybrid search fusion algorithms.
-public enum HybridSearch {
+package enum HybridSearch {
     /// Reciprocal Rank Fusion (RRF) to combine ranked lists.
     ///
     /// Notes (v1):
     /// - RRF is rank-based (it ignores the raw score scales from BM25 vs vector distance).
     /// - Provide deterministic tie-break rules so outputs are stable.
-    public static func rrfFusion(
+    package static func rrfFusion(
         textResults: [(UInt64, Float)],
         vectorResults: [(UInt64, Float)],
         k: Int = 60,
@@ -22,7 +22,7 @@ public enum HybridSearch {
     }
 
     /// Multi-list weighted RRF (e.g., text + vector + timeline).
-    public static func rrfFusion(
+    package static func rrfFusion(
         lists: [(weight: Float, frameIds: [UInt64])],
         k: Int = 60
     ) -> [(UInt64, Float)] {

@@ -1,43 +1,43 @@
 import Foundation
 
-public struct WALRecordLocation: Equatable, Sendable {
-    public var offset: UInt64
-    public var record: WALRecord
+package struct WALRecordLocation: Equatable, Sendable {
+    package var offset: UInt64
+    package var record: WALRecord
 
-    public init(offset: UInt64, record: WALRecord) {
+    package init(offset: UInt64, record: WALRecord) {
         self.offset = offset
         self.record = record
     }
 }
 
-public struct WALScanState: Equatable, Sendable {
-    public var lastSequence: UInt64
-    public var writePos: UInt64
-    public var pendingBytes: UInt64
+package struct WALScanState: Equatable, Sendable {
+    package var lastSequence: UInt64
+    package var writePos: UInt64
+    package var pendingBytes: UInt64
 
-    public init(lastSequence: UInt64, writePos: UInt64, pendingBytes: UInt64) {
+    package init(lastSequence: UInt64, writePos: UInt64, pendingBytes: UInt64) {
         self.lastSequence = lastSequence
         self.writePos = writePos
         self.pendingBytes = pendingBytes
     }
 }
 
-public struct WALPendingScanResult: Equatable, Sendable {
-    public var pendingMutations: [PendingMutation]
-    public var state: WALScanState
+package struct WALPendingScanResult: Equatable, Sendable {
+    package var pendingMutations: [PendingMutation]
+    package var state: WALScanState
 
-    public init(pendingMutations: [PendingMutation], state: WALScanState) {
+    package init(pendingMutations: [PendingMutation], state: WALScanState) {
         self.pendingMutations = pendingMutations
         self.state = state
     }
 }
 
-public final class WALRingReader {
+package final class WALRingReader {
     private let file: FDFile
-    public let walOffset: UInt64
-    public let walSize: UInt64
+    package let walOffset: UInt64
+    package let walSize: UInt64
 
-    public init(file: FDFile, walOffset: UInt64, walSize: UInt64) {
+    package init(file: FDFile, walOffset: UInt64, walSize: UInt64) {
         self.file = file
         self.walOffset = walOffset
         self.walSize = walSize
@@ -45,8 +45,8 @@ public final class WALRingReader {
 
     /// Checks whether the persisted cursor currently points at a terminal marker.
     ///
-    /// A `true` result means open can safely treat WAL replay as empty from this cursor.
-    public func isTerminalMarker(at cursor: UInt64) throws -> Bool {
+    /// A `true` result means package can safely treat WAL replay as empty from this cursor.
+    package func isTerminalMarker(at cursor: UInt64) throws -> Bool {
         guard walSize > 0 else { return true }
         let normalized = cursor % walSize
         let remaining = walSize - normalized
@@ -65,21 +65,21 @@ public final class WALRingReader {
         return header.isSentinel || header.sequence == 0
     }
 
-    public func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
+    package func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
         return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
             let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
             return WALRecordLocation(offset: offset, record: record)
         }
     }
 
-    public func scanPendingMutations(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [PendingMutation] {
+    package func scanPendingMutations(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [PendingMutation] {
         return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
             let entry = try WALEntryCodec.decode(payload, offset: offset)
             return PendingMutation(sequence: header.sequence, entry: entry)
         }
     }
 
-    public func scanPendingMutationsWithState(from checkpointPos: UInt64, committedSeq: UInt64) throws -> WALPendingScanResult {
+    package func scanPendingMutationsWithState(from checkpointPos: UInt64, committedSeq: UInt64) throws -> WALPendingScanResult {
         guard walSize > 0 else {
             return WALPendingScanResult(
                 pendingMutations: [],
@@ -95,7 +95,7 @@ public final class WALRingReader {
         var pendingMutations: [PendingMutation] = []
         // When a pending-entry decode error occurs we stop collecting pending mutations
         // but continue advancing the cursor so writePos/pendingBytes remain accurate
-        // for WAL recovery position tracking. This preserves the old open behavior:
+        // for WAL recovery position tracking. This preserves the old package behavior:
         // a corrupt pending entry does not prevent the state-position scan from reaching
         // the true end of the ring.
         var stopDecodingPendingMutations = false
@@ -190,7 +190,7 @@ public final class WALRingReader {
         return WALPendingScanResult(pendingMutations: pendingMutations, state: state)
     }
 
-    public func scanState(from checkpointPos: UInt64) throws -> WALScanState {
+    package func scanState(from checkpointPos: UInt64) throws -> WALScanState {
         guard walSize > 0 else { return WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0) }
 
         let start = checkpointPos % walSize

@@ -8,21 +8,24 @@
 npx -y waxmcp@latest mcp serve
 ```
 
+> Note: `waxmcp` currently supports Apple Silicon macOS only (`darwin-arm64`).
+
 To publish a new version:
 
 ```bash
-cd /path/to/Wax/npm/waxmcp
-npm version patch   # or minor/major/1.2.3
+cd /path/to/Wax/Resources/npm/waxmcp
+npm version patch   # or minor/major/1.2.3 (requires npm publish access)
 npm publish --access public
 ```
 
 This repo also ships a release script that updates `version`, syncs
-`Sources/WaxMCPServer/main.swift`'s `serverVersion`, and rebuilds both Darwin binaries:
+`Sources/WaxMCPServer/main.swift`'s `serverVersion`, and rebuilds the Darwin binaries
+and resource bundles:
 
 ```bash
 cd /path/to/Wax
-./scripts/release-waxmcp.sh patch   # or minor / major / 1.2.3
-git add npm/waxmcp/package.json Sources/WaxMCPServer/main.swift npm/waxmcp/dist/darwin-*/wax-cli npm/waxmcp/dist/darwin-*/wax-cli.sha256 npm/waxmcp/dist/darwin-*/wax-mcp npm/waxmcp/dist/darwin-*/wax-mcp.sha256
+./scripts/release-waxmcp.sh 0.1.15
+git add Resources/npm/waxmcp/package.json Sources/WaxMCPServer/main.swift Resources/npm/waxmcp/dist
 git commit -m "release: bump waxmcp version"
 ```
 

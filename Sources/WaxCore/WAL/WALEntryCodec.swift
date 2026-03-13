@@ -1,14 +1,14 @@
 import Foundation
 
-public enum WALEntryCodec {
-    public enum OpCode: UInt8 {
+package enum WALEntryCodec {
+    package enum OpCode: UInt8 {
         case putFrame = 0x01
         case deleteFrame = 0x02
         case supersedeFrame = 0x03
         case putEmbedding = 0x04
     }
 
-    public static func encode(_ entry: WALEntry) throws -> Data {
+    package static func encode(_ entry: WALEntry) throws -> Data {
         var encoder = BinaryEncoder()
         switch entry {
         case .putFrame(let put):
@@ -56,7 +56,7 @@ public enum WALEntryCodec {
         return encoder.data
     }
 
-    public static func decode(_ payload: Data, offset: UInt64) throws -> WALEntry {
+    package static func decode(_ payload: Data, offset: UInt64) throws -> WALEntry {
         do {
             var decoder = try BinaryDecoder(data: payload)
             let rawOpcode = try decoder.decode(UInt8.self)

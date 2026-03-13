@@ -1,13 +1,13 @@
 import Foundation
 
-public struct LexIndexManifest: Equatable, Sendable {
-    public var docCount: UInt64
-    public var bytesOffset: UInt64
-    public var bytesLength: UInt64
-    public var checksum: Data
-    public var version: UInt32
+package struct LexIndexManifest: Equatable, Sendable {
+    package var docCount: UInt64
+    package var bytesOffset: UInt64
+    package var bytesLength: UInt64
+    package var checksum: Data
+    package var version: UInt32
 
-    public init(
+    package init(
         docCount: UInt64,
         bytesOffset: UInt64,
         bytesLength: UInt64,
@@ -23,7 +23,7 @@ public struct LexIndexManifest: Equatable, Sendable {
 }
 
 extension LexIndexManifest: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(docCount)
         encoder.encode(bytesOffset)
         encoder.encode(bytesLength)
@@ -34,7 +34,7 @@ extension LexIndexManifest: BinaryCodable {
         encoder.encode(version)
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> LexIndexManifest {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> LexIndexManifest {
         let docCount = try decoder.decode(UInt64.self)
         let bytesOffset = try decoder.decode(UInt64.self)
         let bytesLength = try decoder.decode(UInt64.self)
@@ -50,15 +50,15 @@ extension LexIndexManifest: BinaryCodable {
     }
 }
 
-public struct VecIndexManifest: Equatable, Sendable {
-    public var vectorCount: UInt64
-    public var dimension: UInt32
-    public var bytesOffset: UInt64
-    public var bytesLength: UInt64
-    public var checksum: Data
-    public var similarity: VecSimilarity
+package struct VecIndexManifest: Equatable, Sendable {
+    package var vectorCount: UInt64
+    package var dimension: UInt32
+    package var bytesOffset: UInt64
+    package var bytesLength: UInt64
+    package var checksum: Data
+    package var similarity: VecSimilarity
 
-    public init(
+    package init(
         vectorCount: UInt64,
         dimension: UInt32,
         bytesOffset: UInt64,
@@ -76,7 +76,7 @@ public struct VecIndexManifest: Equatable, Sendable {
 }
 
 extension VecIndexManifest: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(vectorCount)
         encoder.encode(dimension)
         encoder.encode(bytesOffset)
@@ -88,7 +88,7 @@ extension VecIndexManifest: BinaryCodable {
         encoder.encode(similarity.rawValue)
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> VecIndexManifest {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> VecIndexManifest {
         let vectorCount = try decoder.decode(UInt64.self)
         let dimension = try decoder.decode(UInt32.self)
         let bytesOffset = try decoder.decode(UInt64.self)
@@ -109,18 +109,18 @@ extension VecIndexManifest: BinaryCodable {
     }
 }
 
-public struct IndexManifests: Equatable, Sendable {
-    public var lex: LexIndexManifest?
-    public var vec: VecIndexManifest?
+package struct IndexManifests: Equatable, Sendable {
+    package var lex: LexIndexManifest?
+    package var vec: VecIndexManifest?
 
-    public init(lex: LexIndexManifest? = nil, vec: VecIndexManifest? = nil) {
+    package init(lex: LexIndexManifest? = nil, vec: VecIndexManifest? = nil) {
         self.lex = lex
         self.vec = vec
     }
 }
 
 extension IndexManifests: BinaryCodable {
-    public mutating func encode(to encoder: inout BinaryEncoder) throws {
+    package mutating func encode(to encoder: inout BinaryEncoder) throws {
         try encoder.encode(lex) { encoder, value in
             var mutable = value
             try mutable.encode(to: &encoder)
@@ -132,7 +132,7 @@ extension IndexManifests: BinaryCodable {
         encoder.encode(UInt8(0)) // clip manifest absent in v1
     }
 
-    public static func decode(from decoder: inout BinaryDecoder) throws -> IndexManifests {
+    package static func decode(from decoder: inout BinaryDecoder) throws -> IndexManifests {
         let lex = try decodeOptional(LexIndexManifest.self, from: &decoder)
         let vec = try decodeOptional(VecIndexManifest.self, from: &decoder)
         let clipTag = try decoder.decode(UInt8.self)

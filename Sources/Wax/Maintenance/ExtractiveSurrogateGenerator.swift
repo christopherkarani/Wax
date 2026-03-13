@@ -1,11 +1,11 @@
 import Foundation
 
-public struct ExtractiveSurrogateGenerator: HierarchicalSurrogateGenerator, Sendable, Equatable {
-    public var algorithmID: String { "extractive_v1" }
+package struct ExtractiveSurrogateGenerator: HierarchicalSurrogateGenerator, Sendable, Equatable {
+    package var algorithmID: String { "extractive_v1" }
 
-    public init() {}
+    package init() {}
 
-    public func generateSurrogate(sourceText: String, maxTokens: Int) async throws -> String {
+    package func generateSurrogate(sourceText: String, maxTokens: Int) async throws -> String {
         let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, maxTokens > 0 else { return "" }
 
@@ -24,7 +24,7 @@ public struct ExtractiveSurrogateGenerator: HierarchicalSurrogateGenerator, Send
     // MARK: - Hierarchical Generation (Optimized)
     
     /// Optimized hierarchical generation: score once, select different amounts per tier.
-    public func generateTiers(
+    package func generateTiers(
         sourceText: String,
         config: SurrogateTierConfig
     ) async throws -> SurrogateTiers {

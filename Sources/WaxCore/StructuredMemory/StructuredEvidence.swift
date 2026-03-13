@@ -1,16 +1,16 @@
 import Foundation
 
 /// Provenance evidence pointing back to Wax frames/chunks.
-public struct StructuredEvidence: Sendable, Equatable {
-    public var sourceFrameId: UInt64
-    public var chunkIndex: UInt32?
-    public var spanUTF8: Range<Int>?
-    public var extractorId: String
-    public var extractorVersion: String
-    public var confidence: Double?
-    public var assertedAtMs: Int64
+package struct StructuredEvidence: Sendable, Equatable {
+    package var sourceFrameId: UInt64
+    package var chunkIndex: UInt32?
+    package var spanUTF8: Range<Int>?
+    package var extractorId: String
+    package var extractorVersion: String
+    package var confidence: Double?
+    package var assertedAtMs: Int64
 
-    public init(
+    package init(
         sourceFrameId: UInt64,
         chunkIndex: UInt32? = nil,
         spanUTF8: Range<Int>? = nil,

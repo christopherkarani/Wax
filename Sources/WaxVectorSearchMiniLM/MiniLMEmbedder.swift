@@ -12,10 +12,10 @@ extension MiniLMEmbeddings: @unchecked Sendable {}
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
 /// Implements BatchEmbeddingProvider for significant throughput improvements during ingest.
 @available(macOS 15.0, iOS 18.0, *)
-public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
-    public nonisolated let dimensions: Int = 384
-    public nonisolated let normalize: Bool = true
-    public nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
+    package nonisolated let dimensions: Int = 384
+    package nonisolated let normalize: Bool = true
+    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
         provider: "Wax",
         model: "MiniLMAll",
         dimensions: 384,
@@ -29,50 +29,75 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     private static let maximumBatchSize = 256
     private var batchInputBuffers: BatchInputBuffers?
 
-    public struct Config {
-        public var batchSize: Int
-        public var modelConfiguration: MLModelConfiguration?
+    package struct Config {
+        package var batchSize: Int
+        package var modelConfiguration: MLModelConfiguration?
 
-        public init(batchSize: Int = 256, modelConfiguration: MLModelConfiguration? = nil) {
+        package init(batchSize: Int = 256, modelConfiguration: MLModelConfiguration? = nil) {
             self.batchSize = batchSize
             self.modelConfiguration = modelConfiguration
         }
     }
 
-    public init() throws {
+    private init(model: MiniLMEmbeddings, batchSize: Int) {
+        self.model = model
+        self.batchSize = max(1, batchSize)
+        logComputeUnits()
+    }
+
+    package init() throws {
         self.model = try MiniLMEmbeddings()
         self.batchSize = Self.maximumBatchSize
         logComputeUnits()
     }
 
-    public init(model: MiniLMEmbeddings) {
-        self.model = model
-        self.batchSize = Self.maximumBatchSize
-        logComputeUnits()
+    package init(model: MiniLMEmbeddings) {
+        self.init(model: model, batchSize: Self.maximumBatchSize)
     }
 
-    public init(config: Config) throws {
+    package init(config: Config) throws {
         self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration)
         self.batchSize = max(1, config.batchSize)
         logComputeUnits()
     }
 
-    public init(overrides: MiniLMEmbeddings.Overrides, config: Config = Config()) throws {
+    package init(overrides: MiniLMEmbeddings.Overrides, config: Config = Config()) throws {
         self.model = try MiniLMEmbeddings(configuration: config.modelConfiguration, overrides: overrides)
         self.batchSize = max(1, config.batchSize)
         logComputeUnits()
+    }
+
+    package static func make(
+        config: Config = Config(),
+        overrides: MiniLMEmbeddings.Overrides = .default,
+        timeout: Duration,
+        skipPrewarm: Bool = false,
+        prewarmBatchSize: Int = 1
+    ) async throws -> MiniLMEmbedder {
+        let model = try await MiniLMEmbeddings.make(
+            configuration: config.modelConfiguration,
+            overrides: overrides,
+            timeout: timeout
+        )
+        let embedder = MiniLMEmbedder(model: model, batchSize: max(1, config.batchSize))
+        if !skipPrewarm {
+            try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder prewarm") {
+                try await embedder.prewarm(batchSize: prewarmBatchSize)
+            }
+        }
+        return embedder
     }
 
     // MARK: - Diagnostics
 
     /// Checks if the model is configured to use the Apple Neural Engine (ANE).
     /// Note: This checks the configuration preference, not whether ANE is actually being used at runtime.
-    public nonisolated func isUsingANE() -> Bool {
+    package nonisolated func isUsingANE() -> Bool {
         return model.computeUnits == .all || model.computeUnits == .cpuAndNeuralEngine
     }
 
     /// Returns the current compute units configuration.
-    public nonisolated func currentComputeUnits() -> MLComputeUnits {
+    package nonisolated func currentComputeUnits() -> MLComputeUnits {
         return model.computeUnits
     }
 
@@ -88,8 +113,10 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         // TODO: Expose MLModelConfiguration knobs (e.g. low-precision accumulation) for more tuning.
     }
 
-    public func embed(_ text: String) async throws -> [Float] {
-        let vector = try await model.encodeThrowing(sentence: text)
+    package func embed(_ text: String) async throws -> [Float] {
+        guard let vector = await model.encode(sentence: text) else {
+            throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
+        }
         if vector.count != dimensions {
             throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
@@ -102,7 +129,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// - Uses exact batch sizes (no padding waste)
     /// - Streams batches with limited concurrency to avoid memory spikes
     /// - Returns embeddings in same order as input texts
-    public func embed(batch texts: [String]) async throws -> [[Float]] {
+    package func embed(batch texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         let plannedBatches = Self.planBatchSizes(for: texts.count, maxBatchSize: batchSize)
         var results = Array(repeating: [Float](), count: texts.count)
@@ -127,7 +154,9 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     
     /// Core ML batch prediction path (true batching).
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        let vectors = try model.encodeThrowing(batch: texts, reuseBuffers: &batchInputBuffers)
+        guard let vectors = model.encode(batch: texts, reuseBuffers: &batchInputBuffers) else {
+            throw WaxError.io("MiniLMAll batch embedding failed.")
+        }
         guard vectors.count == texts.count else {
             throw WaxError.io("MiniLMAll batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
         }
@@ -139,7 +168,7 @@ public actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         return vectors
     }
 
-    public func prewarm(batchSize: Int = 16) async throws {
+    package func prewarm(batchSize: Int = 16) async throws {
         _ = try await embed(" ")
         let clamped = max(1, min(batchSize, 32))
         if clamped > 1 {
@@ -155,9 +184,13 @@ extension MiniLMEmbedder {
     ///
     /// This path intentionally uses `batchSize = 1` because some executable contexts are
     /// more reliable with single-prediction CoreML APIs than large batch prediction APIs.
-    public static func makeCommandLineEmbedder(
+    ///
+    /// - Parameter skipPrewarm: When `true`, skip the prewarm step to reduce cold-start latency.
+    ///   Use for write-only operations where the first real embedding will warm the model.
+    package static func makeCommandLineEmbedder(
         prewarmBatchSize: Int = 1,
-        computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]
+        skipPrewarm: Bool = false,
+        computeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
     ) async throws -> MiniLMEmbedder {
         var failures: [String] = []
         for units in computeUnitsOrder {
@@ -168,7 +201,9 @@ extension MiniLMEmbedder {
                 let embedder = try MiniLMEmbedder(
                     config: Config(batchSize: 1, modelConfiguration: modelConfiguration)
                 )
-                try await embedder.prewarm(batchSize: prewarmBatchSize)
+                if !skipPrewarm {
+                    try await embedder.prewarm(batchSize: prewarmBatchSize)
+                }
                 return embedder
             } catch {
                 failures.append("\(describe(units)): \(error.localizedDescription)")
@@ -180,9 +215,8 @@ extension MiniLMEmbedder {
         )
     }
 
-    /// SPI for deterministic batch planning tests.
-    @_spi(Testing)
-    public static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
+    /// Test helper for deterministic batch planning verification.
+    package static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
         planBatchSizes(for: totalCount, maxBatchSize: maxBatchSize)
     }
 }

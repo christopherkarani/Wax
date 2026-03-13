@@ -372,6 +372,71 @@ func memoryOrchestratorRespectsIngestBatchingAndOrder() async throws {
     }
 }
 
+@Suite(.serialized)
+struct MemoryOrchestratorIngestFastPathTests {
+    @Test
+    func memoryOrchestratorSingleChunkRememberAvoidsBatchPreparationPath() async throws {
+        try await TempFiles.withTempFile { url in
+            var config = OrchestratorConfig.default
+            config.ingestBatchSize = 32
+            config.ingestConcurrency = 1
+            config.enableVectorSearch = true
+            config.enableTextSearch = true
+            config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
+
+            let factory = BenchmarkTextFactory(sentencesPerDocument: 10)
+            let content = factory.makeDocument(index: 0)
+            let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+            #expect(chunks.count == 1)
+
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicEmbedder(dimensions: 8)
+            )
+            MemoryOrchestrator._resetBatchPreparationPathCallCountForTests()
+
+            try await orchestrator.remember(content)
+
+            #expect(MemoryOrchestrator._batchPreparationPathCallCountForTests() == 0)
+            try await orchestrator.close()
+        }
+    }
+
+    @Test
+    func memoryOrchestratorRepeatedSingleChunkRemembersEnsureMemoryBindingOnce() async throws {
+        try await TempFiles.withTempFile { url in
+            var config = OrchestratorConfig.default
+            config.ingestBatchSize = 32
+            config.ingestConcurrency = 1
+            config.enableVectorSearch = true
+            config.enableTextSearch = true
+            config.chunking = .tokenCount(targetTokens: 220, overlapTokens: 24)
+
+            let factory = BenchmarkTextFactory(sentencesPerDocument: 10)
+            let contents = (0..<3).map(factory.makeDocument(index:))
+            for content in contents {
+                let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+                #expect(chunks.count == 1)
+            }
+
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicEmbedder(dimensions: 8)
+            )
+            MemoryOrchestrator._resetMemoryBindingEnsureCallCountForTests()
+
+            for content in contents {
+                try await orchestrator.remember(content)
+            }
+
+            #expect(MemoryOrchestrator._memoryBindingEnsureCallCountForTests() == 1)
+            try await orchestrator.close()
+        }
+    }
+}
+
 private actor RecordingBatchEmbedder: BatchEmbeddingProvider {
     let dimensions: Int
     let normalize: Bool = false

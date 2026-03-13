@@ -13,6 +13,7 @@ import SwiftTUI
 /// The `SearchCommand` creates `SearchViewModel` and `Application` directly
 /// for finer control (e.g. pre-populating a query). This wrapper provides
 /// a simpler API for callers that just want to launch the TUI.
+@MainActor
 struct SearchApp {
     private let viewModel: SearchViewModel
 

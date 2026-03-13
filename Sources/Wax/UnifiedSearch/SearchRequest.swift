@@ -3,36 +3,38 @@ import WaxCore
 import WaxVectorSearch
 
 /// Unified search request.
-public struct SearchRequest: Sendable, Equatable {
-    public var query: String?
-    public var embedding: [Float]?
-    public var vectorEnginePreference: VectorEnginePreference
-    public var mode: SearchMode
-    public var topK: Int
-    public var minScore: Float?
-    public var timeRange: TimeRange?
-    public var frameFilter: FrameFilter?
-    public var asOfMs: Int64
-    public var structuredMemory: StructuredMemorySearchOptions
+package struct SearchRequest: Sendable, Equatable {
+    package var query: String?
+    package var embedding: [Float]?
+    package var vectorEnginePreference: VectorEnginePreference
+    package var vectorSearchTimeout: Duration?
+    package var mode: SearchMode
+    package var topK: Int
+    package var minScore: Float?
+    package var timeRange: SearchTimeRange?
+    package var frameFilter: FrameFilter?
+    package var asOfMs: Int64
+    package var structuredMemory: StructuredMemorySearchOptions
 
-    public var rrfK: Int
-    public var previewMaxBytes: Int
+    package var rrfK: Int
+    package var previewMaxBytes: Int
     /// Threshold for switching between lazy per-frame metadata fetches and batch prefetch.
     /// Default: 50.
-    public var metadataLoadingThreshold: Int
-    public var allowTimelineFallback: Bool
-    public var timelineFallbackLimit: Int
-    public var enableRankingDiagnostics: Bool
-    public var rankingDiagnosticsTopK: Int
+    package var metadataLoadingThreshold: Int
+    package var allowTimelineFallback: Bool
+    package var timelineFallbackLimit: Int
+    package var enableRankingDiagnostics: Bool
+    package var rankingDiagnosticsTopK: Int
 
-    public init(
+    package init(
         query: String? = nil,
         embedding: [Float]? = nil,
         vectorEnginePreference: VectorEnginePreference = .auto,
+        vectorSearchTimeout: Duration? = .seconds(10),
         mode: SearchMode = .textOnly,
         topK: Int = 10,
         minScore: Float? = nil,
-        timeRange: TimeRange? = nil,
+        timeRange: SearchTimeRange? = nil,
         frameFilter: FrameFilter? = nil,
         asOfMs: Int64 = Int64.max,
         structuredMemory: StructuredMemorySearchOptions = .init(),
@@ -47,6 +49,7 @@ public struct SearchRequest: Sendable, Equatable {
         self.query = query
         self.embedding = embedding
         self.vectorEnginePreference = vectorEnginePreference
+        self.vectorSearchTimeout = vectorSearchTimeout
         self.mode = mode
         self.topK = topK
         self.minScore = minScore
@@ -65,14 +68,14 @@ public struct SearchRequest: Sendable, Equatable {
 }
 
 /// Structured memory lane options for unified search.
-public struct StructuredMemorySearchOptions: Sendable, Equatable {
-    public var weight: Float
-    public var maxEntityCandidates: Int
-    public var maxFacts: Int
-    public var maxEvidenceFrames: Int
-    public var requireEvidenceSpan: Bool
+package struct StructuredMemorySearchOptions: Sendable, Equatable {
+    package var weight: Float
+    package var maxEntityCandidates: Int
+    package var maxFacts: Int
+    package var maxEvidenceFrames: Int
+    package var requireEvidenceSpan: Bool
 
-    public init(
+    package init(
         weight: Float = 0.2,
         maxEntityCandidates: Int = 16,
         maxFacts: Int = 64,
@@ -88,16 +91,16 @@ public struct StructuredMemorySearchOptions: Sendable, Equatable {
 }
 
 /// Time range filter.
-public struct TimeRange: Sendable, Equatable {
-    public var after: Int64?
-    public var before: Int64?
+package struct SearchTimeRange: Sendable, Equatable {
+    package var after: Int64?
+    package var before: Int64?
 
-    public init(after: Int64? = nil, before: Int64? = nil) {
+    package init(after: Int64? = nil, before: Int64? = nil) {
         self.after = after
         self.before = before
     }
 
-    public func contains(_ timestamp: Int64) -> Bool {
+    package func contains(_ timestamp: Int64) -> Bool {
         if let after, timestamp < after { return false }
         if let before, timestamp >= before { return false }
         return true
@@ -105,14 +108,14 @@ public struct TimeRange: Sendable, Equatable {
 }
 
 /// Frame filter predicate.
-public struct FrameFilter: Sendable, Equatable {
-    public var includeDeleted: Bool
-    public var includeSuperseded: Bool
-    public var includeSurrogates: Bool
-    public var frameIds: Set<UInt64>?
-    public var metadataFilter: MetadataFilter?
+package struct FrameFilter: Sendable, Equatable {
+    package var includeDeleted: Bool
+    package var includeSuperseded: Bool
+    package var includeSurrogates: Bool
+    package var frameIds: Set<UInt64>?
+    package var metadataFilter: MetadataFilter?
 
-    public init(
+    package init(
         includeDeleted: Bool = false,
         includeSuperseded: Bool = false,
         includeSurrogates: Bool = false,
@@ -128,12 +131,12 @@ public struct FrameFilter: Sendable, Equatable {
 }
 
 /// Metadata predicate applied to candidate frame metadata during unified search.
-public struct MetadataFilter: Sendable, Equatable {
-    public var requiredEntries: [String: String]
-    public var requiredTags: [TagPair]
-    public var requiredLabels: [String]
+package struct MetadataFilter: Sendable, Equatable {
+    package var requiredEntries: [String: String]
+    package var requiredTags: [TagPair]
+    package var requiredLabels: [String]
 
-    public init(
+    package init(
         requiredEntries: [String: String] = [:],
         requiredTags: [TagPair] = [],
         requiredLabels: [String] = []

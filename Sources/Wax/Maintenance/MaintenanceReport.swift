@@ -1,14 +1,14 @@
 import Foundation
 
-public struct MaintenanceReport: Sendable, Equatable {
-    public var scannedFrames: Int
-    public var eligibleFrames: Int
-    public var generatedSurrogates: Int
-    public var supersededSurrogates: Int
-    public var skippedUpToDate: Int
-    public var didTimeout: Bool
+package struct MaintenanceReport: Sendable, Equatable {
+    package var scannedFrames: Int
+    package var eligibleFrames: Int
+    package var generatedSurrogates: Int
+    package var supersededSurrogates: Int
+    package var skippedUpToDate: Int
+    package var didTimeout: Bool
 
-    public init(
+    package init(
         scannedFrames: Int = 0,
         eligibleFrames: Int = 0,
         generatedSurrogates: Int = 0,

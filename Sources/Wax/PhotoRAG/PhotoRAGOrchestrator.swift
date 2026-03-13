@@ -19,7 +19,7 @@ import CoreLocation
 /// `PhotoRAGOrchestrator` ingests `PHAsset`s (offline-only), extracts metadata/OCR, computes
 /// multimodal embeddings, indexes everything in Wax, and serves hybrid retrieval to assemble
 /// RAG-ready context with text surrogates and optional pixel payloads (thumbnails/crops).
-public actor PhotoRAGOrchestrator {
+package actor PhotoRAGOrchestrator {
     private enum FrameKind {
         static let root = PhotoFrameKind.root.rawValue
         static let ocrBlock = PhotoFrameKind.ocrBlock.rawValue
@@ -83,11 +83,11 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// The underlying Wax store for frame storage and indexing.
-    public let wax: Wax
+    package let wax: Wax
     /// The active Wax session for reads and writes.
-    public let session: WaxSession
+    package let session: WaxSession
     /// Configuration controlling pixel sizes, OCR, regions, search parameters, and budgets.
-    public let config: PhotoRAGConfig
+    package let config: PhotoRAGConfig
 
     private let embedder: any MultimodalEmbeddingProvider
     private let ocr: (any OCRProvider)?
@@ -97,7 +97,7 @@ public actor PhotoRAGOrchestrator {
     private var index = IndexState()
     private var inFlightAssetIDs: Set<String> = []
 
-    public init(
+    package init(
         storeURL: URL,
         config: PhotoRAGConfig = .default,
         embedder: any MultimodalEmbeddingProvider,
@@ -152,7 +152,7 @@ public actor PhotoRAGOrchestrator {
     /// Sync the Photos library into the local Wax store.
     ///
     /// The implementation fetches asset identifiers on the MainActor, then ingests by identifier only.
-    public func syncLibrary(scope: PhotoScope) async throws {
+    package func syncLibrary(scope: PhotoScope) async throws {
         #if canImport(Photos)
         let ids: [String] = switch scope {
         case .assetIDs(let ids):
@@ -178,7 +178,7 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// Convenience wrapper: accepts PHAssets but only passes stable IDs into the actor.
-    public nonisolated func ingest(assets: [PHAsset]) async throws {
+    package nonisolated func ingest(assets: [PHAsset]) async throws {
         let ids = await MainActor.run { assets.map(\.localIdentifier) }
         try await self.ingest(assetIDs: ids)
     }
@@ -187,7 +187,7 @@ public actor PhotoRAGOrchestrator {
     ///
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
-    public func ingest(assetIDs: [String]) async throws {
+    package func ingest(assetIDs: [String]) async throws {
         let uniqueAssetIDs = Self.dedupeAssetIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
@@ -219,7 +219,7 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// Recall RAG context for a photo query, returning ranked items with text surrogates and optional pixel payloads.
-    public func recall(_ query: PhotoQuery) async throws -> PhotoRAGContext {
+    package func recall(_ query: PhotoQuery) async throws -> PhotoRAGContext {
         let cleanedText = query.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let queryText = (cleanedText?.isEmpty == false) ? cleanedText : nil
 
@@ -415,7 +415,7 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// Delete all frames associated with a given `PHAsset.localIdentifier`.
-    public func delete(assetID: String) async throws {
+    package func delete(assetID: String) async throws {
         guard let rootId = index.rootByAssetID[assetID] else { return }
 
         var toDelete: [UInt64] = [rootId]
@@ -434,7 +434,7 @@ public actor PhotoRAGOrchestrator {
     }
 
     /// Flush pending writes to disk.
-    public func flush() async throws {
+    package func flush() async throws {
         try await session.commit()
     }
 
@@ -1062,7 +1062,7 @@ public actor PhotoRAGOrchestrator {
         return PhotoNormalizedRect(x: x, y: y, width: w, height: h)
     }
 
-    private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> TimeRange? {
+    private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> SearchTimeRange? {
         guard let range else { return nil }
         let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
         let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
@@ -1075,7 +1075,7 @@ public actor PhotoRAGOrchestrator {
         } else {
             beforeExclusive = beforeInclusive + 1
         }
-        return TimeRange(after: after, before: beforeExclusive)
+        return SearchTimeRange(after: after, before: beforeExclusive)
     }
 
     private static func buildSummaryText(

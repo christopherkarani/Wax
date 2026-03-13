@@ -3,6 +3,48 @@
 
 import PackageDescription
 
+let waxIntegrationLinuxExcludes: [String]
+#if os(Linux)
+waxIntegrationLinuxExcludes = [
+    "CoverageGapTests.swift",
+    "BatchEmbeddingBenchmark.swift",
+    "BertTokenizerReuseTests.swift",
+    "BufferSerializationBenchmark.swift",
+    "FoundationModelsToolAvailabilityTests.swift",
+    "LongMemoryBenchmarkHarness.swift",
+    "MLMultiArrayBatchBuilderTests.swift",
+    "MemoryOrchestratorTests.swift",
+    "MetalVectorEngineBenchmark.swift",
+    "MetalVectorEnginePoolTests.swift",
+    "MiniLMBatchBuilderTests.swift",
+    "MiniLMEmbedderBatchPlanningTests.swift",
+    "MiniLMEmbedderTests.swift",
+    "MiniLMEmbeddingQualityTests.swift",
+    "MiniLMFloat16DecodingTests.swift",
+    "MiniLMResourceFailureTests.swift",
+    "Mocks/MockProviders.swift",
+    "OptimizationComparisonBenchmark.swift",
+    "PDFIngestTests.swift",
+    "PhotoRAGConstraintQueriesTests.swift",
+    "PhotoRAGIngestDedupeTests.swift",
+    "PhotoRAGOrchestratorTests.swift",
+    "ProductionReadinessStabilityTests.swift",
+    "RAGBenchmarkSupport.swift",
+    "RAGBenchmarks.swift",
+    "RAGBenchmarksMiniLM.swift",
+    "RAGConfigClampingTests.swift",
+    "UnifiedSearchTests.swift",
+    "VectorSearchEngineTests.swift",
+    "VideoRAGFileIngestIntegrationTests.swift",
+    "VideoRAGRecallOnlyTests.swift",
+    "VideoRAGSegmentationMathTests.swift",
+    "VideoRAGTestSupport.swift",
+    "TokenizerBenchmark.swift",
+]
+#else
+waxIntegrationLinuxExcludes = []
+#endif
+
 let package = Package(
     name: "Wax",
     platforms: [
@@ -14,10 +56,6 @@ let package = Package(
             name: "Wax",
             targets: ["Wax"]
         ),
-        .library(name: "WaxCore", targets: ["WaxCore"]),
-        .library(name: "WaxTextSearch", targets: ["WaxTextSearch"]),
-        .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
-        .library(name: "WaxVectorSearchMiniLM", targets: ["WaxVectorSearchMiniLM"]),
     ],
     traits: [
         .default(enabledTraits: ["MiniLMEmbeddings"]),
@@ -39,14 +77,15 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.24.0"),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
+        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.1.3"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3"),
-        .package(url: "https://github.com/rensbreur/SwiftTUI.git", exact: "1.0.2"),
+        .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
         .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
     ],
     targets: [
@@ -84,6 +123,11 @@ let package = Package(
             dependencies: [
                 "WaxCore",
                 .product(name: "USearch", package: "USearch"),
+                .product(
+                    name: "MetalANNS",
+                    package: "MetalANNS",
+                    condition: .when(platforms: [.macOS, .iOS])
+                ),
             ],
             resources: [.process("Shaders")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
@@ -200,6 +244,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
             ],
+            exclude: waxIntegrationLinuxExcludes,
             resources: [.process("Fixtures")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
@@ -233,6 +278,15 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxTests",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "WaxCLITests",
+            dependencies: [
+                "Wax",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            path: "Tests/WaxCLITests",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
     ]

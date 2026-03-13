@@ -1,22 +1,22 @@
 import Foundation
 
-public struct WaxFooter: Equatable, Sendable {
-    public static let size: Int = Int(Constants.footerSize)
-    public static let magic: Data = Constants.footerMagic
+package struct WaxFooter: Equatable, Sendable {
+    package static let size: Int = Int(Constants.footerSize)
+    package static let magic: Data = Constants.footerMagic
 
-    public var tocLen: UInt64
-    public var tocHash: Data
-    public var generation: UInt64
-    public var walCommittedSeq: UInt64
+    package var tocLen: UInt64
+    package var tocHash: Data
+    package var generation: UInt64
+    package var walCommittedSeq: UInt64
 
-    public init(tocLen: UInt64, tocHash: Data, generation: UInt64, walCommittedSeq: UInt64) {
+    package init(tocLen: UInt64, tocHash: Data, generation: UInt64, walCommittedSeq: UInt64) {
         self.tocLen = tocLen
         self.tocHash = tocHash
         self.generation = generation
         self.walCommittedSeq = walCommittedSeq
     }
 
-    public func encode() throws -> Data {
+    package func encode() throws -> Data {
         guard tocHash.count == 32 else {
             throw WaxError.invalidFooter(reason: "toc_hash must be 32 bytes (got \(tocHash.count))")
         }
@@ -35,7 +35,7 @@ public struct WaxFooter: Equatable, Sendable {
         return data
     }
 
-    public static func decode(from data: Data) throws -> WaxFooter {
+    package static func decode(from data: Data) throws -> WaxFooter {
         guard data.count == Self.size else {
             throw WaxError.invalidFooter(reason: "footer must be \(Self.size) bytes (got \(data.count))")
         }
@@ -66,7 +66,7 @@ public struct WaxFooter: Equatable, Sendable {
     /// - `toc_checksum` is the final 32 bytes of the TOC encoding.
     /// - The checksum is computed as `SHA256(toc_body + zero32)` where `toc_body = toc_bytes[0..<len-32]`.
     /// - Footer `toc_hash` must equal both the computed checksum and the stamped `toc_checksum` bytes.
-    public func hashMatches(tocBytes: Data) -> Bool {
+    package func hashMatches(tocBytes: Data) -> Bool {
         guard UInt64(tocBytes.count) == tocLen else { return false }
         guard tocBytes.count >= 32 else { return false }
 
