@@ -112,7 +112,7 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         var runError: Error?
         do {
-            let transport = StdioTransport()
+            let transport = GracefulStdioTransport()
             try await server.start(transport: transport)
             await server.waitUntilCompleted()
         } catch {

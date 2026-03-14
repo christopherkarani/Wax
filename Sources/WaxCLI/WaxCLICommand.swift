@@ -241,6 +241,7 @@ extension WaxCLI.MCP {
 
         mutating func run() throws {
             var failures: [String] = []
+            var warnings: [String] = []
             let resolvedServer: String
 
             do {
@@ -271,6 +272,10 @@ extension WaxCLI.MCP {
             }
 
             if failures.isEmpty {
+                if let diskWarning = lowDiskWarning(forStorePath: storePath) {
+                    warnings.append(diskWarning)
+                }
+
                 var env = ProcessInfo.processInfo.environment
                 env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
                 if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
@@ -304,15 +309,28 @@ extension WaxCLI.MCP {
                         expectedToolName: "wax_remember"
                     )
                     if output.timedOut {
-                        failures.append("Smoke check timed out waiting for tools/list response")
+                        failures.append(
+                            "Smoke check timed out waiting for tools/list response. " +
+                                smokeCheckFailureContext(output)
+                        )
                     } else if output.status != EXIT_SUCCESS {
-                        failures.append("Smoke check failed with exit code \(output.status)")
+                        failures.append(
+                            "Smoke check failed with exit code \(output.status). " +
+                                smokeCheckFailureContext(output)
+                        )
                     } else if !output.foundExpectedTool {
-                        failures.append("Smoke check response missing wax_remember tool")
+                        failures.append(
+                            "Smoke check response missing wax_remember tool. " +
+                                smokeCheckFailureContext(output)
+                        )
                     }
                 } catch {
                     failures.append("Smoke check failed: \(error.localizedDescription)")
                 }
+            }
+
+            for warning in warnings {
+                print("WARN: \(warning)")
             }
 
             if failures.isEmpty {
@@ -355,6 +373,26 @@ extension WaxCLI.MCP {
     }
 }
 
+private func lowDiskWarning(forStorePath rawPath: String) -> String? {
+    let path = Pathing.normalizePath(rawPath)
+    let fileURL = URL(fileURLWithPath: path)
+    let directoryURL = fileURL.deletingLastPathComponent()
+
+    guard let values = try? directoryURL.resourceValues(
+        forKeys: [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
+    ),
+          let available = values.volumeAvailableCapacity.map(Int64.init) ?? values.volumeAvailableCapacityForImportantUsage
+    else {
+        return nil
+    }
+
+    let threshold = 256 * 1024 * 1024
+    guard available < Int64(threshold) else { return nil }
+
+    let formatted = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+    return "Low disk space on the store volume (\(formatted) available). Wax store creation or flushes may fail."
+}
+
 private struct CapturedProcessOutput {
     let status: Int32
     let stdout: String
@@ -367,6 +405,28 @@ private struct MCPSmokeCheckOutput {
     let stderr: String
     let foundExpectedTool: Bool
     let timedOut: Bool
+}
+
+private func smokeCheckFailureContext(_ output: MCPSmokeCheckOutput) -> String {
+    let stderr = output.stderr
+        .split(whereSeparator: \.isNewline)
+        .map(String.init)
+        .last { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    if let stderr {
+        return "server stderr: \(stderr)"
+    }
+
+    let stdout = output.stdout
+        .split(whereSeparator: \.isNewline)
+        .map(String.init)
+        .last { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    if let stdout {
+        return "server stdout: \(stdout)"
+    }
+
+    return "No server output captured."
 }
 
 private enum ProcessRunner {

@@ -39,6 +39,7 @@ enum WaxMCPTools {
     ) async -> CallTool.Result {
         let sessionRegistry = await sessionRegistries.registry(for: memory)
         do {
+            try validateArgumentSurface(name: params.name, arguments: params.arguments)
             switch params.name {
             case "wax_remember":
                 return try await remember(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
@@ -156,6 +157,7 @@ enum WaxMCPTools {
         } else {
             .ifAvailable
         }
+        try await ensureNoPendingWritesForRead(memory: memory, toolName: "wax_recall")
 
         let execution = try await memory.recallExecution(
             query: query,
@@ -216,6 +218,7 @@ enum WaxMCPTools {
         }
         let parsedFilters = try parseSearchFilters(args)
         try await validateActiveSession(parsedFilters.sessionId, in: sessionRegistry)
+        try await ensureNoPendingWritesForRead(memory: memory, toolName: "wax_search")
 
         let execution = try await memory.searchExecution(
             query: query,
@@ -758,13 +761,57 @@ enum WaxMCPTools {
         return parsed
     }
 
+    private static func validateArgumentSurface(name: String, arguments: [String: Value]?) throws {
+        let args = ToolArguments(arguments)
+        switch name {
+        case "wax_remember":
+            try args.rejectUnknownKeys(["content", "session_id", "metadata", "commit"])
+        case "wax_recall":
+            try args.rejectUnknownKeys(["query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters"])
+        case "wax_search":
+            try args.rejectUnknownKeys(["query", "mode", "topK", "session_id", "alpha", "filters"])
+        case "wax_flush", "wax_stats", "wax_session_start":
+            try args.rejectUnknownKeys([])
+        case "wax_session_end":
+            try args.rejectUnknownKeys(["session_id"])
+        case "wax_handoff":
+            try args.rejectUnknownKeys(["content", "session_id", "project", "pending_tasks", "commit"])
+        case "wax_handoff_latest":
+            try args.rejectUnknownKeys(["project"])
+        case "wax_entity_upsert":
+            try args.rejectUnknownKeys(["key", "kind", "aliases", "commit"])
+        case "wax_fact_assert":
+            try args.rejectUnknownKeys(["subject", "predicate", "object", "valid_from", "valid_to", "commit"])
+        case "wax_fact_retract":
+            try args.rejectUnknownKeys(["fact_id", "at_ms", "commit"])
+        case "wax_facts_query":
+            try args.rejectUnknownKeys(["subject", "predicate", "as_of", "limit"])
+        case "wax_entity_resolve":
+            try args.rejectUnknownKeys(["alias", "limit"])
+        default:
+            break
+        }
+    }
+
     private static func validateActiveSession(
         _ sessionID: UUID?,
         in sessionRegistry: SessionRegistry
     ) async throws {
         guard let sessionID else { return }
         guard await sessionRegistry.isActive(sessionID) else {
-            throw ToolValidationError.invalid("session_id is not active")
+            throw ToolValidationError.invalid("session_id is not active in this server process; call wax_session_start again")
+        }
+    }
+
+    private static func ensureNoPendingWritesForRead(
+        memory: MemoryOrchestrator,
+        toolName: String
+    ) async throws {
+        let stats = await memory.runtimeStats()
+        guard stats.pendingFrames == 0 else {
+            throw ToolValidationError.invalid(
+                "\(toolName) requires wax_flush before reads when pending writes exist"
+            )
         }
     }
 
@@ -791,23 +838,42 @@ enum WaxMCPTools {
     }
 
     private static func parseTypedFactObject(_ object: [String: Value]) throws -> FactValue {
-        if let type = valueAsString(object["type"]) {
+        let keys = Set(object.keys)
+
+        if keys.contains("type") {
+            guard keys == ["type", "value"] else {
+                throw ToolValidationError.invalid(
+                    "typed object with object.type must contain exactly {type, value}"
+                )
+            }
+            guard let type = valueAsString(object["type"]) else {
+                throw ToolValidationError.invalid("object.type must be a string")
+            }
             guard let wrapped = object["value"] else {
                 throw ToolValidationError.invalid("object.value is required when object.type is provided")
             }
             return try parseTypedFactEnvelope(type: type, value: wrapped)
         }
 
-        if let entity = valueAsString(object["entity"]) {
+        if keys == ["entity"] {
+            guard let entity = valueAsString(object["entity"]) else {
+                throw ToolValidationError.invalid("object.entity must be a string")
+            }
             try validateEntityKey(entity, field: "object.entity")
             return .entity(EntityKey(entity))
         }
 
-        if let timeMs = try valueAsInt64(object["time_ms"], field: "object.time_ms") {
+        if keys == ["time_ms"] {
+            guard let timeMs = try valueAsInt64(object["time_ms"], field: "object.time_ms") else {
+                throw ToolValidationError.invalid("object.time_ms must be an integer")
+            }
             return .timeMs(timeMs)
         }
 
-        if let base64 = valueAsString(object["data_base64"]) {
+        if keys == ["data_base64"] {
+            guard let base64 = valueAsString(object["data_base64"]) else {
+                throw ToolValidationError.invalid("object.data_base64 must be a string")
+            }
             guard let decoded = Data(base64Encoded: base64) else {
                 throw ToolValidationError.invalid("object.data_base64 must be valid base64")
             }
@@ -1323,6 +1389,14 @@ private struct ToolArguments {
         }
         return object
     }
+
+    func rejectUnknownKeys(_ allowed: [String]) throws {
+        let unknown = Set(values.keys).subtracting(Set(allowed))
+        guard unknown.isEmpty else {
+            let invalid = unknown.sorted().joined(separator: ", ")
+            throw ToolValidationError.invalid("unsupported argument(s): \(invalid)")
+        }
+    }
 }
 
 private enum ToolValidationError: LocalizedError {
@@ -1371,7 +1445,7 @@ private actor SessionRegistry {
     func end(sessionID: UUID?) throws -> EndResult {
         if let sessionID {
             guard activeSessions.remove(sessionID) != nil else {
-                throw ToolValidationError.invalid("session_id is not active")
+                throw ToolValidationError.invalid("session_id is not active in this server process; call wax_session_start again")
             }
             return EndResult(endedSessionID: sessionID, hasActiveSessions: !activeSessions.isEmpty)
         }

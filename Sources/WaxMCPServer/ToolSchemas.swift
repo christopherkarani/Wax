@@ -15,12 +15,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_recall",
-            description: "Recall context for a query using Wax RAG assembly.",
+            description: "Recall context for a query using Wax RAG assembly. Reads require wax_flush when pending writes exist.",
             inputSchema: waxRecall
         ),
         Tool(
             name: "wax_search",
-            description: "Run direct Wax search and return ranked raw hits.",
+            description: "Run direct Wax search and return ranked raw hits. Reads require wax_flush when pending writes exist.",
             inputSchema: waxSearch
         ),
         Tool(
@@ -35,12 +35,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_session_start",
-            description: "Create a session UUID for explicit memory scoping and return its session_id.",
+            description: "Create a process-local session UUID for explicit memory scoping and return its session_id.",
             inputSchema: waxSessionStart
         ),
         Tool(
             name: "wax_session_end",
-            description: "Mark an MCP session inactive. Pass session_id when multiple sessions are active.",
+            description: "Mark a process-local MCP session inactive. Pass session_id when multiple sessions are active.",
             inputSchema: waxSessionEnd
         ),
         Tool(
@@ -101,11 +101,11 @@ enum ToolSchemas {
             "metadata": [
                 "type": "object",
                 "description": "Optional metadata map. Scalar values are coerced to strings.",
-                "additionalProperties": true,
+                "additionalProperties": scalarMetadataValueSchema,
             ],
             "commit": [
                 "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before recall/search reads.",
             ],
         ],
         required: ["content"]
@@ -141,6 +141,12 @@ enum ToolSchemas {
             "search_top_k": [
                 "type": "integer",
                 "description": "Optional retrieval top-k for recall search stage. Defaults to limit. Legacy alias: topK.",
+                "minimum": 1,
+                "maximum": 200,
+            ],
+            "topK": [
+                "type": "integer",
+                "description": "Deprecated legacy alias for search_top_k.",
                 "minimum": 1,
                 "maximum": 200,
             ],
@@ -215,7 +221,7 @@ enum ToolSchemas {
             ],
             "commit": [
                 "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["content"]
@@ -226,7 +232,7 @@ enum ToolSchemas {
             "metadata": [
                 "type": "object",
                 "description": "Exact metadata entry matches as a flat object, or wrapped as {\"exact\": {...}}. Scalar values are coerced to strings.",
-                "additionalProperties": true,
+                "additionalProperties": scalarMetadataValueSchema,
             ],
             "labels": [
                 "type": "array",
@@ -276,7 +282,7 @@ enum ToolSchemas {
             ],
             "commit": [
                 "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["key", "kind"]
@@ -344,7 +350,7 @@ enum ToolSchemas {
             ],
             "commit": [
                 "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["subject", "predicate", "object"]
@@ -362,7 +368,7 @@ enum ToolSchemas {
             ],
             "commit": [
                 "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush.",
+                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["fact_id"]
@@ -416,6 +422,15 @@ enum ToolSchemas {
             "additionalProperties": false,
         ]
     }
+
+    private static let scalarMetadataValueSchema: Value = [
+        "oneOf": [
+            ["type": "string"],
+            ["type": "integer"],
+            ["type": "number"],
+            ["type": "boolean"],
+        ],
+    ]
 
     private static func emptyObjectSchema() -> Value {
         objectSchema(properties: [:], required: [])

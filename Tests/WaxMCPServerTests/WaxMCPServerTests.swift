@@ -5,6 +5,7 @@ import Testing
 import MCP
 @testable import wax_mcp
 import Wax
+import XCTest
 
 @Test
 func toolsListContainsExpectedTools() {
@@ -59,13 +60,25 @@ func toolSchemaRegression() {
         #expect(uniqueNames.contains(required), "Required tool '\(required)' is missing from schema")
     }
 
-    // Core tool inputSchemas must be well-formed objects with a required field
-    let coreSchemas: [(name: String, schema: Value)] = [
-        ("wax_remember", ToolSchemas.waxRemember),
-        ("wax_recall", ToolSchemas.waxRecall),
-        ("wax_search", ToolSchemas.waxSearch),
+    // Tool inputSchemas must be well-formed objects, and tools with required inputs
+    // must preserve those requirements in the published schema.
+    let schemas: [(name: String, schema: Value, requiresNonEmptyFields: Bool)] = [
+        ("wax_remember", ToolSchemas.waxRemember, true),
+        ("wax_recall", ToolSchemas.waxRecall, true),
+        ("wax_search", ToolSchemas.waxSearch, true),
+        ("wax_flush", ToolSchemas.waxFlush, false),
+        ("wax_stats", ToolSchemas.waxStats, false),
+        ("wax_session_start", ToolSchemas.waxSessionStart, false),
+        ("wax_session_end", ToolSchemas.waxSessionEnd, false),
+        ("wax_handoff", ToolSchemas.waxHandoff, true),
+        ("wax_handoff_latest", ToolSchemas.waxHandoffLatest, false),
+        ("wax_entity_upsert", ToolSchemas.waxEntityUpsert, true),
+        ("wax_fact_assert", ToolSchemas.waxFactAssert, true),
+        ("wax_fact_retract", ToolSchemas.waxFactRetract, true),
+        ("wax_facts_query", ToolSchemas.waxFactsQuery, false),
+        ("wax_entity_resolve", ToolSchemas.waxEntityResolve, true),
     ]
-    for (toolName, schema) in coreSchemas {
+    for (toolName, schema, requiresNonEmptyFields) in schemas {
         guard let obj = schema.objectValue else {
             Issue.record("Schema for '\(toolName)' is not an object")
             continue
@@ -77,11 +90,178 @@ func toolSchemaRegression() {
         }
         #expect(obj["properties"] != nil, "Schema for '\(toolName)' is missing 'properties'")
         if case .array(let required) = obj["required"] {
-            #expect(!required.isEmpty, "Schema for '\(toolName)' has no required fields")
+            if requiresNonEmptyFields {
+                #expect(!required.isEmpty, "Schema for '\(toolName)' has no required fields")
+            }
         } else {
             Issue.record("Schema for '\(toolName)' is missing 'required' array")
         }
     }
+}
+
+@Test
+func recallSchemaExposesLegacyTopKAlias() {
+    guard let obj = ToolSchemas.waxRecall.objectValue,
+          case .object(let properties) = obj["properties"]
+    else {
+        Issue.record("wax_recall schema is missing object properties")
+        return
+    }
+
+    #expect(properties["search_top_k"] != nil)
+    #expect(properties["topK"] != nil)
+}
+
+@Test
+func toolsRejectUnknownTopLevelArguments() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "limit": .int(3),
+                    "unexpected": .string("boom"),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("unsupported argument"))
+    }
+}
+
+@Test
+func factAssertRejectsMixedTypedObjectKeys() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "object": .object([
+                        "entity": .string("project:wax"),
+                        "time_ms": .int(123),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("typed object"))
+    }
+}
+
+@Test
+func sessionEndRequiresSessionIDWhenMultipleSessionsActive() async throws {
+    try await withMemory { memory in
+        let first = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        let second = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(first.isError != true)
+        #expect(second.isError != true)
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_end", arguments: [:]),
+            memory: memory
+        )
+        #expect(end.isError == true)
+        #expect(firstText(in: end).contains("session_id is required"))
+    }
+}
+
+@Test
+func waxMCPProcessRespondsAfterImmediateEOF() async throws {
+    let harness = try MCPServerProcessHarness()
+    try harness.start()
+    defer { harness.terminateIfNeeded() }
+
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+            "protocolVersion": "2024-11-05",
+            "capabilities": [:],
+            "clientInfo": ["name": "wax-mcp-eof-test", "version": "1.0"],
+        ],
+    ])
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": [:],
+    ])
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": [:],
+    ])
+    try harness.closeInput()
+
+    let initialize = try await harness.waitForResponseLine(id: 1)
+    let toolsList = try await harness.waitForResponseLine(id: 2)
+
+    #expect(initialize.contains(#""protocolVersion":"2024-11-05""#))
+    #expect(toolsList.contains(#""name":"wax_remember""#))
+    #expect(try await harness.waitForExit() == EXIT_SUCCESS)
+}
+
+@Test
+func waxMCPProcessFlushesPendingWritesOnSIGTERM() async throws {
+    let harness = try MCPServerProcessHarness()
+    try harness.start()
+    defer { harness.terminateIfNeeded() }
+
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+            "protocolVersion": "2024-11-05",
+            "capabilities": [:],
+            "clientInfo": ["name": "wax-mcp-sigterm-test", "version": "1.0"],
+        ],
+    ])
+    _ = try await harness.waitForResponseLine(id: 1)
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": [:],
+    ])
+
+    let marker = "waxmcp-sigterm-\(UUID().uuidString)"
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": [
+            "name": "wax_remember",
+            "arguments": [
+                "content": marker,
+                "commit": false,
+            ],
+        ],
+    ])
+    let remember = try await harness.waitForResponseLine(id: 2)
+    let rememberJSON = try parseToolTextJSON(fromResponseLine: remember)
+    #expect((rememberJSON["committed"] as? Bool) == false)
+
+    try harness.sendSignal(SIGTERM)
+    #expect(try await harness.waitForExit() == EXIT_SUCCESS)
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    let reopened = try await MemoryOrchestrator(at: harness.storeURL, config: config)
+    defer { Task { try? await reopened.close() } }
+    let context = try await reopened.recall(query: marker)
+    #expect(context.items.contains { $0.text.contains(marker) })
 }
 
 @Test
@@ -197,6 +377,23 @@ func rememberCommitFalseBatchesUntilFlush() async throws {
         #expect(statsBeforeFlush.isError != true)
         let statsBeforeFlushJSON = try parseJSONText(in: statsBeforeFlush)
         #expect((statsBeforeFlushJSON["pendingFrames"] as? Int ?? 0) > 0)
+
+        let recallBeforeFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
+            memory: memory
+        )
+        #expect(recallBeforeFlush.isError == true)
+        #expect(firstText(in: recallBeforeFlush).contains("wax_flush"))
+
+        let searchBeforeFlush = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: ["query": .string(queryToken), "mode": "text", "topK": .int(5)]
+            ),
+            memory: memory
+        )
+        #expect(searchBeforeFlush.isError == true)
+        #expect(firstText(in: searchBeforeFlush).contains("wax_flush"))
 
         let flushResult = await WaxMCPTools.handleCall(
             params: .init(name: "wax_flush", arguments: [:]),
@@ -1087,6 +1284,27 @@ private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) th
     throw NSError(domain: "WaxMCPServerTests", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing JSON resource with suffix '\(uriSuffix)'"])
 }
 
+private func parseToolTextJSON(fromResponseLine line: String) throws -> [String: Any] {
+    guard let data = line.data(using: .utf8) else {
+        throw NSError(domain: "WaxMCPServerTests", code: 8, userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 response line"])
+    }
+    let object = try JSONSerialization.jsonObject(with: data)
+    guard let dict = object as? [String: Any],
+          let result = dict["result"] as? [String: Any],
+          let content = result["content"] as? [[String: Any]],
+          let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String,
+          let textData = text.data(using: .utf8)
+    else {
+        throw NSError(domain: "WaxMCPServerTests", code: 9, userInfo: [NSLocalizedDescriptionKey: "Missing tool text payload"])
+    }
+
+    let textObject = try JSONSerialization.jsonObject(with: textData)
+    guard let textDict = textObject as? [String: Any] else {
+        throw NSError(domain: "WaxMCPServerTests", code: 10, userInfo: [NSLocalizedDescriptionKey: "Tool text payload is not a JSON object"])
+    }
+    return textDict
+}
+
 private func requireString(_ object: [String: Any], key: String) throws -> String {
     guard let value = object[key] as? String, !value.isEmpty else {
         throw NSError(domain: "WaxMCPServerTests", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing string key '\(key)'"])
@@ -1131,6 +1349,168 @@ private actor IdentitylessEmbedder: EmbeddingProvider {
         return [1.0, 0.0]
     }
 }
+
+private final class MCPServerProcessHarness: @unchecked Sendable {
+    private let process = Process()
+    private let stdinPipe = Pipe()
+    private let stdoutPipe = Pipe()
+    private let stderrPipe = Pipe()
+    private let lock = NSLock()
+    private var stdoutLines: [String] = []
+    private var stdoutPending = Data()
+    private var stderrPending = Data()
+    private var stderrLines: [String] = []
+
+    let storeURL: URL
+
+    init() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        self.storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-process-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        process.executableURL = try Self.waxMCPBinaryURL(packageRoot: root)
+        process.arguments = ["--store-path", storeURL.path, "--no-embedder"]
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+    }
+
+    func start() throws {
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self.appendOutput(data, toStdout: true)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self.appendOutput(data, toStdout: false)
+        }
+        try process.run()
+    }
+
+    func terminateIfNeeded() {
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+        try? stdinPipe.fileHandleForWriting.close()
+    }
+
+    func sendJSONLine(_ object: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        stdinPipe.fileHandleForWriting.write(data)
+        stdinPipe.fileHandleForWriting.write(Data([0x0A]))
+    }
+
+    func closeInput() throws {
+        try stdinPipe.fileHandleForWriting.close()
+    }
+
+    func sendSignal(_ signal: Int32) throws {
+        guard process.processIdentifier > 0 else {
+            throw NSError(domain: "MCPServerProcessHarness", code: 1)
+        }
+        Darwin.kill(process.processIdentifier, signal)
+    }
+
+    func waitForResponseLine(id: Int, timeout: TimeInterval = 5) async throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        let needle = #""id":\#(id)"#
+        while Date() < deadline {
+            if let line = withLocked({ stdoutLines.first(where: { $0.contains(needle) }) }) {
+                return line
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let stderr = withLocked { stderrLines.joined(separator: "\n") }
+        throw NSError(
+            domain: "MCPServerProcessHarness",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for response id \(id). stderr=\(stderr)"]
+        )
+    }
+
+    func waitForExit(timeout: TimeInterval = 5) async throws -> Int32 {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !process.isRunning {
+                drainPipes()
+                return process.terminationStatus
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw NSError(domain: "MCPServerProcessHarness", code: 3)
+    }
+
+    private func drainPipes() {
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        if let remaining = try? stdoutPipe.fileHandleForReading.readToEnd(), !remaining.isEmpty {
+            appendOutput(remaining, toStdout: true)
+        }
+        if let remaining = try? stderrPipe.fileHandleForReading.readToEnd(), !remaining.isEmpty {
+            appendOutput(remaining, toStdout: false)
+        }
+    }
+
+    private func appendOutput(_ data: Data, toStdout: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if toStdout {
+            stdoutPending.append(data)
+            Self.extractLines(from: &stdoutPending, into: &stdoutLines)
+        } else {
+            stderrPending.append(data)
+            Self.extractLines(from: &stderrPending, into: &stderrLines)
+        }
+    }
+
+    private func withLocked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    private static func extractLines(from pending: inout Data, into target: inout [String]) {
+        while let newline = pending.firstIndex(of: 0x0A) {
+            let lineData = pending[..<newline]
+            pending = pending[(newline + 1)...]
+            guard !lineData.isEmpty, let line = String(data: lineData, encoding: .utf8) else { continue }
+            target.append(line)
+        }
+    }
+
+    private static func waxMCPBinaryURL(packageRoot: URL) throws -> URL {
+        let bundleDebugDir = Bundle(for: XCTestCase.self).bundleURL.deletingLastPathComponent()
+        let candidates = [
+            bundleDebugDir.appendingPathComponent("wax-mcp"),
+            packageRoot.appendingPathComponent(".build/debug/wax-mcp"),
+            packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-mcp"),
+        ]
+
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
+            return candidate
+        }
+
+        let attempted = candidates.map(\.path).joined(separator: "\n")
+        throw NSError(
+            domain: "MCPServerProcessHarness",
+            code: 4,
+            userInfo: [NSLocalizedDescriptionKey: "Could not find wax-mcp binary. Tried:\n\(attempted)"]
+        )
+    }
+}
+
 #else
 @Test
 func mcpServerTestsRequireTrait() {
