@@ -23,7 +23,6 @@ AGENTS.md
 *.o
 *.swiftdeps
 tasks/
-docs/
 task/
 output/
 .tmp/
@@ -41,4 +40,13 @@ Resources/website/node_modules/
 Resources/website/.docusaurus/
 Resources/website/build/
 *.xcresult
-docs/\ntasks/\nscripts/
+
+# Internal tooling (not public-facing)
+CLAUDE.md
+/skills/
+/scripts/
+docs/plans/
+Resources/docs/plans/
+Resources/skills/internal/
+Package.resolved
+**/Package.resolved

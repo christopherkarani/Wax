@@ -32,10 +32,6 @@ apply_usarch_float16_patch_for_x86() {
     return 0
   fi
 
-  if rg -q "#if arch\\(arm64\\)" "$source"; then
-    return 0
-  fi
-
   python - "$source" <<'PY'
 import re
 import sys
@@ -87,8 +83,8 @@ if [[ $# -ne 0 ]]; then
   exit 64
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$PROJECT_ROOT/npm/waxmcp/dist/$PLATFORM"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+DIST_DIR="$PROJECT_ROOT/Resources/npm/waxmcp/dist/$PLATFORM"
 CLI_BIN_PATH="$DIST_DIR/wax-cli"
 MCP_BIN_PATH="$DIST_DIR/wax-mcp"
 

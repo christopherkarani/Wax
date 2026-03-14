@@ -56,6 +56,10 @@ let package = Package(
             name: "Wax",
             targets: ["Wax"]
         ),
+        .library(name: "WaxCore", targets: ["WaxCore"]),
+        .library(name: "WaxTextSearch", targets: ["WaxTextSearch"]),
+        .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
+        .library(name: "WaxVectorSearchMiniLM", targets: ["WaxVectorSearchMiniLM"]),
     ],
     traits: [
         .default(enabledTraits: ["MiniLMEmbeddings"]),
