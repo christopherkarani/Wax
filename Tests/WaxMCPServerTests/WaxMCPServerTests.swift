@@ -511,7 +511,10 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
         _ = await WaxMCPTools.handleCall(
             params: .init(
                 name: "wax_remember",
-                arguments: ["content": "SESSION_ONLY_XYZ anchor for scoped search"]
+                arguments: [
+                    "content": "SESSION_ONLY_XYZ anchor for scoped search",
+                    "session_id": .string(sessionID),
+                ]
             ),
             memory: memory
         )
@@ -566,6 +569,250 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
 }
 
 @Test
+func sessionStartDoesNotImplicitlyScopeWrites() async throws {
+    try await withMemory { memory in
+        let start = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(start.isError != true)
+        let started = try parseJSONText(in: start)
+        let sessionID = try requireString(started, key: "session_id")
+
+        let globalWrite = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: ["content": "GLOBAL_IMPLICIT_SCOPE_GUARD"]
+            ),
+            memory: memory
+        )
+        #expect(globalWrite.isError != true)
+
+        let scopedWrite = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": "SESSION_EXPLICIT_SCOPE_GUARD",
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(scopedWrite.isError != true)
+
+        _ = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_flush", arguments: [:]),
+            memory: memory
+        )
+
+        let scopedSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: [
+                    "query": "GLOBAL_IMPLICIT_SCOPE_GUARD",
+                    "mode": "text",
+                    "topK": 10,
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(scopedSearch.isError != true)
+        #expect(!firstText(in: scopedSearch).contains("\"frameId\":1"))
+
+        let unscopedSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: ["query": "GLOBAL_IMPLICIT_SCOPE_GUARD", "mode": "text", "topK": 10]
+            ),
+            memory: memory
+        )
+        #expect(unscopedSearch.isError != true)
+        #expect(firstText(in: unscopedSearch).contains("\"frameId\":1"))
+    }
+}
+
+@Test
+func rememberRejectsMetadataSessionID() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": "invalid metadata session id",
+                    "metadata": .object(["session_id": .string("not-a-uuid")]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("metadata.session_id"))
+    }
+}
+
+@Test
+func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
+    try await withMemory { memory in
+        let start = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(start.isError != true)
+        let started = try parseJSONText(in: start)
+        let sessionID = try requireString(started, key: "session_id")
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionID)]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": "should fail after end",
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(remember.isError == true)
+        #expect(firstText(in: remember).contains("session_id is not active"))
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: [
+                    "query": "should fail after end",
+                    "mode": "text",
+                    "topK": 5,
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(search.isError == true)
+        #expect(firstText(in: search).contains("session_id is not active"))
+    }
+}
+
+@Test
+func sessionEndReportsRemainingActiveSessions() async throws {
+    try await withMemory { memory in
+        let startA = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startA.isError != true)
+        let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
+
+        let startB = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startB.isError != true)
+        let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionA)]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+        let ended = try parseJSONText(in: end)
+        #expect((ended["session_id"] as? String) == sessionA)
+        #expect((ended["active"] as? Bool) == true)
+
+        let stats = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(stats.isError != true)
+        let statsJSON = try parseJSONText(in: stats)
+        let session = statsJSON["session"] as? [String: Any]
+        #expect((session?["activeSessionCount"] as? Int) == 1)
+        #expect((session?["activeSessionIds"] as? [String]) == [sessionB])
+    }
+}
+
+@Test
+func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-identityless-embedder-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.queryEmbeddingTimeout = .seconds(1)
+
+    let memory = try await MemoryOrchestrator(
+        at: url,
+        config: config,
+        embedder: IdentitylessEmbedder()
+    )
+    defer { Task { try? await memory.close() } }
+
+    let stats = await WaxMCPTools.handleCall(
+        params: .init(name: "wax_stats", arguments: [:]),
+        memory: memory
+    )
+    #expect(stats.isError != true)
+    let statsJSON = try parseJSONText(in: stats)
+    #expect((statsJSON["queryEmbeddingAvailable"] as? Bool) == true)
+}
+
+@Test
+func vectorFallbackIsSurfacedInSearchAndStats() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-vector-fallback-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        var seedConfig = OrchestratorConfig.default
+        seedConfig.enableVectorSearch = false
+        let seeded = try await MemoryOrchestrator(at: url, config: seedConfig)
+        try await seeded.remember("VECTOR_FALLBACK_SIGNAL Swift actors")
+        try await seeded.flush()
+        try await seeded.close()
+    }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.queryEmbeddingTimeout = .milliseconds(25)
+    config.rag.searchMode = .hybrid(alpha: 0.5)
+
+    let memory = try await MemoryOrchestrator(
+        at: url,
+        config: config,
+        embedder: HangingCountingEmbedder()
+    )
+    defer { Task { try? await memory.close() } }
+
+    let search = await WaxMCPTools.handleCall(
+        params: .init(
+            name: "wax_search",
+            arguments: ["query": "VECTOR_FALLBACK_SIGNAL", "mode": "hybrid", "topK": 5]
+        ),
+        memory: memory
+    )
+    #expect(search.isError != true)
+    let payload = try parseJSONResource(in: search, uriSuffix: "/search-summary")
+    #expect((payload["requested_mode"] as? String) == "hybrid(alpha=0.500)")
+    #expect((payload["effective_mode"] as? String) == "text")
+    #expect((payload["query_embedding_state"] as? String) == "timeout")
+
+    let stats = await WaxMCPTools.handleCall(
+        params: .init(name: "wax_stats", arguments: [:]),
+        memory: memory
+    )
+    #expect(stats.isError != true)
+    let statsJSON = try parseJSONText(in: stats)
+    #expect((statsJSON["queryEmbeddingCircuitOpen"] as? Bool) == true)
+}
+
+@Test
 func invalidSessionIDIsRejected() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
@@ -596,6 +843,7 @@ func handoffRoundTripAndStatsSessionBlockWork() async throws {
                 name: "wax_handoff",
                 arguments: [
                     "content": "Carry over refactor checkpoints",
+                    "session_id": .string(sessionID),
                     "project": "wax",
                     "pending_tasks": ["add graph tests", "measure ranking drift"],
                 ]
@@ -823,6 +1071,22 @@ private func parseJSONText(in result: CallTool.Result) throws -> [String: Any] {
     return dict
 }
 
+private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) throws -> [String: Any] {
+    for content in result.content {
+        if case .resource(let resource, _, _) = content,
+           resource.uri.hasSuffix(uriSuffix),
+           let text = resource.text,
+           let data = text.data(using: .utf8) {
+            let object = try JSONSerialization.jsonObject(with: data)
+            guard let dict = object as? [String: Any] else {
+                throw NSError(domain: "WaxMCPServerTests", code: 6, userInfo: [NSLocalizedDescriptionKey: "Resource is not a JSON object"])
+            }
+            return dict
+        }
+    }
+    throw NSError(domain: "WaxMCPServerTests", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing JSON resource with suffix '\(uriSuffix)'"])
+}
+
 private func requireString(_ object: [String: Any], key: String) throws -> String {
     guard let value = object[key] as? String, !value.isEmpty else {
         throw NSError(domain: "WaxMCPServerTests", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing string key '\(key)'"])
@@ -838,6 +1102,34 @@ private func requireInt(_ object: [String: Any], key: String) throws -> Int {
         return value.intValue
     }
     throw NSError(domain: "WaxMCPServerTests", code: 5, userInfo: [NSLocalizedDescriptionKey: "Missing int key '\(key)'"])
+}
+
+private actor HangingCountingEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "Test",
+        model: "Hanging",
+        dimensions: 2,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        try await Task.sleep(for: .seconds(60))
+        return [1.0, 0.0]
+    }
+}
+
+private actor IdentitylessEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return [1.0, 0.0]
+    }
 }
 #else
 @Test

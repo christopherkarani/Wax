@@ -134,9 +134,10 @@ package actor WaxSession {
     // MARK: - Search
 
     package func search(_ request: SearchRequest) async throws -> SearchResponse {
+        let searchVectorEngine = try await vectorEngineForSearch(request)
         let overrides = UnifiedSearchEngineOverrides(
             textEngine: textEngine,
-            vectorEngine: nil,
+            vectorEngine: searchVectorEngine,
             structuredEngine: textEngine
         )
         return try await wax.search(request, engineOverrides: overrides)
@@ -452,11 +453,38 @@ package actor WaxSession {
     }
 
     private func stageVectorForCommit(using engine: ConcreteVectorEngine) async throws {
-        let snapshot = await wax.pendingEmbeddingMutations(since: lastPendingEmbeddingSequence)
+        try await syncPendingEmbeddings(into: engine)
+        try await engine.stageForCommit(into: wax)
+    }
+
+    private func vectorEngineForSearch(_ request: SearchRequest) async throws -> (any VectorSearchEngine)? {
+        guard config.enableVectorSearch, let vectorEngine else {
+            return nil
+        }
+
+        switch request.mode {
+        case .textOnly:
+            return nil
+        case .vectorOnly, .hybrid:
+            break
+        }
+
+        guard case .readWrite = mode, let concreteVectorEngine else {
+            return vectorEngine
+        }
+
+        try await syncPendingEmbeddings(into: concreteVectorEngine)
+        return concreteVectorEngine.erased
+    }
+
+    private func syncPendingEmbeddings(into engine: ConcreteVectorEngine) async throws {
+        var sinceSequence = lastPendingEmbeddingSequence
+        var snapshot = await wax.pendingEmbeddingMutations(since: sinceSequence)
         if let latest = snapshot.latestSequence,
-           let last = lastPendingEmbeddingSequence,
+           let last = sinceSequence,
            latest < last {
-            lastPendingEmbeddingSequence = nil
+            sinceSequence = nil
+            snapshot = await wax.pendingEmbeddingMutations(since: nil)
         }
         if !snapshot.embeddings.isEmpty {
             var frameIds: [UInt64] = []
@@ -470,7 +498,6 @@ package actor WaxSession {
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         }
         lastPendingEmbeddingSequence = snapshot.latestSequence
-        try await engine.stageForCommit(into: wax)
     }
 
     private static func resolveVectorDimensions(for wax: Wax, config: Config) async throws -> Int? {
