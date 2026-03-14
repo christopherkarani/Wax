@@ -29,7 +29,7 @@
 
 ## What is Wax?
 
-Wax is a Swift-native persistence engine designed for the next generation of AI agents. It encapsulates documents, high-dimensional embeddings, and structured knowledge into a single, portable `.wax` file. 
+Wax is a Swift-native persistence engine designed for the next generation of AI agents. It encapsulates documents, high-dimensional embeddings, and structured knowledge into a single, portable `.wax` file.
 
 Unlike traditional databases that require complex setups or cloud dependencies, Wax provides a **unified memory layer** that lives entirely on-device, leveraging Metal-accelerated inference for sub-10ms recall latency.
 
@@ -45,7 +45,7 @@ Unlike traditional databases that require complex setups or cloud dependencies, 
 
 ### 📦 Why a Single `.wax` File?
 Most RAG systems require a database, a vector store, and a file server. Wax bundles everything—documents, metadata, and high-dimensional indices—into one portable binary.
-*   **Zero Infrastructure:** No Docker, no DB setup, no cloud bill. 
+*   **Zero Infrastructure:** No Docker, no DB setup, no cloud bill.
 *   **Truly Portable:** AirDrop your agent's memory to another Mac, or sync it via iCloud.
 *   **Atomic:** One file to backup, one file to version control, one file to delete.
 
