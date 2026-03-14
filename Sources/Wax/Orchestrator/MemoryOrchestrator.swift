@@ -19,6 +19,16 @@ package actor MemoryOrchestrator {
         package static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
     }
 
+    package enum QueryEmbeddingState: String, Sendable, Equatable {
+        case notRequested = "not_requested"
+        case available = "available"
+        case timeout = "timeout"
+        case circuitOpen = "circuit_open"
+        case noEmbedder = "no_embedder"
+        case vectorDisabled = "vector_disabled"
+        case failed = "failed"
+    }
+
     /// Stable search hit DTO for MCP and other raw-search callers.
     package struct MemorySearchHit: Sendable, Equatable {
         package var frameId: UInt64
@@ -34,6 +44,44 @@ package actor MemoryOrchestrator {
         }
     }
 
+    package struct SearchExecution: Sendable, Equatable {
+        package var hits: [MemorySearchHit]
+        package var requestedModeSummary: String
+        package var effectiveModeSummary: String
+        package var queryEmbeddingState: QueryEmbeddingState
+
+        package init(
+            hits: [MemorySearchHit],
+            requestedModeSummary: String,
+            effectiveModeSummary: String,
+            queryEmbeddingState: QueryEmbeddingState
+        ) {
+            self.hits = hits
+            self.requestedModeSummary = requestedModeSummary
+            self.effectiveModeSummary = effectiveModeSummary
+            self.queryEmbeddingState = queryEmbeddingState
+        }
+    }
+
+    package struct RecallExecution: Sendable, Equatable {
+        package var context: RAGContext
+        package var requestedModeSummary: String
+        package var effectiveModeSummary: String
+        package var queryEmbeddingState: QueryEmbeddingState
+
+        package init(
+            context: RAGContext,
+            requestedModeSummary: String,
+            effectiveModeSummary: String,
+            queryEmbeddingState: QueryEmbeddingState
+        ) {
+            self.context = context
+            self.requestedModeSummary = requestedModeSummary
+            self.effectiveModeSummary = effectiveModeSummary
+            self.queryEmbeddingState = queryEmbeddingState
+        }
+    }
+
     /// Runtime stats DTO exposed to external callers.
     package struct RuntimeStats: Sendable, Equatable {
         package var frameCount: UInt64
@@ -42,6 +90,7 @@ package actor MemoryOrchestrator {
         package var wal: WaxWALStats
         package var storeURL: URL
         package var vectorSearchEnabled: Bool
+        package var queryEmbeddingCircuitOpen: Bool
         package var structuredMemoryEnabled: Bool
         package var accessStatsScoringEnabled: Bool
         package var embedderIdentity: EmbeddingIdentity?
@@ -53,6 +102,7 @@ package actor MemoryOrchestrator {
             wal: WaxWALStats,
             storeURL: URL,
             vectorSearchEnabled: Bool,
+            queryEmbeddingCircuitOpen: Bool,
             structuredMemoryEnabled: Bool,
             accessStatsScoringEnabled: Bool,
             embedderIdentity: EmbeddingIdentity?
@@ -63,6 +113,7 @@ package actor MemoryOrchestrator {
             self.wal = wal
             self.storeURL = storeURL
             self.vectorSearchEnabled = vectorSearchEnabled
+            self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.structuredMemoryEnabled = structuredMemoryEnabled
             self.accessStatsScoringEnabled = accessStatsScoringEnabled
             self.embedderIdentity = embedderIdentity
@@ -110,6 +161,12 @@ package actor MemoryOrchestrator {
         }
     }
 
+    private struct SessionRuntimeStatsCacheEntry: Sendable, Equatable {
+        var generation: UInt64
+        var frameIds: [UInt64]
+        var tokenEstimate: Int
+    }
+
     private static let accessStatsFrameKind = "wax.internal.access_stats"
     private static let accessStatsLabel = "wax.internal"
     private static let accessStatsMarkerKey = "wax.internal.kind"
@@ -128,6 +185,7 @@ package actor MemoryOrchestrator {
     private var accessStatsFrameId: UInt64?
     private var hasEnsuredMemoryBinding = false
     private var queryEmbeddingCircuitOpen = false
+    private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
 
     private var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -651,13 +709,25 @@ package actor MemoryOrchestrator {
     // MARK: - Recall (Fast RAG)
 
     package func recall(query: String) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
-        return try await buildRecallContext(query: query, embedding: embedding)
+        try await executeRecall(
+            query: query,
+            embeddingPolicy: .ifAvailable,
+            frameFilter: nil,
+            timeRange: nil,
+            topK: nil,
+            requestedMode: nil
+        ).context
     }
 
     package func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: .ifAvailable)
-        return try await buildRecallContext(query: query, embedding: embedding, frameFilter: frameFilter)
+        try await executeRecall(
+            query: query,
+            embeddingPolicy: .ifAvailable,
+            frameFilter: frameFilter,
+            timeRange: nil,
+            topK: nil,
+            requestedMode: nil
+        ).context
     }
 
     package func recall(query: String, embedding: [Float]) async throws -> RAGContext {
@@ -665,8 +735,14 @@ package actor MemoryOrchestrator {
     }
 
     package func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-        return try await buildRecallContext(query: query, embedding: embedding)
+        try await executeRecall(
+            query: query,
+            embeddingPolicy: embeddingPolicy,
+            frameFilter: nil,
+            timeRange: nil,
+            topK: nil,
+            requestedMode: nil
+        ).context
     }
 
     package func recall(
@@ -677,30 +753,31 @@ package actor MemoryOrchestrator {
         topK: Int?,
         mode: DirectSearchMode?
     ) async throws -> RAGContext {
-        let embedding = try await queryEmbedding(for: query, policy: embeddingPolicy)
-
-        let searchModeOverride: SearchMode? = if let mode {
-            switch mode {
-            case .text:
-                .textOnly
-            case .hybrid(let alpha):
-                if embedding == nil {
-                    .textOnly
-                } else {
-                    .hybrid(alpha: Self.clampHybridAlpha(alpha))
-                }
-            }
-        } else {
-            nil
-        }
-
-        return try await buildRecallContext(
+        try await executeRecall(
             query: query,
-            embedding: embedding,
+            embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: timeRange,
-            searchTopK: topK,
-            searchMode: searchModeOverride
+            topK: topK,
+            requestedMode: mode
+        ).context
+    }
+
+    package func recallExecution(
+        query: String,
+        embeddingPolicy: QueryEmbeddingPolicy,
+        frameFilter: FrameFilter?,
+        timeRange: SearchTimeRange?,
+        topK: Int?,
+        mode: DirectSearchMode?
+    ) async throws -> RecallExecution {
+        try await executeRecall(
+            query: query,
+            embeddingPolicy: embeddingPolicy,
+            frameFilter: frameFilter,
+            timeRange: timeRange,
+            topK: topK,
+            requestedMode: mode
         )
     }
 
@@ -753,9 +830,40 @@ package actor MemoryOrchestrator {
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
     ) async throws -> [MemorySearchHit] {
+        try await searchExecution(
+            query: query,
+            mode: mode,
+            topK: topK,
+            frameFilter: frameFilter,
+            timeRange: timeRange
+        ).hits
+    }
+
+    package func searchExecution(
+        query: String,
+        mode: DirectSearchMode = .default,
+        topK: Int = 10,
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil
+    ) async throws -> SearchExecution {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        guard topK > 0 else { return [] }
+        let requestedModeSummary = Self.modeSummary(mode)
+        guard !trimmed.isEmpty else {
+            return SearchExecution(
+                hits: [],
+                requestedModeSummary: requestedModeSummary,
+                effectiveModeSummary: "text",
+                queryEmbeddingState: .notRequested
+            )
+        }
+        guard topK > 0 else {
+            return SearchExecution(
+                hits: [],
+                requestedModeSummary: requestedModeSummary,
+                effectiveModeSummary: "text",
+                queryEmbeddingState: .notRequested
+            )
+        }
 
         let preference = config.vectorEnginePreference
 
@@ -765,22 +873,15 @@ package actor MemoryOrchestrator {
         case .hybrid:
             .ifAvailable
         }
-        let embedding = try await queryEmbedding(for: trimmed, policy: policy)
-
-        let searchMode: SearchMode = switch mode {
-        case .text:
-            .textOnly
-        case .hybrid(let alpha):
-            if embedding == nil {
-                .textOnly
-            } else {
-                .hybrid(alpha: Self.clampHybridAlpha(alpha))
-            }
-        }
+        let queryEmbedding = try await queryEmbeddingResult(for: trimmed, policy: policy)
+        let searchMode = Self.resolveSearchMode(
+            requested: Self.searchMode(from: mode),
+            embeddingAvailable: queryEmbedding.embedding != nil
+        )
 
         let request = SearchRequest(
             query: trimmed,
-            embedding: embedding,
+            embedding: queryEmbedding.embedding,
             vectorEnginePreference: preference,
             vectorSearchTimeout: config.vectorSearchTimeout,
             mode: searchMode,
@@ -800,7 +901,12 @@ package actor MemoryOrchestrator {
             )
         }
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
-        return hits
+        return SearchExecution(
+            hits: hits,
+            requestedModeSummary: requestedModeSummary,
+            effectiveModeSummary: Self.modeSummary(searchMode),
+            queryEmbeddingState: queryEmbedding.state
+        )
     }
 
     /// Returns lightweight store/runtime stats useful for operators and MCP tools.
@@ -816,6 +922,7 @@ package actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
+            queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embedder?.identity
@@ -823,8 +930,13 @@ package actor MemoryOrchestrator {
     }
 
     package func sessionRuntimeStats() async throws -> SessionRuntimeStats {
-        let pendingFramesStoreWide = await wax.stats().pendingFrames
-        guard let sessionId = currentSessionId else {
+        try await sessionRuntimeStats(sessionId: currentSessionId)
+    }
+
+    package func sessionRuntimeStats(sessionId: UUID?) async throws -> SessionRuntimeStats {
+        let storeStats = await wax.stats()
+        let pendingFramesStoreWide = storeStats.pendingFrames
+        guard let sessionId else {
             return SessionRuntimeStats(
                 active: false,
                 sessionId: nil,
@@ -841,6 +953,7 @@ package actor MemoryOrchestrator {
         )
 
         guard !frameIds.isEmpty else {
+            sessionRuntimeStatsCache[sessionId] = nil
             return SessionRuntimeStats(
                 active: true,
                 sessionId: sessionId,
@@ -851,14 +964,53 @@ package actor MemoryOrchestrator {
             )
         }
 
-        let contentMap = try await wax.frameContents(frameIds: frameIds)
-        let texts: [String] = frameIds.compactMap { frameId in
-            guard let data = contentMap[frameId] else { return nil }
-            return String(data: data, encoding: .utf8)
+        if let cached = sessionRuntimeStatsCache[sessionId],
+           cached.generation == storeStats.generation,
+           cached.frameIds == frameIds {
+            return SessionRuntimeStats(
+                active: true,
+                sessionId: sessionId,
+                sessionFrameCount: frameIds.count,
+                sessionTokenEstimate: cached.tokenEstimate,
+                pendingFramesStoreWide: pendingFramesStoreWide,
+                countsIncludePending: false
+            )
         }
+
+        let frameMetas = await wax.frameMetas(frameIds: frameIds)
+        var textsByFrameID: [UInt64: String] = [:]
+        textsByFrameID.reserveCapacity(frameIds.count)
+        var missingSearchTextFrameIDs: [UInt64] = []
+        missingSearchTextFrameIDs.reserveCapacity(frameIds.count)
+
+        for frameId in frameIds {
+            if let searchText = frameMetas[frameId]?.searchText {
+                textsByFrameID[frameId] = searchText
+            } else {
+                missingSearchTextFrameIDs.append(frameId)
+            }
+        }
+
+        if !missingSearchTextFrameIDs.isEmpty {
+            let contentMap = try await wax.frameContents(frameIds: missingSearchTextFrameIDs)
+            for frameId in missingSearchTextFrameIDs {
+                guard let data = contentMap[frameId],
+                      let text = String(data: data, encoding: .utf8) else {
+                    continue
+                }
+                textsByFrameID[frameId] = text
+            }
+        }
+
+        let texts = frameIds.compactMap { textsByFrameID[$0] }
         let tokenCounter = try await TokenCounter.shared()
         let tokenCounts = await tokenCounter.countBatch(texts)
         let totalTokens = tokenCounts.reduce(0, +)
+        sessionRuntimeStatsCache[sessionId] = SessionRuntimeStatsCacheEntry(
+            generation: storeStats.generation,
+            frameIds: frameIds,
+            tokenEstimate: totalTokens
+        )
 
         return SessionRuntimeStats(
             active: true,
@@ -1031,6 +1183,88 @@ package actor MemoryOrchestrator {
         try await session.retractFact(factId: factId, atMs: timestamp)
         if commit {
             try await session.commit()
+        }
+    }
+
+    private func executeRecall(
+        query: String,
+        embeddingPolicy: QueryEmbeddingPolicy,
+        frameFilter: FrameFilter?,
+        timeRange: SearchTimeRange?,
+        topK: Int?,
+        requestedMode: DirectSearchMode?
+    ) async throws -> RecallExecution {
+        let queryEmbedding = try await queryEmbeddingResult(for: query, policy: embeddingPolicy)
+        let recallConfig = ragConfigForRecall()
+        let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let effectiveSearchMode = Self.resolveSearchMode(
+            requested: requestedSearchMode,
+            embeddingAvailable: queryEmbedding.embedding != nil
+        )
+
+        let context = try await buildRecallContext(
+            query: query,
+            embedding: queryEmbedding.embedding,
+            frameFilter: frameFilter,
+            timeRange: timeRange,
+            searchTopK: topK,
+            searchMode: effectiveSearchMode
+        )
+
+        return RecallExecution(
+            context: context,
+            requestedModeSummary: requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode),
+            effectiveModeSummary: Self.modeSummary(effectiveSearchMode),
+            queryEmbeddingState: queryEmbedding.state
+        )
+    }
+
+    private struct QueryEmbeddingResult {
+        let embedding: [Float]?
+        let state: QueryEmbeddingState
+    }
+
+    private static func searchMode(from mode: DirectSearchMode) -> SearchMode {
+        switch mode {
+        case .text:
+            .textOnly
+        case .hybrid(let alpha):
+            .hybrid(alpha: clampHybridAlpha(alpha))
+        }
+    }
+
+    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
+        switch requested {
+        case .textOnly:
+            .textOnly
+        case .vectorOnly where !embeddingAvailable:
+            .textOnly
+        case .vectorOnly:
+            .vectorOnly
+        case .hybrid where !embeddingAvailable:
+            .textOnly
+        case .hybrid(let alpha):
+            .hybrid(alpha: clampHybridAlpha(alpha))
+        }
+    }
+
+    private static func modeSummary(_ mode: SearchMode) -> String {
+        switch mode {
+        case .textOnly:
+            return "text"
+        case .vectorOnly:
+            return "vector"
+        case .hybrid(let alpha):
+            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
+        }
+    }
+
+    private static func modeSummary(_ mode: DirectSearchMode) -> String {
+        switch mode {
+        case .text:
+            return "text"
+        case .hybrid(let alpha):
+            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
         }
     }
 
@@ -1344,29 +1578,45 @@ package actor MemoryOrchestrator {
     #endif
 
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
+        try await queryEmbeddingResult(for: query, policy: policy).embedding
+    }
+
+    private func queryEmbeddingResult(
+        for query: String,
+        policy: QueryEmbeddingPolicy
+    ) async throws -> QueryEmbeddingResult {
         switch policy {
         case .never:
-            return nil
+            return QueryEmbeddingResult(embedding: nil, state: .notRequested)
         case .ifAvailable:
-            guard config.enableVectorSearch, let embedder else { return nil }
-            guard !queryEmbeddingCircuitOpen else { return nil }
+            guard config.enableVectorSearch else {
+                return QueryEmbeddingResult(embedding: nil, state: .vectorDisabled)
+            }
+            guard let embedder else {
+                return QueryEmbeddingResult(embedding: nil, state: .noEmbedder)
+            }
+            guard !queryEmbeddingCircuitOpen else {
+                return QueryEmbeddingResult(embedding: nil, state: .circuitOpen)
+            }
             do {
-                return try await Self.embedOne(
+                let embedding = try await Self.embedOne(
                     query,
                     embedder: embedder,
                     cache: embeddingCache,
                     timeout: config.queryEmbeddingTimeout
                 )
+                return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
                     queryEmbeddingCircuitOpen = true
+                    return QueryEmbeddingResult(embedding: nil, state: .timeout)
                 }
                 WaxDiagnostics.logSwallowed(
                     error,
                     context: "query embedding",
                     fallback: "text-only search for this query"
                 )
-                return nil
+                return QueryEmbeddingResult(embedding: nil, state: .failed)
             }
         case .always:
             guard config.enableVectorSearch else {
@@ -1379,12 +1629,13 @@ package actor MemoryOrchestrator {
                 throw WaxError.io("query embedding disabled after timeout; restart to retry")
             }
             do {
-                return try await Self.embedOne(
+                let embedding = try await Self.embedOne(
                     query,
                     embedder: embedder,
                     cache: embeddingCache,
                     timeout: config.queryEmbeddingTimeout
                 )
+                return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
                     queryEmbeddingCircuitOpen = true

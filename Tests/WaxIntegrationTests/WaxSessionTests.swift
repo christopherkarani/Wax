@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 
 @Test func unifiedSession_textAndStructuredPersistWithSingleCommit() async throws {
     try await TempFiles.withTempFile { url in
@@ -224,5 +224,44 @@ import Wax
 
         await reader.close()
         try await reopened.close()
+    }
+}
+
+@Test func unifiedSession_searchReusesLoadedVectorEngine() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableTextSearch = false
+        config.enableStructuredMemory = false
+        config.enableVectorSearch = true
+        config.vectorDimensions = 2
+        config.vectorEnginePreference = .cpuOnly
+
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+        _ = try await session.put(
+            Data("alpha".utf8),
+            embedding: [1.0, 0.0],
+            options: FrameMetaSubset(searchText: "alpha")
+        )
+
+        await UnifiedSearchEngineCache.shared.resetStats()
+
+        _ = try await session.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1
+            )
+        )
+
+        let stats = await UnifiedSearchEngineCache.shared.snapshotStats()
+        #expect(stats.vectorDeserializations == 0)
+
+        await session.close()
+        do {
+            try await wax.close()
+        } catch {
+            #expect(Bool(true))
+        }
     }
 }

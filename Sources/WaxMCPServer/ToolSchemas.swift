@@ -35,12 +35,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "wax_session_start",
-            description: "Start a new scoped memory session and return a session_id.",
+            description: "Create a session UUID for explicit memory scoping and return its session_id.",
             inputSchema: waxSessionStart
         ),
         Tool(
             name: "wax_session_end",
-            description: "End the active scoped memory session.",
+            description: "Mark an MCP session inactive. Pass session_id when multiple sessions are active.",
             inputSchema: waxSessionEnd
         ),
         Tool(
@@ -96,7 +96,7 @@ enum ToolSchemas {
             ],
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID to scope this write explicitly.",
+                "description": "Optional session UUID to scope this write explicitly. metadata.session_id is rejected.",
             ],
             "metadata": [
                 "type": "object",
@@ -184,7 +184,15 @@ enum ToolSchemas {
     static let waxFlush: Value = emptyObjectSchema()
     static let waxStats: Value = emptyObjectSchema()
     static let waxSessionStart: Value = emptyObjectSchema()
-    static let waxSessionEnd: Value = emptyObjectSchema()
+    static let waxSessionEnd: Value = objectSchema(
+        properties: [
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID to end explicitly. Required when more than one MCP session is active.",
+            ],
+        ],
+        required: []
+    )
 
     static let waxHandoff: Value = objectSchema(
         properties: [

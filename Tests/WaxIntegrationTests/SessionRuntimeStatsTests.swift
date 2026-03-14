@@ -74,3 +74,39 @@ func sessionRuntimeStatsIgnoresDeletedSupersededAndPendingSessionFrames() async 
         try await orchestrator.close()
     }
 }
+
+@Test
+func sessionRuntimeStatsUsesSearchTextWhenPayloadIsNotUTF8() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        let sessionID = await orchestrator.startSession().uuidString
+        let wax = await orchestrator.wax
+
+        _ = try await wax.put(
+            Data([0xFF, 0xD8, 0x00, 0x80]),
+            options: FrameMetaSubset(
+                role: .document,
+                searchText: "session search text fallback",
+                metadata: Metadata(["session_id": sessionID])
+            )
+        )
+        try await wax.commit()
+
+        let stats = try await orchestrator.sessionRuntimeStats()
+        let tokenCounter = try await TokenCounter.shared()
+        let expectedTokens = await tokenCounter.countBatch([
+            "session search text fallback",
+        ]).reduce(0, +)
+
+        #expect(stats.active)
+        #expect(stats.sessionId?.uuidString == sessionID)
+        #expect(stats.sessionFrameCount == 1)
+        #expect(stats.sessionTokenEstimate == expectedTokens)
+
+        try await orchestrator.close()
+    }
+}

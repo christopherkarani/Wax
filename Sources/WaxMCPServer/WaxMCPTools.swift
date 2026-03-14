@@ -12,12 +12,14 @@ enum WaxMCPTools {
     private static let maxGraphKindBytes = 64
     private static let graphIdentifierAllowedScalars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
     private static let graphKindAllowedScalars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    private static let sessionRegistries = SessionRegistryPool()
 
     static func register(
         on server: Server,
         memory: MemoryOrchestrator,
         structuredMemoryEnabled: Bool
     ) async {
+        _ = await sessionRegistries.registry(for: memory)
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(
                 tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
@@ -35,6 +37,7 @@ enum WaxMCPTools {
         memory: MemoryOrchestrator,
         structuredMemoryEnabled: Bool = true
     ) async -> CallTool.Result {
+        let sessionRegistry = await sessionRegistries.registry(for: memory)
         do {
             switch params.name {
             case "wax_remember":
@@ -46,11 +49,11 @@ enum WaxMCPTools {
             case "wax_flush":
                 return try await flush(memory: memory)
             case "wax_stats":
-                return try await stats(memory: memory)
+                return try await stats(memory: memory, sessionRegistry: sessionRegistry)
             case "wax_session_start":
-                return await sessionStart(memory: memory)
+                return await sessionStart(sessionRegistry: sessionRegistry)
             case "wax_session_end":
-                return await sessionEnd(memory: memory)
+                return try await sessionEnd(arguments: params.arguments, sessionRegistry: sessionRegistry)
             case "wax_handoff":
                 return try await handoff(arguments: params.arguments, memory: memory)
             case "wax_handoff_latest":
@@ -96,6 +99,9 @@ enum WaxMCPTools {
         let sessionID = try parseOptionalSessionID(args)
         let commit = try args.optionalBool("commit") ?? true
         var metadata = try coerceMetadata(try args.optionalObject("metadata"))
+        if metadata["session_id"] != nil {
+            throw ToolValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
+        }
         if let sessionID {
             metadata["session_id"] = sessionID.uuidString
         }
@@ -147,7 +153,7 @@ enum WaxMCPTools {
             .ifAvailable
         }
 
-        let context = try await memory.recall(
+        let execution = try await memory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
             frameFilter: parsedFilters.frameFilter,
@@ -155,13 +161,17 @@ enum WaxMCPTools {
             topK: effectiveTopK,
             mode: mode
         )
+        let context = execution.context
         let selected = context.items.prefix(limit)
         var lines: [String] = []
         lines.reserveCapacity(selected.count + 5)
         lines.append("Query: \(context.query)")
         lines.append("Total tokens: \(context.totalTokens)")
         lines.append("Results: \(selected.count) of \(limit) requested (orchestrator returned \(context.items.count))")
-        lines.append("Search controls: mode=\(modeSummary(mode)) search_top_k=\(effectiveTopK) limit=\(limit)")
+        lines.append(
+            "Search controls: requested_mode=\(execution.requestedModeSummary) effective_mode=\(execution.effectiveModeSummary) " +
+                "query_embedding_state=\(execution.queryEmbeddingState.rawValue) search_top_k=\(effectiveTopK) limit=\(limit)"
+        )
         lines.append("Applied filters: \(encodeJSON(parsedFilters.summary) ?? "{}")")
 
         for (index, item) in selected.enumerated() {
@@ -178,7 +188,9 @@ enum WaxMCPTools {
                 "result_count": value(from: selected.count),
                 "limit": value(from: limit),
                 "search_top_k": value(from: effectiveTopK),
-                "mode": value(from: modeSummary(mode)),
+                "requested_mode": value(from: execution.requestedModeSummary),
+                "effective_mode": value(from: execution.effectiveModeSummary),
+                "query_embedding_state": value(from: execution.queryEmbeddingState.rawValue),
                 "applied_filters": parsedFilters.summary,
             ],
             uri: "wax://tool/recall-summary"
@@ -199,13 +211,14 @@ enum WaxMCPTools {
         }
         let parsedFilters = try parseSearchFilters(args)
 
-        let hits = try await memory.search(
+        let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
             topK: topK,
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
+        let hits = execution.hits
         let lines = hits.enumerated().map { index, hit in
             let row: Value = [
                 "rank": value(from: index + 1),
@@ -221,7 +234,9 @@ enum WaxMCPTools {
             payload: [
                 "query": value(from: query),
                 "topK": value(from: topK),
-                "mode": value(from: modeSummary(mode)),
+                "requested_mode": value(from: execution.requestedModeSummary),
+                "effective_mode": value(from: execution.effectiveModeSummary),
+                "query_embedding_state": value(from: execution.queryEmbeddingState.rawValue),
                 "applied_filters": parsedFilters.summary,
                 "time_range_requested": value(from: parsedFilters.timeRange != nil),
                 "time_range_applied": value(from: parsedFilters.timeRange != nil),
@@ -236,9 +251,25 @@ enum WaxMCPTools {
         return textResult("Flushed. \(stats.frameCount) frames now searchable.")
     }
 
-    private static func stats(memory: MemoryOrchestrator) async throws -> CallTool.Result {
+    private static func stats(
+        memory: MemoryOrchestrator,
+        sessionRegistry: SessionRegistry
+    ) async throws -> CallTool.Result {
         let stats = await memory.runtimeStats()
-        let sessionStats = try await memory.sessionRuntimeStats()
+        let activeSessions = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
+        let pendingFramesStoreWide = stats.pendingFrames
+        let sessionStats: MemoryOrchestrator.SessionRuntimeStats = if activeSessions.count == 1 {
+            try await memory.sessionRuntimeStats(sessionId: activeSessions[0])
+        } else {
+            .init(
+                active: !activeSessions.isEmpty,
+                sessionId: nil,
+                sessionFrameCount: 0,
+                sessionTokenEstimate: 0,
+                pendingFramesStoreWide: pendingFramesStoreWide,
+                countsIncludePending: false
+            )
+        }
 
         let diskBytes: UInt64 = {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: stats.storeURL.path),
@@ -266,6 +297,12 @@ enum WaxMCPTools {
             "diskBytes": value(from: diskBytes),
             "storePath": value(from: stats.storeURL.path),
             "vectorSearchEnabled": value(from: stats.vectorSearchEnabled),
+            "queryEmbeddingAvailable": value(
+                from: stats.vectorSearchEnabled &&
+                    stats.embedderIdentity != nil &&
+                    !stats.queryEmbeddingCircuitOpen
+            ),
+            "queryEmbeddingCircuitOpen": value(from: stats.queryEmbeddingCircuitOpen),
             "features": [
                 "structuredMemoryEnabled": value(from: stats.structuredMemoryEnabled),
                 "accessStatsScoringEnabled": value(from: stats.accessStatsScoringEnabled),
@@ -284,6 +321,8 @@ enum WaxMCPTools {
             "session": [
                 "active": value(from: sessionStats.active),
                 "session_id": sessionStats.sessionId.map { value(from: $0.uuidString) } ?? .null,
+                "activeSessionCount": value(from: activeSessions.count),
+                "activeSessionIds": .array(activeSessions.map { value(from: $0.uuidString) }),
                 "sessionFrameCount": value(from: sessionStats.sessionFrameCount),
                 "sessionTokenEstimate": value(from: sessionStats.sessionTokenEstimate),
                 "pendingFramesStoreWide": value(from: sessionStats.pendingFramesStoreWide),
@@ -292,18 +331,24 @@ enum WaxMCPTools {
         ])
     }
 
-    private static func sessionStart(memory: MemoryOrchestrator) async -> CallTool.Result {
-        let sessionID = await memory.startSession()
+    private static func sessionStart(sessionRegistry: SessionRegistry) async -> CallTool.Result {
+        let sessionID = await sessionRegistry.start()
         return jsonResult([
             "status": "ok",
             "session_id": value(from: sessionID.uuidString),
         ])
     }
 
-    private static func sessionEnd(memory: MemoryOrchestrator) async -> CallTool.Result {
-        await memory.endSession()
+    private static func sessionEnd(
+        arguments: [String: Value]?,
+        sessionRegistry: SessionRegistry
+    ) async throws -> CallTool.Result {
+        let args = ToolArguments(arguments)
+        let sessionID = try parseOptionalSessionID(args)
+        let endedSessionID = try await sessionRegistry.end(sessionID: sessionID)
         return jsonResult([
             "status": "ok",
+            "session_id": endedSessionID.map { value(from: $0.uuidString) } ?? .null,
             "active": value(from: false),
         ])
     }
@@ -693,20 +738,6 @@ enum WaxMCPTools {
             throw ToolValidationError.invalid("alpha must be between 0 and 1")
         }
         return Float(resolved)
-    }
-
-    private static func modeSummary(_ mode: MemoryOrchestrator.DirectSearchMode?) -> String {
-        guard let mode else { return "default" }
-        return modeSummary(mode)
-    }
-
-    private static func modeSummary(_ mode: MemoryOrchestrator.DirectSearchMode) -> String {
-        switch mode {
-        case .text:
-            return "text"
-        case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
-        }
     }
 
     private static func parseOptionalSessionID(_ args: ToolArguments) throws -> UUID? {
@@ -1285,6 +1316,53 @@ private enum ToolValidationError: LocalizedError {
         case .invalid(let message):
             return message
         }
+    }
+}
+
+private actor SessionRegistryPool {
+    private var registries: [ObjectIdentifier: SessionRegistry] = [:]
+
+    func registry(for memory: MemoryOrchestrator) -> SessionRegistry {
+        let key = ObjectIdentifier(memory)
+        if let existing = registries[key] {
+            return existing
+        }
+
+        let created = SessionRegistry()
+        registries[key] = created
+        return created
+    }
+}
+
+private actor SessionRegistry {
+    private var activeSessions: Set<UUID> = []
+
+    func start() -> UUID {
+        let sessionID = UUID()
+        activeSessions.insert(sessionID)
+        return sessionID
+    }
+
+    func end(sessionID: UUID?) throws -> UUID? {
+        if let sessionID {
+            guard activeSessions.remove(sessionID) != nil else {
+                throw ToolValidationError.invalid("session_id is not active")
+            }
+            return sessionID
+        }
+
+        switch activeSessions.count {
+        case 0:
+            return nil
+        case 1:
+            return activeSessions.removeFirst()
+        default:
+            throw ToolValidationError.invalid("session_id is required when more than one MCP session is active")
+        }
+    }
+
+    func activeSessionIDs() -> [UUID] {
+        Array(activeSessions)
     }
 }
 #endif
