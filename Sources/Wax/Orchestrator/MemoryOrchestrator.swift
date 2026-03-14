@@ -90,6 +90,7 @@ package actor MemoryOrchestrator {
         package var wal: WaxWALStats
         package var storeURL: URL
         package var vectorSearchEnabled: Bool
+        package var queryEmbedderConfigured: Bool
         package var queryEmbeddingCircuitOpen: Bool
         package var structuredMemoryEnabled: Bool
         package var accessStatsScoringEnabled: Bool
@@ -102,6 +103,7 @@ package actor MemoryOrchestrator {
             wal: WaxWALStats,
             storeURL: URL,
             vectorSearchEnabled: Bool,
+            queryEmbedderConfigured: Bool,
             queryEmbeddingCircuitOpen: Bool,
             structuredMemoryEnabled: Bool,
             accessStatsScoringEnabled: Bool,
@@ -113,6 +115,7 @@ package actor MemoryOrchestrator {
             self.wal = wal
             self.storeURL = storeURL
             self.vectorSearchEnabled = vectorSearchEnabled
+            self.queryEmbedderConfigured = queryEmbedderConfigured
             self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.structuredMemoryEnabled = structuredMemoryEnabled
             self.accessStatsScoringEnabled = accessStatsScoringEnabled
@@ -922,6 +925,7 @@ package actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
+            queryEmbedderConfigured: embedder != nil,
             queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,

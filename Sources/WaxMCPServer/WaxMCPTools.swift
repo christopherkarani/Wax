@@ -41,11 +41,11 @@ enum WaxMCPTools {
         do {
             switch params.name {
             case "wax_remember":
-                return try await remember(arguments: params.arguments, memory: memory)
+                return try await remember(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
             case "wax_recall":
-                return try await recall(arguments: params.arguments, memory: memory)
+                return try await recall(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
             case "wax_search":
-                return try await search(arguments: params.arguments, memory: memory)
+                return try await search(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
             case "wax_flush":
                 return try await flush(memory: memory)
             case "wax_stats":
@@ -55,7 +55,7 @@ enum WaxMCPTools {
             case "wax_session_end":
                 return try await sessionEnd(arguments: params.arguments, sessionRegistry: sessionRegistry)
             case "wax_handoff":
-                return try await handoff(arguments: params.arguments, memory: memory)
+                return try await handoff(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
             case "wax_handoff_latest":
                 return try await handoffLatest(arguments: params.arguments, memory: memory)
             case "wax_entity_upsert" where structuredMemoryEnabled:
@@ -92,11 +92,13 @@ enum WaxMCPTools {
 
     private static func remember(
         arguments: [String: Value]?,
-        memory: MemoryOrchestrator
+        memory: MemoryOrchestrator,
+        sessionRegistry: SessionRegistry
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let content = try args.requiredString("content", maxBytes: maxContentBytes)
         let sessionID = try parseOptionalSessionID(args)
+        try await validateActiveSession(sessionID, in: sessionRegistry)
         let commit = try args.optionalBool("commit") ?? true
         var metadata = try coerceMetadata(try args.optionalObject("metadata"))
         if metadata["session_id"] != nil {
@@ -132,7 +134,8 @@ enum WaxMCPTools {
 
     private static func recall(
         arguments: [String: Value]?,
-        memory: MemoryOrchestrator
+        memory: MemoryOrchestrator,
+        sessionRegistry: SessionRegistry
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let query = try args.requiredString("query", maxBytes: maxContentBytes)
@@ -141,6 +144,7 @@ enum WaxMCPTools {
             throw ToolValidationError.invalid("limit must be between 1 and \(maxRecallLimit)")
         }
         let parsedFilters = try parseSearchFilters(args)
+        try await validateActiveSession(parsedFilters.sessionId, in: sessionRegistry)
         let mode = try parseRecallMode(args)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
         if let requestedTopK, !(1...maxTopK).contains(requestedTopK) {
@@ -199,7 +203,8 @@ enum WaxMCPTools {
 
     private static func search(
         arguments: [String: Value]?,
-        memory: MemoryOrchestrator
+        memory: MemoryOrchestrator,
+        sessionRegistry: SessionRegistry
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let query = try args.requiredString("query", maxBytes: maxContentBytes)
@@ -210,6 +215,7 @@ enum WaxMCPTools {
             throw ToolValidationError.invalid("topK must be between 1 and \(maxTopK)")
         }
         let parsedFilters = try parseSearchFilters(args)
+        try await validateActiveSession(parsedFilters.sessionId, in: sessionRegistry)
 
         let execution = try await memory.searchExecution(
             query: query,
@@ -299,7 +305,7 @@ enum WaxMCPTools {
             "vectorSearchEnabled": value(from: stats.vectorSearchEnabled),
             "queryEmbeddingAvailable": value(
                 from: stats.vectorSearchEnabled &&
-                    stats.embedderIdentity != nil &&
+                    stats.queryEmbedderConfigured &&
                     !stats.queryEmbeddingCircuitOpen
             ),
             "queryEmbeddingCircuitOpen": value(from: stats.queryEmbeddingCircuitOpen),
@@ -345,21 +351,23 @@ enum WaxMCPTools {
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
-        let endedSessionID = try await sessionRegistry.end(sessionID: sessionID)
+        let endResult = try await sessionRegistry.end(sessionID: sessionID)
         return jsonResult([
             "status": "ok",
-            "session_id": endedSessionID.map { value(from: $0.uuidString) } ?? .null,
-            "active": value(from: false),
+            "session_id": endResult.endedSessionID.map { value(from: $0.uuidString) } ?? .null,
+            "active": value(from: endResult.hasActiveSessions),
         ])
     }
 
     private static func handoff(
         arguments: [String: Value]?,
-        memory: MemoryOrchestrator
+        memory: MemoryOrchestrator,
+        sessionRegistry: SessionRegistry
     ) async throws -> CallTool.Result {
         let args = ToolArguments(arguments)
         let content = try args.requiredString("content", maxBytes: maxContentBytes)
         let sessionID = try parseOptionalSessionID(args)
+        try await validateActiveSession(sessionID, in: sessionRegistry)
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
         let commit = try args.optionalBool("commit") ?? true
@@ -555,6 +563,7 @@ enum WaxMCPTools {
     }
 
     private struct ParsedSearchFilters {
+        let sessionId: UUID?
         let frameFilter: FrameFilter?
         let timeRange: SearchTimeRange?
         let summary: Value
@@ -681,6 +690,7 @@ enum WaxMCPTools {
         ]
 
         return ParsedSearchFilters(
+            sessionId: sessionID,
             frameFilter: frameFilter,
             timeRange: timeRange,
             summary: summary
@@ -746,6 +756,16 @@ enum WaxMCPTools {
             throw ToolValidationError.invalid("session_id must be a valid UUID")
         }
         return parsed
+    }
+
+    private static func validateActiveSession(
+        _ sessionID: UUID?,
+        in sessionRegistry: SessionRegistry
+    ) async throws {
+        guard let sessionID else { return }
+        guard await sessionRegistry.isActive(sessionID) else {
+            throw ToolValidationError.invalid("session_id is not active")
+        }
     }
 
     private static func parseFactValue(_ value: Value) throws -> FactValue {
@@ -1335,6 +1355,11 @@ private actor SessionRegistryPool {
 }
 
 private actor SessionRegistry {
+    struct EndResult {
+        let endedSessionID: UUID?
+        let hasActiveSessions: Bool
+    }
+
     private var activeSessions: Set<UUID> = []
 
     func start() -> UUID {
@@ -1343,22 +1368,26 @@ private actor SessionRegistry {
         return sessionID
     }
 
-    func end(sessionID: UUID?) throws -> UUID? {
+    func end(sessionID: UUID?) throws -> EndResult {
         if let sessionID {
             guard activeSessions.remove(sessionID) != nil else {
                 throw ToolValidationError.invalid("session_id is not active")
             }
-            return sessionID
+            return EndResult(endedSessionID: sessionID, hasActiveSessions: !activeSessions.isEmpty)
         }
 
         switch activeSessions.count {
         case 0:
-            return nil
+            return EndResult(endedSessionID: nil, hasActiveSessions: false)
         case 1:
-            return activeSessions.removeFirst()
+            return EndResult(endedSessionID: activeSessions.removeFirst(), hasActiveSessions: false)
         default:
             throw ToolValidationError.invalid("session_id is required when more than one MCP session is active")
         }
+    }
+
+    func isActive(_ sessionID: UUID) -> Bool {
+        activeSessions.contains(sessionID)
     }
 
     func activeSessionIDs() -> [UUID] {

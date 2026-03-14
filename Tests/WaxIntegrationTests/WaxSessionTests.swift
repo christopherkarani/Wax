@@ -243,6 +243,7 @@ import Testing
             embedding: [1.0, 0.0],
             options: FrameMetaSubset(searchText: "alpha")
         )
+        try await session.commit()
 
         await UnifiedSearchEngineCache.shared.resetStats()
 

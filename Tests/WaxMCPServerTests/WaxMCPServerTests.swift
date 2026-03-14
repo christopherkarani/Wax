@@ -651,6 +651,118 @@ func rememberRejectsMetadataSessionID() async throws {
 }
 
 @Test
+func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
+    try await withMemory { memory in
+        let start = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(start.isError != true)
+        let started = try parseJSONText(in: start)
+        let sessionID = try requireString(started, key: "session_id")
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionID)]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: [
+                    "content": "should fail after end",
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(remember.isError == true)
+        #expect(firstText(in: remember).contains("session_id is not active"))
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_search",
+                arguments: [
+                    "query": "should fail after end",
+                    "mode": "text",
+                    "topK": 5,
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(search.isError == true)
+        #expect(firstText(in: search).contains("session_id is not active"))
+    }
+}
+
+@Test
+func sessionEndReportsRemainingActiveSessions() async throws {
+    try await withMemory { memory in
+        let startA = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startA.isError != true)
+        let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
+
+        let startB = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startB.isError != true)
+        let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionA)]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+        let ended = try parseJSONText(in: end)
+        #expect((ended["session_id"] as? String) == sessionA)
+        #expect((ended["active"] as? Bool) == true)
+
+        let stats = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_stats", arguments: [:]),
+            memory: memory
+        )
+        #expect(stats.isError != true)
+        let statsJSON = try parseJSONText(in: stats)
+        let session = statsJSON["session"] as? [String: Any]
+        #expect((session?["activeSessionCount"] as? Int) == 1)
+        #expect((session?["activeSessionIds"] as? [String]) == [sessionB])
+    }
+}
+
+@Test
+func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-identityless-embedder-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.queryEmbeddingTimeout = .seconds(1)
+
+    let memory = try await MemoryOrchestrator(
+        at: url,
+        config: config,
+        embedder: IdentitylessEmbedder()
+    )
+    defer { Task { try? await memory.close() } }
+
+    let stats = await WaxMCPTools.handleCall(
+        params: .init(name: "wax_stats", arguments: [:]),
+        memory: memory
+    )
+    #expect(stats.isError != true)
+    let statsJSON = try parseJSONText(in: stats)
+    #expect((statsJSON["queryEmbeddingAvailable"] as? Bool) == true)
+}
+
+@Test
 func vectorFallbackIsSurfacedInSearchAndStats() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-mcp-vector-fallback-\(UUID().uuidString)")
@@ -1005,6 +1117,17 @@ private actor HangingCountingEmbedder: EmbeddingProvider {
     func embed(_ text: String) async throws -> [Float] {
         _ = text
         try await Task.sleep(for: .seconds(60))
+        return [1.0, 0.0]
+    }
+}
+
+private actor IdentitylessEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
         return [1.0, 0.0]
     }
 }
