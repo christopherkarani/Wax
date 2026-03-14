@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  [English](README.md) | [Español](locales/README.es.md) | [Français](locales/README.fr.md) | [日本語](locales/README.ja.md) | [한국어](locales/README.ko.md) | [Português](locales/README.pt.md) | [中文](locales/README.zh-CN.md)
+  <a href="README.md">English</a> · <a href="locales/README.es.md">Español</a> · <a href="locales/README.fr.md">Français</a> · <a href="locales/README.ja.md">日本語</a> · <a href="locales/README.ko.md">한국어</a> · <a href="locales/README.pt.md">Português</a> · <a href="locales/README.zh-CN.md">中文</a>
 </p>
 <!-- HEADER:END -->
 
