@@ -2,8 +2,8 @@
   <defs>
     <!-- Background gradient -->
     <linearGradient id="bg" x1="0" y1="0" x2="800" y2="200" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FAFAFA"/>
-      <stop offset="100%" stop-color="#F0F0F5"/>
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
     </linearGradient>
 
     <!-- Silver metallic gradient (light mode) -->

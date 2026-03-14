@@ -2,8 +2,8 @@
   <defs>
     <!-- Background gradient -->
     <linearGradient id="bg" x1="0" y1="0" x2="800" y2="200" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0A0A0F"/>
-      <stop offset="100%" stop-color="#141420"/>
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
     </linearGradient>
 
     <!-- Silver metallic gradient -->
@@ -58,7 +58,7 @@
     <ellipse cx="400" cy="95" rx="180" ry="60" fill="#C0C0D0" opacity="0.04" filter="url(#ambientBlur)"/>
 
     <!-- Subtle grid -->
-    <g stroke="#FFFFFF" stroke-opacity="0.02" stroke-width="0.5">
+    <g stroke="#000000" stroke-opacity="0.03" stroke-width="0.5">
       <line x1="0" y1="50" x2="800" y2="50"/>
       <line x1="0" y1="100" x2="800" y2="100"/>
       <line x1="0" y1="150" x2="800" y2="150"/>
@@ -96,7 +96,7 @@
     <ellipse cx="334" cy="58" rx="2" ry="3" fill="url(#silverDrip)"/>
 
     <!-- === Main "Wax" text === -->
-    <text x="400" y="100" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="6" fill="#F5F5F7">Wax</text>
+    <text x="400" y="100" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="6" fill="#1D1D1F">Wax</text>
 
     <!-- Silver sheen on text -->
     <text x="400" y="100" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="6" fill="url(#chrome)" opacity="0.5">Wax</text>
@@ -110,7 +110,7 @@
     <ellipse cx="440" cy="119" rx="4" ry="1" fill="url(#silver)" opacity="0.2"/>
 
     <!-- Subtitle -->
-    <text x="400" y="148" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" letter-spacing="3.5" fill="#6E6E78">SINGLE-FILE MEMORY FOR APPLE-NATIVE AI</text>
+    <text x="400" y="148" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" letter-spacing="3.5" fill="#86868B">SINGLE-FILE MEMORY FOR APPLE-NATIVE AI</text>
 
     <!-- Accent line -->
     <rect x="345" y="164" width="110" height="1.5" rx="0.75" fill="url(#accent)" opacity="0.4"/>

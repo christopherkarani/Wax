@@ -43,9 +43,11 @@ Resources/website/build/
 
 # Internal tooling (not public-facing)
 CLAUDE.md
+AUDIT_REPORT.md
 /skills/
 /scripts/
 docs/plans/
+docs/framework-audit-*.md
 Resources/docs/plans/
 Resources/skills/internal/
 Package.resolved
