@@ -1,47 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION_BUMP="${1:-}"
-if [[ -z "$VERSION_BUMP" ]]; then
-  echo "Usage: $0 <patch|minor|major|x.y.z>" >&2
-  exit 64
+if [[ "${1:-}" == "" ]]; then
+  echo "usage: scripts/release-waxmcp.sh <version>" >&2
+  echo "example: scripts/release-waxmcp.sh 0.1.15" >&2
+  exit 2
 fi
 
-if ! [[ "$VERSION_BUMP" =~ ^([0-9]+\.[0-9]+\.[0-9]+|patch|minor|major)$ ]]; then
-  echo "Usage: $0 <patch|minor|major|x.y.z>" >&2
-  exit 64
+VERSION="$1"
+
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: version must be semver like 0.1.15 (got '$VERSION')" >&2
+  exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PKG_JSON="$ROOT/Resources/npm/waxmcp/package.json"
+SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+DIST_DIR="$ROOT/Resources/npm/waxmcp/dist/darwin-arm64"
+BUILD_DIR="$ROOT/.build/arm64-apple-macosx/release"
 
-cd "$PROJECT_ROOT"
-
-npm --version >/dev/null
-node --version >/dev/null
-
-cd "$PROJECT_ROOT/npm/waxmcp"
-npm version "$VERSION_BUMP" --no-git-tag-version --allow-same-version
-cd "$PROJECT_ROOT"
-
-VERSION="$(node -p "require('./npm/waxmcp/package.json').version")"
-perl -0pi -e "s/let serverVersion = \"[0-9]+\\.[0-9]+\\.[0-9]+\"/let serverVersion = \"$VERSION\"/" Sources/WaxMCPServer/main.swift
-
-if ! grep -q "let serverVersion = \"$VERSION\"" Sources/WaxMCPServer/main.swift; then
-  echo "ERROR: failed to sync serverVersion in Sources/WaxMCPServer/main.swift" >&2
-  exit 1
+if [[ ! -f "$PKG_JSON" ]]; then
+  echo "error: missing $PKG_JSON" >&2
+  exit 2
 fi
 
-echo "Preparing release binaries for version $VERSION"
-./scripts/build-waxmcp-binaries.sh darwin-arm64 arm64-apple-macosx14.0
-
-if ! ./scripts/build-waxmcp-binaries.sh darwin-x64 x86_64-apple-macosx14.0; then
-  if [[ -f "$PROJECT_ROOT/npm/waxmcp/dist/darwin-x64/wax-cli" ]]; then
-    echo "WARN: x64 cross-compile is unavailable on this host. Reusing checked-in darwin-x64 binary."
-  else
-    echo "ERROR: darwin-x64 binary missing and cross-compile is unavailable on this host." >&2
-    exit 1
-  fi
+if [[ ! -f "$SERVER_SWIFT" ]]; then
+  echo "error: missing $SERVER_SWIFT" >&2
+  exit 2
 fi
 
-echo "Done. Updated npm package and binaries for Wax MCP $VERSION"
+echo "-> Bump versions to $VERSION"
+perl -0pi -e 's/"version"\\s*:\\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
+perl -0pi -e 's/let serverVersion\\s*=\\s*"[^"]+"/let serverVersion = "'"$VERSION"'"/' "$SERVER_SWIFT"
+
+echo "-> Build release binaries (darwin-arm64)"
+cd "$ROOT"
+swift build -c release --product wax-cli --traits default,MCPServer
+swift build -c release --product wax-mcp --traits default,MCPServer
+
+echo "-> Stage dist artifacts"
+mkdir -p "$DIST_DIR"
+cp -f "$BUILD_DIR/wax-cli" "$DIST_DIR/wax-cli"
+cp -f "$BUILD_DIR/wax-mcp" "$DIST_DIR/wax-mcp"
+
+# Copy all SwiftPM resource bundles next to the binaries so Bundle.module resolves at runtime.
+for b in "$BUILD_DIR"/*.bundle; do
+  name="$(basename "$b")"
+  rm -rf "$DIST_DIR/$name"
+  ditto "$b" "$DIST_DIR/$name"
+done
+
+shasum -a 256 "$DIST_DIR/wax-cli" | awk '{print $1 "  wax-cli"}' > "$DIST_DIR/wax-cli.sha256"
+shasum -a 256 "$DIST_DIR/wax-mcp" | awk '{print $1 "  wax-mcp"}' > "$DIST_DIR/wax-mcp.sha256"
+
+echo "-> Done"
+echo "Next:"
+echo "  git status -sb"
+echo "  git diff"
+echo "  # optional local smoke checks:"
+echo "  $DIST_DIR/wax-cli vector-health --store-path /tmp/waxmcp-release.wax --format text"
+echo "  $DIST_DIR/wax-cli mcp doctor --server-path $DIST_DIR/wax-mcp --store-path /tmp/waxmcp-release.wax"

@@ -1,8 +1,8 @@
 <!-- HEADER:START -->
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img src="docs/assets/banner-light.svg" width="800" alt="Wax Banner">
+    <source media="(prefers-color-scheme: dark)" srcset="Resources/docs/assets/banner-dark.svg">
+    <img src="Resources/docs/assets/banner-light.svg" width="800" alt="Wax Banner">
   </picture>
 </div>
 
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="locales/README.es.md">Español</a> · <a href="locales/README.fr.md">Français</a> · <a href="locales/README.ja.md">日本語</a> · <a href="locales/README.ko.md">한국어</a> · <a href="locales/README.pt.md">Português</a> · <a href="locales/README.zh-CN.md">中文</a>
+  <a href="README.md">English</a> · <a href="Resources/locales/README.es.md">Español</a> · <a href="Resources/locales/README.fr.md">Français</a> · <a href="Resources/locales/README.ja.md">日本語</a> · <a href="Resources/locales/README.ko.md">한국어</a> · <a href="Resources/locales/README.pt.md">Português</a> · <a href="Resources/locales/README.zh-CN.md">中文</a>
 </p>
 <!-- HEADER:END -->
 
@@ -74,7 +74,7 @@ Traditional   |█████████████████████�
 
 > [!TIP]
 > **Ingest Throughput:** Wax handles **85.9 docs/s** with full hybrid indexing on an M3 Max.
-> Full benchmark report: [docs/benchmarks/2026-03-06-performance-results.md](docs/benchmarks/2026-03-06-performance-results.md)
+> Full benchmark report: [Resources/docs/benchmarks/2026-03-06-performance-results.md](Resources/docs/benchmarks/2026-03-06-performance-results.md)
 
 ---
 
