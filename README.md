@@ -117,36 +117,76 @@ Wax uses a **"Database of Databases"** model. It manages its own frame-based sto
 
 ## Quick Start
 
+### Swift
+
 Copy and paste this into a `main.swift` file to get started immediately.
 
 ```swift
-import Foundation
 import Wax
-import WaxVectorSearchMiniLM
 
 @main
 struct AgentMemory {
     static func main() async throws {
         let url = URL(fileURLWithPath: "agent.wax")
 
-        // 1. Initialize a memory store (on-device MiniLM embeddings)
-        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
+        // 1. Open a memory store
+        let memory = try await Memory(at: url)
 
-        // 2. Commit a new memory
-        try await memory.remember("The user is building a habit tracker in SwiftUI.")
+        // 2. Save a memory
+        try await memory.save("The user is building a habit tracker in SwiftUI.")
 
-        // 3. Perform semantic recall
-        let context = try await memory.recall(query: "What is the user building?")
+        // 3. Search with hybrid recall (text + vector)
+        let results = try await memory.search("What is the user building?")
 
-        if let bestMatch = context.items.first {
-            print("Recall: \(bestMatch.text)") 
-            // Output: "Recall: The user is building a habit tracker in SwiftUI."
+        if let best = results.items.first {
+            print("Found: \(best.text)")
+            // Output: "Found: The user is building a habit tracker in SwiftUI."
         }
+
+        try await memory.close()
     }
 }
 ```
 
 Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
+
+### AI Coding Assistants
+
+If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsurf**, you can get up to speed instantly with the bundled **Wax skill** — it teaches your assistant the full Wax API, constraints, and best practices so it writes correct Wax code on the first try.
+
+**Install the skill (Claude Code):**
+
+```bash
+# From within your project directory
+claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
+```
+
+Once installed, your assistant automatically knows how to use `Memory`, `VideoRAGOrchestrator`, `PhotoRAGOrchestrator`, hybrid search, structured memory, and the MCP server — no copy-pasting docs.
+
+**Or paste this prompt to get started from scratch:**
+
+<details>
+<summary>Wax starter prompt (click to expand, then copy)</summary>
+
+```text
+I'm integrating the Wax framework (https://github.com/christopherkarani/Wax) into my Swift project.
+Wax is an on-device, single-file (.wax) memory and RAG engine for Apple platforms.
+
+Here's what I need you to know:
+- The public API is the `Memory` actor — import `Wax` and use `Memory(at: url)` to open a store.
+- Use `.save(_:)` to persist text and `.search(_:)` to retrieve ranked results as `RAGContext`.
+- Wax ships with on-device MiniLM embeddings (384-dim, CoreML) enabled by default for hybrid search (BM25 text + HNSW vector). Pass `enableVectorSearch: false` in `Memory.Config` for text-only mode.
+- Configuration is done through `Memory.Config` (text search, vector search, structured memory, enrichment) and `Memory.SearchOptions` (topK, retrieval mode, time range, surrogates).
+- For video RAG, use `VideoRAGOrchestrator` with a `MultimodalEmbeddingProvider` and `VideoTranscriptProvider`.
+- For photo RAG, use `PhotoRAGOrchestrator` with the Photos framework.
+- Lifecycle: always call `.flush()` to persist pending writes, and `.close()` when done.
+- The `.wax` file is the single source of truth — data, indices, and WAL in one portable binary. No server, no cloud, no infrastructure.
+- Everything runs on-device with Metal-accelerated vector search. Typical recall latency is ~6ms (p95).
+
+Please read the Wax source code in my project's dependencies to understand the full API surface before writing any integration code.
+```
+
+</details>
 
 ---
 

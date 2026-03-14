@@ -1,5 +1,123 @@
 <svg width="800" height="200" viewBox="0 0 800 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="800" height="200" fill="#F2F2F7"/>
-  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="700" fill="#1C1C1E">Wax</text>
-  <text x="50%" y="65%" dominant-baseline="middle" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#3A3A3C">Single-file memory layer for Apple-native AI</text>
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="800" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FAFAFA"/>
+      <stop offset="100%" stop-color="#F0F0F5"/>
+    </linearGradient>
+
+    <!-- Silver metallic gradient (light mode) -->
+    <linearGradient id="silver" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D8D8E0"/>
+      <stop offset="25%" stop-color="#B0B0BE"/>
+      <stop offset="50%" stop-color="#C8C8D5"/>
+      <stop offset="75%" stop-color="#9898A8"/>
+      <stop offset="100%" stop-color="#B8B8C8"/>
+    </linearGradient>
+
+    <!-- Silver drip gradient -->
+    <linearGradient id="silverDrip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C0C0CE"/>
+      <stop offset="40%" stop-color="#A0A0B0"/>
+      <stop offset="100%" stop-color="#888898"/>
+    </linearGradient>
+
+    <!-- Chrome shine -->
+    <linearGradient id="chrome" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.3"/>
+    </linearGradient>
+
+    <!-- Accent gradient -->
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5E5CE6"/>
+      <stop offset="100%" stop-color="#BF5AF2"/>
+    </linearGradient>
+
+    <!-- Glow filter -->
+    <filter id="silverGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3"/>
+    </filter>
+
+    <!-- Soft ambient blur -->
+    <filter id="ambientBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="35"/>
+    </filter>
+
+    <!-- Drop shadow for depth -->
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.08"/>
+    </filter>
+
+    <clipPath id="roundedRect">
+      <rect width="800" height="200" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#roundedRect)">
+    <!-- Background -->
+    <rect width="800" height="200" fill="url(#bg)"/>
+
+    <!-- Ambient glow behind text -->
+    <ellipse cx="400" cy="95" rx="180" ry="60" fill="#B0B0C0" opacity="0.06" filter="url(#ambientBlur)"/>
+
+    <!-- Subtle grid -->
+    <g stroke="#000000" stroke-opacity="0.03" stroke-width="0.5">
+      <line x1="0" y1="50" x2="800" y2="50"/>
+      <line x1="0" y1="100" x2="800" y2="100"/>
+      <line x1="0" y1="150" x2="800" y2="150"/>
+      <line x1="200" y1="0" x2="200" y2="200"/>
+      <line x1="400" y1="0" x2="400" y2="200"/>
+      <line x1="600" y1="0" x2="600" y2="200"/>
+    </g>
+
+    <!-- === Silver wax dripping from top === -->
+
+    <!-- Wax pool on top edge — flowing down -->
+    <path d="M280,0 L520,0 L520,18 Q518,28 510,30 Q505,42 500,52 Q498,56 496,52 Q494,46 492,36 Q490,30 485,28 L480,26 Q478,36 475,44 Q472,50 470,44 Q468,36 466,28 L450,24 Q448,38 445,50 Q443,58 440,66 Q438,72 436,66 Q434,56 432,42 Q430,32 425,26 L400,22 Q397,34 394,46 Q392,52 390,46 Q388,38 386,28 L370,24 Q368,32 365,40 Q363,44 361,40 Q359,34 358,26 L340,22 Q337,30 334,38 Q332,46 330,52 Q328,58 326,52 Q324,42 322,30 L310,26 Q308,34 305,40 Q303,44 302,40 Q300,34 298,26 L290,22 Q288,26 286,22 Q284,18 280,18 Z" fill="url(#silver)" filter="url(#dropShadow)"/>
+
+    <!-- Highlight on the pool -->
+    <path d="M300,0 L500,0 L500,12 Q480,16 450,14 Q420,12 390,15 Q360,18 330,14 Q310,12 300,14 Z" fill="url(#chrome)"/>
+
+    <!-- Long drip — left of W -->
+    <path d="M310,26 Q310,40 311,56 Q312,68 311,80 Q310,88 309,84 Q308,76 308,64 Q308,50 308,38 Q308,30 310,26 Z" fill="url(#silverDrip)" filter="url(#dropShadow)"/>
+    <ellipse cx="310" cy="82" rx="3" ry="4" fill="url(#silverDrip)"/>
+
+    <!-- Long drip — center, dripping past text -->
+    <path d="M400,22 Q400,36 401,52 Q402,68 402,84 Q402,96 401,108 Q400,118 399,126 Q398,132 397,126 Q396,116 397,104 Q398,88 398,70 Q398,50 398,34 Q398,26 400,22 Z" fill="url(#silverDrip)" filter="url(#dropShadow)"/>
+    <ellipse cx="399" cy="130" rx="3.5" ry="5" fill="url(#silverDrip)"/>
+
+    <!-- Medium drip — right side -->
+    <path d="M475,44 Q475,52 476,62 Q477,72 476,80 Q475,86 474,80 Q473,70 474,58 Q474,50 475,44 Z" fill="url(#silverDrip)"/>
+    <ellipse cx="475" cy="84" rx="2.5" ry="3.5" fill="url(#silverDrip)"/>
+
+    <!-- Short drip — far right -->
+    <path d="M500,52 Q500,58 501,66 Q501,72 500,68 Q499,62 500,52 Z" fill="url(#silverDrip)"/>
+    <ellipse cx="500" cy="70" rx="2" ry="3" fill="url(#silverDrip)"/>
+
+    <!-- Small drip — left -->
+    <path d="M334,38 Q334,46 335,54 Q335,60 334,56 Q333,50 334,38 Z" fill="url(#silverDrip)"/>
+    <ellipse cx="334" cy="58" rx="2" ry="3" fill="url(#silverDrip)"/>
+
+    <!-- === Main "Wax" text === -->
+    <text x="400" y="100" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="6" fill="#1D1D1F">Wax</text>
+
+    <!-- Chrome sheen on text -->
+    <text x="400" y="100" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="6" fill="url(#chrome)" opacity="0.3">Wax</text>
+
+    <!-- Small silver splashes at text base -->
+    <ellipse cx="365" cy="120" rx="8" ry="2" fill="url(#silver)" opacity="0.25"/>
+    <ellipse cx="420" cy="122" rx="6" ry="1.5" fill="url(#silver)" opacity="0.2"/>
+    <ellipse cx="440" cy="119" rx="4" ry="1" fill="url(#silver)" opacity="0.15"/>
+
+    <!-- Subtitle -->
+    <text x="400" y="148" dominant-baseline="middle" text-anchor="middle" font-family="ui-rounded, SF Pro Rounded, system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" letter-spacing="3.5" fill="#86868B">SINGLE-FILE MEMORY FOR APPLE-NATIVE AI</text>
+
+    <!-- Accent line -->
+    <rect x="345" y="164" width="110" height="1.5" rx="0.75" fill="url(#accent)" opacity="0.35"/>
+
+    <!-- Bottom border -->
+    <rect x="0" y="197" width="800" height="3" fill="url(#accent)" opacity="0.15"/>
+  </g>
 </svg>
