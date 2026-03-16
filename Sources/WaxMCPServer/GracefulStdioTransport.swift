@@ -78,6 +78,7 @@ actor GracefulStdioTransport: Transport {
         messageWithNewline.append(UInt8(ascii: "\n"))
 
         var remaining = messageWithNewline
+        var zeroWriteCount = 0
         while !remaining.isEmpty {
             do {
                 let written = try remaining.withUnsafeBytes { buffer in
@@ -85,6 +86,13 @@ actor GracefulStdioTransport: Transport {
                 }
                 if written > 0 {
                     remaining = remaining.dropFirst(written)
+                    zeroWriteCount = 0
+                } else {
+                    zeroWriteCount += 1
+                    if zeroWriteCount > 100 {
+                        throw MCPError.transportError(Errno(rawValue: EIO))
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
                 }
             } catch let error where MCPError.isResourceTemporarilyUnavailable(error) {
                 try await Task.sleep(for: .milliseconds(10))

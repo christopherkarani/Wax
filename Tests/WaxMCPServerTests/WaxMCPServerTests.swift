@@ -1247,6 +1247,119 @@ private func withMemory(
     }
 }
 
+private func withVectorMemory(
+    _ body: @Sendable (MemoryOrchestrator) async throws -> Void
+) async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-vector-tests-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.enableTextSearch = true
+    config.enableStructuredMemory = false
+    config.ingestEmbeddingTimeout = .seconds(5)
+    config.queryEmbeddingTimeout = .seconds(5)
+    config.chunking = .tokenCount(targetTokens: 200, overlapTokens: 20)
+    config.rag = FastRAGConfig(
+        maxContextTokens: 120,
+        expansionMaxTokens: 60,
+        snippetMaxTokens: 30,
+        maxSnippets: 8,
+        searchTopK: 20,
+        searchMode: .hybrid(alpha: 0.5)
+    )
+
+    let embedder = MCPTestDeterministicEmbedder()
+    let memory = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+    var deferredError: Error?
+
+    do {
+        try await body(memory)
+    } catch {
+        deferredError = error
+    }
+
+    do {
+        try await memory.close()
+    } catch {
+        if deferredError == nil {
+            deferredError = error
+        }
+    }
+
+    if let deferredError {
+        throw deferredError
+    }
+}
+
+@Test
+func vectorSearchRememberFlushRecallHappyPath() async throws {
+    try await withVectorMemory { memory in
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_remember", arguments: [
+                "content": .string("Swift actors provide data isolation through actor-isolated state."),
+                "commit": .bool(true),
+            ]),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+        let rememberJSON = try parseJSONText(in: remember)
+        #expect((rememberJSON["status"] as? String) == "ok")
+        let framesAdded = rememberJSON["framesAdded"] as? Int ?? 0
+        #expect(framesAdded > 0)
+
+        let recall = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_recall", arguments: [
+                "query": .string("actors"),
+            ]),
+            memory: memory
+        )
+        #expect(recall.isError != true)
+        let recallText = firstText(in: recall)
+        #expect(recallText.contains("Results:"))
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_search", arguments: [
+                "query": .string("actors"),
+                "mode": .string("hybrid"),
+            ]),
+            memory: memory
+        )
+        #expect(search.isError != true)
+    }
+}
+
+@Test
+func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-hang-remember-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.ingestEmbeddingTimeout = .milliseconds(100)
+
+    let memory = try await MemoryOrchestrator(
+        at: url,
+        config: config,
+        embedder: HangingCountingEmbedder()
+    )
+    defer { Task { try? await memory.close() } }
+
+    let result = await WaxMCPTools.handleCall(
+        params: .init(name: "wax_remember", arguments: [
+            "content": .string("This should time out."),
+        ]),
+        memory: memory
+    )
+    #expect(result.isError == true)
+    let text = firstText(in: result)
+    #expect(text.localizedCaseInsensitiveContains("timeout") || text.localizedCaseInsensitiveContains("timed out"))
+}
+
 private func firstText(in result: CallTool.Result) -> String {
     for content in result.content {
         if case .text(let text) = content {
@@ -1347,6 +1460,25 @@ private actor IdentitylessEmbedder: EmbeddingProvider {
     func embed(_ text: String) async throws -> [Float] {
         _ = text
         return [1.0, 0.0]
+    }
+}
+
+private struct MCPTestDeterministicEmbedder: EmbeddingProvider, Sendable {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "MCPTest",
+        model: "Deterministic",
+        dimensions: 2,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        let a = Float(text.utf8.count % 97) / 97.0
+        let b = Float(text.unicodeScalars.count % 89) / 89.0
+        let norm = sqrt(a * a + b * b)
+        guard norm > 0 else { return [1, 0] }
+        return [a / norm, b / norm]
     }
 }
 

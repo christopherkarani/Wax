@@ -169,10 +169,20 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     package func prewarm(batchSize: Int = 16) async throws {
+        // Warm the 32-token bucket with a short input.
         _ = try await embed(" ")
+
+        // Warm the 64-token and 128-token buckets with representative-length
+        // inputs so CoreML does not need to recompile on first real prediction.
+        let medium = String(repeating: "token ", count: 12)   // ~12 words → ~15 tokens → 32 bucket (already warm)
+        let longer = String(repeating: "token ", count: 30)   // ~30 words → ~35 tokens → 64 bucket
+        let longest = String(repeating: "token ", count: 60)  // ~60 words → ~70 tokens → 128 bucket
+        _ = try await embed(longer)
+        _ = try await embed(longest)
+
         let clamped = max(1, min(batchSize, 32))
         if clamped > 1 {
-            let batch = Array(repeating: " ", count: clamped)
+            let batch = Array(repeating: medium, count: clamped)
             _ = try await embed(batch: batch)
         }
     }

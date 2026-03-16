@@ -17,6 +17,7 @@ package struct OrchestratorConfig: Sendable {
     package var enrichmentStopTimeout: Duration = .seconds(10)
     package var vectorEnginePreference: VectorEnginePreference = .auto
     package var queryEmbeddingTimeout: Duration? = .seconds(10)
+    package var ingestEmbeddingTimeout: Duration? = .seconds(30)
     package var vectorSearchTimeout: Duration? = .seconds(10)
 
     package var requireOnDeviceProviders: Bool = true

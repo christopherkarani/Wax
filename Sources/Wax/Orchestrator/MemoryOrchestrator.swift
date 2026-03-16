@@ -387,7 +387,8 @@ package actor MemoryOrchestrator {
                 chunkEmbedding = try await Self.embedOne(
                     chunk,
                     embedder: localEmbedder,
-                    cache: cache
+                    cache: cache,
+                    timeout: config.ingestEmbeddingTimeout
                 )
             } else {
                 chunkEmbedding = nil
@@ -455,6 +456,7 @@ package actor MemoryOrchestrator {
             }
 
         let parallelism = max(1, config.ingestConcurrency)
+        let ingestTimeout = config.ingestEmbeddingTimeout
 
         var preparedEmbeddingsByBatch: [Int: [[Float]]] = [:]
         preparedEmbeddingsByBatch.reserveCapacity(batchRanges.count)
@@ -469,7 +471,8 @@ package actor MemoryOrchestrator {
                         let embeddings = try await Self.prepareEmbeddingsBatchOptimized(
                             chunks: batchChunks,
                             embedder: localEmbedder,
-                            cache: cache
+                            cache: cache,
+                            timeout: ingestTimeout
                         )
                         return IngestBatchResult(
                             index: entry.index,
@@ -614,7 +617,8 @@ package actor MemoryOrchestrator {
     private static func prepareEmbeddingsBatchOptimized(
         chunks: [String],
         embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?
+        cache: EmbeddingMemoizer?,
+        timeout: Duration? = nil
     ) async throws -> [[Float]] {
 #if DEBUG
         Self._recordBatchPreparationPathCallForTests()
@@ -655,16 +659,30 @@ package actor MemoryOrchestrator {
         // Compute missing embeddings using batch API when available
         if !missingTexts.isEmpty {
             let vectors: [[Float]]
-            
+            let textsToEmbed = missingTexts // let-bind for @Sendable capture
+
             // Prefer batch embedding for significantly better throughput
             if let batchEmbedder = embedder as? any BatchEmbeddingProvider {
-                // Use optimized batch embedding - 3-8x faster than sequential
-                vectors = try await batchEmbedder.embed(batch: missingTexts)
+                if let timeout {
+                    vectors = try await AsyncTimeout.run(timeout: timeout, operation: "batch ingest embed") {
+                        try await batchEmbedder.embed(batch: textsToEmbed)
+                    }
+                } else {
+                    vectors = try await batchEmbedder.embed(batch: textsToEmbed)
+                }
             } else {
                 var sequentialVectors: [[Float]] = []
-                sequentialVectors.reserveCapacity(missingTexts.count)
-                for text in missingTexts {
-                    let vector = try await embedder.embed(text)
+                sequentialVectors.reserveCapacity(textsToEmbed.count)
+                for text in textsToEmbed {
+                    let vector: [Float]
+                    if let timeout {
+                        let textCopy = text
+                        vector = try await AsyncTimeout.run(timeout: timeout, operation: "ingest embed") {
+                            try await embedder.embed(textCopy)
+                        }
+                    } else {
+                        vector = try await embedder.embed(text)
+                    }
                     sequentialVectors.append(vector)
                 }
                 vectors = sequentialVectors
@@ -704,9 +722,10 @@ package actor MemoryOrchestrator {
     private static func prepareEmbeddingsBatch(
         chunks: [String],
         embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?
+        cache: EmbeddingMemoizer?,
+        timeout: Duration? = nil
     ) async throws -> [[Float]] {
-        try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache)
+        try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache, timeout: timeout)
     }
 
     // MARK: - Recall (Fast RAG)
