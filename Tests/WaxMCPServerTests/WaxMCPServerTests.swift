@@ -1495,7 +1495,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
 
     let storeURL: URL
 
-    init() throws {
+    init(useRealEmbedder: Bool = false) throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -1505,7 +1505,11 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             .appendingPathExtension("wax")
 
         process.executableURL = try Self.waxMCPBinaryURL(packageRoot: root)
-        process.arguments = ["--store-path", storeURL.path, "--no-embedder"]
+        var args = ["--store-path", storeURL.path]
+        if !useRealEmbedder {
+            args.append("--no-embedder")
+        }
+        process.arguments = args
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -1641,6 +1645,86 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             userInfo: [NSLocalizedDescriptionKey: "Could not find wax-mcp binary. Tried:\n\(attempted)"]
         )
     }
+
+    func stderrSnapshot() -> String {
+        withLocked { stderrLines.joined(separator: "\n") }
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
+    let harness = try MCPServerProcessHarness(useRealEmbedder: true)
+    try harness.start()
+    defer { harness.terminateIfNeeded() }
+
+    // Initialize — allow up to 60s for CoreML model load + prewarm
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+            "protocolVersion": "2024-11-05",
+            "capabilities": [:],
+            "clientInfo": ["name": "wax-mcp-coreml-test", "version": "1.0"],
+        ],
+    ])
+    let initResp = try await harness.waitForResponseLine(id: 1, timeout: 60)
+    #expect(initResp.contains(#""protocolVersion":"2024-11-05""#))
+
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": [:],
+    ])
+
+    // 200+ word content → forces 256-token bucket (NOT prewarmed)
+    let longContent = """
+    The architecture of modern distributed systems requires careful consideration \
+    of consistency models, partition tolerance, and availability guarantees as \
+    described by the CAP theorem. When designing microservices that communicate \
+    via message queues and event-driven architectures, developers must account for \
+    eventual consistency, idempotent message processing, and proper dead-letter \
+    queue handling. The Swift programming language provides excellent support for \
+    building concurrent applications through its actor model, which isolates \
+    mutable state and prevents data races at compile time. Combined with async/await \
+    syntax and structured concurrency via task groups, Swift enables developers to \
+    write safe, performant server-side applications. Core ML on Apple platforms \
+    offers on-device machine learning inference with support for neural engine \
+    acceleration, but careful attention must be paid to model compilation, \
+    sequence length bucketing, and thread pool management to avoid performance \
+    bottlenecks. The MiniLM model produces 384-dimensional dense embeddings \
+    suitable for semantic search and retrieval-augmented generation workflows.
+    """
+
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": [
+            "name": "wax_remember",
+            "arguments": ["content": longContent],
+        ],
+    ])
+
+    let rememberResp = try await harness.waitForResponseLine(id: 2, timeout: 60)
+    let rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
+    #expect((rememberJSON["committed"] as? Bool) == true)
+
+    // Recall with vector search to exercise the query embedding path
+    try harness.sendJSONLine([
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": [
+            "name": "wax_recall",
+            "arguments": ["query": "Swift concurrency", "limit": 3],
+        ],
+    ])
+    let recallResp = try await harness.waitForResponseLine(id: 3, timeout: 30)
+    #expect(recallResp.contains("result"))
+
+    try harness.closeInput()
+    #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
 }
 
 #else

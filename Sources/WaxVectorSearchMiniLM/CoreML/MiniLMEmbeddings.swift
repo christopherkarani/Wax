@@ -58,6 +58,15 @@ package final class MiniLMEmbeddings {
     package let outputDimension: Int = 384
     private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
 
+    /// Dedicated queue for CoreML prediction calls. CoreML's `model.prediction()` is synchronous
+    /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
+    /// (non-cooperative) queue prevents starvation of the Swift concurrency cooperative thread pool,
+    /// which the MCP server's transport readLoop and send operations depend on for progress.
+    private static let predictionQueue = DispatchQueue(
+        label: "wax.minilm.coreml-prediction",
+        qos: .userInitiated
+    )
+
     package var computeUnits: MLComputeUnits {
         model.model.configuration.computeUnits
     }
@@ -114,6 +123,33 @@ package final class MiniLMEmbeddings {
         self.model = model
     }
 
+    // MARK: - Off-Pool Prediction
+
+    /// Run CoreML prediction on a dedicated dispatch queue instead of a cooperative thread.
+    ///
+    /// CoreML's `model.prediction()` is synchronous — the calling thread blocks until the
+    /// neural engine / CPU finishes inference. If that thread belongs to the Swift concurrency
+    /// cooperative pool (typical), no other async work (transport I/O, MCP message dispatch)
+    /// can make progress on it until prediction returns. On cold sequence-length buckets the
+    /// block can last 5–30 s while CoreML recompiles the execution plan.
+    ///
+    /// Dispatching to `predictionQueue` keeps the cooperative pool free.
+    private func predictionOffPool(
+        inputIds: MLMultiArray,
+        attentionMask: MLMultiArray
+    ) async -> all_MiniLM_L6_v2Output? {
+        let localModel = model
+        return await withCheckedContinuation { continuation in
+            Self.predictionQueue.async {
+                let output = try? localModel.prediction(
+                    input_ids: inputIds,
+                    attention_mask: attentionMask
+                )
+                continuation.resume(returning: output)
+            }
+        }
+    }
+
     // MARK: - Dense Embeddings
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
@@ -123,9 +159,9 @@ package final class MiniLMEmbeddings {
             sequenceLengthBuckets: Self.sequenceLengthBuckets
         ), batchInputs.sequenceLength > 0 else { return nil }
 
-        guard let output = try? model.prediction(
-            input_ids: batchInputs.inputIds,
-            attention_mask: batchInputs.attentionMask
+        guard let output = await predictionOffPool(
+            inputIds: batchInputs.inputIds,
+            attentionMask: batchInputs.attentionMask
         ) else {
             return nil
         }
@@ -140,13 +176,13 @@ package final class MiniLMEmbeddings {
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
     package func encode(batch sentences: [String]) async -> [[Float]]? {
         var reuse: BatchInputBuffers?
-        return encode(batch: sentences, reuseBuffers: &reuse)
+        return await encode(batch: sentences, reuseBuffers: &reuse)
     }
 
     package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
-    ) -> [[Float]]? {
+    ) async -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
         guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
@@ -155,9 +191,9 @@ package final class MiniLMEmbeddings {
             reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
 
-        guard let output = try? model.prediction(
-            input_ids: batchInputs.inputIds,
-            attention_mask: batchInputs.attentionMask
+        guard let output = await predictionOffPool(
+            inputIds: batchInputs.inputIds,
+            attentionMask: batchInputs.attentionMask
         ) else {
             return nil
         }
@@ -170,15 +206,15 @@ package final class MiniLMEmbeddings {
     }
 
     /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> [Float]? {
-        let inputFeatures = all_MiniLM_L6_v2Input(input_ids: inputIds, attention_mask: attentionMask)
-        let output = try? model.prediction(input: inputFeatures)
-
-        guard let embeddings = output?.var_554 else {
+    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async -> [Float]? {
+        guard let output = await predictionOffPool(
+            inputIds: inputIds,
+            attentionMask: attentionMask
+        ) else {
             return nil
         }
 
-        return Self.decodeEmbeddings(embeddings, batchSize: 1, outputDimension: outputDimension)?.first
+        return Self.decodeEmbeddings(output.var_554, batchSize: 1, outputDimension: outputDimension)?.first
     }
 
 }

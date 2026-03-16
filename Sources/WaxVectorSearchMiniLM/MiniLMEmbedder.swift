@@ -154,7 +154,12 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     
     /// Core ML batch prediction path (true batching).
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = model.encode(batch: texts, reuseBuffers: &batchInputBuffers) else {
+        // Copy buffer out, call async encode, copy back — required because
+        // actor-isolated inout properties can't be passed to async functions.
+        var buffers = batchInputBuffers
+        let vectors = await model.encode(batch: texts, reuseBuffers: &buffers)
+        batchInputBuffers = buffers
+        guard let vectors else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
         }
         guard vectors.count == texts.count else {
