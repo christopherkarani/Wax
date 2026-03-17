@@ -117,34 +117,86 @@ Wax 采用**“数据库中的数据库”**模型。它管理自己的基于帧
 
 ## 快速开始
 
-将以下代码粘贴到 `main.swift` 文件中即可立即开始。
+```swift
+import Wax
+
+// 使用可写入的位置（适用于应用和 CLI 工具）
+let url = URL.documentsDirectory.appending(path: "agent.wax")
+
+// 1. 打开记忆存储
+let memory = try await Memory(at: url)
+
+// 2. 保存记忆
+try await memory.save("用户正在使用 SwiftUI 开发一个习惯追踪器。")
+
+// 3. 使用混合检索（文本 + 向量）进行搜索
+let results = try await memory.search("用户正在开发什么？")
+
+if let best = results.items.first {
+    print("找到：\(best.text)")
+    // → "找到：用户正在使用 SwiftUI 开发一个习惯追踪器。"
+}
+
+try await memory.close()
+```
+
+<details>
+<summary><strong>SwiftUI 示例</strong></summary>
 
 ```swift
-import Foundation
+import SwiftUI
 import Wax
-import WaxVectorSearchMiniLM
+
+struct ContentView: View {
+    @State private var result = "搜索中…"
+
+    var body: some View {
+        Text(result)
+            .task {
+                do {
+                    let url = URL.documentsDirectory.appending(path: "agent.wax")
+                    let memory = try await Memory(at: url)
+
+                    try await memory.save("用户正在使用 SwiftUI 开发一个习惯追踪器。")
+                    let context = try await memory.search("用户正在开发什么？")
+
+                    result = context.items.first?.text ?? "未找到"
+                    try await memory.close()
+                } catch {
+                    result = "错误：\(error.localizedDescription)"
+                }
+            }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>CLI 工具 (main.swift)</strong></summary>
+
+```swift
+import Wax
 
 @main
 struct AgentMemory {
     static func main() async throws {
-        let url = URL(fileURLWithPath: "agent.wax")
+        let url = URL.documentsDirectory.appending(path: "agent.wax")
+        let memory = try await Memory(at: url)
 
-        // 1. 初始化记忆存储（设备端 MiniLM 嵌入）
-        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
+        try await memory.save("用户正在使用 SwiftUI 开发一个习惯追踪器。")
 
-        // 2. 存入一条新记忆
-        try await memory.remember("用户正在使用 SwiftUI 开发一个习惯追踪器。")
-
-        // 3. 执行语义检索
-        let context = try await memory.recall(query: "用户正在开发什么？")
-
-        if let bestMatch = context.items.first {
-            print("检索结果：\(bestMatch.text)") 
-            // 输出："检索结果：用户正在使用 SwiftUI 开发一个习惯追踪器。"
+        let results = try await memory.search("用户正在开发什么？")
+        if let best = results.items.first {
+            print("找到：\(best.text)")
         }
+
+        try await memory.close()
     }
 }
 ```
+
+</details>
 
 想要存储持久化事实和长期推理？请参阅 [结构化记忆](../Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md)。
 

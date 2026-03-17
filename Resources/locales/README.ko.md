@@ -117,34 +117,86 @@ Wax는 **"데이터베이스의 데이터베이스"** 모델을 사용합니다.
 
 ## 빠른 시작
 
-즉시 시작하려면 이것을 `main.swift` 파일에 복사하여 붙여넣으세요.
+```swift
+import Wax
+
+// 쓰기 가능한 위치 사용 (앱과 CLI 도구 모두에서 동작)
+let url = URL.documentsDirectory.appending(path: "agent.wax")
+
+// 1. 메모리 저장소 열기
+let memory = try await Memory(at: url)
+
+// 2. 메모리 저장
+try await memory.save("사용자가 SwiftUI로 습관 추적기를 만들고 있습니다.")
+
+// 3. 하이브리드 리콜 (텍스트 + 벡터)로 검색
+let results = try await memory.search("사용자가 무엇을 만들고 있나요?")
+
+if let best = results.items.first {
+    print("검색 결과: \(best.text)")
+    // → "검색 결과: 사용자가 SwiftUI로 습관 추적기를 만들고 있습니다."
+}
+
+try await memory.close()
+```
+
+<details>
+<summary><strong>SwiftUI 예제</strong></summary>
 
 ```swift
-import Foundation
+import SwiftUI
 import Wax
-import WaxVectorSearchMiniLM
+
+struct ContentView: View {
+    @State private var result = "검색 중…"
+
+    var body: some View {
+        Text(result)
+            .task {
+                do {
+                    let url = URL.documentsDirectory.appending(path: "agent.wax")
+                    let memory = try await Memory(at: url)
+
+                    try await memory.save("사용자가 SwiftUI로 습관 추적기를 만들고 있습니다.")
+                    let context = try await memory.search("사용자가 무엇을 만들고 있나요?")
+
+                    result = context.items.first?.text ?? "결과 없음"
+                    try await memory.close()
+                } catch {
+                    result = "오류: \(error.localizedDescription)"
+                }
+            }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>CLI 도구 (main.swift)</strong></summary>
+
+```swift
+import Wax
 
 @main
 struct AgentMemory {
     static func main() async throws {
-        let url = URL(fileURLWithPath: "agent.wax")
+        let url = URL.documentsDirectory.appending(path: "agent.wax")
+        let memory = try await Memory(at: url)
 
-        // 1. 메모리 저장소 초기화 (기기 내 MiniLM 임베딩)
-        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
+        try await memory.save("사용자가 SwiftUI로 습관 추적기를 만들고 있습니다.")
 
-        // 2. 새로운 메모리 저장
-        try await memory.remember("사용자가 SwiftUI로 습관 추적기를 만들고 있습니다.")
-
-        // 3. 의미론적 리콜 수행
-        let context = try await memory.recall(query: "사용자가 무엇을 만들고 있나요?")
-
-        if let bestMatch = context.items.first {
-            print("리콜: \(bestMatch.text)") 
-            // 출력: "리콜: 사용자가 SwiftUI로 습관 추적기를 만들고 있습니다."
+        let results = try await memory.search("사용자가 무엇을 만들고 있나요?")
+        if let best = results.items.first {
+            print("검색 결과: \(best.text)")
         }
+
+        try await memory.close()
     }
 }
 ```
+
+</details>
 
 지속적인 사실과 장기적인 추론을 저장하고 싶으신가요? [구조화된 메모리](../Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md)를 확인하세요.
 

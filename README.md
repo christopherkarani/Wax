@@ -119,7 +119,63 @@ Wax uses a **"Database of Databases"** model. It manages its own frame-based sto
 
 ### Swift
 
-Copy and paste this into a `main.swift` file to get started immediately.
+```swift
+import Wax
+
+// Use a sandbox-safe, writable location (works in apps and CLI tools)
+let url = URL.documentsDirectory.appending(path: "agent.wax")
+
+// 1. Open a memory store
+let memory = try await Memory(at: url)
+
+// 2. Save a memory
+try await memory.save("The user is building a habit tracker in SwiftUI.")
+
+// 3. Search with hybrid recall (text + vector)
+let results = try await memory.search("What is the user building?")
+
+if let best = results.items.first {
+    print("Found: \(best.text)")
+    // → "Found: The user is building a habit tracker in SwiftUI."
+}
+
+try await memory.close()
+```
+
+<details>
+<summary><strong>SwiftUI example</strong></summary>
+
+```swift
+import SwiftUI
+import Wax
+
+struct ContentView: View {
+    @State private var result = "Searching…"
+
+    var body: some View {
+        Text(result)
+            .task {
+                do {
+                    let url = URL.documentsDirectory.appending(path: "agent.wax")
+                    let memory = try await Memory(at: url)
+
+                    try await memory.save("The user is building a habit tracker in SwiftUI.")
+                    let context = try await memory.search("What is the user building?")
+
+                    result = context.items.first?.text ?? "Nothing found"
+                    try await memory.close()
+                } catch {
+                    result = "Error: \(error.localizedDescription)"
+                }
+            }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>CLI tool (main.swift)</strong></summary>
 
 ```swift
 import Wax
@@ -127,26 +183,22 @@ import Wax
 @main
 struct AgentMemory {
     static func main() async throws {
-        let url = URL(fileURLWithPath: "agent.wax")
-
-        // 1. Open a memory store
+        let url = URL.documentsDirectory.appending(path: "agent.wax")
         let memory = try await Memory(at: url)
 
-        // 2. Save a memory
         try await memory.save("The user is building a habit tracker in SwiftUI.")
 
-        // 3. Search with hybrid recall (text + vector)
         let results = try await memory.search("What is the user building?")
-
         if let best = results.items.first {
             print("Found: \(best.text)")
-            // Output: "Found: The user is building a habit tracker in SwiftUI."
         }
 
         try await memory.close()
     }
 }
 ```
+
+</details>
 
 Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
 

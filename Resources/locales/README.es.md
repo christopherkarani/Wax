@@ -117,34 +117,86 @@ Wax utiliza un modelo de **"Base de datos de bases de datos"**. Gestiona su prop
 
 ## Inicio rápido
 
-Copia y pega esto en un archivo `main.swift` para comenzar de inmediato.
+```swift
+import Wax
+
+// Usa una ubicación con permisos de escritura (funciona en apps y herramientas CLI)
+let url = URL.documentsDirectory.appending(path: "agent.wax")
+
+// 1. Abre un almacén de memoria
+let memory = try await Memory(at: url)
+
+// 2. Guarda una memoria
+try await memory.save("El usuario está construyendo un rastreador de hábitos en SwiftUI.")
+
+// 3. Busca con recuperación híbrida (texto + vector)
+let results = try await memory.search("¿Qué está construyendo el usuario?")
+
+if let best = results.items.first {
+    print("Encontrado: \(best.text)")
+    // → "Encontrado: El usuario está construyendo un rastreador de hábitos en SwiftUI."
+}
+
+try await memory.close()
+```
+
+<details>
+<summary><strong>Ejemplo en SwiftUI</strong></summary>
 
 ```swift
-import Foundation
+import SwiftUI
 import Wax
-import WaxVectorSearchMiniLM
+
+struct ContentView: View {
+    @State private var result = "Buscando…"
+
+    var body: some View {
+        Text(result)
+            .task {
+                do {
+                    let url = URL.documentsDirectory.appending(path: "agent.wax")
+                    let memory = try await Memory(at: url)
+
+                    try await memory.save("El usuario está construyendo un rastreador de hábitos en SwiftUI.")
+                    let context = try await memory.search("¿Qué está construyendo el usuario?")
+
+                    result = context.items.first?.text ?? "Nada encontrado"
+                    try await memory.close()
+                } catch {
+                    result = "Error: \(error.localizedDescription)"
+                }
+            }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Herramienta CLI (main.swift)</strong></summary>
+
+```swift
+import Wax
 
 @main
 struct AgentMemory {
     static func main() async throws {
-        let url = URL(fileURLWithPath: "agent.wax")
+        let url = URL.documentsDirectory.appending(path: "agent.wax")
+        let memory = try await Memory(at: url)
 
-        // 1. Inicializa un almacén de memoria (embeddings MiniLM en el dispositivo)
-        let memory = try await MemoryOrchestrator.openMiniLM(at: url)
+        try await memory.save("El usuario está construyendo un rastreador de hábitos en SwiftUI.")
 
-        // 2. Registra una nueva memoria
-        try await memory.remember("El usuario está construyendo un rastreador de hábitos en SwiftUI.")
-
-        // 3. Realiza una recuperación semántica
-        let context = try await memory.recall(query: "¿Qué está construyendo el usuario?")
-
-        if let bestMatch = context.items.first {
-            print("Recuperación: \(bestMatch.text)") 
-            // Salida: "Recuperación: El usuario está construyendo un rastreador de hábitos en SwiftUI."
+        let results = try await memory.search("¿Qué está construyendo el usuario?")
+        if let best = results.items.first {
+            print("Encontrado: \(best.text)")
         }
+
+        try await memory.close()
     }
 }
 ```
+
+</details>
 
 ¿Buscas almacenar hechos persistentes y razonamiento a largo plazo? Consulta [Memoria Estructurada](../Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
 
