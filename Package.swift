@@ -57,15 +57,22 @@ let package = Package(
             targets: ["Wax"]
         ),
         .library(name: "WaxCore", targets: ["WaxCore"]),
+        .library(name: "WaxBertTokenizer", targets: ["WaxBertTokenizer"]),
         .library(name: "WaxTextSearch", targets: ["WaxTextSearch"]),
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
         .library(name: "WaxVectorSearchMiniLM", targets: ["WaxVectorSearchMiniLM"]),
+        .library(name: "WaxVectorSearchArctic", targets: ["WaxVectorSearchArctic"]),
     ],
     traits: [
         .default(enabledTraits: ["MiniLMEmbeddings"]),
         .init(
             name: "MiniLMEmbeddings",
             description: "Includes the built-in MiniLM embedding provider",
+            enabledTraits: []
+        ),
+        .init(
+            name: "ArcticEmbeddings",
+            description: "Includes the Snowflake Arctic Embed Small provider",
             enabledTraits: []
         ),
         .init(
@@ -115,6 +122,12 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
+            name: "WaxBertTokenizer",
+            dependencies: [],
+            resources: [.process("Resources/bert_tokenizer_vocab.txt")],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "WaxTextSearch",
             dependencies: [
                 "WaxCore",
@@ -140,10 +153,21 @@ let package = Package(
             name: "WaxVectorSearchMiniLM",
             dependencies: [
                 "WaxVectorSearch",
+                "WaxBertTokenizer",
             ],
             resources: [
                 .copy("Resources/all-MiniLM-L6-v2.mlmodelc"),
-                .process("Resources/bert_tokenizer_vocab.txt"),
+            ],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .target(
+            name: "WaxVectorSearchArctic",
+            dependencies: [
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/snowflake-arctic-embed-s.mlmodelc"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
@@ -157,9 +181,16 @@ let package = Package(
                     name: "WaxVectorSearchMiniLM",
                     condition: .when(traits: ["MiniLMEmbeddings"])
                 ),
+                .target(
+                    name: "WaxVectorSearchArctic",
+                    condition: .when(traits: ["ArcticEmbeddings"])
+                ),
             ],
             resources: [.process("RAG/Resources")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
+            ]
         ),
         .executableTarget(
             name: "wax-mcp",
@@ -179,14 +210,16 @@ let package = Package(
                     name: "WaxVectorSearchMiniLM",
                     condition: .when(traits: ["MiniLMEmbeddings"])
                 ),
+                .target(
+                    name: "WaxVectorSearchArctic",
+                    condition: .when(traits: ["ArcticEmbeddings"])
+                ),
             ],
             path: "Sources/WaxMCPServer",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
-                // Inject -D MCPServer so #if MCPServer guards in source files are active
-                // when the MCPServer trait is enabled. Without this define, all MCP-specific
-                // code is dead code even when the MCP dependency is linked.
                 .define("MCPServer", .when(traits: ["MCPServer"])),
+                .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),
         .executableTarget(
@@ -196,11 +229,14 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .target(name: "WaxVectorSearchMiniLM",
                         condition: .when(traits: ["MiniLMEmbeddings"])),
+                .target(name: "WaxVectorSearchArctic",
+                        condition: .when(traits: ["ArcticEmbeddings"])),
             ],
             path: "Sources/WaxCLI",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+                .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),
         .executableTarget(
@@ -220,14 +256,14 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .target(name: "WaxVectorSearchMiniLM",
                         condition: .when(traits: ["MiniLMEmbeddings"])),
+                .target(name: "WaxVectorSearchArctic",
+                        condition: .when(traits: ["ArcticEmbeddings"])),
             ],
             path: "Sources/WaxRepo",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
-                // Inject -D WaxRepo so #if WaxRepo guards in source files are active
-                // when the WaxRepo trait is enabled. Without this define, all WaxRepo
-                // command code is dead code even when the trait is linked.
                 .define("WaxRepo", .when(traits: ["WaxRepo"])),
+                .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),
         .testTarget(
@@ -253,6 +289,18 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
+            name: "WaxArcticTests",
+            dependencies: [
+                "Wax",
+                "WaxVectorSearchArctic",
+                "WaxVectorSearchMiniLM",
+                "WaxBertTokenizer",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            path: "Tests/WaxArcticTests",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .testTarget(
             name: "wax-mcpTests",
             dependencies: [
                 "Wax",
@@ -270,8 +318,6 @@ let package = Package(
             path: "Tests/WaxMCPServerTests",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
-                // Must mirror the WaxMCPServer target so #if MCPServer guards in test
-                // source resolve to true when building with --traits MCPServer.
                 .define("MCPServer", .when(traits: ["MCPServer"])),
             ]
         ),

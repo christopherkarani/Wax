@@ -24,6 +24,16 @@ package protocol BatchEmbeddingProvider: EmbeddingProvider {
     func embed(batch texts: [String]) async throws -> [[Float]]
 }
 
+/// An embedding provider that can produce query-optimized embeddings.
+///
+/// Some models (e.g. Snowflake Arctic Embed) benefit from prepending a task-specific
+/// prefix to the query text at recall time. Providers that do not need special query
+/// handling can simply call through to `embed(_:)`.
+package protocol QueryAwareEmbeddingProvider: EmbeddingProvider {
+    /// Produce an embedding optimized for retrieval queries.
+    func embedQuery(_ text: String) async throws -> [Float]
+}
+
 public struct EmbeddingIdentity: Sendable, Equatable {
     public var provider: String?
     public var model: String?

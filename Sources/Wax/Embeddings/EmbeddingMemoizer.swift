@@ -168,7 +168,7 @@ extension EmbeddingMemoizer {
 }
 
 enum EmbeddingKey {
-    static func make(text: String, identity: EmbeddingIdentity?, dimensions: Int, normalized: Bool) -> UInt64 {
+    static func make(text: String, identity: EmbeddingIdentity?, dimensions: Int, normalized: Bool, queryAware: Bool = false) -> UInt64 {
         var hasher = FNV1a64()
         if let identity {
             hasher.append(identity.provider ?? "")
@@ -179,6 +179,9 @@ enum EmbeddingKey {
             hasher.append("nil_identity")
             hasher.append(String(dimensions))
             hasher.append(String(normalized))
+        }
+        if queryAware {
+            hasher.append("query")
         }
         hasher.append(text)
         return hasher.finalize()

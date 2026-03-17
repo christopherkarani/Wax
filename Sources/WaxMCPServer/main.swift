@@ -10,6 +10,10 @@ import Wax
 import WaxVectorSearchMiniLM
 #endif
 
+#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+import WaxVectorSearchArctic
+#endif
+
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -23,7 +27,10 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
 
-    @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without MiniLM")
+    @Option(name: .customLong("embedder"), help: "Embedding provider: minilm (default) or arctic")
+    var embedderChoice: String = "minilm"
+
+    @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")
     var noEmbedder = false
 
     mutating func run() throws {
@@ -73,7 +80,13 @@ struct WaxMCPServerCommand: ParsableCommand {
         let activeToolNames = ToolSchemas.tools(structuredMemoryEnabled: memoryConfig.enableStructuredMemory)
             .map(\.name)
 
-        let embedderStatus = memoryConfig.enableVectorSearch ? "miniLM" : "text-only"
+        let embedderStatus: String = {
+            guard memoryConfig.enableVectorSearch else { return "text-only" }
+            if let identity = embedder?.identity?.model {
+                return identity
+            }
+            return embedderChoice.lowercased()
+        }()
         writeStderr(
             "wax-mcp config: store=\"\(memoryURL.path)\" " +
                 "structuredMemory=\(memoryConfig.enableStructuredMemory) " +
@@ -196,30 +209,49 @@ struct WaxMCPServerCommand: ParsableCommand {
             return nil
         }
 
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-        do {
-            // CoreML model loading isn't reliably cancellable; bound init with a timeout so the server
-            // can degrade to text-only mode instead of hanging indefinitely on startup.
-            let timeout: Duration = {
-                let env = ProcessInfo.processInfo.environment
-                if let raw = env["WAX_EMBEDDER_TIMEOUT_SECS"],
-                   let secs = Double(raw),
-                   secs > 0 {
-                    return .milliseconds(Int64(secs * 1000))
-                }
-                return .seconds(30)
-            }()
+        let timeout: Duration = {
+            let env = ProcessInfo.processInfo.environment
+            if let raw = env["WAX_EMBEDDER_TIMEOUT_SECS"],
+               let secs = Double(raw),
+               secs > 0 {
+                return .milliseconds(Int64(secs * 1000))
+            }
+            return .seconds(30)
+        }()
 
+        // Try Arctic if explicitly requested
+        if embedderChoice.lowercased() == "arctic" {
+            #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
             do {
-                return try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder init") {
-                    try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
+                return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic embedder init") {
+                    try await ArcticEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
                 }
             } catch let error as AsyncTimeout.TimeoutError {
                 writeStderr(
-                    "Warning: MiniLM embedder timed out after \(timeout) (\(error)); falling back to text-only search."
+                    "Warning: Arctic embedder timed out after \(timeout) (\(error)); falling back to text-only search."
                 )
                 return nil
+            } catch {
+                writeStderr("Warning: Arctic embedder failed to load (\(error)); falling back to text-only search.")
+                return nil
             }
+            #else
+            writeStderr("Warning: Arctic embeddings not available in this build. Falling back to text-only search.")
+            return nil
+            #endif
+        }
+
+        // Default: MiniLM
+        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+        do {
+            return try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder init") {
+                try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
+            }
+        } catch let error as AsyncTimeout.TimeoutError {
+            writeStderr(
+                "Warning: MiniLM embedder timed out after \(timeout) (\(error)); falling back to text-only search."
+            )
+            return nil
         } catch {
             writeStderr("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.")
             return nil

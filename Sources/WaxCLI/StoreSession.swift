@@ -5,6 +5,10 @@ import Wax
 import WaxVectorSearchMiniLM
 #endif
 
+#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+import WaxVectorSearchArctic
+#endif
+
 // MARK: - OnceContinuation
 
 /// A thread-safe wrapper that ensures a `CheckedContinuation` is resumed exactly once.
@@ -44,6 +48,15 @@ enum StoreSession {
         #endif
     }
 
+    /// Whether this binary was compiled with Arctic Embed Small support.
+    static var arcticCompiled: Bool {
+        #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+        return true
+        #else
+        return false
+        #endif
+    }
+
     static func resolveURL(_ rawPath: String) throws -> URL {
         let expanded = (rawPath as NSString).expandingTildeInPath
         let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -74,12 +87,57 @@ enum StoreSession {
 
     /// Open a memory store with an optional embedder.
     ///
-    /// - Parameter skipPrewarm: Skip the MiniLM prewarm step to reduce cold-start latency.
-    ///   Use `true` for write-only operations (remember, handoff) where the first real
-    ///   embedding will warm the model naturally.
-    static func open(at url: URL, noEmbedder: Bool = false, skipPrewarm: Bool = false) async throws -> MemoryOrchestrator {
+    /// - Parameters:
+    ///   - skipPrewarm: Skip the prewarm step to reduce cold-start latency.
+    ///     Use `true` for write-only operations (remember, handoff) where the first real
+    ///     embedding will warm the model naturally.
+    ///   - embedderChoice: Which embedder to use: `"minilm"` (default) or `"arctic"`.
+    static func open(at url: URL, noEmbedder: Bool = false, skipPrewarm: Bool = false, embedderChoice: String = "minilm") async throws -> MemoryOrchestrator {
         let embedder: (any EmbeddingProvider)? = try await {
             guard !noEmbedder else { return nil }
+
+            // Arctic path
+            if embedderChoice.lowercased() == "arctic" {
+                #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+                if !skipPrewarm {
+                    writeStderr("Loading Arctic embedder...")
+                }
+
+                let e: ArcticEmbedder? = await withCheckedContinuation { cont in
+                    let once = OnceContinuation<ArcticEmbedder?>(cont)
+                    let timeoutNS = embedderTimeoutNS
+
+                    Task {
+                        do {
+                            let embedder = try await ArcticEmbedder.makeCommandLineEmbedder(
+                                prewarmBatchSize: 1,
+                                skipPrewarm: skipPrewarm
+                            )
+                            once.resume(returning: embedder)
+                        } catch {
+                            writeStderr("Warning: Arctic embedder failed to load (\(error)); falling back to text-only search.")
+                            once.resume(returning: nil)
+                        }
+                    }
+
+                    Task {
+                        try? await Task.sleep(nanoseconds: timeoutNS)
+                        if once.resume(returning: nil) {
+                            let secs = Int(timeoutNS / 1_000_000_000)
+                            writeStderr("Warning: Arctic embedder timed out (>\(secs)s); falling back to text-only search. Set WAX_EMBEDDER_TIMEOUT_SECS to extend.")
+                        }
+                    }
+                }
+                return e
+                #else
+                if !noEmbedder {
+                    writeStderr("Note: Arctic not available in this build. Falling back to text-only search.")
+                }
+                return nil
+                #endif
+            }
+
+            // Default: MiniLM
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
             if !skipPrewarm {
                 writeStderr("Loading MiniLM embedder...")

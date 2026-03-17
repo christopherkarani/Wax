@@ -1626,7 +1626,8 @@ package actor MemoryOrchestrator {
                     query,
                     embedder: embedder,
                     cache: embeddingCache,
-                    timeout: config.queryEmbeddingTimeout
+                    timeout: config.queryEmbeddingTimeout,
+                    isQuery: true
                 )
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
@@ -1656,7 +1657,8 @@ package actor MemoryOrchestrator {
                     query,
                     embedder: embedder,
                     cache: embeddingCache,
-                    timeout: config.queryEmbeddingTimeout
+                    timeout: config.queryEmbeddingTimeout,
+                    isQuery: true
                 )
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
@@ -1672,13 +1674,17 @@ package actor MemoryOrchestrator {
         _ text: String,
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?,
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        isQuery: Bool = false
     ) async throws -> [Float] {
+        // Use query-aware embedding when available and this is a recall/query path.
+        let useQueryEmbed = isQuery && (embedder is any QueryAwareEmbeddingProvider)
         let key = EmbeddingKey.make(
             text: text,
             identity: embedder.identity,
             dimensions: embedder.dimensions,
-            normalized: embedder.normalize
+            normalized: embedder.normalize,
+            queryAware: useQueryEmbed
         )
         if let cached = await cache?.get(key) {
             return cached
@@ -1687,10 +1693,17 @@ package actor MemoryOrchestrator {
         var vector: [Float]
         if let timeout {
             vector = try await AsyncTimeout.run(timeout: timeout, operation: "embedder.embed") {
-                try await embedder.embed(text)
+                if useQueryEmbed, let qa = embedder as? any QueryAwareEmbeddingProvider {
+                    return try await qa.embedQuery(text)
+                }
+                return try await embedder.embed(text)
             }
         } else {
-            vector = try await embedder.embed(text)
+            if useQueryEmbed, let qa = embedder as? any QueryAwareEmbeddingProvider {
+                vector = try await qa.embedQuery(text)
+            } else {
+                vector = try await embedder.embed(text)
+            }
         }
         if embedder.normalize {
             vector = normalizedL2(vector)

@@ -1,0 +1,101 @@
+[
+  {
+    "shortDescription" : "Snowflake Arctic Embed Small (384-dim, FP16). CLS extraction + L2 normalization baked in. Optimized for Wax on-device memory RAG.",
+    "metadataOutputVersion" : "3.0",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32)",
+        "shortDescription" : "",
+        "shape" : "[]",
+        "name" : "embeddings",
+        "type" : "MultiArray"
+      }
+    ],
+    "version" : "1.0",
+    "modelParameters" : [
+
+    ],
+    "author" : "Wax",
+    "specificationVersion" : 9,
+    "storagePrecision" : "Mixed (Float32, Int32, Int8)",
+    "mlProgramOperationTypeHistogram" : {
+      "Ios18.expandDims" : 2,
+      "Ios18.mul" : 13,
+      "Ios18.softmax" : 12,
+      "Ios16.reduceL2Norm" : 1,
+      "Ios18.matmul" : 24,
+      "Ios18.realDiv" : 2,
+      "Ios18.equal" : 1,
+      "Ios18.greaterEqual" : 6,
+      "Select" : 7,
+      "Tile" : 1,
+      "Ios18.gather" : 41,
+      "Ios18.add" : 44,
+      "Ios18.layerNorm" : 25,
+      "Ios18.reshape" : 48,
+      "Shape" : 26,
+      "Ios18.linear" : 72,
+      "Ios18.concat" : 26,
+      "Ios18.cast" : 1,
+      "Ios18.sub" : 1,
+      "Ios18.transpose" : 48,
+      "Ios18.gelu" : 12,
+      "Ios18.clip" : 1,
+      "Ios18.sliceByIndex" : 3,
+      "Ios18.constexprBlockwiseShiftScale" : 74
+    },
+    "computePrecision" : "Mixed (Float32, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "dataType" : "Int32",
+        "hasShapeFlexibility" : "1",
+        "isOptional" : "0",
+        "shapeFlexibility" : "1...64 × 32...512",
+        "shapeRange" : "[[1, 64], [32, 512]]",
+        "formattedType" : "MultiArray (Int32 1 × 32)",
+        "type" : "MultiArray",
+        "shape" : "[1, 32]",
+        "name" : "input_ids",
+        "shortDescription" : ""
+      },
+      {
+        "dataType" : "Int32",
+        "hasShapeFlexibility" : "1",
+        "isOptional" : "0",
+        "shapeFlexibility" : "1...64 × 32...512",
+        "shapeRange" : "[[1, 64], [32, 512]]",
+        "formattedType" : "MultiArray (Int32 1 × 32)",
+        "type" : "MultiArray",
+        "shape" : "[1, 32]",
+        "name" : "attention_mask",
+        "shortDescription" : ""
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-03-17",
+      "com.github.apple.coremltools.source" : "torch==2.7.1",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "generatedClassName" : "snowflake_arctic_embed_s",
+    "method" : "predict"
+  }
+]
