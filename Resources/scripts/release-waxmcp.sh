@@ -3,14 +3,14 @@ set -euo pipefail
 
 if [[ "${1:-}" == "" ]]; then
   echo "usage: scripts/release-waxmcp.sh <version>" >&2
-  echo "example: scripts/release-waxmcp.sh 0.1.15" >&2
+  echo "example: scripts/release-waxmcp.sh 0.1.18" >&2
   exit 2
 fi
 
 VERSION="$1"
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: version must be semver like 0.1.15 (got '$VERSION')" >&2
+  echo "error: version must be semver like 0.1.18 (got '$VERSION')" >&2
   exit 2
 fi
 
@@ -31,8 +31,8 @@ if [[ ! -f "$SERVER_SWIFT" ]]; then
 fi
 
 echo "-> Bump versions to $VERSION"
-perl -0pi -e 's/"version"\\s*:\\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
-perl -0pi -e 's/let serverVersion\\s*=\\s*"[^"]+"/let serverVersion = "'"$VERSION"'"/' "$SERVER_SWIFT"
+perl -0pi -e 's/"version"\s*:\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
+perl -0pi -e 's/let serverVersion\s*=\s*"[^"]+"/let serverVersion = "'"$VERSION"'"/' "$SERVER_SWIFT"
 
 echo "-> Build release binaries (darwin-arm64)"
 cd "$ROOT"

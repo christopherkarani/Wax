@@ -24,7 +24,7 @@ and resource bundles:
 
 ```bash
 cd /path/to/Wax
-./scripts/release-waxmcp.sh 0.1.15
+./scripts/release-waxmcp.sh 0.1.18
 git add Resources/npm/waxmcp/package.json Sources/WaxMCPServer/main.swift Resources/npm/waxmcp/dist
 git commit -m "release: bump waxmcp version"
 ```
