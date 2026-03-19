@@ -21,11 +21,11 @@ jobs:
           - runs-on: macos-14
             platform: darwin-x64
             triple: x86_64-apple-macosx14.0
-            source-build: true
+            source_build: true
           - runs-on: macos-14
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
-            source-build: true
+            source_build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
@@ -34,13 +34,13 @@ jobs:
           swift-version: "6.2"
 
       - name: Build binaries
-        if: ${{ matrix.source-build }}
+        if: ${{ matrix.source_build }}
         run: |
           set -euo pipefail
           ./Resources/scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}" "${{ matrix.triple }}"
 
       - name: Reuse checked-in binaries
-        if: ${{ !matrix.source-build }}
+        if: ${{ !matrix.source_build }}
         run: |
           set -euo pipefail
           ./Resources/scripts/build-waxmcp-binaries.sh "${{ matrix.platform }}"
@@ -57,7 +57,7 @@ jobs:
             sha256sum -c "$PLATFORM_DIR/wax-cli.sha256"
           fi
           # Verify wax-mcp binary exists (for source builds)
-          if [[ "${{ matrix.source-build }}" == "true" ]]; then
+          if [[ "${{ matrix.source_build }}" == "true" ]]; then
             test -f "$PLATFORM_DIR/wax-mcp"
             test -f "$PLATFORM_DIR/wax-mcp.sha256"
           fi
