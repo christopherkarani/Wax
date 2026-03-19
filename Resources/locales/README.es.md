@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Wax es una capa de memoria de alto rendimiento en un solo archivo para agentes de IA en plataformas Apple.</strong><br/>
-  En el dispositivo, privado y portable — sin servidor, sin nube, cero infraestructura.
+  En el dispositivo, privado y portable. Sin servidor y sin dependencia de la nube.
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@ A diferencia de las bases de datos tradicionales que requieren configuraciones c
 | **Arquitectura** | Nativo Apple Silicon   | Genérico               | Varía                  |
 
 ### 📦 ¿Por qué un solo archivo `.wax`?
-La mayoría de los sistemas RAG requieren una base de datos, un almacén de vectores y un servidor de archivos. Wax agrupa todo —documentos, metadatos e índices de alta dimensión— en un solo binario portable.
+La mayoría de los sistemas RAG requieren una base de datos, un almacén de vectores y un servidor de archivos. Wax reúne documentos, metadatos e índices de alta dimensión en un solo binario portable.
 *   **Cero Infraestructura:** Sin Docker, sin configuración de BD, sin facturas de nube.
 *   **Verdaderamente Portable:** Envía la memoria de tu agente por AirDrop a otro Mac o sincronízala a través de iCloud.
 *   **Atómico:** Un archivo para respaldar, un archivo para control de versiones, un archivo para eliminar.

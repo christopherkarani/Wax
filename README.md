@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Wax is a high-performance, single-file memory layer for AI agents on Apple platforms.</strong><br/>
-  On-device, private, and portable — no server, no cloud, zero infrastructure.
+  On-device, private, and portable. No server and no cloud dependency.
 </p>
 
 <p align="center">
@@ -29,9 +29,9 @@
 
 ## What is Wax?
 
-Wax is a Swift-native persistence engine designed for the next generation of AI agents. It encapsulates documents, high-dimensional embeddings, and structured knowledge into a single, portable `.wax` file.
+Wax is a Swift-native persistence engine for AI agents. It stores documents, embeddings, and structured knowledge in a single portable `.wax` file.
 
-Unlike traditional databases that require complex setups or cloud dependencies, Wax provides a **unified memory layer** that lives entirely on-device, leveraging Metal-accelerated inference for sub-10ms recall latency.
+The goal is simple: keep memory local, keep setup light, and keep recall fast enough to stay in the loop.
 
 ### Why Wax?
 
@@ -43,17 +43,17 @@ Unlike traditional databases that require complex setups or cloud dependencies, 
 | **Setup**        | Zero Config            | Low                    | Complex (API Keys)     |
 | **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
 
-### 📦 Why a Single `.wax` File?
-Most RAG systems require a database, a vector store, and a file server. Wax bundles everything—documents, metadata, and high-dimensional indices—into one portable binary.
-*   **Zero Infrastructure:** No Docker, no DB setup, no cloud bill.
-*   **Truly Portable:** AirDrop your agent's memory to another Mac, or sync it via iCloud.
-*   **Atomic:** One file to backup, one file to version control, one file to delete.
+### Why a single `.wax` file?
+Most RAG systems end up with a database, a vector store, and a file server. Wax keeps the moving pieces smaller by bundling documents, metadata, and indexes into one binary.
+*   **Less setup:** no Docker stack and no separate database to babysit.
+*   **Portable:** move the file with AirDrop, iCloud, or whatever sync layer you already use.
+*   **Atomic:** backup, copy, or delete one file instead of chasing state across services.
 
 ---
 
 ## Performance
 
-Wax is tuned for the M-series architecture, providing near-instantaneous recall even with large-scale local indices.
+Wax is tuned for M-series hardware and local recall.
 
 ### Recall Latency (p95)
 *Lower is better. Measured in milliseconds.*
@@ -80,7 +80,7 @@ Traditional   |█████████████████████�
 
 ## Architecture
 
-Wax uses a **"Database of Databases"** model. It manages its own frame-based storage format while embedding specialized search engines (SQLite FTS5 and Metal-accelerated HNSW) as serialized blobs within the main file.
+Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors.
 
 ### Internal File Layout
 
@@ -109,9 +109,9 @@ Wax uses a **"Database of Databases"** model. It manages its own frame-based sto
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Atomic Resilience**: Dual-headers and WAL ensure that even if the process crashes mid-write, the store remains consistent.
-2. **Unified Retrieval**: A single query triggers parallel execution across the BM25 (text) and HNSW (vector) engines.
-3. **Structured Knowledge**: Built-in EAV (Entity-Attribute-Value) storage for persistent facts and long-term reasoning.
+1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
+2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
+3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning.
 
 ---
 
@@ -223,7 +223,7 @@ npx -y waxmcp@latest mcp install --scope user
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
 ```
 
-Once installed, your assistant automatically knows how to use `Memory`, `VideoRAGOrchestrator`, `PhotoRAGOrchestrator`, hybrid search, structured memory, and the MCP server — no copy-pasting docs.
+Once installed, your assistant can work against `Memory`, `VideoRAGOrchestrator`, `PhotoRAGOrchestrator`, hybrid search, structured memory, and the MCP server without extra prompt scaffolding.
 
 **Or paste this prompt to get started from scratch:**
 
