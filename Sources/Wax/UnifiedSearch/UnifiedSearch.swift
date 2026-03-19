@@ -388,6 +388,7 @@ extension Wax {
             let sources: [SearchResponse.Source]
             let snippet: String?
             let rankingDiagnostics: SearchResponse.RankingDiagnostics?
+            let metadata: [String: String]
         }
 
         var pendingResults: [PendingResult] = []
@@ -419,7 +420,8 @@ extension Wax {
                             score: item.score,
                             sources: item.sources,
                             snippet: snippetByFrameId[item.frameId],
-                            rankingDiagnostics: item.rankingDiagnostics
+                            rankingDiagnostics: item.rankingDiagnostics,
+                            metadata: meta.metadata?.entries ?? [:]
                         )
                     )
 
@@ -455,7 +457,8 @@ extension Wax {
                             score: item.score,
                             sources: item.sources,
                             snippet: snippetByFrameId[item.frameId],
-                            rankingDiagnostics: item.rankingDiagnostics
+                            rankingDiagnostics: item.rankingDiagnostics,
+                            metadata: meta.metadata?.entries ?? [:]
                         )
                     )
 
@@ -493,7 +496,8 @@ extension Wax {
                 score: item.score,
                 previewText: previewText,
                 sources: item.sources,
-                rankingDiagnostics: rankingDiagnostics
+                rankingDiagnostics: rankingDiagnostics,
+                metadata: item.metadata
             )
         }
 
@@ -560,7 +564,8 @@ extension Wax {
                     frameId: frameId,
                     score: score,
                     previewText: previewText,
-                    sources: [.timeline]
+                    sources: [.timeline],
+                    metadata: meta.metadata?.entries ?? [:]
                 )
             )
 

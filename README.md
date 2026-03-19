@@ -136,6 +136,7 @@ let results = try await memory.search("What is the user building?")
 
 if let best = results.items.first {
     print("Found: \(best.text)")
+    print("Document ID: \(best.metadata["id"] ?? "unknown")")
     // → "Found: The user is building a habit tracker in SwiftUI."
 }
 

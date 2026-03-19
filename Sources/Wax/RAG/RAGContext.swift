@@ -16,13 +16,22 @@ public struct RAGContext: Sendable, Equatable {
         public var score: Float
         public var sources: [Source]
         public var text: String
+        public var metadata: [String: String]
 
-        public init(kind: ItemKind, frameId: UInt64, score: Float, sources: [Source], text: String) {
+        public init(
+            kind: ItemKind,
+            frameId: UInt64,
+            score: Float,
+            sources: [Source],
+            text: String,
+            metadata: [String: String] = [:]
+        ) {
             self.kind = kind
             self.frameId = frameId
             self.score = score
             self.sources = sources
             self.text = text
+            self.metadata = metadata
         }
     }
 

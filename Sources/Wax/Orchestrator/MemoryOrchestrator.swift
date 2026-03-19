@@ -35,12 +35,20 @@ package actor MemoryOrchestrator {
         package var score: Float
         package var previewText: String?
         package var sources: [SearchResponse.Source]
+        package var metadata: [String: String]
 
-        package init(frameId: UInt64, score: Float, previewText: String?, sources: [SearchResponse.Source]) {
+        package init(
+            frameId: UInt64,
+            score: Float,
+            previewText: String?,
+            sources: [SearchResponse.Source],
+            metadata: [String: String] = [:]
+        ) {
             self.frameId = frameId
             self.score = score
             self.previewText = previewText
             self.sources = sources
+            self.metadata = metadata
         }
     }
 
@@ -919,7 +927,8 @@ package actor MemoryOrchestrator {
                 frameId: result.frameId,
                 score: result.score,
                 previewText: result.previewText,
-                sources: result.sources
+                sources: result.sources,
+                metadata: result.metadata
             )
         }
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))

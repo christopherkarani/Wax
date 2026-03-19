@@ -127,6 +127,7 @@ for result in response.results {
     print("Frame \(result.frameId): \(result.score)")
     print("Sources: \(result.sources)")  // [.text, .vector, ...]
     print("Preview: \(result.previewText ?? "")")
+    print("Document id: \(result.metadata["id"] ?? "unknown")")
 }
 ```
 

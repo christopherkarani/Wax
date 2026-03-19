@@ -103,6 +103,10 @@ for hit in hits {
 }
 ```
 
+If you store a structured payload alongside your content, the returned hit also
+includes `metadata`. That lets you recover app-specific identifiers such as an
+`id` field without re-parsing the original content.
+
 ## Configuration
 
 Customize behavior via ``OrchestratorConfig``:

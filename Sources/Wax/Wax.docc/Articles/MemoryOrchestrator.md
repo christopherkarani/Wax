@@ -93,6 +93,16 @@ let hits = try await orchestrator.search(
 )
 ```
 
+Each hit includes the stored `frameId` and a `metadata` dictionary. If you save
+structured records as JSON plus stable identifiers, put the identifier in
+metadata and read it back from the returned hit or RAG item after recall.
+
+```swift
+if let best = hits.first {
+    print(best.metadata["id"] ?? "unknown")
+}
+```
+
 ## Structured Memory
 
 When `enableStructuredMemory` is set in the config:
