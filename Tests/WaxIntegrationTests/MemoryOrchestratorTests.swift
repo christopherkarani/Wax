@@ -73,6 +73,39 @@ func memoryOrchestratorRecallWithoutFlushFindsRecentText() async throws {
 }
 
 @Test
+func memoryOrchestratorRecallSurfacesStoredMetadata() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+        config.rag = FastRAGConfig(
+            maxContextTokens: 80,
+            expansionMaxTokens: 30,
+            snippetMaxTokens: 15,
+            maxSnippets: 10,
+            searchTopK: 25,
+            searchMode: .textOnly
+        )
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember(
+            "A New Habit Tracker is a SwiftUI app for tracking user habits.",
+            metadata: [
+                "id": "doc-123",
+                "title": "A New Habit Tracker",
+            ]
+        )
+
+        let ctx = try await orchestrator.recall(query: "Habit Tracker")
+        #expect(!ctx.items.isEmpty)
+        #expect(ctx.items.contains { $0.metadata["id"] == "doc-123" })
+        #expect(ctx.items.contains { $0.metadata["title"] == "A New Habit Tracker" })
+
+        try await orchestrator.close()
+    }
+}
+
+@Test
 func memoryOrchestratorSessionTaggingAndChunkMetadataPersist() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default

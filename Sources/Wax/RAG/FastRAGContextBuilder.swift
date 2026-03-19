@@ -102,7 +102,8 @@ package struct FastRAGContextBuilder: Sendable {
                             frameId: result.frameId,
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
-                            text: expanded
+                            text: expanded,
+                            metadata: result.metadata
                         )
                     )
                     break
@@ -241,7 +242,8 @@ package struct FastRAGContextBuilder: Sendable {
                             frameId: surrogateFrameId,
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
-                            text: capped
+                            text: capped,
+                            metadata: result.metadata
                         )
                     )
                     surrogateSourceFrameIds.insert(result.frameId)
@@ -328,7 +330,8 @@ package struct FastRAGContextBuilder: Sendable {
                             frameId: result.frameId,
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
-                            text: capped
+                            text: capped,
+                            metadata: result.metadata
                         )
                     )
                     remainingTokens -= tokens

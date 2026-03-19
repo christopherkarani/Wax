@@ -51,19 +51,22 @@ package struct SearchResponse: Sendable, Equatable {
         package var previewText: String?
         package var sources: [Source]
         package var rankingDiagnostics: RankingDiagnostics?
+        package var metadata: [String: String]
 
         package init(
             frameId: UInt64,
             score: Float,
             previewText: String? = nil,
             sources: [Source],
-            rankingDiagnostics: RankingDiagnostics? = nil
+            rankingDiagnostics: RankingDiagnostics? = nil,
+            metadata: [String: String] = [:]
         ) {
             self.frameId = frameId
             self.score = score
             self.previewText = previewText
             self.sources = sources
             self.rankingDiagnostics = rankingDiagnostics
+            self.metadata = metadata
         }
     }
 
