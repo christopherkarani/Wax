@@ -163,26 +163,29 @@ Wax ships with an MCP server that gives Claude Code persistent memory. Install a
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-Then add the memory prompt to your `CLAUDE.md` — see the [README](https://github.com/christopherkarani/Wax#claude-code-integration) for the recommended snippet.
+Then add the memory prompt to your `CLAUDE.md` — see the [README](https://github.com/christopherkarani/Wax#ai-coding-assistants) for the recommended snippet.
 
 ### MCP Tools
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `wax_remember` | Store text, auto-extract entities/facts | `content`, `project`, `extract` |
-| `wax_recall` | Hybrid retrieval (text + vector + graph) | `query`, `project`, `graph`, `max_depth` |
-| `wax_forget` | Retract wrong facts | `content` or `fact_id` |
-| `wax_context` | Entity knowledge card | `entity` |
-| `wax_reflect` | Memory stats and introspection | `project` |
-| `wax_handoff` | Save session state | `content`, `project`, `pending_tasks` |
-| `wax_handoff_latest` | Load previous handoff | `project` |
+| `wax_session_start` | Start a process-local MCP session and return `session_id` | none |
+| `wax_remember` | Store text and optional metadata | `content`, `session_id`, `metadata`, `commit` |
+| `wax_recall` | Build assembled context for a query | `query`, `session_id`, `limit`, `mode`, `search_top_k` |
+| `wax_search` | Return ranked raw hits | `query`, `session_id`, `mode`, `topK`, `filters` |
+| `wax_corpus_search` | Search across many session `.wax` files with provenance | `query`, `sessions_dir`, `corpus_store_path`, `rebuild`, `mode`, `topK` |
+| `wax_handoff` | Save session state for the next run | `content`, `session_id`, `project`, `pending_tasks` |
+| `wax_handoff_latest` | Load the latest handoff | `project` |
+| `wax_flush` | Commit batched writes before reads | none |
+| `wax_stats` | Runtime and storage stats | none |
 
 ### Agent Workflow
 
 ```
-Session start  →  wax_handoff_latest(project: "my-app")
-During work    →  wax_recall("auth architecture", project: "my-app")
-Learn fact     →  wax_remember("Auth uses session cookies", project: "my-app")
-Correct error  →  wax_forget(content: "auth uses JWT")
-Session end    →  wax_handoff("Migrated auth to cookies", project: "my-app")
+Session start      →  wax_handoff_latest(project: "my-app"), then wax_session_start()
+During work        →  wax_recall(query: "auth architecture", session_id: ...)
+Save task memory   →  wax_remember(content: "Auth uses session cookies", session_id: ...)
+Batch writes       →  wax_remember(..., commit: false), then wax_flush()
+Cross-session look →  wax_corpus_search(query: "previous auth migration", mode: "hybrid")
+Session end        →  wax_handoff(content: "Migrated auth to cookies", session_id: ..., project: "my-app"), then wax_session_end(session_id: ...)
 ```

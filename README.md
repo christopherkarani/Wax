@@ -205,7 +205,16 @@ Looking to store persistent facts and long-term reasoning? See [Structured Memor
 
 ### AI Coding Assistants
 
-If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsurf**, you can get up to speed instantly with the bundled **Wax skill** — it teaches your assistant the full Wax API, constraints, and best practices so it writes correct Wax code on the first try.
+If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsurf**, there are two good setup paths:
+
+- Use the **Wax MCP server** when you want persistent memory, session handoffs, and cross-session search inside the assistant.
+- Use the bundled **Wax skill** when you want the assistant to write correct Wax framework code directly against the Swift API.
+
+**Install the MCP server (Claude Code):**
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
 
 **Install the skill (Claude Code):**
 
@@ -222,21 +231,22 @@ Once installed, your assistant automatically knows how to use `Memory`, `VideoRA
 <summary>Wax starter prompt (click to expand, then copy)</summary>
 
 ```text
-I'm integrating the Wax framework (https://github.com/christopherkarani/Wax) into my Swift project.
-Wax is an on-device, single-file (.wax) memory and RAG engine for Apple platforms.
+Use the Wax MCP server for persistent memory in this repo.
 
-Here's what I need you to know:
-- The public API is the `Memory` actor — import `Wax` and use `Memory(at: url)` to open a store.
-- Use `.save(_:)` to persist text and `.search(_:)` to retrieve ranked results as `RAGContext`.
-- Wax ships with on-device MiniLM embeddings (384-dim, CoreML) enabled by default for hybrid search (BM25 text + HNSW vector). Pass `enableVectorSearch: false` in `Memory.Config` for text-only mode.
-- Configuration is done through `Memory.Config` (text search, vector search, structured memory, enrichment) and `Memory.SearchOptions` (topK, retrieval mode, time range, surrogates).
-- For video RAG, use `VideoRAGOrchestrator` with a `MultimodalEmbeddingProvider` and `VideoTranscriptProvider`.
-- For photo RAG, use `PhotoRAGOrchestrator` with the Photos framework.
-- Lifecycle: always call `.flush()` to persist pending writes, and `.close()` when done.
-- The `.wax` file is the single source of truth — data, indices, and WAL in one portable binary. No server, no cloud, no infrastructure.
-- Everything runs on-device with Metal-accelerated vector search. Typical recall latency is ~6ms (p95).
+Workflow rules:
+- At session start, call `wax_handoff_latest` first to load prior context, then call `wax_session_start` once and keep the returned `session_id`.
+- Use `wax_remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
+- Use `wax_recall` for assembled context and `wax_search` for raw ranked hits.
+- Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
+- If you batch writes with `commit: false`, call `wax_flush` before any `wax_recall` or `wax_search`.
+- Use `wax_handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `wax_session_end`.
+- Use `wax_corpus_search` only when you need cross-session retrieval across many session `.wax` files, such as `~/.wax/sessions`. It rebuilds or refreshes a shared corpus store and returns provenance metadata under `wax.corpus.*` so you can trace hits back to the source session store and frame.
+- Use structured memory tools (`wax_entity_upsert`, `wax_fact_assert`, `wax_fact_retract`, `wax_facts_query`, `wax_entity_resolve`) for stable entities and facts, not transient debugging notes.
 
-Please read the Wax source code in my project's dependencies to understand the full API surface before writing any integration code.
+Behavior expectations:
+- Read existing handoffs and recall results before asking me to restate prior context.
+- Keep memory writes concise, factual, and scoped to the task.
+- When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
 ```
 
 </details>
@@ -263,6 +273,8 @@ Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
+
+For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ### 🔍 WaxRepo
 A semantic search TUI for your git history. Index any repository and find code or commits using natural language.
