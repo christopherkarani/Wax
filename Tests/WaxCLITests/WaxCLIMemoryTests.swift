@@ -202,4 +202,34 @@ struct WaxCLIMemoryTests {
             #expect(afterRetract.hits.isEmpty, "facts query should be empty after retraction")
         }
     }
+
+    @Test func orchestratorOpenFailsFastWhenStoreIsLocked() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-lock-timeout-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableStructuredMemory = true
+        config.rag.searchMode = .textOnly
+
+        let holder = try await MemoryOrchestrator(at: url, config: config)
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let contender = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                waxOptions: WaxOptions(lockWaitTimeout: .milliseconds(150))
+            )
+            try await contender.close()
+            Issue.record("expected second orchestrator open to time out")
+        } catch {
+            let elapsed = start.duration(to: clock.now)
+            #expect(elapsed < .seconds(2))
+            #expect(error.localizedDescription.contains("timed out waiting for exclusive lock"))
+        }
+        try await holder.close()
+    }
 }

@@ -35,12 +35,20 @@ package actor MemoryOrchestrator {
         package var score: Float
         package var previewText: String?
         package var sources: [SearchResponse.Source]
+        package var metadata: [String: String]
 
-        package init(frameId: UInt64, score: Float, previewText: String?, sources: [SearchResponse.Source]) {
+        package init(
+            frameId: UInt64,
+            score: Float,
+            previewText: String?,
+            sources: [SearchResponse.Source],
+            metadata: [String: String] = [:]
+        ) {
             self.frameId = frameId
             self.score = score
             self.previewText = previewText
             self.sources = sources
+            self.metadata = metadata
         }
     }
 
@@ -200,15 +208,17 @@ package actor MemoryOrchestrator {
 
     package init(
         at url: URL,
-        config: OrchestratorConfig = .default
+        config: OrchestratorConfig = .default,
+        waxOptions: WaxOptions = .init()
     ) async throws {
-        try await self.init(at: url, config: config, embedder: nil)
+        try await self.init(at: url, config: config, embedder: nil, waxOptions: waxOptions)
     }
 
     package init(
         at url: URL,
         config: OrchestratorConfig = .default,
-        embedder: (any EmbeddingProvider)? = nil
+        embedder: (any EmbeddingProvider)? = nil,
+        waxOptions: WaxOptions = .init()
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
@@ -233,9 +243,9 @@ package actor MemoryOrchestrator {
         }
         
         if FileManager.default.fileExists(atPath: url.path) {
-            self.wax = try await Wax.open(at: url)
+            self.wax = try await Wax.open(at: url, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: url)
+            self.wax = try await Wax.create(at: url, options: waxOptions)
         }
 
         // Auto-disable vector search when no embedder is provided and no pre-existing
@@ -605,11 +615,16 @@ package actor MemoryOrchestrator {
 
     private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
         guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
+        hasEnsuredMemoryBinding = true
 #if DEBUG
         Self._recordMemoryBindingEnsureCallForTests()
 #endif
-        try await wax.setMemoryBindingIfMissing(binding)
-        hasEnsuredMemoryBinding = true
+        do {
+            try await wax.setMemoryBindingIfMissing(binding)
+        } catch {
+            hasEnsuredMemoryBinding = false
+            throw error
+        }
     }
 
     /// Optimized batch embedding preparation with cache-aware batching.
@@ -919,7 +934,8 @@ package actor MemoryOrchestrator {
                 frameId: result.frameId,
                 score: result.score,
                 previewText: result.previewText,
-                sources: result.sources
+                sources: result.sources,
+                metadata: result.metadata
             )
         }
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))

@@ -481,7 +481,11 @@ package actor Wax {
             let file = try FDFile.create(at: url)
             let lock: FileLock
             do {
-                lock = try FileLock.acquire(at: url, mode: .exclusive)
+                lock = try FileLock.acquire(
+                    at: url,
+                    mode: .exclusive,
+                    timeout: options.lockWaitTimeout
+                )
             } catch {
                 try? file.close()
                 throw error
@@ -618,7 +622,11 @@ package actor Wax {
             dirty: Bool,
             replaySnapshotUsed: Bool
         ) in
-            let lock = try FileLock.acquire(at: url, mode: .exclusive)
+            let lock = try FileLock.acquire(
+                at: url,
+                mode: .exclusive,
+                timeout: options.lockWaitTimeout
+            )
             let file = try FDFile.open(at: url)
 
             let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
