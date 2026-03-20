@@ -24,6 +24,11 @@ enum ToolSchemas {
             inputSchema: waxSearch
         ),
         Tool(
+            name: "wax_corpus_search",
+            description: "Build or refresh a shared corpus store from many session .wax files, then search it with provenance-rich results.",
+            inputSchema: waxCorpusSearch
+        ),
+        Tool(
             name: "wax_flush",
             description: "Flush pending Wax writes and commit indexes.",
             inputSchema: waxFlush
@@ -189,6 +194,48 @@ enum ToolSchemas {
 
     static let waxFlush: Value = emptyObjectSchema()
     static let waxStats: Value = emptyObjectSchema()
+    static let waxCorpusSearch: Value = objectSchema(
+        properties: [
+            "query": [
+                "type": "string",
+                "description": "Search query text.",
+            ],
+            "sessions_dir": [
+                "type": "string",
+                "description": "Directory containing source session .wax stores. Default: ~/.wax/sessions",
+            ],
+            "corpus_store_path": [
+                "type": "string",
+                "description": "Path to the shared corpus store. Default: ~/.wax/corpus.wax",
+            ],
+            "rebuild": [
+                "type": "boolean",
+                "description": "Rebuild the shared corpus before searching. Default: true. If false and the corpus is missing, it is still built.",
+            ],
+            "recursive": [
+                "type": "boolean",
+                "description": "Recursively scan sessions_dir for .wax files. Default: true.",
+            ],
+            "mode": [
+                "type": "string",
+                "description": "Search mode for the shared corpus.",
+                "enum": ["text", "hybrid"],
+            ],
+            "alpha": [
+                "type": "number",
+                "description": "Optional hybrid alpha in [0,1]. Only valid when mode=hybrid.",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            ],
+            "topK": [
+                "type": "integer",
+                "description": "Max hit count. Default: 10.",
+                "minimum": 1,
+                "maximum": 200,
+            ],
+        ],
+        required: ["query"]
+    )
     static let waxSessionStart: Value = emptyObjectSchema()
     static let waxSessionEnd: Value = objectSchema(
         properties: [

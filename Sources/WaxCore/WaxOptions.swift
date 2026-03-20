@@ -6,6 +6,7 @@ package struct WaxOptions: Sendable {
     package var walProactiveCommitMaxWalSizeBytes: UInt64?
     package var walProactiveCommitMinPendingBytes: UInt64
     package var walReplayStateSnapshotEnabled: Bool
+    package var lockWaitTimeout: Duration?
     package var ioQueueLabel: String
     package var ioQueueQosClass: DispatchQoS.QoSClass
     package var ioQueueRelativePriority: Int
@@ -29,6 +30,7 @@ package struct WaxOptions: Sendable {
         walProactiveCommitMaxWalSizeBytes: UInt64? = 4 * 1024 * 1024,
         walProactiveCommitMinPendingBytes: UInt64 = 128 * 1024,
         walReplayStateSnapshotEnabled: Bool = false,
+        lockWaitTimeout: Duration? = nil,
         ioQueueLabel: String = "com.wax.io",
         ioQueueQos: DispatchQoS = .userInitiated
     ) {
@@ -37,6 +39,7 @@ package struct WaxOptions: Sendable {
         self.walProactiveCommitMaxWalSizeBytes = walProactiveCommitMaxWalSizeBytes
         self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
         self.walReplayStateSnapshotEnabled = walReplayStateSnapshotEnabled
+        self.lockWaitTimeout = lockWaitTimeout
         self.ioQueueLabel = ioQueueLabel
         self.ioQueueQosClass = ioQueueQos.qosClass
         self.ioQueueRelativePriority = ioQueueQos.relativePriority

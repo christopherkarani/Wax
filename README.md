@@ -18,7 +18,6 @@
   <a href="https://developer.apple.com/ios/"><img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-lightgrey?style=flat-square" alt="Platforms" /></a>
   <a href="https://github.com/christopherkarani/Wax/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License" /></a>
   <a href="https://github.com/christopherkarani/Wax/stargazers"><img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat-square&logo=github" alt="Stars" /></a>
-  <a href="https://discord.gg/NHgNh7HJ6M"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FNHgNh7HJ6M%3Fwith_counts%3Dtrue&query=%24.approximate_presence_count&suffix=%20online&logo=discord&label=Discord&color=5865F2&style=flat-square" alt="Discord" /></a>
 </p>
 
 <p align="center">
@@ -32,7 +31,7 @@
 
 Wax is a Swift-native persistence engine for AI agents. It stores documents, embeddings, and structured knowledge in a single portable `.wax` file.
 
-The goal is simple: keep memory local, keep setup light, and keep recall fast enough to stay in the loop.
+The goal is simple: keep memory local, keep setup light, and make recall fast enough that it can stay in the loop.
 
 ### Why Wax?
 
@@ -45,7 +44,7 @@ The goal is simple: keep memory local, keep setup light, and keep recall fast en
 | **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
 
 ### Why a single `.wax` file?
-Most RAG systems end up with a database, a vector store, and a file server. Wax keeps the moving pieces smaller by bundling documents, metadata, and indexes into one binary.
+Most RAG setups end up with a database, a vector store, and a file server. Wax keeps the moving pieces smaller by bundling documents, metadata, and indexes into one binary.
 *   **Less setup:** no Docker stack and no separate database to babysit.
 *   **Portable:** move the file with AirDrop, iCloud, or whatever sync layer you already use.
 *   **Atomic:** backup, copy, or delete one file instead of chasing state across services.

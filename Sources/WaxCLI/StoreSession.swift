@@ -38,6 +38,7 @@ private final class OnceContinuation<T: Sendable>: @unchecked Sendable {
 
 enum StoreSession {
     static let defaultStorePath = "~/.wax/memory.wax"
+    private static let defaultLockTimeoutSeconds = 5.0
 
     /// Whether this binary was compiled with MiniLM embedding support.
     static var miniLMCompiled: Bool {
@@ -85,6 +86,26 @@ enum StoreSession {
         return 30_000_000_000 // 30 seconds default
     }
 
+    private static var waxOptions: WaxOptions {
+        var options = WaxOptions()
+        options.lockWaitTimeout = lockWaitTimeout
+        return options
+    }
+
+    private static var lockWaitTimeout: Duration? {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty
+        else {
+            return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
+        }
+        guard let secs = Double(raw) else {
+            return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
+        }
+        guard secs > 0 else { return nil }
+        return .milliseconds(Int64(secs * 1000))
+    }
+
     /// Open a memory store with an optional embedder.
     ///
     /// - Parameters:
@@ -93,6 +114,7 @@ enum StoreSession {
     ///     embedding will warm the model naturally.
     ///   - embedderChoice: Which embedder to use: `"minilm"` (default) or `"arctic"`.
     static func open(at url: URL, noEmbedder: Bool = false, skipPrewarm: Bool = false, embedderChoice: String = "minilm") async throws -> MemoryOrchestrator {
+        try StoreLockProbe.preflightExclusiveAccess(at: url, timeout: waxOptions.lockWaitTimeout)
         let embedder: (any EmbeddingProvider)? = try await {
             guard !noEmbedder else { return nil }
 
@@ -197,6 +219,11 @@ enum StoreSession {
             config.enableVectorSearch = false
             config.rag.searchMode = .textOnly
         }
-        return try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+        return try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: embedder,
+            waxOptions: waxOptions
+        )
     }
 }

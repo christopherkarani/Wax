@@ -13,6 +13,7 @@ func toolsListContainsExpectedTools() {
     #expect(names.contains("wax_remember"))
     #expect(names.contains("wax_recall"))
     #expect(names.contains("wax_search"))
+    #expect(names.contains("wax_corpus_search"))
     #expect(names.contains("wax_flush"))
     #expect(names.contains("wax_stats"))
     #expect(names.contains("wax_session_start"))
@@ -55,7 +56,7 @@ func toolSchemaRegression() {
     }
 
     // Core tools must be present (regression: renaming or removing breaks clients)
-    let requiredTools = ["wax_remember", "wax_recall", "wax_search", "wax_flush", "wax_stats"]
+    let requiredTools = ["wax_remember", "wax_recall", "wax_search", "wax_corpus_search", "wax_flush", "wax_stats"]
     for required in requiredTools {
         #expect(uniqueNames.contains(required), "Required tool '\(required)' is missing from schema")
     }
@@ -66,6 +67,7 @@ func toolSchemaRegression() {
         ("wax_remember", ToolSchemas.waxRemember, true),
         ("wax_recall", ToolSchemas.waxRecall, true),
         ("wax_search", ToolSchemas.waxSearch, true),
+        ("wax_corpus_search", ToolSchemas.waxCorpusSearch, true),
         ("wax_flush", ToolSchemas.waxFlush, false),
         ("wax_stats", ToolSchemas.waxStats, false),
         ("wax_session_start", ToolSchemas.waxSessionStart, false),
@@ -122,6 +124,24 @@ func toolsRejectUnknownTopLevelArguments() async throws {
                     "query": .string("actors"),
                     "limit": .int(3),
                     "unexpected": .string("boom"),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("unsupported argument"))
+    }
+}
+
+@Test
+func corpusSearchRejectsUnknownTopLevelArguments() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_corpus_search",
+                arguments: [
+                    "query": .string("actors"),
+                    "sessionsDir": .string("/tmp/typo"),
                 ]
             ),
             memory: memory
@@ -309,6 +329,81 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
         )
         #expect(statsResult.isError != true)
         #expect(firstText(in: statsResult).contains("\"frameCount\""))
+    }
+}
+
+@Test
+func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
+    try await withMemory { memory in
+        try await withTemporaryDirectory { root in
+            let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+            try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+            let sourceA = sessionsDir.appendingPathComponent("session-a.wax")
+            let sourceB = sessionsDir.appendingPathComponent("session-b.wax")
+            let corpus = root.appendingPathComponent("corpus.wax")
+
+            try await writeSessionStore(
+                at: sourceA,
+                documents: [("Apollo guidance session with thruster calibration notes.", ["session_id": "session-a"])]
+            )
+            try await writeSessionStore(
+                at: sourceB,
+                documents: [("Zephyr retrieval session covering lunar habitat logistics.", ["session_id": "session-b"])]
+            )
+
+            let result = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "wax_corpus_search",
+                    arguments: [
+                        "query": .string("thruster calibration"),
+                        "sessions_dir": .string(sessionsDir.path),
+                        "corpus_store_path": .string(corpus.path),
+                        "mode": .string("text"),
+                        "topK": .int(5),
+                        "rebuild": .bool(true),
+                    ]
+                ),
+                memory: memory,
+                noEmbedder: true
+            )
+
+            #expect(result.isError != true)
+            #expect(firstText(in: result).contains("session-a.wax"))
+
+            let resource = try parseJSONResource(in: result, uriSuffix: "/corpus-search-summary")
+            let build = try requireObject(resource, key: "build")
+            #expect((build["performed"] as? Bool) == true)
+            #expect((build["stores_discovered"] as? Int) == 2)
+            #expect((build["documents_indexed"] as? Int) == 2)
+
+            let results = try requireArray(resource, key: "results")
+            let first = try requireObject(results[0])
+            let metadata = try requireObject(first, key: "metadata")
+            #expect((metadata[CorpusMetadataKeys.sourceStorePath] as? String) == sourceA.path)
+            #expect((metadata[CorpusMetadataKeys.sourceStoreName] as? String) == "session-a.wax")
+            #expect((metadata["session_id"] as? String) == "session-a")
+        }
+    }
+}
+
+@Test
+func corpusSearchRejectsInvalidTopK() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_corpus_search",
+                arguments: [
+                    "query": .string("anything"),
+                    "topK": .int(0),
+                ]
+            ),
+            memory: memory,
+            noEmbedder: true
+        )
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("topK must be between 1 and"))
     }
 }
 
@@ -1247,6 +1342,57 @@ private func withMemory(
     }
 }
 
+private func withTemporaryDirectory(
+    _ body: (URL) async throws -> Void
+) async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-corpus-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: url) }
+    try await body(url)
+}
+
+private func writeSessionStore(
+    at url: URL,
+    documents: [(String, [String: String])]
+) async throws {
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    config.enableStructuredMemory = false
+    config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 2)
+    config.rag = FastRAGConfig(
+        maxContextTokens: 120,
+        expansionMaxTokens: 60,
+        snippetMaxTokens: 30,
+        maxSnippets: 8,
+        searchTopK: 20,
+        searchMode: .textOnly
+    )
+
+    let memory = try await MemoryOrchestrator(at: url, config: config)
+    var deferredError: Error?
+    do {
+        for (text, metadata) in documents {
+            try await memory.remember(text, metadata: metadata)
+        }
+        try await memory.flush()
+    } catch {
+        deferredError = error
+    }
+
+    do {
+        try await memory.close()
+    } catch {
+        if deferredError == nil {
+            deferredError = error
+        }
+    }
+
+    if let deferredError {
+        throw deferredError
+    }
+}
+
 private func withVectorMemory(
     _ body: @Sendable (MemoryOrchestrator) async throws -> Void
 ) async throws {
@@ -1423,6 +1569,39 @@ private func requireString(_ object: [String: Any], key: String) throws -> Strin
         throw NSError(domain: "WaxMCPServerTests", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing string key '\(key)'"])
     }
     return value
+}
+
+private func requireObject(_ object: [String: Any], key: String) throws -> [String: Any] {
+    guard let nested = object[key] as? [String: Any] else {
+        throw NSError(
+            domain: "WaxMCPServerTests",
+            code: 20,
+            userInfo: [NSLocalizedDescriptionKey: "Missing object value for key '\(key)'"]
+        )
+    }
+    return nested
+}
+
+private func requireObject(_ value: Any) throws -> [String: Any] {
+    guard let object = value as? [String: Any] else {
+        throw NSError(
+            domain: "WaxMCPServerTests",
+            code: 21,
+            userInfo: [NSLocalizedDescriptionKey: "Value is not a JSON object"]
+        )
+    }
+    return object
+}
+
+private func requireArray(_ object: [String: Any], key: String) throws -> [Any] {
+    guard let array = object[key] as? [Any] else {
+        throw NSError(
+            domain: "WaxMCPServerTests",
+            code: 22,
+            userInfo: [NSLocalizedDescriptionKey: "Missing array value for key '\(key)'"]
+        )
+    }
+    return array
 }
 
 private func requireInt(_ object: [String: Any], key: String) throws -> Int {

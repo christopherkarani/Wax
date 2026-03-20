@@ -59,9 +59,13 @@ struct WaxMCPServerCommand: ParsableCommand {
             try LicenseValidator.validate(key: resolvedLicense)
         }
 
-        let memoryURL = try resolveStoreURL(storePath)
+        let memoryURL = try MCPPathing.resolveStoreURL(storePath)
+        try StoreLockProbe.preflightExclusiveAccess(at: memoryURL, timeout: lockWaitTimeout())
 
-        let embedder = try await buildEmbedder()
+        let embedder = try await MCPMemoryFactory.buildEmbedder(
+            noEmbedder: noEmbedder,
+            embedderChoice: embedderChoice
+        )
 
         var memoryConfig = OrchestratorConfig.default
         memoryConfig.enableStructuredMemory = featureFlagEnabled(
@@ -100,7 +104,8 @@ struct WaxMCPServerCommand: ParsableCommand {
         let memory = try await MemoryOrchestrator(
             at: memoryURL,
             config: memoryConfig,
-            embedder: embedder
+            embedder: embedder,
+            waxOptions: waxOptions()
         )
 
         // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
@@ -116,7 +121,9 @@ struct WaxMCPServerCommand: ParsableCommand {
         await WaxMCPTools.register(
             on: server,
             memory: memory,
-            structuredMemoryEnabled: memoryConfig.enableStructuredMemory
+            structuredMemoryEnabled: memoryConfig.enableStructuredMemory,
+            noEmbedder: noEmbedder,
+            embedderChoice: embedderChoice
         )
 
         // Install signal handlers so SIGINT/SIGTERM trigger graceful shutdown
@@ -191,75 +198,26 @@ struct WaxMCPServerCommand: ParsableCommand {
         }
     }
 
-    private func resolveStoreURL(_ rawPath: String) throws -> URL {
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw MCP.MCPError.invalidParams("Store path cannot be empty")
-        }
-
-        let url = URL(fileURLWithPath: trimmed).standardizedFileURL
-        let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-        return url
+    private func waxOptions() -> WaxOptions {
+        var options = WaxOptions()
+        options.lockWaitTimeout = lockWaitTimeout()
+        return options
     }
 
-    private func buildEmbedder() async throws -> (any EmbeddingProvider)? {
-        if noEmbedder {
-            return nil
+    private func lockWaitTimeout() -> Duration? {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty
+        else {
+            return .seconds(10)
         }
-
-        let timeout: Duration = {
-            let env = ProcessInfo.processInfo.environment
-            if let raw = env["WAX_EMBEDDER_TIMEOUT_SECS"],
-               let secs = Double(raw),
-               secs > 0 {
-                return .milliseconds(Int64(secs * 1000))
-            }
-            return .seconds(30)
-        }()
-
-        // Try Arctic if explicitly requested
-        if embedderChoice.lowercased() == "arctic" {
-            #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-            do {
-                return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic embedder init") {
-                    try await ArcticEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
-                }
-            } catch let error as AsyncTimeout.TimeoutError {
-                writeStderr(
-                    "Warning: Arctic embedder timed out after \(timeout) (\(error)); falling back to text-only search."
-                )
-                return nil
-            } catch {
-                writeStderr("Warning: Arctic embedder failed to load (\(error)); falling back to text-only search.")
-                return nil
-            }
-            #else
-            writeStderr("Warning: Arctic embeddings not available in this build. Falling back to text-only search.")
-            return nil
-            #endif
+        guard let secs = Double(raw) else {
+            return .seconds(10)
         }
-
-        // Default: MiniLM
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-        do {
-            return try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder init") {
-                try await MiniLMEmbedder.makeCommandLineEmbedder(prewarmBatchSize: 1)
-            }
-        } catch let error as AsyncTimeout.TimeoutError {
-            writeStderr(
-                "Warning: MiniLM embedder timed out after \(timeout) (\(error)); falling back to text-only search."
-            )
-            return nil
-        } catch {
-            writeStderr("Warning: MiniLM embedder failed to load (\(error)); falling back to text-only search.")
-            return nil
-        }
-        #else
-        return nil
-        #endif
+        guard secs > 0 else { return nil }
+        return .milliseconds(Int64(secs * 1000))
     }
+
 }
 
 private func installSignalHandlers(server: Server) -> [DispatchSourceSignal] {
@@ -277,7 +235,7 @@ private func installSignalHandlers(server: Server) -> [DispatchSourceSignal] {
     return sources
 }
 
-private func writeStderr(_ message: String) {
+func writeStderr(_ message: String) {
     guard let data = (message + "\n").data(using: .utf8) else { return }
     FileHandle.standardError.write(data)
 }

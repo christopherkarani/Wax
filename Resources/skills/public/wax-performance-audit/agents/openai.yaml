@@ -1,0 +1,7 @@
+interface:
+  display_name: "Wax Performance Audit"
+  short_description: "Wax benchmarks, memory, concurrency"
+  default_prompt: "Use $wax-performance-audit to run Wax benchmarks and investigate CPU, memory, or Swift 6.2 concurrency bottlenecks."
+
+policy:
+  allow_implicit_invocation: true
