@@ -299,7 +299,6 @@ npx -y waxmcp@latest mcp install --scope user
 
 The published installer stages the bundled runtime into a stable local directory and
 registers `wax-mcp` directly, so steady-state MCP sessions do not launch through raw `npx`.
-
 For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ### 🔍 WaxRepo
