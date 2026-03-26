@@ -36,9 +36,13 @@ package final class FileLock {
     }
 
     package static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
+        try acquire(at: url, mode: mode, timeout: nil)
+    }
+
+    package static func acquire(at url: URL, mode: LockMode, timeout: Duration?) throws -> FileLock {
         let fd = try openFile(at: url, mode: mode)
         do {
-            _ = try lock(fd: fd, mode: mode, nonBlocking: false)
+            _ = try lock(fd: fd, mode: mode, nonBlocking: false, timeout: timeout, url: url)
             return FileLock(fd: fd, url: url, mode: mode)
         } catch {
             _ = close(fd)
@@ -119,21 +123,79 @@ package final class FileLock {
         }
     }
 
-    private static func lock(fd: Int32, mode: LockMode, nonBlocking: Bool) throws -> Bool {
+    private static func lock(
+        fd: Int32,
+        mode: LockMode,
+        nonBlocking: Bool,
+        timeout: Duration? = nil,
+        url: URL? = nil
+    ) throws -> Bool {
         var flags: Int32 = (mode == .exclusive) ? LOCK_EX : LOCK_SH
         if nonBlocking { flags |= LOCK_NB }
 
+        let timeoutNanoseconds = timeout.flatMap(durationNanoseconds(_:))
+        let useTimedPolling = !nonBlocking && timeoutNanoseconds != nil
+        let pollIntervalMicros: useconds_t = 50_000
+        let deadline: UInt64? = {
+            guard let timeoutNanoseconds else { return nil }
+            return DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
+        }()
+
         while true {
-            if flock(fd, flags) == 0 {
+            let attemptFlags = useTimedPolling ? (flags | LOCK_NB) : flags
+            if flock(fd, attemptFlags) == 0 {
                 return true
             }
             let err = errno
             if err == EINTR { continue }
-            if nonBlocking && (err == EWOULDBLOCK || err == EAGAIN) {
-                return false
+            if err == EWOULDBLOCK || err == EAGAIN {
+                if nonBlocking {
+                    return false
+                }
+                if let deadline, DispatchTime.now().uptimeNanoseconds >= deadline {
+                    throw WaxError.lockUnavailable(lockTimeoutMessage(url: url, mode: mode, timeout: timeout))
+                }
+                usleep(pollIntervalMicros)
+                continue
             }
             throw WaxError.lockUnavailable("flock failed: \(String(cString: strerror(err)))")
         }
+    }
+
+    private static func durationNanoseconds(_ duration: Duration) -> UInt64? {
+        let components = duration.components
+        guard components.seconds >= 0, components.attoseconds >= 0 else {
+            return 0
+        }
+
+        let seconds = UInt64(components.seconds)
+        let attoseconds = UInt64(components.attoseconds)
+        let nanosFromAttoseconds = attoseconds / 1_000_000_000
+        let (scaledSeconds, overflowedSeconds) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        if overflowedSeconds {
+            return UInt64.max
+        }
+        let (total, overflowedTotal) = scaledSeconds.addingReportingOverflow(nanosFromAttoseconds)
+        return overflowedTotal ? UInt64.max : total
+    }
+
+    private static func lockTimeoutMessage(url: URL?, mode: LockMode, timeout: Duration?) -> String {
+        let modeLabel = switch mode {
+        case .shared: "shared"
+        case .exclusive: "exclusive"
+        }
+        let target = url?.path ?? "<unknown>"
+        let timeoutLabel = timeout.map(formatDuration(_:)) ?? "the configured timeout"
+        return "timed out waiting for \(modeLabel) lock on \(target) after \(timeoutLabel)"
+    }
+
+    private static func formatDuration(_ duration: Duration) -> String {
+        let components = duration.components
+        let seconds = Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
+        if seconds == 0 {
+            return "0s"
+        }
+        return String(format: "%.2fs", seconds)
     }
 
     private func ensureActive() throws {

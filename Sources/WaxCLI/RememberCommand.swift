@@ -8,7 +8,7 @@ struct RememberCommand: AsyncParsableCommand {
         abstract: "Store content in Wax memory"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Argument(help: "Content to remember")
     var content: String
@@ -41,9 +41,50 @@ struct RememberCommand: AsyncParsableCommand {
             meta[key] = value
         }
 
+        if AgentDaemonPolicy.shouldUseDaemonForRemember(store: store),
+           let response = try AgentDaemonTransport.perform(
+               request: CLIDaemonRequest(
+                   id: nil,
+                   command: "remember",
+                   content: trimmed,
+                   query: nil,
+                   metadata: meta,
+                   mode: nil,
+                   topK: nil,
+                   limit: nil
+               ),
+               storePath: store.storePath,
+               embedderChoice: store.embedder
+           ) {
+            guard response.ok else {
+                throw CLIError(response.error ?? "Daemon remember failed")
+            }
+            guard case .remember(let frameCount, let pendingFrames, let framesAdded)? = response.payload else {
+                throw CLIError("Daemon remember returned an unexpected payload")
+            }
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "framesAdded": framesAdded,
+                    "frameCount": frameCount,
+                    "pendingFrames": pendingFrames,
+                ])
+            case .text:
+                print("Remembered. \(framesAdded) frame(s) added (\(frameCount) total, \(pendingFrames) pending).")
+            }
+            return
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
         // Respect `--no-embedder`; for write-heavy usage we skip prewarm to reduce cold-start latency.
-        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder, skipPrewarm: true) { memory in
+        try await StoreSession.withOpen(
+            at: url,
+            noEmbedder: store.noEmbedder,
+            skipPrewarm: true,
+            embedderChoice: store.embedder,
+            requireVector: store.requireVector
+        ) { memory in
             let before = await memory.runtimeStats()
             try await memory.remember(trimmed, metadata: meta)
 

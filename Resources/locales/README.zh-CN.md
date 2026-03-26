@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Wax 是为 Apple 平台 AI Agent 打造的高性能单文件记忆层。</strong><br/>
-  设备端、私有且便携 —— 无需服务器，无需云端，零基础设施。
+  设备端、私有且便携。不需要服务器，也不依赖云端。
 </p>
 
 <p align="center">

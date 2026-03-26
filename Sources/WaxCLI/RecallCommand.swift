@@ -8,7 +8,7 @@ struct RecallCommand: AsyncParsableCommand {
         abstract: "Recall memories matching a query"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Argument(help: "Query to recall against")
     var query: String
@@ -21,8 +21,64 @@ struct RecallCommand: AsyncParsableCommand {
             throw CLIError("limit must be between 1 and 100")
         }
 
+        if AgentDaemonPolicy.shouldUseDaemonForRecall(store: store),
+           let response = try AgentDaemonTransport.perform(
+               request: CLIDaemonRequest(
+                   id: nil,
+                   command: "recall",
+                   content: nil,
+                   query: query,
+                   metadata: nil,
+                   mode: nil,
+                   topK: nil,
+                   limit: limit
+               ),
+               storePath: store.storePath,
+               embedderChoice: store.embedder
+           ) {
+            guard response.ok else {
+                throw CLIError(response.error ?? "Daemon recall failed")
+            }
+            guard case .recall(let daemonQuery, let totalTokens, let items)? = response.payload else {
+                throw CLIError("Daemon recall returned an unexpected payload")
+            }
+
+            switch store.format {
+            case .json:
+                let encodedItems: [[String: Any]] = items.map { item in
+                    [
+                        "rank": item.rank,
+                        "kind": item.kind ?? "",
+                        "frameId": item.frameId,
+                        "score": item.score,
+                        "text": item.text ?? "",
+                    ]
+                }
+                printJSON([
+                    "query": daemonQuery,
+                    "totalTokens": totalTokens,
+                    "count": encodedItems.count,
+                    "items": encodedItems,
+                ])
+            case .text:
+                print("Query: \(daemonQuery)")
+                print("Total tokens: \(totalTokens)")
+                for item in items {
+                    print(
+                        "\(item.rank). [\(item.kind ?? "unknown")] frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) \(item.text ?? "")"
+                    )
+                }
+            }
+            return
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
-        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder) { memory in
+        try await StoreSession.withOpen(
+            at: url,
+            noEmbedder: store.noEmbedder,
+            embedderChoice: store.embedder,
+            requireVector: store.requireVector
+        ) { memory in
             let context = try await memory.recall(query: query, frameFilter: nil)
             let selected = context.items.prefix(limit)
 

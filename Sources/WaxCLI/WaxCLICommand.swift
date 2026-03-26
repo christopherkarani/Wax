@@ -11,6 +11,7 @@ struct WaxCLI: ParsableCommand {
             RememberCommand.self,
             RecallCommand.self,
             SearchCommand.self,
+            DaemonCommand.self,
             StatsCommand.self,
             VectorHealthCommand.self,
             FlushCommand.self,
@@ -131,7 +132,27 @@ extension WaxCLI.MCP {
                 try resolveToolPath("claude")
             }
 
-            if !skipBuild {
+            let resolvedServer = if dryRun {
+                Pathing.normalizePath(serverPath)
+            } else {
+                try Pathing.resolvePath(serverPath)
+            }
+            let resolvedCLI = try Pathing.resolveSelfExecutablePath()
+            let bundledRuntime = Pathing.bundledRuntimeDirectory(forExecutablePath: resolvedCLI) != nil
+            // Name must precede -e flags; claude mcp add treats positional args after -e as env vars.
+            var addArguments = [
+                "mcp", "add",
+                name,
+                "-t", "stdio",
+                "-s", scope.rawValue,
+                "-e", "WAX_MCP_FEATURE_LICENSE=\(featureLicense ? "1" : "0")",
+            ]
+
+            if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
+                addArguments.append(contentsOf: ["-e", "WAX_LICENSE_KEY=\(key)"])
+            }
+
+            if !skipBuild && !bundledRuntime {
                 let buildArguments = ["build", "--product", "wax-mcp", "--traits", "default,MCPServer"]
                 if dryRun {
                     print("swift \(buildArguments.joined(separator: " "))")
@@ -148,30 +169,15 @@ extension WaxCLI.MCP {
                 }
             }
 
-            let resolvedServer = if dryRun {
-                Pathing.normalizePath(serverPath)
-            } else {
-                try Pathing.resolvePath(serverPath)
-            }
-            let resolvedCLI = try Pathing.resolveSelfExecutablePath()
-            // Name must precede -e flags; claude mcp add treats positional args after -e as env vars.
-            var addArguments = [
-                "mcp", "add",
-                name,
-                "-t", "stdio",
-                "-s", scope.rawValue,
-                "-e", "WAX_MCP_FEATURE_LICENSE=\(featureLicense ? "1" : "0")",
-            ]
-
-            if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
-                addArguments.append(contentsOf: ["-e", "WAX_LICENSE_KEY=\(key)"])
-            }
+            let installRuntime = try Pathing.prepareMCPInstallRuntime(
+                cliPath: resolvedCLI,
+                serverPath: resolvedServer,
+                dryRun: dryRun
+            )
 
             addArguments.append(contentsOf: [
                 "--",
-                resolvedCLI,
-                "mcp", "serve",
-                "--server-path", resolvedServer,
+                installRuntime.serverPath,
                 "--store-path", Pathing.expandPath(storePath),
             ])
             if noEmbedder {
@@ -184,6 +190,12 @@ extension WaxCLI.MCP {
             let removeArguments = ["mcp", "remove", "-s", scope.rawValue, name]
 
             if dryRun {
+                if bundledRuntime && !skipBuild {
+                    print("# Skipping local swift build because wax-cli is running from bundled waxmcp artifacts.")
+                }
+                if installRuntime.staged {
+                    print("# Staging bundled waxmcp runtime into a stable install path before registration.")
+                }
                 print("claude \(removeArguments.joined(separator: " "))")
                 print("claude \(addArguments.joined(separator: " "))")
                 return
@@ -641,7 +653,13 @@ private enum ProcessRunner {
     }
 }
 
-private enum Pathing {
+struct MCPInstallRuntime: Equatable {
+    let cliPath: String
+    let serverPath: String
+    let staged: Bool
+}
+
+enum Pathing {
     static func expandPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
@@ -703,6 +721,90 @@ private enum Pathing {
             }
         }
         return raw
+    }
+
+    static func prepareMCPInstallRuntime(
+        cliPath: String,
+        serverPath: String,
+        dryRun: Bool
+    ) throws -> MCPInstallRuntime {
+        let cliBundledDir = bundledRuntimeDirectory(forExecutablePath: cliPath)
+        let serverBundledDir = bundledRuntimeDirectory(forExecutablePath: serverPath)
+
+        guard let sourceDir = cliBundledDir ?? serverBundledDir else {
+            return MCPInstallRuntime(cliPath: cliPath, serverPath: serverPath, staged: false)
+        }
+
+        let targetDir = stableRuntimeDirectory(forPlatformDirectory: sourceDir.lastPathComponent)
+        if !dryRun {
+            try stageBundledRuntimeIfNeeded(from: sourceDir, to: targetDir)
+        }
+
+        let effectiveCLI = cliBundledDir == sourceDir
+            ? targetDir.appendingPathComponent(URL(fileURLWithPath: cliPath).lastPathComponent).path
+            : cliPath
+        let effectiveServer = serverBundledDir == sourceDir
+            ? targetDir.appendingPathComponent(URL(fileURLWithPath: serverPath).lastPathComponent).path
+            : serverPath
+
+        return MCPInstallRuntime(
+            cliPath: effectiveCLI,
+            serverPath: effectiveServer,
+            staged: true
+        )
+    }
+
+    static func bundledRuntimeDirectory(forExecutablePath path: String) -> URL? {
+        let executableURL = URL(fileURLWithPath: normalizePath(path)).standardizedFileURL
+        let directoryURL = executableURL.deletingLastPathComponent()
+        guard directoryURL.deletingLastPathComponent().lastPathComponent == "dist" else {
+            return nil
+        }
+
+        let platformName = directoryURL.lastPathComponent
+        guard platformName.hasPrefix("darwin-") else {
+            return nil
+        }
+
+        let cliPath = directoryURL.appendingPathComponent("wax-cli").path
+        let serverPath = directoryURL.appendingPathComponent("wax-mcp").path
+        guard FileManager.default.isExecutableFile(atPath: cliPath),
+              FileManager.default.isExecutableFile(atPath: serverPath)
+        else {
+            return nil
+        }
+
+        return directoryURL
+    }
+
+    static func stableRuntimeDirectory(forPlatformDirectory platformDirectory: String) -> URL {
+        let root = ProcessInfo.processInfo.environment["WAX_MCP_INSTALL_ROOT"].flatMap { raw -> URL? in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return URL(fileURLWithPath: expandPath(trimmed)).standardizedFileURL
+        } ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local", isDirectory: true)
+            .appendingPathComponent("share", isDirectory: true)
+            .appendingPathComponent("waxmcp", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+
+        return root.appendingPathComponent(platformDirectory, isDirectory: true)
+    }
+
+    static func stageBundledRuntimeIfNeeded(from sourceDir: URL, to targetDir: URL) throws {
+        let fm = FileManager.default
+        let standardizedSource = sourceDir.standardizedFileURL
+        let standardizedTarget = targetDir.standardizedFileURL
+        guard standardizedSource.path != standardizedTarget.path else { return }
+
+        try fm.createDirectory(
+            at: standardizedTarget.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fm.fileExists(atPath: standardizedTarget.path) {
+            try fm.removeItem(at: standardizedTarget)
+        }
+        try fm.copyItem(at: standardizedSource, to: standardizedTarget)
     }
 }
 

@@ -227,42 +227,45 @@ import Testing
     }
 }
 
-@Test func unifiedSession_searchReusesLoadedVectorEngine() async throws {
-    try await TempFiles.withTempFile { url in
-        let wax = try await Wax.create(at: url)
-        var config = WaxSession.Config()
-        config.enableTextSearch = false
-        config.enableStructuredMemory = false
-        config.enableVectorSearch = true
-        config.vectorDimensions = 2
-        config.vectorEnginePreference = .cpuOnly
+@Suite(.serialized)
+struct WaxSessionCacheIsolationTests {
+    @Test func unifiedSession_searchReusesLoadedVectorEngine() async throws {
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            var config = WaxSession.Config()
+            config.enableTextSearch = false
+            config.enableStructuredMemory = false
+            config.enableVectorSearch = true
+            config.vectorDimensions = 2
+            config.vectorEnginePreference = .cpuOnly
 
-        let session = try await wax.openSession(.readWrite(.fail), config: config)
-        _ = try await session.put(
-            Data("alpha".utf8),
-            embedding: [1.0, 0.0],
-            options: FrameMetaSubset(searchText: "alpha")
-        )
-        try await session.commit()
-
-        await UnifiedSearchEngineCache.shared.resetStats()
-
-        _ = try await session.search(
-            SearchRequest(
+            let session = try await wax.openSession(.readWrite(.fail), config: config)
+            _ = try await session.put(
+                Data("alpha".utf8),
                 embedding: [1.0, 0.0],
-                mode: .vectorOnly,
-                topK: 1
+                options: FrameMetaSubset(searchText: "alpha")
             )
-        )
+            try await session.commit()
 
-        let stats = await UnifiedSearchEngineCache.shared.snapshotStats()
-        #expect(stats.vectorDeserializations == 0)
+            await UnifiedSearchEngineCache.shared.resetStats()
 
-        await session.close()
-        do {
-            try await wax.close()
-        } catch {
-            #expect(Bool(true))
+            _ = try await session.search(
+                SearchRequest(
+                    embedding: [1.0, 0.0],
+                    mode: .vectorOnly,
+                    topK: 1
+                )
+            )
+
+            let stats = await UnifiedSearchEngineCache.shared.snapshotStats()
+            #expect(stats.vectorDeserializations == 0)
+
+            await session.close()
+            do {
+                try await wax.close()
+            } catch {
+                #expect(Bool(true))
+            }
         }
     }
 }

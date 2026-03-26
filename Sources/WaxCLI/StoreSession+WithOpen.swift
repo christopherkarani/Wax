@@ -15,9 +15,17 @@ extension StoreSession {
         at url: URL,
         noEmbedder: Bool = false,
         skipPrewarm: Bool = false,
+        embedderChoice: EmbedderChoice = .minilm,
+        requireVector: Bool = false,
         body: (MemoryOrchestrator) async throws -> T
     ) async throws -> T {
-        let memory = try await open(at: url, noEmbedder: noEmbedder, skipPrewarm: skipPrewarm)
+        let memory = try await open(
+            at: url,
+            noEmbedder: noEmbedder,
+            skipPrewarm: skipPrewarm,
+            embedderChoice: embedderChoice,
+            requireVector: requireVector
+        )
         do {
             let result = try await body(memory)
             try await memory.close()

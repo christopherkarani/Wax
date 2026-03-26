@@ -17,7 +17,9 @@ enum WaxMCPTools {
     static func register(
         on server: Server,
         memory: MemoryOrchestrator,
-        structuredMemoryEnabled: Bool
+        structuredMemoryEnabled: Bool,
+        noEmbedder: Bool,
+        embedderChoice: String
     ) async {
         _ = await sessionRegistries.registry(for: memory)
         _ = await server.withMethodHandler(ListTools.self) { _ in
@@ -28,14 +30,22 @@ enum WaxMCPTools {
         }
 
         _ = await server.withMethodHandler(CallTool.self) { params in
-            await handleCall(params: params, memory: memory, structuredMemoryEnabled: structuredMemoryEnabled)
+            await handleCall(
+                params: params,
+                memory: memory,
+                structuredMemoryEnabled: structuredMemoryEnabled,
+                noEmbedder: noEmbedder,
+                embedderChoice: embedderChoice
+            )
         }
     }
 
     static func handleCall(
         params: CallTool.Parameters,
         memory: MemoryOrchestrator,
-        structuredMemoryEnabled: Bool = true
+        structuredMemoryEnabled: Bool = true,
+        noEmbedder: Bool = false,
+        embedderChoice: String = "minilm"
     ) async -> CallTool.Result {
         let sessionRegistry = await sessionRegistries.registry(for: memory)
         do {
@@ -47,6 +57,13 @@ enum WaxMCPTools {
                 return try await recall(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
             case "wax_search":
                 return try await search(arguments: params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+            case "wax_corpus_search":
+                return try await corpusSearch(
+                    arguments: params.arguments,
+                    memory: memory,
+                    noEmbedder: noEmbedder,
+                    embedderChoice: embedderChoice
+                )
             case "wax_flush":
                 return try await flush(memory: memory)
             case "wax_stats":
@@ -258,6 +275,113 @@ enum WaxMCPTools {
         try await memory.flush()
         let stats = await memory.runtimeStats()
         return textResult("Flushed. \(stats.frameCount) frames now searchable.")
+    }
+
+    private static func corpusSearch(
+        arguments: [String: Value]?,
+        memory _: MemoryOrchestrator,
+        noEmbedder: Bool,
+        embedderChoice: String
+    ) async throws -> CallTool.Result {
+        let args = ToolArguments(arguments)
+        let query = try args.requiredString("query", maxBytes: maxContentBytes)
+        let sessionsDirRaw = try args.optionalString("sessions_dir") ?? "~/.wax/sessions"
+        let corpusStoreRaw = try args.optionalString("corpus_store_path") ?? "~/.wax/corpus.wax"
+        let rebuild = try args.optionalBool("rebuild") ?? true
+        let recursive = try args.optionalBool("recursive") ?? true
+        let modeRaw = try args.optionalString("mode")?.lowercased()
+        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
+        let topK = try args.optionalInt("topK") ?? 10
+        guard topK > 0, topK <= maxTopK else {
+            throw ToolValidationError.invalid("topK must be between 1 and \(maxTopK)")
+        }
+        let corpusNoEmbedder: Bool
+        switch mode {
+        case .text:
+            corpusNoEmbedder = true
+        case .hybrid:
+            corpusNoEmbedder = noEmbedder
+        }
+
+        let sessionsDirectoryURL = try MCPPathing.resolveDirectoryURL(sessionsDirRaw)
+        let corpusStoreURL = try MCPPathing.resolveStoreURL(corpusStoreRaw)
+
+        let buildSummary: CorpusBuildSummary?
+        if rebuild || !FileManager.default.fileExists(atPath: corpusStoreURL.path) {
+            buildSummary = try await CorpusStoreBuilder.build(
+                sessionsDirectory: sessionsDirectoryURL,
+                targetStoreURL: corpusStoreURL,
+                noEmbedder: corpusNoEmbedder,
+                embedderChoice: embedderChoice,
+                recursive: recursive
+            )
+        } else {
+            buildSummary = nil
+        }
+
+        let execution = try await MCPMemoryFactory.withOpenMemory(
+            at: corpusStoreURL,
+            noEmbedder: corpusNoEmbedder,
+            embedderChoice: embedderChoice,
+            structuredMemoryEnabled: false
+        ) { corpusMemory in
+            try await corpusMemory.searchExecution(
+                query: query,
+                mode: mode,
+                topK: topK,
+                frameFilter: nil,
+                timeRange: nil
+            )
+        }
+
+        let resultRows = execution.hits.enumerated().map { index, hit -> Value in
+            [
+                "rank": value(from: index + 1),
+                "frameId": value(from: hit.frameId),
+                "score": value(from: Double(hit.score)),
+                "sources": .array(hit.sources.map { .string($0.rawValue) }),
+                "preview": value(from: hit.previewText ?? ""),
+                "metadata": .object(hit.metadata.mapValues(value(from:))),
+            ]
+        }
+        let text = if resultRows.isEmpty {
+            "No results."
+        } else {
+            resultRows.map { encodeJSON($0) ?? "{}" }.joined(separator: "\n")
+        }
+
+        let summaryValue: Value = if let buildSummary {
+            [
+                "performed": value(from: true),
+                "stores_discovered": value(from: buildSummary.storesDiscovered),
+                "stores_indexed": value(from: buildSummary.storesIndexed),
+                "documents_indexed": value(from: buildSummary.documentsIndexed),
+                "documents_skipped": value(from: buildSummary.documentsSkipped),
+                "corpus_store_path": value(from: buildSummary.targetStorePath),
+            ]
+        } else {
+            [
+                "performed": value(from: false),
+                "corpus_store_path": value(from: corpusStoreURL.path),
+            ]
+        }
+
+        return textWithJSONResourceResult(
+            text: text,
+            payload: [
+                "query": value(from: query),
+                "topK": value(from: topK),
+                "requested_mode": value(from: execution.requestedModeSummary),
+                "effective_mode": value(from: execution.effectiveModeSummary),
+                "query_embedding_state": value(from: execution.queryEmbeddingState.rawValue),
+                "sessions_dir": value(from: sessionsDirectoryURL.path),
+                "recursive": value(from: recursive),
+                "rebuild_requested": value(from: rebuild),
+                "build": summaryValue,
+                "results": .array(resultRows),
+            ],
+            uri: "wax://tool/corpus-search-summary"
+        )
     }
 
     private static func stats(
@@ -770,6 +894,8 @@ enum WaxMCPTools {
             try args.rejectUnknownKeys(["query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters"])
         case "wax_search":
             try args.rejectUnknownKeys(["query", "mode", "topK", "session_id", "alpha", "filters"])
+        case "wax_corpus_search":
+            try args.rejectUnknownKeys(["query", "sessions_dir", "corpus_store_path", "rebuild", "recursive", "mode", "alpha", "topK"])
         case "wax_flush", "wax_stats", "wax_session_start":
             try args.rejectUnknownKeys([])
         case "wax_session_end":
