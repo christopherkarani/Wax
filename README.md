@@ -203,6 +203,26 @@ struct AgentMemory {
 
 Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
 
+For repeated CLI vector work, Wax CLI now auto-starts and reuses a background daemon for
+vector-capable commands such as `remember`, `recall`, and `search --mode hybrid`.
+
+You can still run the daemon directly when you want an explicit long-lived session:
+
+```bash
+wax-cli daemon --store-path ~/.wax/memory.wax
+```
+
+Send JSON lines such as:
+
+```json
+{"id":"1","command":"remember","content":"An automobile needs periodic maintenance."}
+{"id":"2","command":"search","query":"car service","mode":"hybrid","topK":3}
+{"id":"3","command":"shutdown"}
+```
+
+Simple text-only usage still runs one-shot. If vector search is unavailable, hybrid/vector
+commands now fail loudly instead of silently dropping to text-only mode.
+
 ### AI Coding Assistants
 
 If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsurf**, there are two good setup paths:
@@ -215,6 +235,9 @@ If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsur
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
+
+This install flow stages the bundled Wax runtime into a stable local directory and
+registers the staged `wax-mcp` binary with Claude Code. `npx` is only used for install/bootstrap.
 
 **Install the skill (Claude Code):**
 
@@ -274,6 +297,8 @@ Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your
 npx -y waxmcp@latest mcp install --scope user
 ```
 
+The published installer stages the bundled runtime into a stable local directory and
+registers `wax-mcp` directly, so steady-state MCP sessions do not launch through raw `npx`.
 For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ### 🔍 WaxRepo

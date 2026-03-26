@@ -334,6 +334,7 @@ let package = Package(
             name: "WaxCLITests",
             dependencies: [
                 "Wax",
+                "wax-cli",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxCLITests",

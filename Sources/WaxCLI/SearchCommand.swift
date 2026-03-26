@@ -8,7 +8,7 @@ struct SearchCommand: AsyncParsableCommand {
         abstract: "Search memory frames by text or hybrid mode"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Argument(help: "Search query")
     var query: String
@@ -38,8 +38,65 @@ struct SearchCommand: AsyncParsableCommand {
             throw CLIError("mode must be one of: text, hybrid")
         }
 
+        if AgentDaemonPolicy.shouldUseDaemonForSearch(store: store, mode: modeLower),
+           let response = try AgentDaemonTransport.perform(
+               request: CLIDaemonRequest(
+                   id: nil,
+                   command: "search",
+                   content: nil,
+                   query: query,
+                   metadata: nil,
+                   mode: modeLower,
+                   topK: topK,
+                   limit: nil
+               ),
+               storePath: store.storePath,
+               embedderChoice: store.embedder
+           ) {
+            guard response.ok else {
+                throw CLIError(response.error ?? "Daemon search failed")
+            }
+            guard case .search(let count, let items)? = response.payload else {
+                throw CLIError("Daemon search returned an unexpected payload")
+            }
+
+            switch store.format {
+            case .json:
+                let encodedItems: [[String: Any]] = items.map { item in
+                    [
+                        "rank": item.rank,
+                        "frameId": item.frameId,
+                        "score": item.score,
+                        "sources": item.sources,
+                        "preview": item.preview ?? "",
+                    ]
+                }
+                printJSON([
+                    "count": count,
+                    "items": encodedItems,
+                ])
+            case .text:
+                if items.isEmpty {
+                    print("No results.")
+                } else {
+                    for item in items {
+                        print(
+                            "\(item.rank). frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) sources=[\(item.sources.joined(separator: ","))] \(item.preview ?? "")"
+                        )
+                    }
+                }
+            }
+            return
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
-        try await StoreSession.withOpen(at: url, noEmbedder: store.noEmbedder) { memory in
+        let requireVector = store.requireVector || modeLower == "hybrid"
+        try await StoreSession.withOpen(
+            at: url,
+            noEmbedder: store.noEmbedder,
+            embedderChoice: store.embedder,
+            requireVector: requireVector
+        ) { memory in
             let hits = try await memory.search(query: query, mode: searchMode, topK: topK, frameFilter: nil)
 
             switch store.format {

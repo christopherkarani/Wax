@@ -10,7 +10,7 @@ swift run --traits MCPServer wax-cli mcp install --scope user
 This will:
 
 1. Build `wax-mcp`
-2. Register a `wax` MCP server entry in Claude Code
+2. Register a `wax` MCP server entry in Claude Code against the resolved `wax-mcp` binary
 3. Configure default store paths under `~/.wax`
 
 ## Recommended `CLAUDE.md` prompt
@@ -82,6 +82,9 @@ This package includes embedded binaries for:
 2. `dist/darwin-x64/wax-cli` + `dist/darwin-x64/wax-mcp`
 
 For users of the published package, no local Wax build is required.
+Running `npx -y waxmcp@latest mcp install --scope user` stages those bundled artifacts into a
+stable local runtime directory and registers the staged `wax-mcp` binary, so steady-state
+Claude/Codex sessions do not depend on raw `npx` startup.
 
 For local development:
 

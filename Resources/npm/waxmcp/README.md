@@ -10,6 +10,15 @@
 npx -y waxmcp@latest mcp serve
 ```
 
+For Claude Code / Codex installs, prefer:
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
+
+That install flow stages the bundled runtime into a stable local directory and registers the
+staged `wax-mcp` binary, so regular MCP sessions do not keep launching through raw `npx`.
+
 > Note: `waxmcp` currently supports Apple Silicon macOS only (`darwin-arm64`).
 
 To publish a new version:
@@ -56,6 +65,21 @@ binary using this search order:
 2. Bundled `dist/darwin-arm64/wax-cli` or `dist/darwin-x64/wax-cli`
 3. `wax-cli` in PATH
 4. `./.build/debug/wax-cli` (current working directory)
+
+Vector-capable CLI commands now auto-start and reuse a background daemon by default, so
+coding agents can keep calling normal `wax-cli`/`waxmcp` commands without learning a
+separate workflow.
+
+You can still run the daemon directly when you want an explicit long-lived session:
+
+```bash
+waxmcp daemon --store-path ~/.wax/memory.wax
+```
+
+The daemon keeps one `MemoryOrchestrator` open, so repeated `remember` / `search` / `recall`
+requests do not reload the CoreML embedder every time. Simple text-only usage still runs
+one-shot. Hybrid/vector searches now fail explicitly if vector search is unavailable instead
+of silently degrading to text-only mode.
 
 ## Local development
 

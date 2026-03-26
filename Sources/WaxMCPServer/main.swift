@@ -109,7 +109,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
 
         // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.18"
+        let serverVersion = "0.1.19"
         writeStderr("wax-mcp v\(serverVersion) starting")
         let server = Server(
             name: "wax-mcp",

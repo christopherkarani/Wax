@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+@testable import wax_cli
 
 @Suite("WaxCLI Memory Commands")
 struct WaxCLIMemoryTests {
@@ -231,5 +232,220 @@ struct WaxCLIMemoryTests {
             #expect(error.localizedDescription.contains("timed out waiting for exclusive lock"))
         }
         try await holder.close()
+    }
+
+    @Test func vectorRequiredOpenRejectsNoEmbedderFlag() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-require-vector-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        do {
+            let memory = try await StoreSession.open(
+                at: url,
+                noEmbedder: true,
+                requireVector: true
+            )
+            try await memory.close()
+            Issue.record("expected vector-required open to fail when --no-embedder is set")
+        } catch {
+            #expect(error.localizedDescription.contains("Vector search required"))
+            #expect(error.localizedDescription.contains("--no-embedder"))
+        }
+    }
+
+    @Test func agentDaemonPolicyPrefersDaemonForVectorCommands() throws {
+        let vectorStore = try VectorStoreOptions.parse([])
+        let textStore = try VectorStoreOptions.parse(["--no-embedder"])
+
+        #expect(AgentDaemonPolicy.shouldUseDaemonForRemember(store: vectorStore))
+        #expect(AgentDaemonPolicy.shouldUseDaemonForRecall(store: vectorStore))
+        #expect(AgentDaemonPolicy.shouldUseDaemonForSearch(store: vectorStore, mode: "hybrid"))
+        #expect(!AgentDaemonPolicy.shouldUseDaemonForSearch(store: vectorStore, mode: "text"))
+        #expect(!AgentDaemonPolicy.shouldUseDaemonForRemember(store: textStore))
+    }
+
+    @Test func agentDaemonConfigurationUsesStableSocketPaths() throws {
+        let daemonRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-daemon-config-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: daemonRoot) }
+
+        setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
+        defer { unsetenv("WAX_CLI_DAEMON_DIR") }
+
+        let first = try AgentDaemonTransport.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: .minilm
+        )
+        let second = try AgentDaemonTransport.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: .minilm
+        )
+        let arctic = try AgentDaemonTransport.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: .arctic
+        )
+
+        #expect(first.socketPath == second.socketPath)
+        #expect(first.socketPath != arctic.socketPath)
+        #expect(first.socketPath.hasPrefix(daemonRoot.path))
+    }
+
+    @Test func daemonSessionHandlesPersistentRoundTripCommands() async throws {
+        try await withCLIMemory { memory in
+            let daemon = CLIDaemonSession(memory: memory)
+
+            let remember = await daemon.handle(
+                CLIDaemonRequest(
+                    id: "1",
+                    command: "remember",
+                    content: "Wax daemon keeps one orchestrator open for repeated CLI requests.",
+                    query: nil,
+                    metadata: ["source": "daemon-test"],
+                    mode: nil,
+                    topK: nil,
+                    limit: nil
+                )
+            )
+            #expect(remember.ok)
+            if case .remember(let frameCount, let pendingFrames, let framesAdded)? = remember.payload {
+                #expect(frameCount > 0)
+                #expect(pendingFrames == 0)
+                #expect(framesAdded > 0)
+            } else {
+                Issue.record("expected remember payload")
+            }
+
+            let search = await daemon.handle(
+                CLIDaemonRequest(
+                    id: "2",
+                    command: "search",
+                    content: nil,
+                    query: "orchestrator open",
+                    metadata: nil,
+                    mode: "text",
+                    topK: 5,
+                    limit: nil
+                )
+            )
+            #expect(search.ok)
+            if case .search(let count, let items)? = search.payload {
+                #expect(count > 0)
+                #expect(items.contains { ($0.preview ?? "").localizedCaseInsensitiveContains("orchestrator") })
+            } else {
+                Issue.record("expected search payload")
+            }
+
+            let recall = await daemon.handle(
+                CLIDaemonRequest(
+                    id: "3",
+                    command: "recall",
+                    content: nil,
+                    query: "daemon",
+                    metadata: nil,
+                    mode: nil,
+                    topK: nil,
+                    limit: 3
+                )
+            )
+            #expect(recall.ok)
+            if case .recall(let query, _, let items)? = recall.payload {
+                #expect(query == "daemon")
+                #expect(items.count > 0)
+                #expect(items.contains { ($0.text ?? "").localizedCaseInsensitiveContains("daemon") })
+            } else {
+                Issue.record("expected recall payload")
+            }
+
+            let shutdown = await daemon.handle(
+                CLIDaemonRequest(
+                    id: "4",
+                    command: "shutdown",
+                    content: nil,
+                    query: nil,
+                    metadata: nil,
+                    mode: nil,
+                    topK: nil,
+                    limit: nil
+                )
+            )
+            #expect(shutdown.ok)
+            #expect(shutdown.shouldExit)
+            if case .shutdown? = shutdown.payload {
+                // expected
+            } else {
+                Issue.record("expected shutdown payload")
+            }
+        }
+    }
+
+    @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-stage-\(UUID().uuidString)", isDirectory: true)
+        let sourceDir = tempRoot.appendingPathComponent("dist/darwin-arm64", isDirectory: true)
+        let installRoot = tempRoot.appendingPathComponent("install-root", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-mcp"))
+        try FileManager.default.createDirectory(
+            at: sourceDir.appendingPathComponent("Wax_WaxVectorSearchMiniLM.bundle", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        setenv("WAX_MCP_INSTALL_ROOT", installRoot.path, 1)
+        defer { unsetenv("WAX_MCP_INSTALL_ROOT") }
+
+        let runtime = try Pathing.prepareMCPInstallRuntime(
+            cliPath: sourceDir.appendingPathComponent("wax-cli").path,
+            serverPath: sourceDir.appendingPathComponent("wax-mcp").path,
+            dryRun: false
+        )
+
+        let expectedDir = installRoot.appendingPathComponent("darwin-arm64", isDirectory: true)
+        #expect(runtime.staged)
+        #expect(runtime.cliPath == expectedDir.appendingPathComponent("wax-cli").path)
+        #expect(runtime.serverPath == expectedDir.appendingPathComponent("wax-mcp").path)
+        #expect(FileManager.default.isExecutableFile(atPath: runtime.cliPath))
+        #expect(FileManager.default.isExecutableFile(atPath: runtime.serverPath))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: expectedDir
+                    .appendingPathComponent("Wax_WaxVectorSearchMiniLM.bundle", isDirectory: true)
+                    .path
+            )
+        )
+    }
+
+    @Test func mcpInstallLeavesNonBundledPathsUntouched() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-local-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = tempRoot.appendingPathComponent("wax-cli")
+        let server = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: cli)
+        try makeExecutableStub(at: server)
+
+        let runtime = try Pathing.prepareMCPInstallRuntime(
+            cliPath: cli.path,
+            serverPath: server.path,
+            dryRun: false
+        )
+
+        #expect(!runtime.staged)
+        #expect(runtime.cliPath == cli.path)
+        #expect(runtime.serverPath == server.path)
+    }
+
+    private func makeExecutableStub(at url: URL) throws {
+        try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: url.path
+        )
     }
 }

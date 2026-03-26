@@ -1836,7 +1836,8 @@ func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
     try harness.start()
     defer { harness.terminateIfNeeded() }
 
-    // Initialize — allow up to 60s for CoreML model load + prewarm
+    // Initialize should stay fast even with the real embedder configured.
+    let initStart = Date()
     try harness.sendJSONLine([
         "jsonrpc": "2.0",
         "id": 1,
@@ -1847,8 +1848,10 @@ func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
             "clientInfo": ["name": "wax-mcp-coreml-test", "version": "1.0"],
         ],
     ])
-    let initResp = try await harness.waitForResponseLine(id: 1, timeout: 60)
+    let initResp = try await harness.waitForResponseLine(id: 1, timeout: 10)
+    let initElapsed = Date().timeIntervalSince(initStart)
     #expect(initResp.contains(#""protocolVersion":"2024-11-05""#))
+    #expect(initElapsed < 10)
 
     try harness.sendJSONLine([
         "jsonrpc": "2.0",
