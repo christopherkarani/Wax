@@ -636,6 +636,7 @@ private extension AgentBrokerService {
                 "performed": .bool(true),
                 "stores_discovered": .from(buildSummary.storesDiscovered),
                 "stores_indexed": .from(buildSummary.storesIndexed),
+                "stores_skipped": .from(buildSummary.storesSkipped),
                 "documents_indexed": .from(buildSummary.documentsIndexed),
                 "documents_skipped": .from(buildSummary.documentsSkipped),
                 "corpus_store_path": .string(buildSummary.targetStorePath),

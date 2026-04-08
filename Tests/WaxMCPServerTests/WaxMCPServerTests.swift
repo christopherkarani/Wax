@@ -268,6 +268,7 @@ func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
             recursive: true
         )
         #expect(build.storesDiscovered == 2)
+        #expect(build.storesSkipped == 0)
         #expect(build.documentsIndexed == 2)
 
         let execution = try await MCPMemoryFactory.withOpenMemory(
@@ -293,6 +294,61 @@ func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
         #expect(metadata[CorpusMetadataKeys.sourceStorePath] == sourceA.path)
         #expect(metadata[CorpusMetadataKeys.sourceStoreName] == "session-a.wax")
         #expect(metadata["session_id"] == "session-a")
+    }
+}
+
+@Test
+func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+        let sourceA = sessionsDir.appendingPathComponent("session-a.wax")
+        let sourceB = sessionsDir.appendingPathComponent("session-b.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
+
+        try await writeSessionStore(
+            at: sourceA,
+            documents: [("Unlocked session note about mission telemetry.", ["session_id": "session-a"])]
+        )
+        try await writeSessionStore(
+            at: sourceB,
+            documents: [("Locked session note about fallback navigation.", ["session_id": "session-b"])]
+        )
+
+        let lockedMemory = try await openTextOnlyMemory(at: sourceB, structuredMemoryEnabled: false)
+        defer { Task { try? await lockedMemory.close() } }
+
+        let build = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(build.storesDiscovered == 2)
+        #expect(build.storesIndexed == 1)
+        #expect(build.storesSkipped == 1)
+        #expect(build.documentsIndexed == 1)
+
+        let execution = try await MCPMemoryFactory.withOpenMemory(
+            at: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            structuredMemoryEnabled: false
+        ) { memory in
+            try await memory.searchExecution(
+                query: "mission telemetry",
+                mode: .text,
+                topK: 5,
+                frameFilter: nil,
+                timeRange: nil
+            )
+        }
+
+        #expect(!execution.hits.isEmpty)
+        #expect(execution.hits.contains { ($0.previewText ?? "").contains("telemetry") })
+        #expect(!execution.hits.contains { ($0.previewText ?? "").contains("navigation") })
     }
 }
 
@@ -1269,6 +1325,25 @@ private func writeSessionStore(
     }
 }
 
+private func openTextOnlyMemory(
+    at url: URL,
+    structuredMemoryEnabled: Bool
+) async throws -> MemoryOrchestrator {
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    config.enableStructuredMemory = structuredMemoryEnabled
+    config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 2)
+    config.rag = FastRAGConfig(
+        maxContextTokens: 120,
+        expansionMaxTokens: 60,
+        snippetMaxTokens: 30,
+        maxSnippets: 8,
+        searchTopK: 20,
+        searchMode: .textOnly
+    )
+    return try await MemoryOrchestrator(at: url, config: config)
+}
+
 private func withVectorMemory(
     _ body: @Sendable (MemoryOrchestrator) async throws -> Void
 ) async throws {
@@ -1439,6 +1514,32 @@ private func parseToolTextJSON(fromResponseLine line: String) throws -> [String:
     return textDict
 }
 
+private func parseToolResourceJSON(fromResponseLine line: String, uriSuffix: String) throws -> [String: Any] {
+    guard let data = line.data(using: .utf8) else {
+        throw NSError(domain: "WaxMCPServerTests", code: 24, userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 response line"])
+    }
+    let object = try JSONSerialization.jsonObject(with: data)
+    guard let dict = object as? [String: Any],
+          let result = dict["result"] as? [String: Any],
+          let content = result["content"] as? [[String: Any]],
+          let resource = content.first(where: {
+              ($0["type"] as? String) == "resource" &&
+              (($0["resource"] as? [String: Any])?["uri"] as? String)?.hasSuffix(uriSuffix) == true
+          }),
+          let resourceObject = resource["resource"] as? [String: Any],
+          let text = resourceObject["text"] as? String,
+          let textData = text.data(using: .utf8)
+    else {
+        throw NSError(domain: "WaxMCPServerTests", code: 25, userInfo: [NSLocalizedDescriptionKey: "Missing tool resource payload"])
+    }
+
+    let textObject = try JSONSerialization.jsonObject(with: textData)
+    guard let textDict = textObject as? [String: Any] else {
+        throw NSError(domain: "WaxMCPServerTests", code: 26, userInfo: [NSLocalizedDescriptionKey: "Tool resource payload is not a JSON object"])
+    }
+    return textDict
+}
+
 private func requireString(_ object: [String: Any], key: String) throws -> String {
     guard let value = object[key] as? String, !value.isEmpty else {
         throw NSError(domain: "WaxMCPServerTests", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing string key '\(key)'"])
@@ -1554,6 +1655,9 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     private let brokerConfiguration: AgentBrokerConfiguration
 
     let storeURL: URL
+    var brokerSessionRootURL: URL {
+        URL(fileURLWithPath: brokerConfiguration.sessionRootPath, isDirectory: true)
+    }
 
     init(useRealEmbedder: Bool = false, storeURL: URL? = nil) throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -2191,7 +2295,7 @@ struct WaxMCPProcessTests {
         try harness.closeInput()
         #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
         let stderr = harness.stderrSnapshot()
-        #expect(stderr.contains("wax-mcp v0.1.19 starting"))
+        #expect(stderr.contains("wax-mcp v0.1.20 starting"))
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -2226,6 +2330,88 @@ struct WaxMCPProcessTests {
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
         #expect(!stderr.localizedCaseInsensitiveContains("use a unique --store-path"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func corpusSearchSkipsLockedBrokerManagedSessionStore() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-corpus-locked-session-test",
+            includeToolsList: true
+        )
+
+        let lockedSessionStart = try await harness.callTool(id: 30, name: "session_start", arguments: [:], timeout: 20)
+        let lockedSessionID = try requireString(try parseToolTextJSON(fromResponseLine: lockedSessionStart), key: "session_id")
+        _ = try await harness.callTool(
+            id: 31,
+            name: "remember",
+            arguments: [
+                "content": "LOCKED_CORPUS_ONLY broker-managed session note",
+                "session_id": lockedSessionID,
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 32,
+            name: "session_end",
+            arguments: ["session_id": lockedSessionID],
+            timeout: 20
+        )
+
+        let unlockedSessionStart = try await harness.callTool(id: 33, name: "session_start", arguments: [:], timeout: 20)
+        let unlockedSessionID = try requireString(try parseToolTextJSON(fromResponseLine: unlockedSessionStart), key: "session_id")
+        _ = try await harness.callTool(
+            id: 34,
+            name: "remember",
+            arguments: [
+                "content": "UNLOCKED_CORPUS_MATCH broker-managed session note",
+                "session_id": unlockedSessionID,
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 35,
+            name: "session_end",
+            arguments: ["session_id": unlockedSessionID],
+            timeout: 20
+        )
+
+        let lockedStoreURL = harness.brokerSessionRootURL
+            .appendingPathComponent("\(lockedSessionID).wax")
+        let lockHolder = try await openTextOnlyMemory(at: lockedStoreURL, structuredMemoryEnabled: false)
+        defer { Task { try? await lockHolder.close() } }
+
+        let corpusSearch = try await harness.callTool(
+            id: 36,
+            name: "corpus_search",
+            arguments: [
+                "query": "UNLOCKED_CORPUS_MATCH",
+                "mode": "text",
+                "topK": 5,
+                "rebuild": true,
+            ],
+            timeout: 20
+        )
+        let payload = try parseToolResourceJSON(
+            fromResponseLine: corpusSearch,
+            uriSuffix: "/corpus-search-summary"
+        )
+        let build = try requireObject(payload, key: "build")
+        #expect(try requireInt(build, key: "stores_discovered") >= 2)
+        #expect(try requireInt(build, key: "stores_indexed") >= 1)
+        #expect(try requireInt(build, key: "stores_skipped") >= 1)
+        let results = try requireArray(payload, key: "results")
+        #expect(!results.isEmpty)
+        #expect(results.contains { result in
+            guard let object = try? requireObject(result) else {
+                return false
+            }
+            let preview = object["preview"] as? String ?? ""
+            return preview.contains("UNLOCKED") && preview.contains("MATCH")
+        })
     }
 }
 

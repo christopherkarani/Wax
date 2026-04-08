@@ -14,6 +14,7 @@ package enum BrokerCorpusMetadataKeys {
 package struct BrokerCorpusBuildSummary: Equatable, Sendable {
     package var storesDiscovered: Int
     package var storesIndexed: Int
+    package var storesSkipped: Int
     package var documentsIndexed: Int
     package var documentsSkipped: Int
     package var targetStorePath: String
@@ -47,6 +48,7 @@ package enum BrokerCorpusStoreBuilder {
         }
 
         var storesIndexed = 0
+        var storesSkipped = 0
         var documentsIndexed = 0
         var documentsSkipped = 0
 
@@ -60,12 +62,21 @@ package enum BrokerCorpusStoreBuilder {
 
         do {
             for storeURL in storeURLs {
-                let outcome = try await ingestSourceStore(
-                    at: storeURL,
-                    into: memory,
-                    embedderChoice: embedderChoice,
-                    embedderTuning: embedderTuning
-                )
+                let outcome: IngestOutcome
+                do {
+                    outcome = try await ingestSourceStore(
+                        at: storeURL,
+                        into: memory,
+                        embedderChoice: embedderChoice,
+                        embedderTuning: embedderTuning
+                    )
+                } catch {
+                    guard isSkippableSourceStoreError(error) else {
+                        throw error
+                    }
+                    storesSkipped += 1
+                    continue
+                }
                 if outcome.indexedDocuments > 0 {
                     storesIndexed += 1
                 }
@@ -87,6 +98,7 @@ package enum BrokerCorpusStoreBuilder {
         return BrokerCorpusBuildSummary(
             storesDiscovered: storeURLs.count,
             storesIndexed: storesIndexed,
+            storesSkipped: storesSkipped,
             documentsIndexed: documentsIndexed,
             documentsSkipped: documentsSkipped,
             targetStorePath: standardizedTarget.path
@@ -218,6 +230,28 @@ private extension BrokerCorpusStoreBuilder {
         return directory
             .appendingPathComponent("\(stem)-building-\(UUID().uuidString)")
             .appendingPathExtension("wax")
+    }
+
+    static func isSkippableSourceStoreError(_ error: Error) -> Bool {
+        if let waxError = error as? WaxError {
+            switch waxError {
+            case .lockUnavailable:
+                return true
+            case .io(let details):
+                return details.localizedCaseInsensitiveContains("no such file")
+            default:
+                break
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileNoSuchFileError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == ENOENT {
+            return true
+        }
+        return false
     }
 
     static func openMemory(

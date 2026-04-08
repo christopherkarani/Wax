@@ -15,6 +15,7 @@ enum CorpusMetadataKeys {
 struct CorpusBuildSummary: Equatable, Sendable {
     var storesDiscovered: Int
     var storesIndexed: Int
+    var storesSkipped: Int
     var documentsIndexed: Int
     var documentsSkipped: Int
     var targetStorePath: String
@@ -48,6 +49,7 @@ enum CorpusStoreBuilder {
 
         var deferredError: Error?
         var storesIndexed = 0
+        var storesSkipped = 0
         var documentsIndexed = 0
         var documentsSkipped = 0
 
@@ -59,7 +61,16 @@ enum CorpusStoreBuilder {
                 structuredMemoryEnabled: false
             ) { targetMemory in
                 for storeURL in storeURLs {
-                    let outcome = try await ingestSourceStore(at: storeURL, into: targetMemory)
+                    let outcome: IngestOutcome
+                    do {
+                        outcome = try await ingestSourceStore(at: storeURL, into: targetMemory)
+                    } catch {
+                        guard isSkippableSourceStoreError(error) else {
+                            throw error
+                        }
+                        storesSkipped += 1
+                        continue
+                    }
                     if outcome.indexedDocuments > 0 {
                         storesIndexed += 1
                     }
@@ -87,6 +98,7 @@ enum CorpusStoreBuilder {
         return CorpusBuildSummary(
             storesDiscovered: storeURLs.count,
             storesIndexed: storesIndexed,
+            storesSkipped: storesSkipped,
             documentsIndexed: documentsIndexed,
             documentsSkipped: documentsSkipped,
             targetStorePath: standardizedTarget.path
@@ -204,6 +216,28 @@ enum CorpusStoreBuilder {
         return directory
             .appendingPathComponent("\(stem)-building-\(UUID().uuidString)")
             .appendingPathExtension("wax")
+    }
+
+    private static func isSkippableSourceStoreError(_ error: Error) -> Bool {
+        if let waxError = error as? WaxError {
+            switch waxError {
+            case .lockUnavailable:
+                return true
+            case .io(let details):
+                return details.localizedCaseInsensitiveContains("no such file")
+            default:
+                break
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileNoSuchFileError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == ENOENT {
+            return true
+        }
+        return false
     }
 }
 #endif

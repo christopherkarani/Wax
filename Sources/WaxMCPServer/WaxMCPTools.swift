@@ -972,6 +972,7 @@ private extension WaxMCPTools {
                 "performed": .bool(true),
                 "stores_discovered": .int(summary.storesDiscovered),
                 "stores_indexed": .int(summary.storesIndexed),
+                "stores_skipped": .int(summary.storesSkipped),
                 "documents_indexed": .int(summary.documentsIndexed),
                 "documents_skipped": .int(summary.documentsSkipped),
                 "corpus_store_path": .string(summary.targetStorePath),

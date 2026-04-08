@@ -65,13 +65,13 @@ jobs:
           echo "MiniLM bundle present"
 
       - name: Smoke check MCP server
-        if: ${{ matrix.source-build }}
+        if: ${{ matrix.source_build }}
         run: |
           set -euo pipefail
           Resources/npm/waxmcp/dist/${{ matrix.platform }}/wax-mcp --help
 
       - name: Smoke check CLI entrypoint
-        if: ${{ matrix.source-build }}
+        if: ${{ matrix.source_build }}
         run: |
           set -euo pipefail
           Resources/npm/waxmcp/dist/${{ matrix.platform }}/wax-cli mcp serve --help

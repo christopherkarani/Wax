@@ -864,6 +864,7 @@ enum Pathing {
         }
         try fm.copyItem(at: standardizedSource, to: staging)
         try adHocSignExecutables(in: staging)
+        try refreshRuntimeChecksums(in: staging)
 
         if fm.fileExists(atPath: standardizedTarget.path) {
             try fm.removeItem(at: standardizedTarget)
@@ -964,6 +965,18 @@ enum Pathing {
             throw CLIError("Checksum file is empty at \(url.path)")
         }
         return String(token)
+    }
+
+    private static func refreshRuntimeChecksums(in directory: URL) throws {
+        let requiredExecutables = ["wax-cli", "wax-mcp"]
+        for executable in requiredExecutables {
+            let executableURL = directory.appendingPathComponent(executable)
+            guard FileManager.default.fileExists(atPath: executableURL.path) else { continue }
+            let digest = try sha256Hex(for: executableURL)
+            let checksumURL = directory.appendingPathComponent("\(executable).sha256")
+            let contents = "\(digest)  \(executable)\n"
+            try contents.write(to: checksumURL, atomically: true, encoding: .utf8)
+        }
     }
 
     private static func sha256Hex(for url: URL) throws -> String {

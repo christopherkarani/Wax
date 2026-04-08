@@ -439,6 +439,8 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
         try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-cli"))
         try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-mcp"))
+        try writeChecksumFile(for: sourceDir.appendingPathComponent("wax-cli"))
+        try writeChecksumFile(for: sourceDir.appendingPathComponent("wax-mcp"))
         try FileManager.default.createDirectory(
             at: sourceDir.appendingPathComponent("Wax_WaxVectorSearchMiniLM.bundle", isDirectory: true),
             withIntermediateDirectories: true
@@ -466,6 +468,12 @@ struct WaxCLIMemoryTests {
                     .path
             )
         )
+
+        let validation = try Pathing.validateMCPRuntime(
+            serverPath: runtime.serverPath,
+            expectVectorRuntime: true
+        )
+        #expect(validation.failures.isEmpty)
     }
 
     @Test func mcpInstallLeavesNonBundledPathsUntouched() throws {
@@ -775,6 +783,23 @@ struct WaxCLIMemoryTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o755))],
             ofItemAtPath: url.path
+        )
+    }
+
+    private func writeChecksumFile(for executableURL: URL) throws {
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", executableURL.path]
+        )
+        guard output.status == EXIT_SUCCESS,
+              let token = output.stdout.split(whereSeparator: \.isWhitespace).first else {
+            throw CLIError("Unable to compute checksum for \(executableURL.path)")
+        }
+        let contents = "\(token)  \(executableURL.lastPathComponent)\n"
+        try contents.write(
+            to: executableURL.deletingPathExtension().appendingPathExtension("sha256"),
+            atomically: true,
+            encoding: String.Encoding.utf8
         )
     }
 
