@@ -251,7 +251,7 @@ func corruptedTocVersionFailsFastWithExplicitInvalidTocError() async throws {
         try await wax.close()
     }
 
-    guard var footerSlice = try FooterScanner.findLastValidFooter(in: url) else {
+    guard let footerSlice = try FooterScanner.findLastValidFooter(in: url) else {
         Issue.record("Expected a valid footer for corruption setup")
         return
     }

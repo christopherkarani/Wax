@@ -118,19 +118,16 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
         vectors.withUnsafeBufferPointer { matrixBuffer in
             preparedQuery.withUnsafeBufferPointer { queryBuffer in
                 scores.withUnsafeMutableBufferPointer { scoreBuffer in
-                    cblas_sgemv(
-                        CblasRowMajor,
-                        CblasNoTrans,
-                        Int32(frameIds.count),
-                        Int32(dimensions),
+                    vDSP_mmul(
+                        matrixBuffer.baseAddress!,
                         1,
-                        matrixBuffer.baseAddress,
-                        Int32(dimensions),
-                        queryBuffer.baseAddress,
+                        queryBuffer.baseAddress!,
                         1,
-                        0,
-                        scoreBuffer.baseAddress,
-                        1
+                        scoreBuffer.baseAddress!,
+                        1,
+                        vDSP_Length(frameIds.count),
+                        1,
+                        vDSP_Length(dimensions)
                     )
                 }
             }

@@ -29,6 +29,7 @@ struct SearchCommand: AsyncParsableCommand {
         }
 
         let searchMode: MemoryOrchestrator.DirectSearchMode
+        let requireVector = store.requireVector || modeLower == "hybrid"
         switch modeLower {
         case "text":
             searchMode = .text
@@ -38,37 +39,34 @@ struct SearchCommand: AsyncParsableCommand {
             throw CLIError("mode must be one of: text, hybrid")
         }
 
-        if AgentDaemonPolicy.shouldUseDaemonForSearch(store: store, mode: modeLower),
-           let response = try AgentDaemonTransport.perform(
-               request: CLIDaemonRequest(
-                   id: nil,
-                   command: "search",
-                   content: nil,
-                   query: query,
-                   metadata: nil,
-                   mode: modeLower,
-                   topK: topK,
-                   limit: nil
-               ),
-               storePath: store.storePath,
-               embedderChoice: store.embedder
-           ) {
-            guard response.ok else {
-                throw CLIError(response.error ?? "Daemon search failed")
-            }
-            guard case .search(let count, let items)? = response.payload else {
-                throw CLIError("Daemon search returned an unexpected payload")
-            }
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "search",
+                arguments: [
+                    "query": .string(query),
+                    "mode": .string(modeLower),
+                    "topK": .from(topK),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let items = brokerArray(payload, "results")
+            let count = items.count
 
             switch store.format {
             case .json:
-                let encodedItems: [[String: Any]] = items.map { item in
-                    [
-                        "rank": item.rank,
-                        "frameId": item.frameId,
-                        "score": item.score,
-                        "sources": item.sources,
-                        "preview": item.preview ?? "",
+                let encodedItems: [[String: Any]] = items.compactMap { item in
+                    guard let object = item.objectValue else { return nil }
+                    return [
+                        "rank": brokerInt(object, "rank") ?? 0,
+                        "frameId": brokerInt64(object, "frameId") ?? 0,
+                        "score": object["score"]?.doubleValue ?? 0,
+                        "sources": brokerArray(object, "sources").compactMap(\.stringValue),
+                        "preview": brokerString(object, "preview") ?? "",
                     ]
                 }
                 printJSON([
@@ -80,8 +78,9 @@ struct SearchCommand: AsyncParsableCommand {
                     print("No results.")
                 } else {
                     for item in items {
+                        guard let object = item.objectValue else { continue }
                         print(
-                            "\(item.rank). frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) sources=[\(item.sources.joined(separator: ","))] \(item.preview ?? "")"
+                            "\(brokerInt(object, "rank") ?? 0). frame=\(brokerInt64(object, "frameId") ?? 0) score=\(String(format: "%.4f", object["score"]?.doubleValue ?? 0)) sources=[\(brokerArray(object, "sources").compactMap(\.stringValue).joined(separator: ","))] \(brokerString(object, "preview") ?? "")"
                         )
                     }
                 }
@@ -90,11 +89,11 @@ struct SearchCommand: AsyncParsableCommand {
         }
 
         let url = try StoreSession.resolveURL(store.storePath)
-        let requireVector = store.requireVector || modeLower == "hybrid"
         try await StoreSession.withOpen(
             at: url,
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder,
+            embedderTuning: store.embedderTuning,
             requireVector: requireVector
         ) { memory in
             let hits = try await memory.search(query: query, mode: searchMode, topK: topK, frameFilter: nil)

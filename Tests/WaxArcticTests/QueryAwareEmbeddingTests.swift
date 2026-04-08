@@ -1,4 +1,5 @@
 #if canImport(CoreML)
+import CoreML
 import Foundation
 import Testing
 import WaxVectorSearch
@@ -11,17 +12,14 @@ struct QueryAwareEmbeddingTests {
 
     @Test
     func miniLMDoesNotConformToQueryAware() throws {
-        let embedder = try MiniLMEmbedder()
-        #expect(!(embedder is any QueryAwareEmbeddingProvider),
+        #expect(!(MiniLMEmbedder.self is any QueryAwareEmbeddingProvider.Type),
                 "MiniLM should not conform to QueryAwareEmbeddingProvider")
     }
 
-    @Test(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_ARCTIC"] != "1",
-                    "Set WAX_TEST_ARCTIC=1 to run Arctic tests"))
-    func arcticConformsToQueryAware() throws {
-        let embedder = try ArcticEmbedder()
-        #expect(embedder is any QueryAwareEmbeddingProvider,
-                "Arctic should conform to QueryAwareEmbeddingProvider")
+    @Test
+    func arcticConformsToQueryAware() {
+        func requireQueryAware<T: QueryAwareEmbeddingProvider>(_: T.Type) {}
+        requireQueryAware(ArcticEmbedder.self)
     }
 
     @Test(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_ARCTIC"] != "1",
@@ -42,7 +40,7 @@ struct QueryAwareEmbeddingTests {
 
     @Test
     func miniLMEmbedIsConsistentWithoutQueryPrefix() async throws {
-        let embedder = try MiniLMEmbedder()
+        let embedder = try makeMiniLMEmbedderForTesting()
         try await embedder.prewarm(batchSize: 1)
 
         let text = "Simple test sentence"
@@ -54,5 +52,13 @@ struct QueryAwareEmbeddingTests {
 
         #expect(v1 == v2)
     }
+}
+
+private func makeMiniLMEmbedderForTesting() throws -> MiniLMEmbedder {
+    let modelConfiguration = MLModelConfiguration()
+    modelConfiguration.computeUnits = .cpuOnly
+    return try MiniLMEmbedder(
+        config: .init(batchSize: 1, modelConfiguration: modelConfiguration)
+    )
 }
 #endif

@@ -427,11 +427,11 @@ struct MemoryOrchestratorIngestFastPathTests {
                 config: config,
                 embedder: DeterministicEmbedder(dimensions: 8)
             )
-            MemoryOrchestrator._resetBatchPreparationPathCallCountForTests()
-
-            try await orchestrator.remember(content)
-
-            #expect(MemoryOrchestrator._batchPreparationPathCallCountForTests() == 0)
+            try await MemoryOrchestrator._withIsolatedDebugCountersForTests { scopeKey in
+                MemoryOrchestrator._resetBatchPreparationPathCallCountForTests(scopeKey: scopeKey)
+                try await orchestrator.remember(content)
+                #expect(MemoryOrchestrator._batchPreparationPathCallCountForTests(scopeKey: scopeKey) == 0)
+            }
             try await orchestrator.close()
         }
     }
@@ -458,13 +458,15 @@ struct MemoryOrchestratorIngestFastPathTests {
                 config: config,
                 embedder: DeterministicEmbedder(dimensions: 8)
             )
-            MemoryOrchestrator._resetMemoryBindingEnsureCallCountForTests()
+            try await MemoryOrchestrator._withIsolatedDebugCountersForTests { scopeKey in
+                MemoryOrchestrator._resetMemoryBindingEnsureCallCountForTests(scopeKey: scopeKey)
 
-            for content in contents {
-                try await orchestrator.remember(content)
+                for content in contents {
+                    try await orchestrator.remember(content)
+                }
+
+                #expect(MemoryOrchestrator._memoryBindingEnsureCallCountForTests(scopeKey: scopeKey) == 1)
             }
-
-            #expect(MemoryOrchestrator._memoryBindingEnsureCallCountForTests() == 1)
             try await orchestrator.close()
         }
     }

@@ -41,27 +41,23 @@ struct RememberCommand: AsyncParsableCommand {
             meta[key] = value
         }
 
-        if AgentDaemonPolicy.shouldUseDaemonForRemember(store: store),
-           let response = try AgentDaemonTransport.perform(
-               request: CLIDaemonRequest(
-                   id: nil,
-                   command: "remember",
-                   content: trimmed,
-                   query: nil,
-                   metadata: meta,
-                   mode: nil,
-                   topK: nil,
-                   limit: nil
-               ),
-               storePath: store.storePath,
-               embedderChoice: store.embedder
-           ) {
-            guard response.ok else {
-                throw CLIError(response.error ?? "Daemon remember failed")
-            }
-            guard case .remember(let frameCount, let pendingFrames, let framesAdded)? = response.payload else {
-                throw CLIError("Daemon remember returned an unexpected payload")
-            }
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "remember",
+                arguments: [
+                    "content": .string(trimmed),
+                    "metadata": .object(meta.mapValues(AgentBrokerValue.string)),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let frameCount = brokerInt(payload, "frameCount") ?? 0
+            let pendingFrames = brokerInt(payload, "pendingFrames") ?? 0
+            let framesAdded = brokerInt(payload, "framesAdded") ?? 0
             switch store.format {
             case .json:
                 printJSON([
@@ -83,6 +79,7 @@ struct RememberCommand: AsyncParsableCommand {
             noEmbedder: store.noEmbedder,
             skipPrewarm: true,
             embedderChoice: store.embedder,
+            embedderTuning: store.embedderTuning,
             requireVector: store.requireVector
         ) { memory in
             let before = await memory.runtimeStats()

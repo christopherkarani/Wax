@@ -1,5 +1,6 @@
 import Foundation
 import Wax
+import WaxCore
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
@@ -76,22 +77,6 @@ enum StoreSession {
         return url
     }
 
-    /// Timeout for MiniLM embedder initialisation (nanoseconds).
-    ///
-    /// CoreML model loading is not cooperatively cancellable, so without an explicit
-    /// deadline the CLI hangs indefinitely in some environments (sandboxed, first-boot,
-    /// slow ANE scheduling). If the embedder doesn't become ready within this window
-    /// we fall back to text-only search and print a warning to stderr.
-    ///
-    /// Override at runtime with the `WAX_EMBEDDER_TIMEOUT_SECS` environment variable.
-    private static var embedderTimeoutNS: UInt64 {
-        if let raw = ProcessInfo.processInfo.environment["WAX_EMBEDDER_TIMEOUT_SECS"],
-           let secs = Double(raw), secs > 0 {
-            return UInt64(secs * 1_000_000_000)
-        }
-        return 30_000_000_000 // 30 seconds default
-    }
-
     private static var waxOptions: WaxOptions {
         var options = WaxOptions()
         options.lockWaitTimeout = lockWaitTimeout
@@ -125,13 +110,15 @@ enum StoreSession {
         noEmbedder: Bool = false,
         skipPrewarm: Bool = false,
         embedderChoice: EmbedderChoice = .minilm,
+        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         requireVector: Bool = false
     ) async throws -> MemoryOrchestrator {
         try StoreLockProbe.preflightExclusiveAccess(at: url, timeout: waxOptions.lockWaitTimeout)
         let embedderLoad = try await loadEmbedder(
             noEmbedder: noEmbedder,
             skipPrewarm: skipPrewarm,
-            embedderChoice: embedderChoice
+            embedderChoice: embedderChoice,
+            tuning: embedderTuning
         )
         let embedder: (any EmbeddingProvider)?
         switch embedderLoad {
@@ -167,7 +154,8 @@ enum StoreSession {
     private static func loadEmbedder(
         noEmbedder: Bool,
         skipPrewarm: Bool,
-        embedderChoice: EmbedderChoice
+        embedderChoice: EmbedderChoice,
+        tuning: CommandLineEmbedderRuntimeTuning
     ) async throws -> EmbedderLoadResult {
         guard !noEmbedder else { return .disabled }
 
@@ -180,13 +168,14 @@ enum StoreSession {
 
             let embedder: ArcticEmbedder? = await withCheckedContinuation { cont in
                 let once = OnceContinuation<ArcticEmbedder?>(cont)
-                let timeoutNS = embedderTimeoutNS
+                let timeoutNS = UInt64(tuning.timeoutSeconds * 1_000_000_000)
 
                 Task {
                     do {
                         let embedder = try await ArcticEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: 1,
-                            skipPrewarm: skipPrewarm
+                            prewarmBatchSize: tuning.prewarmBatchSize,
+                            skipPrewarm: skipPrewarm,
+                            tuning: tuning
                         )
                         once.resume(returning: embedder)
                     } catch {
@@ -207,7 +196,7 @@ enum StoreSession {
             if let embedder {
                 return .ready(embedder)
             }
-            let secs = Int(embedderTimeoutNS / 1_000_000_000)
+            let secs = Int(tuning.timeoutSeconds.rounded(.up))
             return .unavailable(
                 "Arctic embedder is unavailable or timed out after \(secs)s"
             )
@@ -222,13 +211,14 @@ enum StoreSession {
 
             let embedder: MiniLMEmbedder? = await withCheckedContinuation { cont in
                 let once = OnceContinuation<MiniLMEmbedder?>(cont)
-                let timeoutNS = embedderTimeoutNS
+                let timeoutNS = UInt64(tuning.timeoutSeconds * 1_000_000_000)
 
                 Task {
                     do {
                         let embedder = try await MiniLMEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: 1,
-                            skipPrewarm: skipPrewarm
+                            prewarmBatchSize: tuning.prewarmBatchSize,
+                            skipPrewarm: skipPrewarm,
+                            tuning: tuning
                         )
                         once.resume(returning: embedder)
                     } catch {
@@ -249,7 +239,7 @@ enum StoreSession {
             if let embedder {
                 return .ready(embedder)
             }
-            let secs = Int(embedderTimeoutNS / 1_000_000_000)
+            let secs = Int(tuning.timeoutSeconds.rounded(.up))
             return .unavailable(
                 "MiniLM embedder is unavailable or timed out after \(secs)s"
             )

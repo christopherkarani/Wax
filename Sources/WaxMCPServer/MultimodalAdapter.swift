@@ -39,7 +39,7 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
 
     private func describe(image: CGImage) async throws -> String {
         #if canImport(Vision)
-        return try await Task.detached(priority: .utility) {
+        return await Task.detached(priority: .utility) {
             var labels: [String] = []
             var ocrText: [String] = []
 

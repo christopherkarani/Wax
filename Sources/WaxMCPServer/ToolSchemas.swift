@@ -9,52 +9,47 @@ enum ToolSchemas {
     static func tools(structuredMemoryEnabled: Bool) -> [Tool] {
         var tools: [Tool] = [
         Tool(
-            name: "wax_remember",
+            name: "remember",
             description: "Store text in Wax memory with optional metadata.",
             inputSchema: waxRemember
         ),
         Tool(
-            name: "wax_recall",
-            description: "Recall context for a query using Wax RAG assembly. Reads require wax_flush when pending writes exist.",
+            name: "recall",
+            description: "Recall context for a query using Wax RAG assembly.",
             inputSchema: waxRecall
         ),
         Tool(
-            name: "wax_search",
-            description: "Run direct Wax search and return ranked raw hits. Reads require wax_flush when pending writes exist.",
+            name: "search",
+            description: "Run direct Wax search and return ranked raw hits.",
             inputSchema: waxSearch
         ),
         Tool(
-            name: "wax_corpus_search",
-            description: "Build or refresh a shared corpus store from many session .wax files, then search it with provenance-rich results.",
+            name: "corpus_search",
+            description: "Search broker-managed session history with provenance-rich results.",
             inputSchema: waxCorpusSearch
         ),
         Tool(
-            name: "wax_flush",
-            description: "Flush pending Wax writes and commit indexes.",
-            inputSchema: waxFlush
-        ),
-        Tool(
-            name: "wax_stats",
+            name: "stats",
             description: "Return Wax runtime and storage stats.",
             inputSchema: waxStats
         ),
         Tool(
-            name: "wax_session_start",
-            description: "Create a process-local session UUID for explicit memory scoping and return its session_id.",
+            name: "session_start",
+            description: "Create a broker-managed virtual session and return its session_id.",
             inputSchema: waxSessionStart
         ),
         Tool(
-            name: "wax_session_end",
-            description: "Mark a process-local MCP session inactive. Pass session_id when multiple sessions are active.",
+            name: "session_end",
+            description: "End an active broker-managed virtual session. Pass session_id when multiple sessions are active.",
             inputSchema: waxSessionEnd
         ),
         Tool(
-            name: "wax_handoff",
-            description: "Store a cross-session handoff note for later retrieval. Commit by default; set commit=false to batch with wax_flush.",
+            name: "handoff",
+            description: "Store a cross-session handoff note for later retrieval.",
             inputSchema: waxHandoff
         ),
         Tool(
-            name: "wax_handoff_latest",
+            name: "handoff_latest",
             description: "Fetch the latest handoff note, optionally scoped by project.",
             inputSchema: waxHandoffLatest
         ),
@@ -63,27 +58,27 @@ enum ToolSchemas {
         if structuredMemoryEnabled {
             tools.append(contentsOf: [
                 Tool(
-                    name: "wax_entity_upsert",
+                    name: "entity_upsert",
                     description: "Upsert a structured-memory entity by key.",
                     inputSchema: waxEntityUpsert
                 ),
                 Tool(
-                    name: "wax_fact_assert",
+                    name: "fact_assert",
                     description: "Assert a structured-memory fact.",
                     inputSchema: waxFactAssert
                 ),
                 Tool(
-                    name: "wax_fact_retract",
+                    name: "fact_retract",
                     description: "Retract a structured-memory fact by id.",
                     inputSchema: waxFactRetract
                 ),
                 Tool(
-                    name: "wax_facts_query",
+                    name: "facts_query",
                     description: "Query structured-memory facts.",
                     inputSchema: waxFactsQuery
                 ),
                 Tool(
-                    name: "wax_entity_resolve",
+                    name: "entity_resolve",
                     description: "Resolve entities by alias.",
                     inputSchema: waxEntityResolve
                 ),
@@ -107,10 +102,6 @@ enum ToolSchemas {
                 "type": "object",
                 "description": "Optional metadata map. Scalar values are coerced to strings.",
                 "additionalProperties": scalarMetadataValueSchema,
-            ],
-            "commit": [
-                "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before recall/search reads.",
             ],
         ],
         required: ["content"]
@@ -200,21 +191,13 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Search query text.",
             ],
-            "sessions_dir": [
-                "type": "string",
-                "description": "Directory containing source session .wax stores. Default: ~/.wax/sessions",
-            ],
-            "corpus_store_path": [
-                "type": "string",
-                "description": "Path to the shared corpus store. Default: ~/.wax/corpus.wax",
-            ],
             "rebuild": [
                 "type": "boolean",
-                "description": "Rebuild the shared corpus before searching. Default: true. If false and the corpus is missing, it is still built.",
+                "description": "Rebuild the broker-managed shared corpus before searching. Default: true.",
             ],
             "recursive": [
                 "type": "boolean",
-                "description": "Recursively scan sessions_dir for .wax files. Default: true.",
+                "description": "Recursively scan broker-managed session stores. Default: true.",
             ],
             "mode": [
                 "type": "string",
@@ -265,10 +248,6 @@ enum ToolSchemas {
                 "type": "array",
                 "description": "Optional list of pending tasks.",
                 "items": ["type": "string"],
-            ],
-            "commit": [
-                "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["content"]
@@ -326,10 +305,6 @@ enum ToolSchemas {
                 "type": "array",
                 "description": "Optional aliases for entity resolution.",
                 "items": ["type": "string"],
-            ],
-            "commit": [
-                "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["key", "kind"]
@@ -395,10 +370,6 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional valid-to timestamp (ms since epoch).",
             ],
-            "commit": [
-                "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
-            ],
         ],
         required: ["subject", "predicate", "object"]
     )
@@ -412,10 +383,6 @@ enum ToolSchemas {
             "at_ms": [
                 "type": "integer",
                 "description": "Optional retraction timestamp in ms since epoch.",
-            ],
-            "commit": [
-                "type": "boolean",
-                "description": "Commit immediately. Default: true. Set false to batch with wax_flush before dependent reads.",
             ],
         ],
         required: ["fact_id"]

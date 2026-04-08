@@ -63,7 +63,7 @@ import WaxVectorSearch
 
     let request = SearchRequest(
         embedding: [1.0, 0.0],
-        vectorEnginePreference: .metalPreferred,
+        vectorEnginePreference: .auto,
         mode: .vectorOnly,
         topK: 5
     )
@@ -113,7 +113,7 @@ import WaxVectorSearch
 
     let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
-    let session = try await wax.enableVectorSearch(metric: .cosine, dimensions: 2, preference: .metalPreferred)
+    let session = try await wax.enableVectorSearch(metric: .cosine, dimensions: 2, preference: .auto)
 
     let frameA = try await wax.put(Data("a".utf8))
     let frameB = try await wax.put(Data("b".utf8))

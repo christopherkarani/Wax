@@ -247,7 +247,7 @@ struct WaxSessionCacheIsolationTests {
             )
             try await session.commit()
 
-            await UnifiedSearchEngineCache.shared.resetStats()
+            await UnifiedSearchEngineCache.shared.resetStats(for: wax)
 
             _ = try await session.search(
                 SearchRequest(
@@ -257,7 +257,7 @@ struct WaxSessionCacheIsolationTests {
                 )
             )
 
-            let stats = await UnifiedSearchEngineCache.shared.snapshotStats()
+            let stats = await UnifiedSearchEngineCache.shared.snapshotStats(for: wax)
             #expect(stats.vectorDeserializations == 0)
 
             await session.close()

@@ -1,5 +1,10 @@
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 #if MCPServer
 import MCP
@@ -10,21 +15,21 @@ import XCTest
 @Test
 func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
-    #expect(names.contains("wax_remember"))
-    #expect(names.contains("wax_recall"))
-    #expect(names.contains("wax_search"))
-    #expect(names.contains("wax_corpus_search"))
-    #expect(names.contains("wax_flush"))
-    #expect(names.contains("wax_stats"))
-    #expect(names.contains("wax_session_start"))
-    #expect(names.contains("wax_session_end"))
-    #expect(names.contains("wax_handoff"))
-    #expect(names.contains("wax_handoff_latest"))
-    #expect(names.contains("wax_entity_upsert"))
-    #expect(names.contains("wax_fact_assert"))
-    #expect(names.contains("wax_fact_retract"))
-    #expect(names.contains("wax_facts_query"))
-    #expect(names.contains("wax_entity_resolve"))
+    #expect(names.contains("remember"))
+    #expect(names.contains("recall"))
+    #expect(names.contains("search"))
+    #expect(names.contains("corpus_search"))
+    #expect(!names.contains("flush"))
+    #expect(names.contains("stats"))
+    #expect(names.contains("session_start"))
+    #expect(names.contains("session_end"))
+    #expect(names.contains("handoff"))
+    #expect(names.contains("handoff_latest"))
+    #expect(names.contains("entity_upsert"))
+    #expect(names.contains("fact_assert"))
+    #expect(names.contains("fact_retract"))
+    #expect(names.contains("facts_query"))
+    #expect(names.contains("entity_resolve"))
     // Verify no duplicate tool names
     #expect(names.count == ToolSchemas.allTools.count)
 }
@@ -33,11 +38,11 @@ func toolsListContainsExpectedTools() {
 func toolsListHonorsStructuredMemoryFlag() {
     let withStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: true).map(\.name))
     let withoutStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: false).map(\.name))
-    #expect(withStructuredMemory.contains("wax_facts_query"))
-    #expect(!withoutStructuredMemory.contains("wax_facts_query"))
-    #expect(withStructuredMemory.contains("wax_entity_upsert"))
-    #expect(!withoutStructuredMemory.contains("wax_entity_upsert"))
-    #expect(!withoutStructuredMemory.contains("wax_fact_assert"))
+    #expect(withStructuredMemory.contains("facts_query"))
+    #expect(!withoutStructuredMemory.contains("facts_query"))
+    #expect(withStructuredMemory.contains("entity_upsert"))
+    #expect(!withoutStructuredMemory.contains("entity_upsert"))
+    #expect(!withoutStructuredMemory.contains("fact_assert"))
 }
 
 @Test
@@ -56,7 +61,7 @@ func toolSchemaRegression() {
     }
 
     // Core tools must be present (regression: renaming or removing breaks clients)
-    let requiredTools = ["wax_remember", "wax_recall", "wax_search", "wax_corpus_search", "wax_flush", "wax_stats"]
+    let requiredTools = ["remember", "recall", "search", "corpus_search", "stats"]
     for required in requiredTools {
         #expect(uniqueNames.contains(required), "Required tool '\(required)' is missing from schema")
     }
@@ -64,21 +69,20 @@ func toolSchemaRegression() {
     // Tool inputSchemas must be well-formed objects, and tools with required inputs
     // must preserve those requirements in the published schema.
     let schemas: [(name: String, schema: Value, requiresNonEmptyFields: Bool)] = [
-        ("wax_remember", ToolSchemas.waxRemember, true),
-        ("wax_recall", ToolSchemas.waxRecall, true),
-        ("wax_search", ToolSchemas.waxSearch, true),
-        ("wax_corpus_search", ToolSchemas.waxCorpusSearch, true),
-        ("wax_flush", ToolSchemas.waxFlush, false),
-        ("wax_stats", ToolSchemas.waxStats, false),
-        ("wax_session_start", ToolSchemas.waxSessionStart, false),
-        ("wax_session_end", ToolSchemas.waxSessionEnd, false),
-        ("wax_handoff", ToolSchemas.waxHandoff, true),
-        ("wax_handoff_latest", ToolSchemas.waxHandoffLatest, false),
-        ("wax_entity_upsert", ToolSchemas.waxEntityUpsert, true),
-        ("wax_fact_assert", ToolSchemas.waxFactAssert, true),
-        ("wax_fact_retract", ToolSchemas.waxFactRetract, true),
-        ("wax_facts_query", ToolSchemas.waxFactsQuery, false),
-        ("wax_entity_resolve", ToolSchemas.waxEntityResolve, true),
+        ("remember", ToolSchemas.waxRemember, true),
+        ("recall", ToolSchemas.waxRecall, true),
+        ("search", ToolSchemas.waxSearch, true),
+        ("corpus_search", ToolSchemas.waxCorpusSearch, true),
+        ("stats", ToolSchemas.waxStats, false),
+        ("session_start", ToolSchemas.waxSessionStart, false),
+        ("session_end", ToolSchemas.waxSessionEnd, false),
+        ("handoff", ToolSchemas.waxHandoff, true),
+        ("handoff_latest", ToolSchemas.waxHandoffLatest, false),
+        ("entity_upsert", ToolSchemas.waxEntityUpsert, true),
+        ("fact_assert", ToolSchemas.waxFactAssert, true),
+        ("fact_retract", ToolSchemas.waxFactRetract, true),
+        ("facts_query", ToolSchemas.waxFactsQuery, false),
+        ("entity_resolve", ToolSchemas.waxEntityResolve, true),
     ]
     for (toolName, schema, requiresNonEmptyFields) in schemas {
         guard let obj = schema.objectValue else {
@@ -106,7 +110,7 @@ func recallSchemaExposesLegacyTopKAlias() {
     guard let obj = ToolSchemas.waxRecall.objectValue,
           case .object(let properties) = obj["properties"]
     else {
-        Issue.record("wax_recall schema is missing object properties")
+        Issue.record("recall schema is missing object properties")
         return
     }
 
@@ -119,7 +123,7 @@ func toolsRejectUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: [
                     "query": .string("actors"),
                     "limit": .int(3),
@@ -138,7 +142,7 @@ func corpusSearchRejectsUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_corpus_search",
+                name: "corpus_search",
                 arguments: [
                     "query": .string("actors"),
                     "sessionsDir": .string("/tmp/typo"),
@@ -156,7 +160,7 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_fact_assert",
+                name: "fact_assert",
                 arguments: [
                     "subject": .string("project:wax"),
                     "predicate": .string("status"),
@@ -177,18 +181,18 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
 func sessionEndRequiresSessionIDWhenMultipleSessionsActive() async throws {
     try await withMemory { memory in
         let first = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         let second = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(first.isError != true)
         #expect(second.isError != true)
 
         let end = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_end", arguments: [:]),
+            params: .init(name: "session_end", arguments: [:]),
             memory: memory
         )
         #expect(end.isError == true)
@@ -197,99 +201,11 @@ func sessionEndRequiresSessionIDWhenMultipleSessionsActive() async throws {
 }
 
 @Test
-func waxMCPProcessRespondsAfterImmediateEOF() async throws {
-    let harness = try MCPServerProcessHarness()
-    try harness.start()
-    defer { harness.terminateIfNeeded() }
-
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": [
-            "protocolVersion": "2024-11-05",
-            "capabilities": [:],
-            "clientInfo": ["name": "wax-mcp-eof-test", "version": "1.0"],
-        ],
-    ])
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": [:],
-    ])
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": [:],
-    ])
-    try harness.closeInput()
-
-    let initialize = try await harness.waitForResponseLine(id: 1)
-    let toolsList = try await harness.waitForResponseLine(id: 2)
-
-    #expect(initialize.contains(#""protocolVersion":"2024-11-05""#))
-    #expect(toolsList.contains(#""name":"wax_remember""#))
-    #expect(try await harness.waitForExit() == EXIT_SUCCESS)
-}
-
-@Test
-func waxMCPProcessFlushesPendingWritesOnSIGTERM() async throws {
-    let harness = try MCPServerProcessHarness()
-    try harness.start()
-    defer { harness.terminateIfNeeded() }
-
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": [
-            "protocolVersion": "2024-11-05",
-            "capabilities": [:],
-            "clientInfo": ["name": "wax-mcp-sigterm-test", "version": "1.0"],
-        ],
-    ])
-    _ = try await harness.waitForResponseLine(id: 1)
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": [:],
-    ])
-
-    let marker = "waxmcp-sigterm-\(UUID().uuidString)"
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": [
-            "name": "wax_remember",
-            "arguments": [
-                "content": marker,
-                "commit": false,
-            ],
-        ],
-    ])
-    let remember = try await harness.waitForResponseLine(id: 2)
-    let rememberJSON = try parseToolTextJSON(fromResponseLine: remember)
-    #expect((rememberJSON["committed"] as? Bool) == false)
-
-    try harness.sendSignal(SIGTERM)
-    #expect(try await harness.waitForExit() == EXIT_SUCCESS)
-
-    var config = OrchestratorConfig.default
-    config.enableVectorSearch = false
-    let reopened = try await MemoryOrchestrator(at: harness.storeURL, config: config)
-    defer { Task { try? await reopened.close() } }
-    let context = try await reopened.recall(query: marker)
-    #expect(context.items.contains { $0.text.contains(marker) })
-}
-
-@Test
 func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
     try await withMemory { memory in
         let rememberResult = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": "Swift actors isolate mutable state.",
                     "metadata": ["source": "test-suite", "rank": 1],
@@ -299,15 +215,8 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
         )
         #expect(rememberResult.isError != true)
 
-        let flushResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-        #expect(flushResult.isError != true)
-        #expect(firstText(in: flushResult).contains("Flushed."))
-
         let recallResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: ["query": "actors", "limit": 3]),
+            params: .init(name: "recall", arguments: ["query": "actors", "limit": 3]),
             memory: memory
         )
         #expect(recallResult.isError != true)
@@ -315,7 +224,7 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
 
         let searchResult = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "actors", "mode": "text", "topK": 5]
             ),
             memory: memory
@@ -324,7 +233,7 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
         #expect(!firstText(in: searchResult).isEmpty)
 
         let statsResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
+            params: .init(name: "stats", arguments: [:]),
             memory: memory
         )
         #expect(statsResult.isError != true)
@@ -334,56 +243,56 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
 
 @Test
 func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
-    try await withMemory { memory in
-        try await withTemporaryDirectory { root in
-            let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
-            try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
 
-            let sourceA = sessionsDir.appendingPathComponent("session-a.wax")
-            let sourceB = sessionsDir.appendingPathComponent("session-b.wax")
-            let corpus = root.appendingPathComponent("corpus.wax")
+        let sourceA = sessionsDir.appendingPathComponent("session-a.wax")
+        let sourceB = sessionsDir.appendingPathComponent("session-b.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
 
-            try await writeSessionStore(
-                at: sourceA,
-                documents: [("Apollo guidance session with thruster calibration notes.", ["session_id": "session-a"])]
+        try await writeSessionStore(
+            at: sourceA,
+            documents: [("Apollo guidance session with thruster calibration notes.", ["session_id": "session-a"])]
+        )
+        try await writeSessionStore(
+            at: sourceB,
+            documents: [("Zephyr retrieval session covering lunar habitat logistics.", ["session_id": "session-b"])]
+        )
+
+        let build = try await CorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(build.storesDiscovered == 2)
+        #expect(build.documentsIndexed == 2)
+
+        let execution = try await MCPMemoryFactory.withOpenMemory(
+            at: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            structuredMemoryEnabled: false
+        ) { memory in
+            try await memory.searchExecution(
+                query: "thruster calibration",
+                mode: .text,
+                topK: 5,
+                frameFilter: nil,
+                timeRange: nil
             )
-            try await writeSessionStore(
-                at: sourceB,
-                documents: [("Zephyr retrieval session covering lunar habitat logistics.", ["session_id": "session-b"])]
-            )
-
-            let result = await WaxMCPTools.handleCall(
-                params: .init(
-                    name: "wax_corpus_search",
-                    arguments: [
-                        "query": .string("thruster calibration"),
-                        "sessions_dir": .string(sessionsDir.path),
-                        "corpus_store_path": .string(corpus.path),
-                        "mode": .string("text"),
-                        "topK": .int(5),
-                        "rebuild": .bool(true),
-                    ]
-                ),
-                memory: memory,
-                noEmbedder: true
-            )
-
-            #expect(result.isError != true)
-            #expect(firstText(in: result).contains("session-a.wax"))
-
-            let resource = try parseJSONResource(in: result, uriSuffix: "/corpus-search-summary")
-            let build = try requireObject(resource, key: "build")
-            #expect((build["performed"] as? Bool) == true)
-            #expect((build["stores_discovered"] as? Int) == 2)
-            #expect((build["documents_indexed"] as? Int) == 2)
-
-            let results = try requireArray(resource, key: "results")
-            let first = try requireObject(results[0])
-            let metadata = try requireObject(first, key: "metadata")
-            #expect((metadata[CorpusMetadataKeys.sourceStorePath] as? String) == sourceA.path)
-            #expect((metadata[CorpusMetadataKeys.sourceStoreName] as? String) == "session-a.wax")
-            #expect((metadata["session_id"] as? String) == "session-a")
         }
+
+        #expect(!execution.hits.isEmpty)
+        let preview = execution.hits.first?.previewText ?? ""
+        #expect(preview.contains("thruster"))
+        #expect(preview.contains("calibration"))
+        let metadata = execution.hits.first?.metadata ?? [:]
+        #expect(metadata[CorpusMetadataKeys.sourceStorePath] == sourceA.path)
+        #expect(metadata[CorpusMetadataKeys.sourceStoreName] == "session-a.wax")
+        #expect(metadata["session_id"] == "session-a")
     }
 }
 
@@ -392,7 +301,7 @@ func corpusSearchRejectsInvalidTopK() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_corpus_search",
+                name: "corpus_search",
                 arguments: [
                     "query": .string("anything"),
                     "topK": .int(0),
@@ -417,17 +326,17 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
 
         let rememberResult = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: ["content": .string("\(queryToken) \(marker)")]
             ),
             memory: memory
         )
         #expect(rememberResult.isError != true)
         let rememberJSON = try parseJSONText(in: rememberResult)
-        #expect((rememberJSON["committed"] as? Bool) == true)
+        #expect((rememberJSON["status"] as? String) == "ok")
 
         let statsResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
+            params: .init(name: "stats", arguments: [:]),
             memory: memory
         )
         #expect(statsResult.isError != true)
@@ -435,7 +344,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
         #expect((statsJSON["pendingFrames"] as? Int ?? -1) == 0)
 
         let recallResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
+            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
             memory: memory
         )
         #expect(recallResult.isError != true)
@@ -444,126 +353,38 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
 }
 
 @Test
-func rememberCommitFalseBatchesUntilFlush() async throws {
+func rememberRejectsLegacyCommitArgument() async throws {
     try await withMemory { memory in
-        let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let queryToken = "rememberbatchquery\(seed.prefix(8))"
-        let marker = "rememberbatchmarker\(seed.suffix(8))"
-        let markerNeedle = String(marker.prefix(14))
-
         let rememberResult = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
-                    "content": .string("\(queryToken) \(marker)"),
+                    "content": .string("legacy commit should fail"),
                     "commit": .bool(false),
                 ]
             ),
             memory: memory
         )
-        #expect(rememberResult.isError != true)
-        let rememberJSON = try parseJSONText(in: rememberResult)
-        #expect((rememberJSON["committed"] as? Bool) == false)
-
-        let statsBeforeFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
-            memory: memory
-        )
-        #expect(statsBeforeFlush.isError != true)
-        let statsBeforeFlushJSON = try parseJSONText(in: statsBeforeFlush)
-        #expect((statsBeforeFlushJSON["pendingFrames"] as? Int ?? 0) > 0)
-
-        let recallBeforeFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
-            memory: memory
-        )
-        #expect(recallBeforeFlush.isError == true)
-        #expect(firstText(in: recallBeforeFlush).contains("wax_flush"))
-
-        let searchBeforeFlush = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "wax_search",
-                arguments: ["query": .string(queryToken), "mode": "text", "topK": .int(5)]
-            ),
-            memory: memory
-        )
-        #expect(searchBeforeFlush.isError == true)
-        #expect(firstText(in: searchBeforeFlush).contains("wax_flush"))
-
-        let flushResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-        #expect(flushResult.isError != true)
-
-        let statsAfterFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
-            memory: memory
-        )
-        #expect(statsAfterFlush.isError != true)
-        let statsAfterFlushJSON = try parseJSONText(in: statsAfterFlush)
-        #expect((statsAfterFlushJSON["pendingFrames"] as? Int ?? -1) == 0)
-
-        let recallAfterFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
-            memory: memory
-        )
-        #expect(recallAfterFlush.isError != true)
-        #expect(firstText(in: recallAfterFlush).contains(markerNeedle))
+        #expect(rememberResult.isError == true)
+        #expect(firstText(in: rememberResult).contains("unsupported argument"))
     }
 }
 
 @Test
-func handoffCommitFalseBatchesAndLatestOnlySeesCommittedFrames() async throws {
+func handoffRejectsLegacyCommitArgument() async throws {
     try await withMemory { memory in
-        let project = "handoff-batch-project-\(UUID().uuidString)"
-        let marker = "handoff-batch-marker-\(UUID().uuidString)"
-
         let handoffResult = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_handoff",
+                name: "handoff",
                 arguments: [
-                    "content": .string(marker),
-                    "project": .string(project),
+                    "content": .string("legacy handoff commit should fail"),
                     "commit": false,
                 ]
             ),
             memory: memory
         )
-        #expect(handoffResult.isError != true)
-        let handoffJSON = try parseJSONText(in: handoffResult)
-        #expect((handoffJSON["committed"] as? Bool) == false)
-
-        let statsBeforeFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
-            memory: memory
-        )
-        #expect(statsBeforeFlush.isError != true)
-        let statsBeforeFlushJSON = try parseJSONText(in: statsBeforeFlush)
-        #expect((statsBeforeFlushJSON["pendingFrames"] as? Int ?? 0) > 0)
-
-        let latestBeforeFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_handoff_latest", arguments: ["project": .string(project)]),
-            memory: memory
-        )
-        #expect(latestBeforeFlush.isError != true)
-        let latestBeforeFlushJSON = try parseJSONText(in: latestBeforeFlush)
-        #expect((latestBeforeFlushJSON["found"] as? Bool) == false)
-
-        let flushResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-        #expect(flushResult.isError != true)
-
-        let latestAfterFlush = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_handoff_latest", arguments: ["project": .string(project)]),
-            memory: memory
-        )
-        #expect(latestAfterFlush.isError != true)
-        let latestAfterFlushJSON = try parseJSONText(in: latestAfterFlush)
-        #expect((latestAfterFlushJSON["found"] as? Bool) == true)
-        #expect((latestAfterFlushJSON["content"] as? String)?.contains(marker) == true)
+        #expect(handoffResult.isError == true)
+        #expect(firstText(in: handoffResult).contains("unsupported argument"))
     }
 }
 
@@ -579,7 +400,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
         let blockedRemember = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": .string("\(queryToken) \(blockedMarker)"),
                     "metadata": .object(["group": .string("blocked")]),
@@ -591,7 +412,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
         let allowedRemember = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": .string("\(queryToken) \(allowedMarker)"),
                     "metadata": .object(["group": .string("allowed")]),
@@ -601,15 +422,9 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
         )
         #expect(allowedRemember.isError != true)
 
-        let flushResult = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-        #expect(flushResult.isError != true)
-
         let baselineSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": .string(queryToken), "mode": .string("text"), "topK": .int(10)]
             ),
             memory: memory
@@ -619,7 +434,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
         let filteredSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: [
                     "query": .string(queryToken),
                     "mode": .string("text"),
@@ -638,7 +453,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
         #expect(!firstText(in: filteredSearch).contains(blockedNeedle))
 
         let baselineRecall = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: ["query": .string(queryToken), "limit": .int(10)]),
+            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(10)]),
             memory: memory
         )
         #expect(baselineRecall.isError != true)
@@ -646,7 +461,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
         let filteredRecall = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: [
                     "query": .string(queryToken),
                     "limit": .int(10),
@@ -670,7 +485,7 @@ func recallValidatesModeAndSearchControls() async throws {
     try await withMemory { memory in
         let invalidMode = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: ["query": "mode-validation", "mode": "invalid-mode"]
             ),
             memory: memory
@@ -680,7 +495,7 @@ func recallValidatesModeAndSearchControls() async throws {
 
         let invalidTopK = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: ["query": "topk-validation", "search_top_k": 0]
             ),
             memory: memory
@@ -694,7 +509,7 @@ func recallValidatesModeAndSearchControls() async throws {
 func toolsReturnValidationErrorForMissingArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_remember", arguments: [:]),
+            params: .init(name: "remember", arguments: [:]),
             memory: memory
         )
         #expect(result.isError == true)
@@ -707,7 +522,7 @@ func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
     try await withMemory { memory in
         let fractional = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "actors", "topK": 1.9]
             ),
             memory: memory
@@ -717,7 +532,7 @@ func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
 
         let outOfRange = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "actors", "topK": 1e100]
             ),
             memory: memory
@@ -732,7 +547,7 @@ func toolsRejectRecallLimitOutOfRange() async throws {
     try await withMemory { memory in
         let zero = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: ["query": "actors", "limit": 0]
             ),
             memory: memory,
@@ -743,7 +558,7 @@ func toolsRejectRecallLimitOutOfRange() async throws {
 
         let tooHigh = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: ["query": "actors", "limit": 101]
             ),
             memory: memory,
@@ -759,7 +574,7 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_facts_query",
+                name: "facts_query",
                 arguments: ["subject": "agent:codex", "limit": 10]
             ),
             memory: memory,
@@ -774,7 +589,7 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
 func unknownToolReturnsErrorResult() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_nope", arguments: [:]),
+            params: .init(name: "nope", arguments: [:]),
             memory: memory
         )
         #expect(result.isError == true)
@@ -786,7 +601,7 @@ func unknownToolReturnsErrorResult() async throws {
 func sessionStartEndAndScopedRecallSearchWork() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(start.isError != true)
@@ -795,14 +610,14 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
 
         _ = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: ["content": "GLOBAL_ONLY_ABC anchor for unscoped search"]
             ),
             memory: memory
         )
         _ = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": "SESSION_ONLY_XYZ anchor for scoped search",
                     "session_id": .string(sessionID),
@@ -810,14 +625,9 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
             ),
             memory: memory
         )
-        _ = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-
         let scopedRecall = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_recall",
+                name: "recall",
                 arguments: ["query": "SESSION_ONLY_XYZ", "session_id": .string(sessionID), "limit": 10]
             ),
             memory: memory
@@ -829,17 +639,19 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
 
         let unscopedSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "GLOBAL_ONLY_ABC", "mode": "text", "topK": 10]
             ),
             memory: memory
         )
         #expect(unscopedSearch.isError != true)
-        #expect(firstText(in: unscopedSearch).contains("GLOBAL"))
+        let unscopedSearchPayload = try parseJSONResource(in: unscopedSearch, uriSuffix: "/search-summary")
+        let unscopedResults = try requireArray(unscopedSearchPayload, key: "results")
+        #expect(unscopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL") == true })
 
         let scopedSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: [
                     "query": "GLOBAL_ONLY_ABC",
                     "mode": "text",
@@ -850,10 +662,12 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
             memory: memory
         )
         #expect(scopedSearch.isError != true)
-        #expect(!firstText(in: scopedSearch).contains("GLOBAL_ONLY_ABC"))
+        let scopedSearchPayload = try parseJSONResource(in: scopedSearch, uriSuffix: "/search-summary")
+        let scopedResults = try requireArray(scopedSearchPayload, key: "results")
+        #expect(!scopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL_ONLY_ABC") == true })
 
         let end = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_end", arguments: [:]),
+            params: .init(name: "session_end", arguments: [:]),
             memory: memory
         )
         #expect(end.isError != true)
@@ -861,10 +675,41 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
 }
 
 @Test
+func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
+    let tempDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-broker-path-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let cliPath = tempDir.appendingPathComponent("wax-cli")
+    let mcpPath = tempDir.appendingPathComponent("wax-mcp")
+    try "#!/bin/sh\nexit 0\n".write(to: cliPath, atomically: true, encoding: .utf8)
+    try "#!/bin/sh\nexit 0\n".write(to: mcpPath, atomically: true, encoding: .utf8)
+    guard chmod(cliPath.path, 0o755) == 0, chmod(mcpPath.path, 0o755) == 0 else {
+        throw NSError(domain: "WaxMCPServerTests", code: 41, userInfo: [NSLocalizedDescriptionKey: "Failed to make test executables"])
+    }
+
+    let originalPath = ProcessInfo.processInfo.environment["PATH"]
+    let pathPrefix = tempDir.path
+    let newPath = originalPath.map { "\(pathPrefix):\($0)" } ?? pathPrefix
+    setenv("PATH", newPath, 1)
+    defer {
+        if let originalPath {
+            setenv("PATH", originalPath, 1)
+        } else {
+            unsetenv("PATH")
+        }
+    }
+
+    let resolved = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: "wax-mcp")
+    #expect(resolved == cliPath.path)
+}
+
+@Test
 func sessionStartDoesNotImplicitlyScopeWrites() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(start.isError != true)
@@ -873,7 +718,7 @@ func sessionStartDoesNotImplicitlyScopeWrites() async throws {
 
         let globalWrite = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: ["content": "GLOBAL_IMPLICIT_SCOPE_GUARD"]
             ),
             memory: memory
@@ -882,7 +727,7 @@ func sessionStartDoesNotImplicitlyScopeWrites() async throws {
 
         let scopedWrite = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": "SESSION_EXPLICIT_SCOPE_GUARD",
                     "session_id": .string(sessionID),
@@ -892,14 +737,9 @@ func sessionStartDoesNotImplicitlyScopeWrites() async throws {
         )
         #expect(scopedWrite.isError != true)
 
-        _ = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-
         let scopedSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: [
                     "query": "GLOBAL_IMPLICIT_SCOPE_GUARD",
                     "mode": "text",
@@ -910,17 +750,21 @@ func sessionStartDoesNotImplicitlyScopeWrites() async throws {
             memory: memory
         )
         #expect(scopedSearch.isError != true)
-        #expect(!firstText(in: scopedSearch).contains("\"frameId\":1"))
+        let scopedPayload = try parseJSONResource(in: scopedSearch, uriSuffix: "/search-summary")
+        let scopedResults = try requireArray(scopedPayload, key: "results")
+        #expect(!scopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") == true })
 
         let unscopedSearch = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "GLOBAL_IMPLICIT_SCOPE_GUARD", "mode": "text", "topK": 10]
             ),
             memory: memory
         )
         #expect(unscopedSearch.isError != true)
-        #expect(firstText(in: unscopedSearch).contains("\"frameId\":1"))
+        let unscopedPayload = try parseJSONResource(in: unscopedSearch, uriSuffix: "/search-summary")
+        let unscopedResults = try requireArray(unscopedPayload, key: "results")
+        #expect(!unscopedResults.isEmpty)
     }
 }
 
@@ -929,7 +773,7 @@ func rememberRejectsMetadataSessionID() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": "invalid metadata session id",
                     "metadata": .object(["session_id": .string("not-a-uuid")]),
@@ -946,7 +790,7 @@ func rememberRejectsMetadataSessionID() async throws {
 func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(start.isError != true)
@@ -954,14 +798,14 @@ func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
         let sessionID = try requireString(started, key: "session_id")
 
         let end = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionID)]),
+            params: .init(name: "session_end", arguments: ["session_id": .string(sessionID)]),
             memory: memory
         )
         #expect(end.isError != true)
 
         let remember = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_remember",
+                name: "remember",
                 arguments: [
                     "content": "should fail after end",
                     "session_id": .string(sessionID),
@@ -974,7 +818,7 @@ func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
 
         let search = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: [
                     "query": "should fail after end",
                     "mode": "text",
@@ -993,21 +837,21 @@ func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
 func sessionEndReportsRemainingActiveSessions() async throws {
     try await withMemory { memory in
         let startA = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(startA.isError != true)
         let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
 
         let startB = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(startB.isError != true)
         let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
 
         let end = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_end", arguments: ["session_id": .string(sessionA)]),
+            params: .init(name: "session_end", arguments: ["session_id": .string(sessionA)]),
             memory: memory
         )
         #expect(end.isError != true)
@@ -1016,7 +860,7 @@ func sessionEndReportsRemainingActiveSessions() async throws {
         #expect((ended["active"] as? Bool) == true)
 
         let stats = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
+            params: .init(name: "stats", arguments: [:]),
             memory: memory
         )
         #expect(stats.isError != true)
@@ -1046,7 +890,7 @@ func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
     defer { Task { try? await memory.close() } }
 
     let stats = await WaxMCPTools.handleCall(
-        params: .init(name: "wax_stats", arguments: [:]),
+        params: .init(name: "stats", arguments: [:]),
         memory: memory
     )
     #expect(stats.isError != true)
@@ -1084,19 +928,24 @@ func vectorFallbackIsSurfacedInSearchAndStats() async throws {
 
     let search = await WaxMCPTools.handleCall(
         params: .init(
-            name: "wax_search",
+            name: "search",
             arguments: ["query": "VECTOR_FALLBACK_SIGNAL", "mode": "hybrid", "topK": 5]
         ),
         memory: memory
     )
     #expect(search.isError != true)
-    let payload = try parseJSONResource(in: search, uriSuffix: "/search-summary")
-    #expect((payload["requested_mode"] as? String) == "hybrid(alpha=0.500)")
-    #expect((payload["effective_mode"] as? String) == "text")
-    #expect((payload["query_embedding_state"] as? String) == "timeout")
+        let payload = try parseJSONResource(in: search, uriSuffix: "/search-summary")
+        #expect((payload["requested_mode"] as? String) == "hybrid(alpha=0.500)")
+        #expect((payload["effective_mode"] as? String) == "text")
+        #expect((payload["query_embedding_state"] as? String) == "timeout")
+        let results = try requireArray(payload, key: "results")
+        #expect(!results.isEmpty)
+        let firstResult = try requireObject(results[0])
+        #expect(firstResult["frameId"] != nil)
+        #expect(firstResult["sources"] != nil)
 
     let stats = await WaxMCPTools.handleCall(
-        params: .init(name: "wax_stats", arguments: [:]),
+        params: .init(name: "stats", arguments: [:]),
         memory: memory
     )
     #expect(stats.isError != true)
@@ -1109,7 +958,7 @@ func invalidSessionIDIsRejected() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_search",
+                name: "search",
                 arguments: ["query": "x", "mode": "text", "session_id": "not-a-uuid"]
             ),
             memory: memory
@@ -1120,10 +969,42 @@ func invalidSessionIDIsRejected() async throws {
 }
 
 @Test
+func recallJSONResourceIncludesStructuredResults() async throws {
+    try await withMemory { memory in
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": "Structured recall payload marker",
+                    "metadata": ["source": "recall-json"],
+                ]
+            ),
+            memory: memory
+        )
+        let recall = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: ["query": "payload marker", "limit": 3]
+            ),
+            memory: memory
+        )
+
+        #expect(recall.isError != true)
+        let payload = try parseJSONResource(in: recall, uriSuffix: "/recall-summary")
+        let results = try requireArray(payload, key: "results")
+        #expect(!results.isEmpty)
+        let first = try requireObject(results[0])
+        #expect((first["text"] as? String)?.contains("Structured recall payload marker") == true)
+        let metadata = try requireObject(first, key: "metadata")
+        #expect((metadata["source"] as? String) == "recall-json")
+    }
+}
+
+@Test
 func handoffRoundTripAndStatsSessionBlockWork() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_session_start", arguments: [:]),
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
         #expect(start.isError != true)
@@ -1132,7 +1013,7 @@ func handoffRoundTripAndStatsSessionBlockWork() async throws {
 
         let handoff = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_handoff",
+                name: "handoff",
                 arguments: [
                     "content": "Carry over refactor checkpoints",
                     "session_id": .string(sessionID),
@@ -1146,7 +1027,7 @@ func handoffRoundTripAndStatsSessionBlockWork() async throws {
 
         let latest = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_handoff_latest",
+                name: "handoff_latest",
                 arguments: ["project": "wax"]
             ),
             memory: memory
@@ -1155,13 +1036,8 @@ func handoffRoundTripAndStatsSessionBlockWork() async throws {
         let latestJSON = try parseJSONText(in: latest)
         #expect((latestJSON["content"] as? String)?.contains("Carry over refactor checkpoints") == true)
 
-        _ = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_flush", arguments: [:]),
-            memory: memory
-        )
-
         let stats = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_stats", arguments: [:]),
+            params: .init(name: "stats", arguments: [:]),
             memory: memory
         )
         #expect(stats.isError != true)
@@ -1181,7 +1057,7 @@ func graphToolsRoundTripWorks() async throws {
     try await withMemory { memory in
         let upsert = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_entity_upsert",
+                name: "entity_upsert",
                 arguments: [
                     "key": "agent:codex",
                     "kind": "agent",
@@ -1196,7 +1072,7 @@ func graphToolsRoundTripWorks() async throws {
 
         let assert = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_fact_assert",
+                name: "fact_assert",
                 arguments: [
                     "subject": "agent:codex",
                     "predicate": "learned_behavior",
@@ -1211,7 +1087,7 @@ func graphToolsRoundTripWorks() async throws {
 
         let factsBeforeRetract = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_facts_query",
+                name: "facts_query",
                 arguments: ["subject": "agent:codex", "predicate": "learned_behavior", "limit": 20]
             ),
             memory: memory
@@ -1221,7 +1097,7 @@ func graphToolsRoundTripWorks() async throws {
 
         let retract = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_fact_retract",
+                name: "fact_retract",
                 arguments: ["fact_id": .int(factID)]
             ),
             memory: memory
@@ -1230,7 +1106,7 @@ func graphToolsRoundTripWorks() async throws {
 
         let factsAfterRetract = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_facts_query",
+                name: "facts_query",
                 arguments: ["subject": "agent:codex", "predicate": "learned_behavior", "limit": 20]
             ),
             memory: memory
@@ -1240,7 +1116,7 @@ func graphToolsRoundTripWorks() async throws {
 
         let resolve = await WaxMCPTools.handleCall(
             params: .init(
-                name: "wax_entity_resolve",
+                name: "entity_resolve",
                 arguments: ["alias": "codex", "limit": 5]
             ),
             memory: memory
@@ -1444,9 +1320,8 @@ private func withVectorMemory(
 func vectorSearchRememberFlushRecallHappyPath() async throws {
     try await withVectorMemory { memory in
         let remember = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_remember", arguments: [
+            params: .init(name: "remember", arguments: [
                 "content": .string("Swift actors provide data isolation through actor-isolated state."),
-                "commit": .bool(true),
             ]),
             memory: memory
         )
@@ -1457,7 +1332,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
         #expect(framesAdded > 0)
 
         let recall = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_recall", arguments: [
+            params: .init(name: "recall", arguments: [
                 "query": .string("actors"),
             ]),
             memory: memory
@@ -1467,7 +1342,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
         #expect(recallText.contains("Results:"))
 
         let search = await WaxMCPTools.handleCall(
-            params: .init(name: "wax_search", arguments: [
+            params: .init(name: "search", arguments: [
                 "query": .string("actors"),
                 "mode": .string("hybrid"),
             ]),
@@ -1496,7 +1371,7 @@ func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
     defer { Task { try? await memory.close() } }
 
     let result = await WaxMCPTools.handleCall(
-        params: .init(name: "wax_remember", arguments: [
+        params: .init(name: "remember", arguments: [
             "content": .string("This should time out."),
         ]),
         memory: memory
@@ -1508,7 +1383,7 @@ func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
 
 private func firstText(in result: CallTool.Result) -> String {
     for content in result.content {
-        if case .text(let text) = content {
+        if case .text(text: let text, annotations: _, _meta: _) = content {
             return text
         }
     }
@@ -1662,6 +1537,11 @@ private struct MCPTestDeterministicEmbedder: EmbeddingProvider, Sendable {
 }
 
 private final class MCPServerProcessHarness: @unchecked Sendable {
+    struct BootstrapResult {
+        let initialize: String
+        let toolsList: String?
+    }
+
     private let process = Process()
     private let stdinPipe = Pipe()
     private let stdoutPipe = Pipe()
@@ -1671,27 +1551,40 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     private var stdoutPending = Data()
     private var stderrPending = Data()
     private var stderrLines: [String] = []
+    private let brokerConfiguration: AgentBrokerConfiguration
 
     let storeURL: URL
 
-    init(useRealEmbedder: Bool = false) throws {
+    init(useRealEmbedder: Bool = false, storeURL: URL? = nil) throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        self.storeURL = FileManager.default.temporaryDirectory
+        self.storeURL = storeURL ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-process-\(UUID().uuidString)")
             .appendingPathExtension("wax")
 
-        process.executableURL = try Self.waxMCPBinaryURL(packageRoot: root)
-        var args = ["--store-path", storeURL.path]
+        let executableURL = try Self.waxMCPBinaryURL(packageRoot: root)
+        process.executableURL = executableURL
+        var args = ["--store-path", self.storeURL.path]
         if !useRealEmbedder {
             args.append("--no-embedder")
         }
         process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
+        process.environment = environment
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        brokerConfiguration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: AgentBrokerPathing.resolveBrokerCLIPath(
+                currentExecutablePath: executableURL.path
+            ),
+            storePath: self.storeURL.path,
+            embedderChoice: "minilm",
+            noEmbedder: !useRealEmbedder
+        )
     }
 
     func start() throws {
@@ -1708,6 +1601,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             self.appendOutput(data, toStdout: false)
         }
         try process.run()
+        Thread.sleep(forTimeInterval: 0.05)
     }
 
     func terminateIfNeeded() {
@@ -1718,12 +1612,70 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             process.waitUntilExit()
         }
         try? stdinPipe.fileHandleForWriting.close()
+        try? shutdownBrokerIfRunning()
     }
 
     func sendJSONLine(_ object: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         stdinPipe.fileHandleForWriting.write(data)
         stdinPipe.fileHandleForWriting.write(Data([0x0A]))
+    }
+
+    func bootstrap(
+        clientName: String,
+        initializeID: Int = 1,
+        includeToolsList: Bool = false,
+        toolsListID: Int = 2,
+        initializeTimeout: TimeInterval = 15,
+        toolsListTimeout: TimeInterval = 15
+    ) async throws -> BootstrapResult {
+        try sendJSONLine([
+            "jsonrpc": "2.0",
+            "id": initializeID,
+            "method": "initialize",
+            "params": [
+                "protocolVersion": "2024-11-05",
+                "capabilities": [:],
+                "clientInfo": ["name": clientName, "version": "1.0"],
+            ],
+        ])
+        try sendJSONLine([
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": [:],
+        ])
+        if includeToolsList {
+            try sendJSONLine([
+                "jsonrpc": "2.0",
+                "id": toolsListID,
+                "method": "tools/list",
+                "params": [:],
+            ])
+        }
+
+        let initialize = try await waitForResponseLine(id: initializeID, timeout: initializeTimeout)
+        let toolsList = includeToolsList
+            ? try await waitForResponseLine(id: toolsListID, timeout: toolsListTimeout)
+            : nil
+        return BootstrapResult(initialize: initialize, toolsList: toolsList)
+    }
+
+    func callTool(
+        id: Int,
+        name: String,
+        arguments: [String: Any],
+        timeout: TimeInterval = 10
+    ) async throws -> String {
+        try sendJSONLine([
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": [
+                "name": name,
+                "arguments": arguments,
+            ],
+        ])
+        return try await waitForResponseLine(id: id, timeout: timeout)
     }
 
     func closeInput() throws {
@@ -1739,18 +1691,29 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
 
     func waitForResponseLine(id: Int, timeout: TimeInterval = 5) async throws -> String {
         let deadline = Date().addingTimeInterval(timeout)
-        let needle = #""id":\#(id)"#
         while Date() < deadline {
-            if let line = withLocked({ stdoutLines.first(where: { $0.contains(needle) }) }) {
+            if let line = withLocked({ stdoutLines.first(where: { Self.responseLineMatchesID($0, id: id) }) }) {
                 return line
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let stderr = withLocked { stderrLines.joined(separator: "\n") }
+        let running = process.isRunning
+        let (stderr, stdoutTail, terminationStatus) = withLocked {
+            (
+                stderrLines.joined(separator: "\n"),
+                Array(stdoutLines.suffix(10)).joined(separator: "\n"),
+                process.isRunning ? nil : process.terminationStatus
+            )
+        }
         throw NSError(
             domain: "MCPServerProcessHarness",
             code: 2,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for response id \(id). stderr=\(stderr)"]
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Timed out waiting for response id \(id). " +
+                    "running=\(running) terminationStatus=\(String(describing: terminationStatus)) " +
+                    "stderr=\(stderr) stdoutTail=\(stdoutTail)"
+            ]
         )
     }
 
@@ -1764,6 +1727,22 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(20))
         }
         throw NSError(domain: "MCPServerProcessHarness", code: 3)
+    }
+
+    func waitForStderrContaining(_ needle: String, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if withLocked({ stderrLines.joined(separator: "\n") }).contains(needle) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let stderr = withLocked { stderrLines.joined(separator: "\n") }
+        throw NSError(
+            domain: "MCPServerProcessHarness",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for stderr containing '\(needle)'. stderr=\(stderr)"]
+        )
     }
 
     private func drainPipes() {
@@ -1805,6 +1784,26 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         }
     }
 
+    private static func responseLineMatchesID(_ line: String, id: Int) -> Bool {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let responseID = object["id"]
+        else {
+            return false
+        }
+
+        if let responseID = responseID as? Int {
+            return responseID == id
+        }
+        if let responseID = responseID as? NSNumber {
+            return responseID.intValue == id
+        }
+        if let responseID = responseID as? String {
+            return responseID == String(id)
+        }
+        return false
+    }
+
     private static func waxMCPBinaryURL(packageRoot: URL) throws -> URL {
         let bundleDebugDir = Bundle(for: XCTestCase.self).bundleURL.deletingLastPathComponent()
         let candidates = [
@@ -1828,85 +1827,406 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     func stderrSnapshot() -> String {
         withLocked { stderrLines.joined(separator: "\n") }
     }
+
+    func shutdownBrokerIfRunning(timeout: TimeInterval = 2) throws {
+        guard FileManager.default.fileExists(atPath: brokerConfiguration.socketPath) else {
+            return
+        }
+
+        try Self.sendBrokerShutdownSignal(socketPath: brokerConfiguration.socketPath)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !FileManager.default.fileExists(atPath: brokerConfiguration.socketPath) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    private static func sendBrokerRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String
+    ) throws -> AgentBrokerResponse? {
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return nil
+        }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            return nil
+        }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            return nil
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            return nil
+        }
+
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        let payload = try JSONEncoder().encode(request)
+        handle.write(payload)
+        handle.write(Data([0x0A]))
+        shutdown(fd, SHUT_WR)
+
+        let data = try handle.readToEnd() ?? Data()
+        guard let line = String(data: data, encoding: .utf8)?
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
+    }
+
+    private static func sendBrokerShutdownSignal(socketPath: String) throws {
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return
+        }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            return
+        }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            return
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            return
+        }
+
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        let payload = try JSONEncoder().encode(AgentBrokerRequest(command: "shutdown"))
+        handle.write(payload)
+        handle.write(Data([0x0A]))
+        shutdown(fd, SHUT_WR)
+    }
 }
 
-@Test(.timeLimit(.minutes(2)))
-func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
-    let harness = try MCPServerProcessHarness(useRealEmbedder: true)
-    try harness.start()
-    defer { harness.terminateIfNeeded() }
+@Suite("Wax MCP Process Tests", .serialized)
+struct WaxMCPProcessTests {
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedRememberRejectsReservedMetadataSessionID() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
 
-    // Initialize should stay fast even with the real embedder configured.
-    let initStart = Date()
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": [
-            "protocolVersion": "2024-11-05",
-            "capabilities": [:],
-            "clientInfo": ["name": "wax-mcp-coreml-test", "version": "1.0"],
-        ],
-    ])
-    let initResp = try await harness.waitForResponseLine(id: 1, timeout: 10)
-    let initElapsed = Date().timeIntervalSince(initStart)
-    #expect(initResp.contains(#""protocolVersion":"2024-11-05""#))
-    #expect(initElapsed < 10)
+        _ = try await harness.bootstrap(clientName: "wax-mcp-metadata-reserved-test")
 
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": [:],
-    ])
+        let remember = try await harness.callTool(
+            id: 2,
+            name: "remember",
+            arguments: [
+                "content": "invalid reserved metadata key",
+                "metadata": ["session_id": "not-a-real-session"],
+            ],
+            timeout: 20
+        )
+        #expect(remember.contains("metadata.session_id"))
+        #expect(remember.contains("reserved"))
+    }
 
-    // 200+ word content → forces 256-token bucket (NOT prewarmed)
-    let longContent = """
-    The architecture of modern distributed systems requires careful consideration \
-    of consistency models, partition tolerance, and availability guarantees as \
-    described by the CAP theorem. When designing microservices that communicate \
-    via message queues and event-driven architectures, developers must account for \
-    eventual consistency, idempotent message processing, and proper dead-letter \
-    queue handling. The Swift programming language provides excellent support for \
-    building concurrent applications through its actor model, which isolates \
-    mutable state and prevents data races at compile time. Combined with async/await \
-    syntax and structured concurrency via task groups, Swift enables developers to \
-    write safe, performant server-side applications. Core ML on Apple platforms \
-    offers on-device machine learning inference with support for neural engine \
-    acceleration, but careful attention must be paid to model compilation, \
-    sequence length bucketing, and thread pool management to avoid performance \
-    bottlenecks. The MiniLM model produces 384-dimensional dense embeddings \
-    suitable for semantic search and retrieval-augmented generation workflows.
-    """
+    @Test(.timeLimit(.minutes(1)))
+    func legacyWaxFlushReportsRenameInsteadOfUnknownTool() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
 
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": [
-            "name": "wax_remember",
-            "arguments": ["content": longContent],
-        ],
-    ])
+        _ = try await harness.bootstrap(clientName: "wax-mcp-legacy-flush-test")
 
-    let rememberResp = try await harness.waitForResponseLine(id: 2, timeout: 60)
-    let rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
-    #expect((rememberJSON["committed"] as? Bool) == true)
+        let flush = try await harness.callTool(
+            id: 2,
+            name: "wax_flush",
+            arguments: [:],
+            timeout: 20
+        )
+        #expect(flush.contains("tool_renamed"))
+        #expect(flush.contains("renamed to 'flush'"))
+    }
 
-    // Recall with vector search to exercise the query embedding path
-    try harness.sendJSONLine([
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": [
-            "name": "wax_recall",
-            "arguments": ["query": "Swift concurrency", "limit": 3],
-        ],
-    ])
-    let recallResp = try await harness.waitForResponseLine(id: 3, timeout: 30)
-    #expect(recallResp.contains("result"))
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessRespondsAfterImmediateEOF() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
 
-    try harness.closeInput()
-    #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-eof-test",
+            includeToolsList: true
+        )
+        try harness.closeInput()
+
+        #expect(try await harness.waitForExit(timeout: 15) == EXIT_SUCCESS)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessPersistsCommittedWritesBeforeSIGTERM() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-sigterm-test")
+
+        let marker = "waxmcp-sigterm-\(UUID().uuidString)"
+        let remember = try await harness.callTool(
+            id: 2,
+            name: "remember",
+            arguments: ["content": marker]
+        )
+        let rememberJSON = try parseToolTextJSON(fromResponseLine: remember)
+        #expect((rememberJSON["status"] as? String) == "ok")
+
+        try harness.closeInput()
+        #expect(try await harness.waitForExit() == EXIT_SUCCESS)
+        try harness.shutdownBrokerIfRunning()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let reopened = try await MemoryOrchestrator(at: harness.storeURL, config: config)
+        defer { Task { try? await reopened.close() } }
+        let context = try await reopened.recall(query: marker)
+        #expect(context.items.contains { $0.text.contains(marker) })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerManagedSessionLifecycleScopesRecallAndRejectsEndedHandoff() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-session-test",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let sessionStartJSON = try parseToolTextJSON(fromResponseLine: sessionStart)
+        let sessionID = try requireString(sessionStartJSON, key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 4,
+            name: "remember",
+            arguments: ["content": "GLOBAL_ONLY_ABC broker regression anchor"],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 5,
+            name: "remember",
+            arguments: [
+                "content": "SESSION_ONLY_XYZ broker regression anchor",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let recall = try await harness.callTool(
+            id: 6,
+            name: "recall",
+            arguments: [
+                "query": "SESSION_ONLY_XYZ",
+                "session_id": sessionID,
+                "limit": 10,
+            ],
+            timeout: 20
+        )
+        #expect(recall.contains("SESSION_ONLY_XYZ"))
+        #expect(!recall.contains("GLOBAL_ONLY_ABC"))
+
+        _ = try await harness.callTool(
+            id: 7,
+            name: "session_end",
+            arguments: ["session_id": sessionID],
+            timeout: 20
+        )
+
+        let handoff = try await harness.callTool(
+            id: 8,
+            name: "handoff",
+            arguments: [
+                "content": "should fail after session end",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        #expect(handoff.contains("session_id is not active"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerAutoStartHandlesConcurrentFirstAccess() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-concurrent-start-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        try second.start()
+        defer {
+            first.terminateIfNeeded()
+            second.terminateIfNeeded()
+        }
+
+        async let firstBootstrap: MCPServerProcessHarness.BootstrapResult = first.bootstrap(
+            clientName: "wax-mcp-concurrent-first",
+            initializeID: 11,
+            includeToolsList: true,
+            toolsListID: 12,
+            initializeTimeout: 30,
+            toolsListTimeout: 20
+        )
+        async let secondBootstrap: MCPServerProcessHarness.BootstrapResult = second.bootstrap(
+            clientName: "wax-mcp-concurrent-second",
+            initializeID: 21,
+            includeToolsList: true,
+            toolsListID: 22,
+            initializeTimeout: 30,
+            toolsListTimeout: 20
+        )
+        let firstResult = try await firstBootstrap
+        let secondResult = try await secondBootstrap
+
+        #expect(firstResult.initialize.contains(#""protocolVersion":"2024-11-05""#))
+        #expect(firstResult.toolsList?.contains(#""name":"remember""#) == true)
+        #expect(secondResult.initialize.contains(#""protocolVersion":"2024-11-05""#))
+        #expect(secondResult.toolsList?.contains(#""name":"remember""#) == true)
+    }
+
+    @Test(.timeLimit(.minutes(3)))
+    func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
+        let harness = try MCPServerProcessHarness(useRealEmbedder: true)
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        let initStart = Date()
+        let bootstrap = try await harness.bootstrap(
+            clientName: "wax-mcp-coreml-test",
+            includeToolsList: true,
+            toolsListID: 99,
+            initializeTimeout: 20,
+            toolsListTimeout: 5
+        )
+        let initElapsed = Date().timeIntervalSince(initStart)
+        #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
+        #expect(initElapsed < 10)
+
+        // 200+ word content → forces 256-token bucket (NOT prewarmed)
+        let longContent = """
+        The architecture of modern distributed systems requires careful consideration \
+        of consistency models, partition tolerance, and availability guarantees as \
+        described by the CAP theorem. When designing microservices that communicate \
+        via message queues and event-driven architectures, developers must account for \
+        eventual consistency, idempotent message processing, and proper dead-letter \
+        queue handling. The Swift programming language provides excellent support for \
+        building concurrent applications through its actor model, which isolates \
+        mutable state and prevents data races at compile time. Combined with async/await \
+        syntax and structured concurrency via task groups, Swift enables developers to \
+        write safe, performant server-side applications. Core ML on Apple platforms \
+        offers on-device machine learning inference with support for neural engine \
+        acceleration, but careful attention must be paid to model compilation, \
+        sequence length bucketing, and thread pool management to avoid performance \
+        bottlenecks. The MiniLM model produces 384-dimensional dense embeddings \
+        suitable for semantic search and retrieval-augmented generation workflows.
+        """
+
+        let rememberResp = try await harness.callTool(
+            id: 2,
+            name: "remember",
+            arguments: ["content": longContent],
+            timeout: 120
+        )
+        let rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
+        #expect((rememberJSON["status"] as? String) == "ok")
+
+        let recallResp = try await harness.callTool(
+            id: 3,
+            name: "recall",
+            arguments: ["query": "Swift concurrency", "limit": 3],
+            timeout: 30
+        )
+        #expect(recallResp.contains("result"))
+
+        try harness.closeInput()
+        #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
+        let stderr = harness.stderrSnapshot()
+        #expect(stderr.contains("wax-mcp v0.1.19 starting"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPStartupReusesBrokerForSharedStore() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-startup-lock-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        defer { first.terminateIfNeeded() }
+
+        _ = try await first.bootstrap(
+            clientName: "wax-mcp-first-lock-test",
+            includeToolsList: true
+        )
+
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let start = Date()
+        try second.start()
+        defer { second.terminateIfNeeded() }
+
+        let bootstrap = try await second.bootstrap(
+            clientName: "wax-mcp-second-lock-test",
+            includeToolsList: true,
+            initializeTimeout: 10,
+            toolsListTimeout: 10
+        )
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(elapsed < 4)
+        let stderr = second.stderrSnapshot()
+        #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
+        #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
+        #expect(!stderr.localizedCaseInsensitiveContains("use a unique --store-path"))
+    }
 }
 
 #else

@@ -2407,7 +2407,7 @@ package actor Wax {
     }
 
     package func setMemoryBindingIfMissing(_ binding: MemoryBinding) async throws {
-        try await withWriteLock {
+        await withWriteLock {
             guard !binding.isEmpty else { return }
             guard toc.memoryBinding == nil else { return }
             toc.memoryBinding = binding
@@ -2416,7 +2416,7 @@ package actor Wax {
     }
 
     package func overwriteMemoryBindingForTesting(_ binding: MemoryBinding?) async throws {
-        try await withWriteLock {
+        await withWriteLock {
             guard toc.memoryBinding != binding else { return }
             toc.memoryBinding = binding
             dirty = true

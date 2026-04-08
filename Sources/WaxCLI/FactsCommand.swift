@@ -8,7 +8,7 @@ struct FactAssertCommand: AsyncParsableCommand {
         abstract: "Assert a structured fact (subject-predicate-object triple)"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Option(name: .customLong("subject"), help: "Namespaced entity key for the subject (e.g. 'agent:codex')")
     var subject: String
@@ -42,6 +42,36 @@ struct FactAssertCommand: AsyncParsableCommand {
 
         let object = parseObjectValue(trimmedObject)
 
+        if AgentBrokerPolicy.shouldUseBroker(store: store, commit: commit) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string(trimmedSubject),
+                    "predicate": .string(trimmedPredicate),
+                    "object": factValueToBrokerValue(object),
+                    "relation": .string(relation),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let factID = brokerInt64(payload, "fact_id") ?? 0
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "fact_id": factID,
+                    "committed": true,
+                ])
+            case .text:
+                print("Fact asserted (id \(factID), committed: true).")
+            }
+            return
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
         try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
             let factID = try await memory.assertFact(
@@ -74,7 +104,7 @@ struct FactRetractCommand: AsyncParsableCommand {
         abstract: "Retract (soft-delete) a structured fact by ID"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Option(name: .customLong("fact-id"), help: "Fact row ID to retract")
     var factID: Int64
@@ -83,6 +113,33 @@ struct FactRetractCommand: AsyncParsableCommand {
     var commit: Bool = true
 
     func runAsync() async throws {
+        if AgentBrokerPolicy.shouldUseBroker(store: store, commit: commit) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "fact_retract",
+                arguments: [
+                    "fact_id": .from(factID),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let retractedID = brokerInt64(payload, "fact_id") ?? factID
+            switch store.format {
+            case .json:
+                printJSON([
+                    "status": "ok",
+                    "fact_id": retractedID,
+                    "committed": true,
+                ])
+            case .text:
+                print("Fact \(retractedID) retracted (committed: true).")
+            }
+            return
+        }
+
         let url = try StoreSession.resolveURL(store.storePath)
         try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
             try await memory.retractFact(
@@ -111,7 +168,7 @@ struct FactsQueryCommand: AsyncParsableCommand {
         abstract: "Query structured facts with optional subject/predicate filters"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     @Option(name: .customLong("subject"), help: "Filter by subject entity key (optional)")
     var subject: String?
@@ -129,6 +186,40 @@ struct FactsQueryCommand: AsyncParsableCommand {
 
         let subjectKey = subject.map { EntityKey($0) }
         let predicateKey = predicate.map { PredicateKey($0) }
+
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "facts_query",
+                arguments: [
+                    "subject": .from(subject),
+                    "predicate": .from(predicate),
+                    "limit": .from(limit),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let hits = brokerArray(payload, "hits")
+            switch store.format {
+            case .json:
+                printJSON(payload.toJSONObject())
+            case .text:
+                if hits.isEmpty {
+                    print("No facts found.")
+                } else {
+                    print("Found \(hits.count) fact(s):")
+                    for hit in hits {
+                        guard let object = hit.objectValue else { continue }
+                        let objStr = factValueToText(brokerValueToFactValue(object["object"] ?? .null))
+                        print("  [\(brokerInt64(object, "fact_id") ?? 0)] \(brokerString(object, "subject") ?? "") -[\(brokerString(object, "predicate") ?? "")]-> \(objStr)")
+                    }
+                }
+            }
+            return
+        }
 
         let url = try StoreSession.resolveURL(store.storePath)
         try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
@@ -243,5 +334,50 @@ private func factValueToText(_ value: FactValue) -> String {
         return "timeMs(\(ms))"
     case .data(let d):
         return "data(\(d.count) bytes)"
+    }
+}
+
+private func factValueToBrokerValue(_ value: FactValue) -> AgentBrokerValue {
+    switch value {
+    case .string(let s):
+        return .string(s)
+    case .int(let i):
+        return .int(i)
+    case .double(let d):
+        return .double(d)
+    case .bool(let b):
+        return .bool(b)
+    case .entity(let key):
+        return .object(["entity": .string(key.rawValue)])
+    case .timeMs(let ms):
+        return .object(["time_ms": .int(ms)])
+    case .data(let data):
+        return .object(["data_base64": .string(data.base64EncodedString())])
+    }
+}
+
+private func brokerValueToFactValue(_ value: AgentBrokerValue) -> FactValue {
+    switch value {
+    case .string(let s):
+        return .string(s)
+    case .int(let i):
+        return .int(i)
+    case .double(let d):
+        return .double(d)
+    case .bool(let b):
+        return .bool(b)
+    case .object(let object):
+        if let entity = object["entity"]?.stringValue {
+            return .entity(EntityKey(entity))
+        }
+        if let time = object["time_ms"]?.intValue {
+            return .timeMs(time)
+        }
+        if let data = object["data_base64"]?.stringValue, let decoded = Data(base64Encoded: data) {
+            return .data(decoded)
+        }
+        return .string("")
+    default:
+        return .string("")
     }
 }

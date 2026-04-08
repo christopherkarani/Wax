@@ -297,7 +297,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = true
-        config.useMetalVectorSearch = true
+        config.vectorEnginePreference = .auto
         config.rag.searchMode = .vectorOnly
 
         let orchestrator = try await MemoryOrchestrator(

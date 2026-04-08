@@ -5,6 +5,7 @@ import Dispatch
 import Foundation
 import MCP
 import Wax
+import WaxCore
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
@@ -59,14 +60,6 @@ struct WaxMCPServerCommand: ParsableCommand {
             try LicenseValidator.validate(key: resolvedLicense)
         }
 
-        let memoryURL = try MCPPathing.resolveStoreURL(storePath)
-        try StoreLockProbe.preflightExclusiveAccess(at: memoryURL, timeout: lockWaitTimeout())
-
-        let embedder = try await MCPMemoryFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice
-        )
-
         var memoryConfig = OrchestratorConfig.default
         memoryConfig.enableStructuredMemory = featureFlagEnabled(
             "WAX_MCP_FEATURE_STRUCTURED_MEMORY",
@@ -76,37 +69,36 @@ struct WaxMCPServerCommand: ParsableCommand {
             "WAX_MCP_FEATURE_ACCESS_STATS",
             default: false
         )
-        if embedder == nil {
-            memoryConfig.enableVectorSearch = false
-            memoryConfig.rag.searchMode = .textOnly
+
+        let currentExecutablePath = try resolveCurrentExecutablePath()
+        let embedderTuning = CommandLineEmbedderRuntimeTuning.fromEnvironment()
+        let brokerConfiguration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: currentExecutablePath),
+            storePath: storePath,
+            embedderChoice: embedderChoice,
+            noEmbedder: noEmbedder,
+            requireVector: false,
+            embedderTuning: embedderTuning
+        )
+        let brokerStarted = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
+        defer {
+            if brokerStarted {
+                try? AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: brokerConfiguration)
+            }
         }
 
         let activeToolNames = ToolSchemas.tools(structuredMemoryEnabled: memoryConfig.enableStructuredMemory)
             .map(\.name)
 
-        let embedderStatus: String = {
-            guard memoryConfig.enableVectorSearch else { return "text-only" }
-            if let identity = embedder?.identity?.model {
-                return identity
-            }
-            return embedderChoice.lowercased()
-        }()
         writeStderr(
-            "wax-mcp config: store=\"\(memoryURL.path)\" " +
+            "wax-mcp config: broker=\"\(brokerConfiguration.socketPath)\" store=\"\(brokerConfiguration.storePath)\" " +
                 "structuredMemory=\(memoryConfig.enableStructuredMemory) " +
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
-                "vectorSearch=\(memoryConfig.enableVectorSearch) " +
-                "embedder=\(embedderStatus)"
+                "vectorSearch=\(!noEmbedder) " +
+                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased())"
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
-
-        let memory = try await MemoryOrchestrator(
-            at: memoryURL,
-            config: memoryConfig,
-            embedder: embedder,
-            waxOptions: waxOptions()
-        )
 
         // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
         let serverVersion = "0.1.19"
@@ -120,10 +112,9 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
         await WaxMCPTools.register(
             on: server,
-            memory: memory,
+            brokerConfiguration: brokerConfiguration,
             structuredMemoryEnabled: memoryConfig.enableStructuredMemory,
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice
+            noEmbedder: noEmbedder
         )
 
         // Install signal handlers so SIGINT/SIGTERM trigger graceful shutdown
@@ -143,26 +134,6 @@ struct WaxMCPServerCommand: ParsableCommand {
         for source in signalSources { source.cancel() }
 
         await server.stop()
-
-        do {
-            try await memory.flush()
-        } catch {
-            if runError == nil {
-                runError = error
-            } else {
-                writeStderr("Memory flush error: \(error)")
-            }
-        }
-
-        do {
-            try await memory.close()
-        } catch {
-            if runError == nil {
-                runError = error
-            } else {
-                writeStderr("Memory close error: \(error)")
-            }
-        }
 
         if let runError {
             throw runError
@@ -198,26 +169,37 @@ struct WaxMCPServerCommand: ParsableCommand {
         }
     }
 
-    private func waxOptions() -> WaxOptions {
-        var options = WaxOptions()
-        options.lockWaitTimeout = lockWaitTimeout()
-        return options
+    private func resolveCurrentExecutablePath() throws -> String {
+        guard let raw = CommandLine.arguments.first else {
+            throw MCP.MCPError.internalError("Unable to resolve current executable path")
+        }
+        if raw.contains("/") {
+            return URL(fileURLWithPath: raw).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        if let resolved = resolveExecutableOnPath(named: raw) {
+            return resolved.path
+        }
+        let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        return currentDirectory.appendingPathComponent(raw).standardizedFileURL.path
     }
 
-    private func lockWaitTimeout() -> Duration? {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty
-        else {
-            return .seconds(10)
-        }
-        guard let secs = Double(raw) else {
-            return .seconds(10)
-        }
-        guard secs > 0 else { return nil }
-        return .milliseconds(Int64(secs * 1000))
-    }
+}
 
+private func resolveExecutableOnPath(named executable: String) -> URL? {
+    let pathEntries = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        .split(separator: ":", omittingEmptySubsequences: false)
+        .map(String.init)
+
+    let fileManager = FileManager.default
+    for entry in pathEntries {
+        let directoryURL = entry.isEmpty
+            ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            : URL(fileURLWithPath: entry, isDirectory: true)
+        let candidate = directoryURL.appendingPathComponent(executable)
+        guard fileManager.isExecutableFile(atPath: candidate.path) else { continue }
+        return candidate.resolvingSymlinksInPath().standardizedFileURL
+    }
+    return nil
 }
 
 private func installSignalHandlers(server: Server) -> [DispatchSourceSignal] {

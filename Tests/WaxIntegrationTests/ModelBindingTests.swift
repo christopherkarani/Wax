@@ -104,3 +104,65 @@ private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
         try await wax.close()
     }
 }
+
+@Test func modelBindingAllowsLegacyMiniLMAliasOnOpen() async throws {
+    try await TempFiles.withTempFile { url in
+        let legacyEmbedder = BindingTestEmbedder(
+            provider: "Wax",
+            model: "MiniLMAll",
+            dimensions: 384,
+            normalized: true,
+            vector: Array(repeating: 0.125, count: 384)
+        )
+        let currentEmbedder = BindingTestEmbedder(
+            provider: "Wax",
+            model: "MiniLM",
+            dimensions: 384,
+            normalized: true,
+            vector: Array(repeating: 0.125, count: 384)
+        )
+        var config = TestHelpers.defaultMemoryConfig(vector: true)
+        config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 0)
+
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: legacyEmbedder)
+        try await writer.remember("Persist vector data under the legacy MiniLM alias.")
+        try await writer.flush()
+        try await writer.close()
+
+        let reader = try await MemoryOrchestrator(at: url, config: config, embedder: currentEmbedder)
+        try await reader.remember("Reopen with the canonical MiniLM identity.")
+        try await reader.flush()
+        try await reader.close()
+    }
+}
+
+@Test func modelBindingAllowsLegacyArcticAliasOnOpen() async throws {
+    try await TempFiles.withTempFile { url in
+        let legacyEmbedder = BindingTestEmbedder(
+            provider: "Wax",
+            model: "Arctic",
+            dimensions: 384,
+            normalized: true,
+            vector: Array(repeating: 0.125, count: 384)
+        )
+        let currentEmbedder = BindingTestEmbedder(
+            provider: "Wax",
+            model: "ArcticEmbedS",
+            dimensions: 384,
+            normalized: true,
+            vector: Array(repeating: 0.125, count: 384)
+        )
+        var config = TestHelpers.defaultMemoryConfig(vector: true)
+        config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 0)
+
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: legacyEmbedder)
+        try await writer.remember("Persist vector data under the legacy Arctic alias.")
+        try await writer.flush()
+        try await writer.close()
+
+        let reader = try await MemoryOrchestrator(at: url, config: config, embedder: currentEmbedder)
+        try await reader.remember("Reopen with the canonical Arctic identity.")
+        try await reader.flush()
+        try await reader.close()
+    }
+}

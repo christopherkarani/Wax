@@ -169,23 +169,25 @@ Then add the memory prompt to your `CLAUDE.md` — see the [README](https://gith
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `wax_session_start` | Start a process-local MCP session and return `session_id` | none |
-| `wax_remember` | Store text and optional metadata | `content`, `session_id`, `metadata`, `commit` |
-| `wax_recall` | Build assembled context for a query | `query`, `session_id`, `limit`, `mode`, `search_top_k` |
-| `wax_search` | Return ranked raw hits | `query`, `session_id`, `mode`, `topK`, `filters` |
-| `wax_corpus_search` | Search across many session `.wax` files with provenance | `query`, `sessions_dir`, `corpus_store_path`, `rebuild`, `mode`, `topK` |
-| `wax_handoff` | Save session state for the next run | `content`, `session_id`, `project`, `pending_tasks` |
-| `wax_handoff_latest` | Load the latest handoff | `project` |
-| `wax_flush` | Commit batched writes before reads | none |
-| `wax_stats` | Runtime and storage stats | none |
+| `session_start` | Start a broker-managed virtual session and return `session_id` | none |
+| `remember` | Store text and optional metadata | `content`, `session_id`, `metadata` |
+| `recall` | Build assembled context for a query | `query`, `session_id`, `limit`, `mode`, `search_top_k` |
+| `search` | Return ranked raw hits | `query`, `session_id`, `mode`, `topK`, `filters` |
+| `corpus_search` | Search broker-managed session history with provenance | `query`, `rebuild`, `mode`, `topK` |
+| `handoff` | Save session state for the next run | `content`, `session_id`, `project`, `pending_tasks` |
+| `handoff_latest` | Load the latest handoff | `project` |
+| `stats` | Runtime and storage stats | none |
 
 ### Agent Workflow
 
 ```
-Session start      →  wax_handoff_latest(project: "my-app"), then wax_session_start()
-During work        →  wax_recall(query: "auth architecture", session_id: ...)
-Save task memory   →  wax_remember(content: "Auth uses session cookies", session_id: ...)
-Batch writes       →  wax_remember(..., commit: false), then wax_flush()
-Cross-session look →  wax_corpus_search(query: "previous auth migration", mode: "hybrid")
-Session end        →  wax_handoff(content: "Migrated auth to cookies", session_id: ..., project: "my-app"), then wax_session_end(session_id: ...)
+Session start      →  handoff_latest(project: "my-app"), then session_start()
+During work        →  recall(query: "auth architecture", session_id: ...)
+Save task memory   →  remember(content: "Auth uses session cookies", session_id: ...)
+Cross-session look →  corpus_search(query: "previous auth migration", mode: "hybrid")
+Session end        →  handoff(content: "Migrated auth to cookies", session_id: ..., project: "my-app"), then session_end(session_id: ...)
 ```
+
+The MCP server now sits in front of a local broker. Agents should not manage
+`SESSION_STORE`, `--store-path`, or `flush` in the normal workflow; the broker
+owns the long-term store and virtual session stores.

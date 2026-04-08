@@ -1563,46 +1563,62 @@ package actor MemoryOrchestrator {
     #if DEBUG
     private final class DebugCounterState: @unchecked Sendable {
         let lock = NSLock()
-        var batchPreparationPathCallCount: Int = 0
-        var memoryBindingEnsureCallCount: Int = 0
+        var batchPreparationPathCallCounts: [String: Int] = [:]
+        var memoryBindingEnsureCallCounts: [String: Int] = [:]
     }
 
     private static let debugCounterState = DebugCounterState()
+    @TaskLocal private static var activeDebugCounterScopeKey: String?
 
     package static func _recordBatchPreparationPathCallForTests() {
         debugCounterState.lock.lock()
-        debugCounterState.batchPreparationPathCallCount += 1
+        let key = activeDebugCounterScopeKey ?? "__global__"
+        debugCounterState.batchPreparationPathCallCounts[key, default: 0] += 1
         debugCounterState.lock.unlock()
     }
 
-    package static func _resetBatchPreparationPathCallCountForTests() {
+    package static func _withIsolatedDebugCountersForTests<T: Sendable>(
+        _ body: @Sendable (String) async throws -> T
+    ) async rethrows -> T {
+        let key = UUID().uuidString
+        return try await $activeDebugCounterScopeKey.withValue(key) {
+            try await body(key)
+        }
+    }
+
+    package static func _resetBatchPreparationPathCallCountForTests(scopeKey: String? = nil) {
         debugCounterState.lock.lock()
-        debugCounterState.batchPreparationPathCallCount = 0
+        let key = scopeKey ?? activeDebugCounterScopeKey ?? "__global__"
+        debugCounterState.batchPreparationPathCallCounts[key] = 0
         debugCounterState.lock.unlock()
     }
 
-    package static func _batchPreparationPathCallCountForTests() -> Int {
+    package static func _batchPreparationPathCallCountForTests(scopeKey: String? = nil) -> Int {
         debugCounterState.lock.lock()
-        let count = debugCounterState.batchPreparationPathCallCount
+        let key = scopeKey ?? activeDebugCounterScopeKey ?? "__global__"
+        let count = debugCounterState.batchPreparationPathCallCounts[key, default: 0]
         debugCounterState.lock.unlock()
         return count
     }
 
     package static func _recordMemoryBindingEnsureCallForTests() {
         debugCounterState.lock.lock()
-        debugCounterState.memoryBindingEnsureCallCount += 1
+        let key = activeDebugCounterScopeKey ?? "__global__"
+        debugCounterState.memoryBindingEnsureCallCounts[key, default: 0] += 1
         debugCounterState.lock.unlock()
     }
 
-    package static func _resetMemoryBindingEnsureCallCountForTests() {
+    package static func _resetMemoryBindingEnsureCallCountForTests(scopeKey: String? = nil) {
         debugCounterState.lock.lock()
-        debugCounterState.memoryBindingEnsureCallCount = 0
+        let key = scopeKey ?? activeDebugCounterScopeKey ?? "__global__"
+        debugCounterState.memoryBindingEnsureCallCounts[key] = 0
         debugCounterState.lock.unlock()
     }
 
-    package static func _memoryBindingEnsureCallCountForTests() -> Int {
+    package static func _memoryBindingEnsureCallCountForTests(scopeKey: String? = nil) -> Int {
         debugCounterState.lock.lock()
-        let count = debugCounterState.memoryBindingEnsureCallCount
+        let key = scopeKey ?? activeDebugCounterScopeKey ?? "__global__"
+        let count = debugCounterState.memoryBindingEnsureCallCounts[key, default: 0]
         debugCounterState.lock.unlock()
         return count
     }
