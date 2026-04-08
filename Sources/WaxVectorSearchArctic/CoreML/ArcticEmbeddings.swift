@@ -135,7 +135,7 @@ package final class ArcticEmbeddings {
         let localModel = model
         return await withCheckedContinuation { continuation in
             Self.predictionQueue.async {
-                let output = try? localModel.prediction(
+                let output: snowflake_arctic_embed_sOutput? = try? localModel.prediction(
                     input_ids: inputIds,
                     attention_mask: attentionMask
                 )
@@ -212,6 +212,15 @@ package final class ArcticEmbeddings {
     }
 
 }
+
+// MARK: - Sendable Conformances for CoreML Types
+// These auto-generated CoreML wrapper types are safe for concurrent prediction
+// and produce immutable output objects. @unchecked Sendable is appropriate here.
+@available(macOS 15.0, iOS 18.0, *)
+extension snowflake_arctic_embed_s: @unchecked Sendable {}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension snowflake_arctic_embed_sOutput: @unchecked Sendable {}
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension ArcticEmbeddings {

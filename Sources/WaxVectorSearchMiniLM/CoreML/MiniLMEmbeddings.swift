@@ -141,7 +141,7 @@ package final class MiniLMEmbeddings {
         let localModel = model
         return await withCheckedContinuation { continuation in
             Self.predictionQueue.async {
-                let output = try? localModel.prediction(
+                let output: all_MiniLM_L6_v2Output? = try? localModel.prediction(
                     input_ids: inputIds,
                     attention_mask: attentionMask
                 )
@@ -218,6 +218,15 @@ package final class MiniLMEmbeddings {
     }
 
 }
+
+// MARK: - Sendable Conformances for CoreML Types
+// These auto-generated CoreML wrapper types are safe for concurrent prediction
+// and produce immutable output objects. @unchecked Sendable is appropriate here.
+@available(macOS 15.0, iOS 18.0, *)
+extension all_MiniLM_L6_v2: @unchecked Sendable {}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension all_MiniLM_L6_v2Output: @unchecked Sendable {}
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbeddings {
