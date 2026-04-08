@@ -8,9 +8,34 @@ struct StatsCommand: AsyncParsableCommand {
         abstract: "Show Wax memory store statistics"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     func runAsync() async throws {
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "stats",
+                arguments: [:],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            switch store.format {
+            case .json:
+                printJSON(payload.toJSONObject())
+            case .text:
+                print("Store: \(brokerString(payload, "storePath") ?? store.storePath)")
+                print("Frames: \(brokerInt(payload, "frameCount") ?? 0) (\(brokerInt(payload, "pendingFrames") ?? 0) pending)")
+                print("Generation: \(brokerInt(payload, "generation") ?? 0)")
+                let diskBytes = Int64(brokerInt64(payload, "diskBytes") ?? 0)
+                print("Disk: \(ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))")
+                print("Vector search: \((brokerBool(payload, "vectorSearchEnabled") ?? false) ? "enabled" : "disabled")")
+            }
+            return
+        }
+
         // Stats does not need the embedder; force noEmbedder to skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
         let compiled = StoreSession.miniLMCompiled
@@ -98,9 +123,29 @@ struct FlushCommand: AsyncParsableCommand {
         abstract: "Flush pending writes to make frames searchable"
     )
 
-    @OptionGroup var store: StoreOptions
+    @OptionGroup var store: VectorStoreOptions
 
     func runAsync() async throws {
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "flush",
+                arguments: [:],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            switch store.format {
+            case .json:
+                printJSON(payload.toJSONObject())
+            case .text:
+                print(brokerString(payload, "message") ?? "Flushed.")
+            }
+            return
+        }
+
         // Flush does not need the embedder; skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
         try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in

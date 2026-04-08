@@ -203,10 +203,11 @@ struct AgentMemory {
 
 Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
 
-For repeated CLI vector work, Wax CLI now auto-starts and reuses a background daemon for
-vector-capable commands such as `remember`, `recall`, and `search --mode hybrid`.
+For repeated CLI vector work, Wax CLI now auto-starts and reuses a local broker that owns
+the long-term store and broker-managed session stores for commands such as `remember`,
+`recall`, and `search --mode hybrid`.
 
-You can still run the daemon directly when you want an explicit long-lived session:
+You can still run the broker directly when you want an explicit long-lived session:
 
 ```bash
 wax-cli daemon --store-path ~/.wax/memory.wax
@@ -257,14 +258,14 @@ Once installed, your assistant can work against `Memory`, `VideoRAGOrchestrator`
 Use the Wax MCP server for persistent memory in this repo.
 
 Workflow rules:
-- At session start, call `wax_handoff_latest` first to load prior context, then call `wax_session_start` once and keep the returned `session_id`.
-- Use `wax_remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `wax_recall` for assembled context and `wax_search` for raw ranked hits.
+- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
+- Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
+- Use `recall` for assembled context and `search` for raw ranked hits.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- If you batch writes with `commit: false`, call `wax_flush` before any `wax_recall` or `wax_search`.
-- Use `wax_handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `wax_session_end`.
-- Use `wax_corpus_search` only when you need cross-session retrieval across many session `.wax` files, such as `~/.wax/sessions`. It rebuilds or refreshes a shared corpus store and returns provenance metadata under `wax.corpus.*` so you can trace hits back to the source session store and frame.
-- Use structured memory tools (`wax_entity_upsert`, `wax_fact_assert`, `wax_fact_retract`, `wax_facts_query`, `wax_entity_resolve`) for stable entities and facts, not transient debugging notes.
+- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
+- Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
+- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
+- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
 
 Behavior expectations:
 - Read existing handoffs and recall results before asking me to restate prior context.

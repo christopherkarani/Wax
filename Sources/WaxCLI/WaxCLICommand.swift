@@ -1,6 +1,7 @@
 import ArgumentParser
 import Dispatch
 import Foundation
+import WaxCore
 
 @main
 struct WaxCLI: ParsableCommand {
@@ -63,6 +64,8 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("feature-license"), help: "Enable license validation (default disabled)")
         var featureLicense = false
 
+        @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
+
         mutating func run() throws {
             let resolvedServer = try Pathing.resolvePath(serverPath)
             var arguments = [
@@ -77,6 +80,7 @@ extension WaxCLI.MCP {
 
             var env = ProcessInfo.processInfo.environment
             env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
+            env.merge(embedderRuntime.resolvedTuning().environmentOverrides(), uniquingKeysWith: { _, new in new })
 
             let status = try ProcessRunner.run(
                 command: resolvedServer,
@@ -125,6 +129,8 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("dry-run"), help: "Print commands without executing")
         var dryRun = false
 
+        @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
+
         mutating func run() throws {
             let claudePath = if dryRun {
                 "claude"
@@ -150,6 +156,11 @@ extension WaxCLI.MCP {
 
             if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
                 addArguments.append(contentsOf: ["-e", "WAX_LICENSE_KEY=\(key)"])
+            }
+
+            let embedderTuning = embedderRuntime.resolvedTuning()
+            for (key, value) in embedderTuning.environmentOverrides().sorted(by: { $0.key < $1.key }) {
+                addArguments.append(contentsOf: ["-e", "\(key)=\(value)"])
             }
 
             if !skipBuild && !bundledRuntime {
@@ -251,6 +262,8 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("feature-license"), help: "Enable license validation during smoke check")
         var featureLicense = false
 
+        @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
+
         mutating func run() throws {
             var failures: [String] = []
             var warnings: [String] = []
@@ -288,8 +301,18 @@ extension WaxCLI.MCP {
                     warnings.append(diskWarning)
                 }
 
+                let runtimeValidation = try Pathing.validateMCPRuntime(
+                    serverPath: resolvedServer,
+                    expectVectorRuntime: !noEmbedder
+                )
+                warnings.append(contentsOf: runtimeValidation.warnings)
+                failures.append(contentsOf: runtimeValidation.failures)
+            }
+
+            if failures.isEmpty {
                 var env = ProcessInfo.processInfo.environment
                 env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
+                env.merge(embedderRuntime.resolvedTuning().environmentOverrides(), uniquingKeysWith: { _, new in new })
                 if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
                     env["WAX_LICENSE_KEY"] = key
                 }
@@ -318,7 +341,7 @@ extension WaxCLI.MCP {
                         arguments: arguments,
                         environment: env,
                         input: request,
-                        expectedToolName: "wax_remember"
+                        expectedToolName: "remember"
                     )
                     if output.timedOut {
                         failures.append(
@@ -332,7 +355,7 @@ extension WaxCLI.MCP {
                         )
                     } else if !output.foundExpectedTool {
                         failures.append(
-                            "Smoke check response missing wax_remember tool. " +
+                            "Smoke check response missing remember tool. " +
                                 smokeCheckFailureContext(output)
                         )
                     }
@@ -659,6 +682,11 @@ struct MCPInstallRuntime: Equatable {
     let staged: Bool
 }
 
+struct MCPRuntimeValidation: Equatable {
+    var failures: [String] = []
+    var warnings: [String] = []
+}
+
 enum Pathing {
     static func expandPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
@@ -710,14 +738,14 @@ enum Pathing {
                     .appendingPathComponent(raw)
                     .standardizedFileURL
                     .path
-            return path
+            return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
         }
 
         let lookup = try ProcessRunner.runCaptured(command: "which", arguments: [raw])
         if lookup.status == EXIT_SUCCESS {
             let resolved = lookup.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             if !resolved.isEmpty {
-                return resolved
+                return URL(fileURLWithPath: resolved).resolvingSymlinksInPath().standardizedFileURL.path
             }
         }
         return raw
@@ -737,7 +765,22 @@ enum Pathing {
 
         let targetDir = stableRuntimeDirectory(forPlatformDirectory: sourceDir.lastPathComponent)
         if !dryRun {
+            let sourceValidation = try validateRuntimeDirectory(
+                sourceDir,
+                expectVectorRuntime: true
+            )
+            if !sourceValidation.failures.isEmpty {
+                throw CLIError(sourceValidation.failures.joined(separator: " | "))
+            }
             try stageBundledRuntimeIfNeeded(from: sourceDir, to: targetDir)
+            let stagedValidation = try validateStagedRuntimeCopy(
+                sourceDir: sourceDir,
+                targetDir: targetDir,
+                expectVectorRuntime: true
+            )
+            if !stagedValidation.failures.isEmpty {
+                throw CLIError(stagedValidation.failures.joined(separator: " | "))
+            }
         }
 
         let effectiveCLI = cliBundledDir == sourceDir
@@ -777,6 +820,21 @@ enum Pathing {
         return directoryURL
     }
 
+    static func runtimeDirectory(forExecutablePath path: String) -> URL? {
+        if let bundled = bundledRuntimeDirectory(forExecutablePath: path) {
+            return bundled
+        }
+
+        let executableURL = URL(fileURLWithPath: normalizePath(path)).standardizedFileURL
+        let directoryURL = executableURL.deletingLastPathComponent()
+        let cliPath = directoryURL.appendingPathComponent("wax-cli").path
+        let serverPath = directoryURL.appendingPathComponent("wax-mcp").path
+        guard FileManager.default.fileExists(atPath: cliPath) || FileManager.default.fileExists(atPath: serverPath) else {
+            return nil
+        }
+        return directoryURL
+    }
+
     static func stableRuntimeDirectory(forPlatformDirectory platformDirectory: String) -> URL {
         let root = ProcessInfo.processInfo.environment["WAX_MCP_INSTALL_ROOT"].flatMap { raw -> URL? in
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -797,14 +855,148 @@ enum Pathing {
         let standardizedTarget = targetDir.standardizedFileURL
         guard standardizedSource.path != standardizedTarget.path else { return }
 
-        try fm.createDirectory(
-            at: standardizedTarget.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        let parent = standardizedTarget.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        let staging = parent.appendingPathComponent(".\(standardizedTarget.lastPathComponent).staging-\(UUID().uuidString)")
+        if fm.fileExists(atPath: staging.path) {
+            try fm.removeItem(at: staging)
+        }
+        try fm.copyItem(at: standardizedSource, to: staging)
+        try adHocSignExecutables(in: staging)
+
         if fm.fileExists(atPath: standardizedTarget.path) {
             try fm.removeItem(at: standardizedTarget)
         }
-        try fm.copyItem(at: standardizedSource, to: standardizedTarget)
+        try fm.moveItem(at: staging, to: standardizedTarget)
+    }
+
+    static func validateMCPRuntime(
+        serverPath: String,
+        expectVectorRuntime: Bool
+    ) throws -> MCPRuntimeValidation {
+        guard let runtimeDirectory = runtimeDirectory(forExecutablePath: serverPath) else {
+            return MCPRuntimeValidation()
+        }
+        return try validateRuntimeDirectory(runtimeDirectory, expectVectorRuntime: expectVectorRuntime)
+    }
+
+    private static func validateStagedRuntimeCopy(
+        sourceDir: URL,
+        targetDir: URL,
+        expectVectorRuntime: Bool
+    ) throws -> MCPRuntimeValidation {
+        var validation = try validateRuntimeDirectory(targetDir, expectVectorRuntime: expectVectorRuntime)
+        let sourceEntries = try topLevelRuntimeEntries(in: sourceDir)
+        let targetEntries = try topLevelRuntimeEntries(in: targetDir)
+        let missing = sourceEntries.subtracting(targetEntries).sorted()
+        if !missing.isEmpty {
+            validation.failures.append("Staged runtime is missing entries copied from the bundled runtime: \(missing.joined(separator: ", "))")
+        }
+        return validation
+    }
+
+    private static func validateRuntimeDirectory(
+        _ directory: URL,
+        expectVectorRuntime: Bool
+    ) throws -> MCPRuntimeValidation {
+        var validation = MCPRuntimeValidation()
+
+        let requiredExecutables = ["wax-cli", "wax-mcp"]
+        for executable in requiredExecutables {
+            let path = directory.appendingPathComponent(executable).path
+            if !FileManager.default.isExecutableFile(atPath: path) {
+                validation.failures.append("Runtime is missing executable \(executable) at \(path)")
+            }
+        }
+
+        for executable in requiredExecutables {
+            let executableURL = directory.appendingPathComponent(executable)
+            let checksumURL = directory.appendingPathComponent("\(executable).sha256")
+            if FileManager.default.fileExists(atPath: checksumURL.path) {
+                if !FileManager.default.fileExists(atPath: executableURL.path) {
+                    validation.failures.append("Runtime checksum exists for \(executable) but the executable is missing.")
+                    continue
+                }
+                let expected = try readChecksumFile(at: checksumURL)
+                let actual = try sha256Hex(for: executableURL)
+                if expected.caseInsensitiveCompare(actual) != .orderedSame {
+                    validation.failures.append("Runtime checksum mismatch for \(executable) in \(directory.path)")
+                }
+            }
+        }
+
+        let recommendedBundles = [
+            "Wax_Wax.bundle",
+            "Wax_WaxBertTokenizer.bundle",
+            "Wax_WaxVectorSearch.bundle",
+            "MetalANNS_MetalANNSCore.bundle",
+        ]
+        for bundle in recommendedBundles {
+            let bundlePath = directory.appendingPathComponent(bundle).path
+            if !FileManager.default.fileExists(atPath: bundlePath) {
+                validation.warnings.append("Runtime bundle missing: \(bundlePath)")
+            }
+        }
+
+        if expectVectorRuntime {
+            let vectorBundlePath = directory.appendingPathComponent("Wax_WaxVectorSearchMiniLM.bundle").path
+            if !FileManager.default.fileExists(atPath: vectorBundlePath) {
+                validation.warnings.append("Vector runtime bundle missing: \(vectorBundlePath)")
+            }
+        }
+
+        return validation
+    }
+
+    private static func topLevelRuntimeEntries(in directory: URL) throws -> Set<String> {
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        return Set(entries.map(\.lastPathComponent))
+    }
+
+    private static func readChecksumFile(at url: URL) throws -> String {
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        guard let token = contents.split(whereSeparator: \.isWhitespace).first else {
+            throw CLIError("Checksum file is empty at \(url.path)")
+        }
+        return String(token)
+    }
+
+    private static func sha256Hex(for url: URL) throws -> String {
+        let output = try ProcessRunner.runCaptured(command: "shasum", arguments: ["-a", "256", url.path])
+        guard output.status == EXIT_SUCCESS,
+              let token = output.stdout.split(whereSeparator: \.isWhitespace).first else {
+            throw CLIError("Unable to compute sha256 for \(url.path)")
+        }
+        return String(token)
+    }
+
+    private static func adHocSignExecutables(in directory: URL) throws {
+        #if os(macOS)
+        let fm = FileManager.default
+        let entries = try fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isExecutableKey],
+            options: [.skipsHiddenFiles]
+        )
+        for entry in entries {
+            let values = try entry.resourceValues(forKeys: [.isRegularFileKey, .isExecutableKey])
+            guard values.isRegularFile == true, values.isExecutable == true else { continue }
+            let status = try ProcessRunner.run(
+                command: "/usr/bin/codesign",
+                arguments: ["--force", "--sign", "-", entry.path],
+                passthrough: false,
+                allowNonZeroExit: true
+            )
+            if status != EXIT_SUCCESS {
+                throw CLIError("Failed to ad-hoc sign staged runtime at \(entry.path)")
+            }
+        }
+        #endif
     }
 }
 

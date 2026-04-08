@@ -4,7 +4,7 @@ import Testing
 
 @Test func blockingIOExecutorRunWriteReturnsValue() async throws {
     let executor = BlockingIOExecutor(label: "test.write")
-    let result = try await executor.runWrite { 42 }
+    let result = await executor.runWrite { 42 }
     #expect(result == 42)
 }
 
@@ -36,10 +36,10 @@ import Testing
     let executor = BlockingIOExecutor(label: "test.barrier")
 
     // Write produces a value
-    let writeResult: Int = try await executor.runWrite { 42 }
+    let writeResult: Int = await executor.runWrite { 42 }
     #expect(writeResult == 42)
 
     // Subsequent read works
-    let readResult = try await executor.run { 99 }
+    let readResult = await executor.run { 99 }
     #expect(readResult == 99)
 }

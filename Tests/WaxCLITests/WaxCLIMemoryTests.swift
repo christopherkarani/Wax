@@ -1,9 +1,10 @@
 import Foundation
+import Dispatch
 import Testing
 import Wax
 @testable import wax_cli
 
-@Suite("WaxCLI Memory Commands")
+@Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
 
     // MARK: - Test helper
@@ -291,6 +292,55 @@ struct WaxCLIMemoryTests {
         #expect(first.socketPath.hasPrefix(daemonRoot.path))
     }
 
+    @Test func agentDaemonConfigurationChangesWhenBinaryIdentityChanges() throws {
+        let daemonRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-daemon-identity-\(UUID().uuidString)", isDirectory: true)
+        let binariesRoot = daemonRoot.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binariesRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: daemonRoot) }
+
+        setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
+        defer { unsetenv("WAX_CLI_DAEMON_DIR") }
+
+        let firstCLI = binariesRoot.appendingPathComponent("wax-cli-a")
+        let secondCLI = binariesRoot.appendingPathComponent("wax-cli-b")
+        try Data("v1".utf8).write(to: firstCLI)
+        try Data("v2-with-different-size".utf8).write(to: secondCLI)
+
+        let first = try AgentDaemonTransport.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: .minilm,
+            cliPathOverride: firstCLI.path
+        )
+        let second = try AgentDaemonTransport.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: .minilm,
+            cliPathOverride: secondCLI.path
+        )
+
+        #expect(first.socketPath != second.socketPath)
+    }
+
+    @Test func agentDaemonConfigurationResolvesWaxSymlinkIntoBundledCLI() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-symlink-layout-\(UUID().uuidString)", isDirectory: true)
+        let runtime = root.appendingPathComponent("runtime/darwin-arm64", isDirectory: true)
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cli = runtime.appendingPathComponent("wax-cli")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: cli)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+
+        let waxSymlink = bin.appendingPathComponent("wax")
+        try FileManager.default.createSymbolicLink(at: waxSymlink, withDestinationURL: cli)
+
+        let resolved = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: waxSymlink.path)
+        #expect(resolved == cli.path)
+    }
+
     @Test func daemonSessionHandlesPersistentRoundTripCommands() async throws {
         try await withCLIMemory { memory in
             let daemon = CLIDaemonSession(memory: memory)
@@ -441,11 +491,496 @@ struct WaxCLIMemoryTests {
         #expect(runtime.serverPath == server.path)
     }
 
+    @Test func embedderRuntimeOptionsOverrideEnvironment() throws {
+        setenv("WAX_EMBEDDER_BATCH_SIZE", "2", 1)
+        setenv("WAX_EMBEDDER_PREWARM_BATCH_SIZE", "3", 1)
+        setenv("WAX_EMBEDDER_ALLOW_LOW_PRECISION_GPU", "1", 1)
+        setenv("WAX_EMBEDDER_TIMEOUT_SECS", "7", 1)
+        setenv("WAX_EMBEDDER_COMPUTE_UNITS", "cpuOnly", 1)
+        defer {
+            unsetenv("WAX_EMBEDDER_BATCH_SIZE")
+            unsetenv("WAX_EMBEDDER_PREWARM_BATCH_SIZE")
+            unsetenv("WAX_EMBEDDER_ALLOW_LOW_PRECISION_GPU")
+            unsetenv("WAX_EMBEDDER_TIMEOUT_SECS")
+            unsetenv("WAX_EMBEDDER_COMPUTE_UNITS")
+        }
+
+        let store = try VectorStoreOptions.parse([
+            "--embedder-batch-size", "8",
+            "--embedder-prewarm-batch-size", "5",
+            "--embedder-low-precision-gpu", "false",
+            "--embedder-timeout-secs", "11",
+            "--embedder-compute-unit", "cpuAndGPU",
+            "--embedder-compute-unit", "cpuOnly",
+        ])
+
+        let tuning = store.embedderTuning
+        #expect(tuning.batchSize == 8)
+        #expect(tuning.prewarmBatchSize == 5)
+        #expect(tuning.allowLowPrecisionGPU == false)
+        #expect(tuning.timeoutSeconds == 11)
+        #expect(tuning.computeUnitsOrder.map(\.rawValue) == ["cpuAndGPU", "cpuOnly"])
+    }
+
+    @Test func brokerConfigurationChangesWhenEmbedderTuningChanges() throws {
+        let first = try AgentBrokerCLI.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: "minilm",
+            noEmbedder: false,
+            requireVector: false,
+            embedderTuning: .init(batchSize: 1)
+        )
+        let second = try AgentBrokerCLI.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: "minilm",
+            noEmbedder: false,
+            requireVector: false,
+            embedderTuning: .init(batchSize: 8)
+        )
+
+        #expect(first.socketPath != second.socketPath)
+    }
+
+    @Test func brokerConfigurationChangesWhenRequireVectorChanges() throws {
+        let first = try AgentBrokerCLI.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: "minilm",
+            noEmbedder: false,
+            requireVector: false,
+            embedderTuning: .init(batchSize: 1)
+        )
+        let second = try AgentBrokerCLI.configuration(
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: "minilm",
+            noEmbedder: false,
+            requireVector: true,
+            embedderTuning: .init(batchSize: 1)
+        )
+
+        #expect(first.socketPath != second.socketPath)
+    }
+
+    @Test func brokerBackedVectorRequirementFailsFastWhenNoEmbedderIsConfigured() async throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbv-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = brokerRoot.appendingPathComponent("vector-required.wax")
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
+        defer { unsetenv("WAX_BROKER_DIR") }
+
+        let brokerConfiguration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+            storePath: storeURL.path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: true
+        )
+
+        do {
+            _ = try await AgentBrokerClient.perform(
+                request: AgentBrokerRequest(command: "stats"),
+                configuration: brokerConfiguration,
+                shutdownIfStarted: true
+            )
+            Issue.record("Expected broker-backed stats to fail when vector search is required and --no-embedder is set")
+        } catch {
+            #expect(error.localizedDescription.contains("Vector search required"))
+            #expect(error.localizedDescription.contains("--no-embedder"))
+        }
+    }
+
+    @Test func brokerBackedOneShotCommandReleasesStoreLockImmediately() async throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbs-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = brokerRoot.appendingPathComponent("one-shot-stats.wax")
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
+        setenv("WAX_LOCK_TIMEOUT_SECS", "0.2", 1)
+        defer {
+            unsetenv("WAX_BROKER_DIR")
+            unsetenv("WAX_LOCK_TIMEOUT_SECS")
+        }
+
+        let configuration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+            storePath: storeURL.path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false
+        )
+
+        let response = try await AgentBrokerClient.perform(
+            request: AgentBrokerRequest(command: "stats"),
+            configuration: configuration,
+            shutdownIfStarted: true
+        )
+        #expect(response.ok)
+
+        #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
+
+        let reopened = try await StoreSession.open(at: storeURL, noEmbedder: true)
+        try await reopened.close()
+    }
+
+    @Test func mcpInstallRejectsBundledRuntimeWithChecksumMismatch() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-bad-checksum-\(UUID().uuidString)", isDirectory: true)
+        let sourceDir = tempRoot.appendingPathComponent("dist/darwin-arm64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: sourceDir.appendingPathComponent("wax-mcp"))
+        try "deadbeef  wax-cli\n".write(
+            to: sourceDir.appendingPathComponent("wax-cli.sha256"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        do {
+            _ = try Pathing.prepareMCPInstallRuntime(
+                cliPath: sourceDir.appendingPathComponent("wax-cli").path,
+                serverPath: sourceDir.appendingPathComponent("wax-mcp").path,
+                dryRun: false
+            )
+            Issue.record("Expected prepareMCPInstallRuntime to reject checksum mismatch")
+        } catch {
+            #expect(error.localizedDescription.contains("checksum mismatch"))
+        }
+    }
+
+    @Test func runtimeValidationDetectsChecksumMismatch() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-runtime-validate-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let cli = tempRoot.appendingPathComponent("wax-cli")
+        let server = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: cli)
+        try makeExecutableStub(at: server)
+        try "deadbeef  wax-mcp\n".write(
+            to: tempRoot.appendingPathComponent("wax-mcp.sha256"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let validation = try Pathing.validateMCPRuntime(
+            serverPath: server.path,
+            expectVectorRuntime: false
+        )
+        #expect(validation.failures.contains { $0.contains("checksum mismatch for wax-mcp") })
+    }
+
+    @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-commit-flag-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("commit-flag.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "entity-upsert",
+                "--store-path", storeURL.path,
+                "--key", "agent:commit-flag",
+                "--kind", "agent",
+                "--no-commit",
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "wax-cli entity-upsert should succeed")
+        #expect(output.stdout.contains(#""committed" : false"#))
+    }
+
+    @Test func mcpDoctorRecognizesRenamedToolSurface() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("doctor.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let server = try builtProductPath(named: "wax-mcp")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", server,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            timeout: 60
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "wax-cli mcp doctor should pass against the renamed tool surface")
+        #expect(output.stdout.contains("Doctor passed."))
+    }
+
+    @Test func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-path-launch-\(UUID().uuidString)", isDirectory: true)
+        let runtimeDir = tempRoot.appendingPathComponent("runtime/bin", isDirectory: true)
+        let shadowDir = tempRoot.appendingPathComponent("shadow/bin", isDirectory: true)
+        let workDir = tempRoot.appendingPathComponent("work", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("path-launch.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: shadowDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let server = try builtProductPath(named: "wax-mcp")
+        let runtimeCLI = runtimeDir.appendingPathComponent("wax-cli")
+        let runtimeServer = runtimeDir.appendingPathComponent("wax-mcp")
+        try FileManager.default.createSymbolicLink(at: runtimeCLI, withDestinationURL: URL(fileURLWithPath: cli))
+        try FileManager.default.createSymbolicLink(at: runtimeServer, withDestinationURL: URL(fileURLWithPath: server))
+
+        let fakeCLI = shadowDir.appendingPathComponent("wax-cli")
+        try "#!/bin/sh\nexit 17\n".write(to: fakeCLI, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: fakeCLI.path
+        )
+
+        let output = try runMCPSmokeProcess(
+            command: "wax-mcp",
+            arguments: [
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: [
+                "PATH": "\(shadowDir.path):\(runtimeDir.path)",
+            ],
+            currentDirectoryURL: workDir,
+            expectedToolName: "remember",
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "PATH-launched wax-mcp should resolve its colocated wax-cli")
+        #expect(output.stdout.contains(#""name":"remember""#))
+        #expect(!output.stdout.contains(#""name":"wax_remember""#))
+    }
+
     private func makeExecutableStub(at url: URL) throws {
         try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o755))],
             ofItemAtPath: url.path
         )
+    }
+
+    private struct ProcessOutput {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+    }
+
+    private func builtProductPath(named name: String) throws -> String {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let candidates = [
+            root.appendingPathComponent(".build/debug/\(name)").path,
+            root.appendingPathComponent(".build/arm64-apple-macosx/debug/\(name)").path,
+        ]
+        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return match
+        }
+        throw CLIError("Unable to locate built product '\(name)'")
+    }
+
+    private func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        currentDirectoryURL: URL? = nil,
+        input: String? = nil,
+        timeout: TimeInterval = 15
+    ) throws -> ProcessOutput {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        var mergedEnvironment = ProcessInfo.processInfo.environment
+        if let environment {
+            for (key, value) in environment {
+                mergedEnvironment[key] = value
+            }
+        }
+        process.environment = mergedEnvironment
+        process.currentDirectoryURL = currentDirectoryURL
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let stdinPipe: Pipe?
+        if input != nil {
+            let pipe = Pipe()
+            process.standardInput = pipe
+            stdinPipe = pipe
+        } else {
+            stdinPipe = nil
+        }
+
+        let terminated = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in terminated.signal() }
+
+        try process.run()
+
+        if let input, let stdinPipe {
+            if let data = input.data(using: .utf8) {
+                stdinPipe.fileHandleForWriting.write(data)
+            }
+            try? stdinPipe.fileHandleForWriting.close()
+        }
+
+        if terminated.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            throw CLIError("Process timed out: \(executableURL.path) \(arguments.joined(separator: " "))")
+        }
+
+        process.waitUntilExit()
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private func runMCPSmokeProcess(
+        command: String,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        currentDirectoryURL: URL? = nil,
+        expectedToolName: String,
+        timeout: TimeInterval = 15
+    ) throws -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [command] + arguments
+        var mergedEnvironment = ProcessInfo.processInfo.environment
+        if let environment {
+            for (key, value) in environment {
+                mergedEnvironment[key] = value
+            }
+        }
+        process.environment = mergedEnvironment
+        process.currentDirectoryURL = currentDirectoryURL
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let stdinPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = stdinPipe
+
+        final class SmokeState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stdoutAll = Data()
+            private var stderrAll = Data()
+            private var stdoutPending = Data()
+            private var sawToolsList = false
+            private var foundExpectedTool = false
+            private var signaled = false
+            let semaphore = DispatchSemaphore(value: 0)
+
+            func appendStdout(_ data: Data, expectedToolName: String) {
+                lock.lock()
+                defer { lock.unlock() }
+                stdoutAll.append(data)
+                stdoutPending.append(data)
+                while let newlineIndex = stdoutPending.firstIndex(of: UInt8(ascii: "\n")) {
+                    let lineData = stdoutPending[..<newlineIndex]
+                    stdoutPending = stdoutPending[(newlineIndex + 1)...]
+                    guard let line = String(data: lineData, encoding: .utf8), !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continue
+                    }
+                    if !sawToolsList, (line.contains(#""id":2"#) || line.contains(#""id": 2"#)) {
+                        sawToolsList = true
+                        foundExpectedTool = line.contains(#""name":"\#(expectedToolName)""#)
+                        signalOnce()
+                        return
+                    }
+                }
+            }
+
+            func appendStderr(_ data: Data) {
+                lock.lock()
+                defer { lock.unlock() }
+                stderrAll.append(data)
+            }
+
+            func snapshot() -> (stdout: Data, stderr: Data, foundExpectedTool: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
+                return (stdoutAll, stderrAll, foundExpectedTool)
+            }
+
+            private func signalOnce() {
+                guard !signaled else { return }
+                signaled = true
+                semaphore.signal()
+            }
+        }
+
+        let state = SmokeState()
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                return
+            }
+            state.appendStdout(data, expectedToolName: expectedToolName)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                return
+            }
+            state.appendStderr(data)
+        }
+
+        try process.run()
+
+        let request = """
+        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"wax-mcp-path-test","version":"1.0"}}}
+        {"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+        {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+        """
+        if let data = (request + "\n").data(using: .utf8) {
+            stdinPipe.fileHandleForWriting.write(data)
+        }
+
+        if state.semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            throw CLIError("Timed out waiting for MCP tools/list response")
+        }
+
+        try? stdinPipe.fileHandleForWriting.close()
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        process.waitUntilExit()
+
+        if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
+            state.appendStdout(data, expectedToolName: expectedToolName)
+        }
+        if let data = try? stderrPipe.fileHandleForReading.readToEnd() {
+            state.appendStderr(data)
+        }
+
+        let snapshot = state.snapshot()
+        let stdout = String(data: snapshot.stdout, encoding: .utf8) ?? ""
+        let stderr = String(data: snapshot.stderr, encoding: .utf8) ?? ""
+        return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 }

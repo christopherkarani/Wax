@@ -48,11 +48,20 @@ actor UnifiedSearchEngineCache {
     private var textByWax: [ObjectIdentifier: CachedText] = [:]
     private var vectorByWax: [ObjectIdentifier: CachedVector] = [:]
     private var stats = Stats()
+    private var statsByWax: [ObjectIdentifier: Stats] = [:]
 
     func snapshotStats() -> Stats { stats }
 
+    func snapshotStats(for wax: Wax) -> Stats {
+        statsByWax[ObjectIdentifier(wax)] ?? Stats()
+    }
+
     func resetStats() {
         stats = Stats()
+    }
+
+    func resetStats(for wax: Wax) {
+        statsByWax[ObjectIdentifier(wax)] = Stats()
     }
 
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
@@ -70,7 +79,7 @@ actor UnifiedSearchEngineCache {
                 return engine
             }
             let engine = try FTS5SearchEngine.deserialize(from: bytes)
-            stats.textDeserializations += 1
+            incrementTextDeserializations(for: waxId)
             textByWax[waxId] = CachedText(key: key, engine: engine)
             return engine
         }
@@ -82,7 +91,7 @@ actor UnifiedSearchEngineCache {
             }
             if let bytes = try await wax.readCommittedLexIndexBytes() {
                 let engine = try FTS5SearchEngine.deserialize(from: bytes)
-                stats.textDeserializations += 1
+                incrementTextDeserializations(for: waxId)
                 textByWax[waxId] = CachedText(key: key, engine: engine)
                 return engine
             }
@@ -123,9 +132,23 @@ actor UnifiedSearchEngineCache {
             dimensions: descriptor.dimensions,
             preference: preference
         )
-        stats.vectorDeserializations += 1
+        incrementVectorDeserializations(for: waxId)
         vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded.erased)
         return loaded.erased
+    }
+
+    private func incrementTextDeserializations(for waxId: ObjectIdentifier) {
+        stats.textDeserializations += 1
+        var waxStats = statsByWax[waxId] ?? Stats()
+        waxStats.textDeserializations += 1
+        statsByWax[waxId] = waxStats
+    }
+
+    private func incrementVectorDeserializations(for waxId: ObjectIdentifier) {
+        stats.vectorDeserializations += 1
+        var waxStats = statsByWax[waxId] ?? Stats()
+        waxStats.vectorDeserializations += 1
+        statsByWax[waxId] = waxStats
     }
 
     private func vectorLoadDescriptor(

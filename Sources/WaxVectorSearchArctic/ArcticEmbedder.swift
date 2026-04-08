@@ -203,16 +203,19 @@ extension ArcticEmbedder {
     package static func makeCommandLineEmbedder(
         prewarmBatchSize: Int = 1,
         skipPrewarm: Bool = false,
-        computeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
+        computeUnitsOrder: [MLComputeUnits] = [],
+        tuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws -> ArcticEmbedder {
         var failures: [String] = []
-        for units in computeUnitsOrder {
-            let modelConfiguration = MLModelConfiguration()
-            modelConfiguration.computeUnits = units
-            modelConfiguration.allowLowPrecisionAccumulationOnGPU = true
+        let resolvedUnits = computeUnitsOrder.isEmpty
+            ? tuning.computeUnitsOrder.map(\.coreMLValue)
+            : computeUnitsOrder
+        for units in resolvedUnits {
+            let matchingUnit = tuning.computeUnitsOrder.first(where: { $0.coreMLValue == units }) ?? .cpuOnly
+            let modelConfiguration = tuning.modelConfiguration(for: matchingUnit)
             do {
                 let embedder = try ArcticEmbedder(
-                    config: Config(batchSize: 1, modelConfiguration: modelConfiguration)
+                    config: Config(batchSize: tuning.batchSize, modelConfiguration: modelConfiguration)
                 )
                 if !skipPrewarm {
                     try await embedder.prewarm(batchSize: prewarmBatchSize)

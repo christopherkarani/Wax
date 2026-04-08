@@ -90,7 +90,7 @@ let package = Package(
         .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.24.0"),
         .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.1.3"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
-        .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
+        .package(url: "https://github.com/swiftlang/swift-testing", exact: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
@@ -196,6 +196,7 @@ let package = Package(
             name: "wax-mcp",
             dependencies: [
                 "Wax",
+                "WaxCore",
                 .product(
                     name: "MCP",
                     package: "swift-sdk",
@@ -226,6 +227,7 @@ let package = Package(
             name: "wax-cli",
             dependencies: [
                 "Wax",
+                "WaxCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .target(name: "WaxVectorSearchMiniLM",
                         condition: .when(traits: ["MiniLMEmbeddings"])),

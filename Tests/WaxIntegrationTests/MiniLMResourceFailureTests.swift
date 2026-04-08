@@ -6,7 +6,7 @@ import Testing
 @available(macOS 15.0, iOS 18.0, *)
 @Test
 func openMiniLMThrowsWhenModelMissing() async throws {
-    try await TempFiles.withTempFile { url in
+    await TempFiles.withTempFile { url in
         do {
             _ = try await MemoryOrchestrator.openMiniLM(
                 at: url,
@@ -23,7 +23,7 @@ func openMiniLMThrowsWhenModelMissing() async throws {
 @available(macOS 15.0, iOS 18.0, *)
 @Test
 func openMiniLMThrowsWhenTokenizerMissing() async throws {
-    try await TempFiles.withTempFile { url in
+    await TempFiles.withTempFile { url in
         do {
             _ = try await MemoryOrchestrator.openMiniLM(
                 at: url,

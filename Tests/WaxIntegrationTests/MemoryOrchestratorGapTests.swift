@@ -74,7 +74,7 @@ private struct NetworkEmbedder: EmbeddingProvider, Sendable {
 
 @Test
 func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
-    try await TempFiles.withTempFile { url in
+    await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = true
         do {

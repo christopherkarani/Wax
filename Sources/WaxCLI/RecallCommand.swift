@@ -21,37 +21,34 @@ struct RecallCommand: AsyncParsableCommand {
             throw CLIError("limit must be between 1 and 100")
         }
 
-        if AgentDaemonPolicy.shouldUseDaemonForRecall(store: store),
-           let response = try AgentDaemonTransport.perform(
-               request: CLIDaemonRequest(
-                   id: nil,
-                   command: "recall",
-                   content: nil,
-                   query: query,
-                   metadata: nil,
-                   mode: nil,
-                   topK: nil,
-                   limit: limit
-               ),
-               storePath: store.storePath,
-               embedderChoice: store.embedder
-           ) {
-            guard response.ok else {
-                throw CLIError(response.error ?? "Daemon recall failed")
-            }
-            guard case .recall(let daemonQuery, let totalTokens, let items)? = response.payload else {
-                throw CLIError("Daemon recall returned an unexpected payload")
-            }
+        if AgentBrokerPolicy.shouldUseBroker(store: store) {
+            let response = try await AgentBrokerCLI.perform(
+                command: "recall",
+                arguments: [
+                    "query": .string(query),
+                    "limit": .from(limit),
+                ],
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+            let payload = try brokerPayloadObject(response)
+            let daemonQuery = brokerString(payload, "query") ?? query
+            let totalTokens = brokerInt(payload, "total_tokens") ?? 0
+            let items = brokerArray(payload, "results")
 
             switch store.format {
             case .json:
-                let encodedItems: [[String: Any]] = items.map { item in
-                    [
-                        "rank": item.rank,
-                        "kind": item.kind ?? "",
-                        "frameId": item.frameId,
-                        "score": item.score,
-                        "text": item.text ?? "",
+                let encodedItems: [[String: Any]] = items.compactMap { item in
+                    guard let object = item.objectValue else { return nil }
+                    return [
+                        "rank": brokerInt(object, "rank") ?? 0,
+                        "kind": brokerString(object, "kind") ?? "",
+                        "frameId": brokerInt64(object, "frameId") ?? 0,
+                        "score": object["score"]?.doubleValue ?? 0,
+                        "text": brokerString(object, "text") ?? "",
                     ]
                 }
                 printJSON([
@@ -64,8 +61,9 @@ struct RecallCommand: AsyncParsableCommand {
                 print("Query: \(daemonQuery)")
                 print("Total tokens: \(totalTokens)")
                 for item in items {
+                    guard let object = item.objectValue else { continue }
                     print(
-                        "\(item.rank). [\(item.kind ?? "unknown")] frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) \(item.text ?? "")"
+                        "\(brokerInt(object, "rank") ?? 0). [\(brokerString(object, "kind") ?? "unknown")] frame=\(brokerInt64(object, "frameId") ?? 0) score=\(String(format: "%.4f", object["score"]?.doubleValue ?? 0)) \(brokerString(object, "text") ?? "")"
                     )
                 }
             }
@@ -77,6 +75,7 @@ struct RecallCommand: AsyncParsableCommand {
             at: url,
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder,
+            embedderTuning: store.embedderTuning,
             requireVector: store.requireVector
         ) { memory in
             let context = try await memory.recall(query: query, frameFilter: nil)

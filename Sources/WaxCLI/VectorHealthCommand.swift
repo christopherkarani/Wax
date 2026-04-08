@@ -89,6 +89,7 @@ private extension VectorHealthCommand {
             at: url,
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder,
+            embedderTuning: store.embedderTuning,
             requireVector: true
         ) { memory in
             let stats = await memory.runtimeStats()
@@ -110,6 +111,7 @@ private extension VectorHealthCommand {
             at: probeURL,
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder,
+            embedderTuning: store.embedderTuning,
             requireVector: true
         ) { memory in
             let expectedDocument = "An automobile needs periodic maintenance and tire rotation."

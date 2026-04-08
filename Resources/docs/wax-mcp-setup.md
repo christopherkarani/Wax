@@ -21,14 +21,14 @@ Paste this into your repo prompt or `CLAUDE.md` after installing Wax:
 Use the Wax MCP server for persistent memory in this repo.
 
 Workflow rules:
-- At session start, call `wax_handoff_latest` first to load prior context, then call `wax_session_start` once and keep the returned `session_id`.
-- Use `wax_remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `wax_recall` for assembled context and `wax_search` for raw ranked hits.
+- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
+- Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
+- Use `recall` for assembled context and `search` for raw ranked hits.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- If you batch writes with `commit: false`, call `wax_flush` before any `wax_recall` or `wax_search`.
-- Use `wax_handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `wax_session_end`.
-- Use `wax_corpus_search` only when you need cross-session retrieval across many session `.wax` files, such as `~/.wax/sessions`. It rebuilds or refreshes a shared corpus store and returns provenance metadata under `wax.corpus.*` so you can trace hits back to the source session store and frame.
-- Use structured memory tools (`wax_entity_upsert`, `wax_fact_assert`, `wax_fact_retract`, `wax_facts_query`, `wax_entity_resolve`) for stable entities and facts, not transient debugging notes.
+- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
+- Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
+- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
+- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
 
 Behavior expectations:
 - Read existing handoffs and recall results before asking me to restate prior context.
@@ -59,14 +59,12 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## MCP tool highlights
 
-- Session lifecycle: `wax_session_start`, `wax_session_end`
-- Session scoping on reads: `wax_recall` and `wax_search` accept `session_id`
-- Explicit session scoping on writes: `wax_remember` and `wax_handoff` accept `session_id`
-- Handoff continuity: `wax_handoff`, `wax_handoff_latest`
-- Cross-session retrieval: `wax_corpus_search` searches many session `.wax` files and returns `wax.corpus.*` provenance metadata
-- Structured memory graph: `wax_entity_upsert`, `wax_fact_assert`, `wax_fact_retract`, `wax_facts_query`, `wax_entity_resolve`
-- Batched graph mutation option: set `commit=false` on graph mutations and call `wax_flush` to commit once
-- Batched write rule: if you set `commit=false` on memory writes, call `wax_flush` before `wax_recall` or `wax_search`
+- Session lifecycle: `session_start`, `session_end`
+- Session scoping on reads: `recall` and `search` accept `session_id`
+- Explicit session scoping on writes: `remember` and `handoff` accept `session_id`
+- Handoff continuity: `handoff`, `handoff_latest`
+- Cross-session retrieval: `corpus_search` searches broker-managed session history and returns provenance metadata
+- Structured memory graph: `entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`
 
 ## npx launcher
 

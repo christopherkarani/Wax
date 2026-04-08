@@ -3,6 +3,11 @@ import WaxCore
 import WaxVectorSearch
 
 enum MemoryBindingCompatibility {
+    private static let modelAliases: [String: String] = [
+        "minilmall": "minilm",
+        "arctic": "arcticembeds",
+    ]
+
     static func binding(from identity: EmbeddingIdentity) -> MemoryBinding {
         MemoryBinding(
             embeddingProvider: identity.provider,
@@ -24,7 +29,7 @@ enum MemoryBindingCompatibility {
         }
         if let expected = binding.embeddingModel,
            let actual = identity.model,
-           expected != actual {
+           canonicalModel(expected) != canonicalModel(actual) {
             return "model expected '\(expected)' got '\(actual)'"
         }
         if let expected = binding.embeddingDimensions {
@@ -41,5 +46,12 @@ enum MemoryBindingCompatibility {
             return "normalized expected \(expected) got \(actual)"
         }
         return nil
+    }
+
+    private static func canonicalModel(_ model: String) -> String {
+        let normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return modelAliases[normalized] ?? normalized
     }
 }

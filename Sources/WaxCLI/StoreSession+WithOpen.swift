@@ -1,5 +1,6 @@
 import Foundation
 import Wax
+import WaxCore
 
 extension StoreSession {
     /// Open a store, run `body`, and guarantee `close()` is awaited before returning.
@@ -16,6 +17,7 @@ extension StoreSession {
         noEmbedder: Bool = false,
         skipPrewarm: Bool = false,
         embedderChoice: EmbedderChoice = .minilm,
+        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         requireVector: Bool = false,
         body: (MemoryOrchestrator) async throws -> T
     ) async throws -> T {
@@ -24,6 +26,7 @@ extension StoreSession {
             noEmbedder: noEmbedder,
             skipPrewarm: skipPrewarm,
             embedderChoice: embedderChoice,
+            embedderTuning: embedderTuning,
             requireVector: requireVector
         )
         do {

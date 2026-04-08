@@ -104,7 +104,7 @@ func memoryOrchestratorQueryEmbeddingTimeoutFallsBackAndOpensCircuit() async thr
     try await TempFiles.withTempFile { url in
         // Seed a store with text-only ingest to avoid calling the hanging embedder during `remember`.
         do {
-            var ingestConfig = TestHelpers.defaultMemoryConfig(vector: false)
+            let ingestConfig = TestHelpers.defaultMemoryConfig(vector: false)
             let ingest = try await MemoryOrchestrator(at: url, config: ingestConfig)
             try await ingest.remember("Swift concurrency actors and tasks.")
             try await ingest.flush()
