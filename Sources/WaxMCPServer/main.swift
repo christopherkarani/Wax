@@ -101,7 +101,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
         // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.19"
+        let serverVersion = "0.1.20"
         writeStderr("wax-mcp v\(serverVersion) starting")
         let server = Server(
             name: "wax-mcp",
