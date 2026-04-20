@@ -318,5 +318,5 @@ wax-repo search "where did we implement the WAL?"
 Wax is released under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 <div align="center">
-<sub>Built for developers who believe user data belongs on the user's device.</sub>
+<sub>Built for developers who believe user data belongs on the user's device</sub>
 </div>
