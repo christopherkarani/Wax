@@ -6,6 +6,14 @@ import Glibc
 #endif
 
 package enum AgentBrokerClient {
+    #if canImport(Darwin)
+    private static let unixStreamSocketType: Int32 = SOCK_STREAM
+    private static let socketShutdownWrite: Int32 = SHUT_WR
+    #elseif canImport(Glibc)
+    private static let unixStreamSocketType: Int32 = Int32(SOCK_STREAM.rawValue)
+    private static let socketShutdownWrite: Int32 = Int32(SHUT_WR)
+    #endif
+
     private static let startTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_START_TIMEOUT_SECS",
         defaultValue: 5.0
@@ -181,7 +189,7 @@ package enum AgentBrokerClient {
             return nil
         }
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
         guard fd >= 0 else {
             return nil
         }
@@ -221,7 +229,7 @@ package enum AgentBrokerClient {
         let payload = try JSONEncoder().encode(request)
         handle.write(payload)
         handle.write(Data([0x0A]))
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, socketShutdownWrite)
 
         let data = try handle.readToEnd() ?? Data()
         guard let line = String(data: data, encoding: .utf8)?
