@@ -63,31 +63,48 @@ struct DaemonCommand: AsyncParsableCommand {
 }
 
 private extension DaemonCommand {
+    #if canImport(Darwin)
+    var unixStreamSocketType: Int32 { SOCK_STREAM }
+    #elseif canImport(Glibc)
+    var unixStreamSocketType: Int32 { Int32(SOCK_STREAM.rawValue) }
+    #endif
+
     func runLoop(
         service: AgentBrokerService,
         input: FileHandle,
         output: FileHandle
     ) async throws {
-        for try await line in input.bytes.lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-
-            let request: AgentBrokerRequest
-            do {
-                request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
-            } catch {
-                let response = AgentBrokerResponse(
-                    ok: false,
-                    error: "Invalid request: \(error.localizedDescription)"
-                )
-                try writeJSONLine(response, to: output)
-                continue
-            }
-
-            let response = await service.handle(request)
-            try writeJSONLine(response, to: output)
-            if response.shouldExit {
+        var buffered = Data()
+        while true {
+            let chunk = try input.read(upToCount: 4096) ?? Data()
+            if chunk.isEmpty {
+                if !buffered.isEmpty {
+                    do {
+                        try await handleRequestLine(
+                            String(decoding: buffered, as: UTF8.self),
+                            service: service,
+                            output: output
+                        )
+                    } catch is ExitRequested {
+                        return
+                    }
+                }
                 return
+            }
+            buffered.append(chunk)
+
+            while let newlineIndex = buffered.firstIndex(of: 0x0A) {
+                let lineData = buffered[..<newlineIndex]
+                buffered.removeSubrange(...newlineIndex)
+                do {
+                    try await handleRequestLine(
+                        String(decoding: lineData, as: UTF8.self),
+                        service: service,
+                        output: output
+                    )
+                } catch is ExitRequested {
+                    return
+                }
             }
         }
     }
@@ -102,7 +119,7 @@ private extension DaemonCommand {
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         unlink(socketURL.path)
 
-        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        let listener = socket(AF_UNIX, unixStreamSocketType, 0)
         guard listener >= 0 else {
             throw CLIError("Unable to create broker socket: \(String(cString: strerror(errno)))")
         }
@@ -197,9 +214,38 @@ private extension DaemonCommand {
         return response.shouldExit
     }
 
+    func handleRequestLine(
+        _ line: String,
+        service: AgentBrokerService,
+        output: FileHandle
+    ) async throws {
+        let trimmed = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let request: AgentBrokerRequest
+        do {
+            request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
+        } catch {
+            let response = AgentBrokerResponse(
+                ok: false,
+                error: "Invalid request: \(error.localizedDescription)"
+            )
+            try writeJSONLine(response, to: output)
+            return
+        }
+
+        let response = await service.handle(request)
+        try writeJSONLine(response, to: output)
+        if response.shouldExit {
+            throw ExitRequested()
+        }
+    }
+
     func writeJSONLine(_ response: AgentBrokerResponse, to output: FileHandle) throws {
         let data = try JSONEncoder().encode(response)
         output.write(data)
         output.write(Data([0x0A]))
     }
 }
+
+private struct ExitRequested: Error {}

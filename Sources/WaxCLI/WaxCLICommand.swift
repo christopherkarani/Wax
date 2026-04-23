@@ -413,11 +413,26 @@ private func lowDiskWarning(forStorePath rawPath: String) -> String? {
     let fileURL = URL(fileURLWithPath: path)
     let directoryURL = fileURL.deletingLastPathComponent()
 
-    guard let values = try? directoryURL.resourceValues(
-        forKeys: [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
-    ),
-          let available = values.volumeAvailableCapacity.map(Int64.init) ?? values.volumeAvailableCapacityForImportantUsage
-    else {
+    #if canImport(Darwin)
+    let requestedKeys: Set<URLResourceKey> = [
+        .volumeAvailableCapacityKey,
+        .volumeAvailableCapacityForImportantUsageKey,
+    ]
+    #else
+    let requestedKeys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
+    #endif
+
+    guard let values = try? directoryURL.resourceValues(forKeys: requestedKeys) else {
+        return nil
+    }
+
+    #if canImport(Darwin)
+    let available = values.volumeAvailableCapacity.map(Int64.init) ?? values.volumeAvailableCapacityForImportantUsage
+    #else
+    let available = values.volumeAvailableCapacity.map(Int64.init)
+    #endif
+
+    guard let available else {
         return nil
     }
 

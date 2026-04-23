@@ -142,12 +142,10 @@ extension Wax {
             var queryEmbedding = embedding
             #if canImport(Metal)
             let isMetalEngine = vectorEngine is MetalVectorEngine
-            #else
-            let isMetalEngine = false
-            #endif
             if isMetalEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
                 queryEmbedding = VectorMath.normalizeL2(queryEmbedding)
             }
+            #endif
             let vectorToSearch = queryEmbedding
             if let timeout = request.vectorSearchTimeout {
                 do {
@@ -167,7 +165,7 @@ extension Wax {
                     return []
                 }
             } else {
-                return try await vectorEngine.search(vector: queryEmbedding, topK: candidateLimit)
+                return try await vectorEngine.search(vector: vectorToSearch, topK: candidateLimit)
             }
         }()
 
