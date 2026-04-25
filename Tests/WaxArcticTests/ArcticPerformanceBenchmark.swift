@@ -47,6 +47,7 @@ final class ArcticPerformanceBenchmark: XCTestCase {
 
     func testMiniLMSingleEmbedLatency() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_ARCTIC=1") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
@@ -68,6 +69,7 @@ final class ArcticPerformanceBenchmark: XCTestCase {
 
     func testArcticSingleEmbedLatency() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_ARCTIC=1") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("Arctic requires macOS 15.0 or iOS 18.0") }
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
@@ -89,6 +91,7 @@ final class ArcticPerformanceBenchmark: XCTestCase {
 
     func testArcticQueryEmbedLatency() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_ARCTIC=1") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("Arctic requires macOS 15.0 or iOS 18.0") }
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
@@ -112,6 +115,7 @@ final class ArcticPerformanceBenchmark: XCTestCase {
 
     func testMiniLMBatchThroughput() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_ARCTIC=1") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
@@ -132,6 +136,7 @@ final class ArcticPerformanceBenchmark: XCTestCase {
 
     func testArcticBatchThroughput() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_ARCTIC=1") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("Arctic requires macOS 15.0 or iOS 18.0") }
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine

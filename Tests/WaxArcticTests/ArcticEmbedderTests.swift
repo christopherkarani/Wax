@@ -12,6 +12,7 @@ struct ArcticEmbedderTests {
 
     @Test
     func arcticEmbedderProduces384Dimensions() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
         let vector = try await embedder.embed("Hello world")
@@ -22,6 +23,7 @@ struct ArcticEmbedderTests {
 
     @Test
     func arcticEmbedderIdentity() throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
 
         let identity = embedder.identity
@@ -33,6 +35,7 @@ struct ArcticEmbedderTests {
 
     @Test
     func arcticBatchConsistency() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
 
@@ -68,12 +71,14 @@ struct ArcticEmbedderTests {
 
     @Test
     func arcticPrewarmDoesNotThrow() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 4)
     }
 
     @Test
     func arcticEmbedderNormalizesOutput() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
         let vector = try await embedder.embed("Test normalization")

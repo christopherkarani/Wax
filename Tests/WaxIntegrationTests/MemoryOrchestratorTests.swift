@@ -608,11 +608,12 @@ private extension String {
     }
 }
 
-#if canImport(WaxVectorSearchMiniLM)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 
 @Test
 func miniLMAdapterSymbolsExistWhenAvailable() async {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
     _ = MiniLMEmbedder.self
     _ = MemoryOrchestrator.openMiniLM
     #expect(Bool(true))

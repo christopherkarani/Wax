@@ -12,12 +12,14 @@ struct QueryAwareEmbeddingTests {
 
     @Test
     func miniLMDoesNotConformToQueryAware() throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         #expect(!(MiniLMEmbedder.self is any QueryAwareEmbeddingProvider.Type),
                 "MiniLM should not conform to QueryAwareEmbeddingProvider")
     }
 
     @Test
     func arcticConformsToQueryAware() {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         func requireQueryAware<T: QueryAwareEmbeddingProvider>(_: T.Type) {}
         requireQueryAware(ArcticEmbedder.self)
     }
@@ -25,6 +27,7 @@ struct QueryAwareEmbeddingTests {
     @Test(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_ARCTIC"] != "1",
                     "Set WAX_TEST_ARCTIC=1 to run Arctic tests"))
     func arcticEmbedQueryProducesDifferentVectorThanEmbed() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
 
@@ -40,6 +43,7 @@ struct QueryAwareEmbeddingTests {
 
     @Test
     func miniLMEmbedIsConsistentWithoutQueryPrefix() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try makeMiniLMEmbedderForTesting()
         try await embedder.prewarm(batchSize: 1)
 
@@ -54,6 +58,7 @@ struct QueryAwareEmbeddingTests {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 private func makeMiniLMEmbedderForTesting() throws -> MiniLMEmbedder {
     let modelConfiguration = MLModelConfiguration()
     modelConfiguration.computeUnits = .cpuOnly

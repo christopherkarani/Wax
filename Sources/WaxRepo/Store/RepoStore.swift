@@ -43,22 +43,28 @@ actor RepoStore {
     init(storeURL: URL, textOnly: Bool = false) async throws {
         self.storeURL = storeURL
 
-        let embedder: (any EmbeddingProvider)? = try await {
-            guard !textOnly else { return nil }
+        let embedder: (any EmbeddingProvider)?
+        if textOnly {
+            embedder = nil
+        } else {
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-            // Some CLI executable contexts are unstable with CoreML batch
-            // prediction APIs. Keep batch size at 1 so MiniLM runs through
-            // the single-prediction path for reliability.
-            let modelConfiguration = MLModelConfiguration()
-            modelConfiguration.computeUnits = .cpuOnly
-            let config = MiniLMEmbedder.Config(batchSize: 1, modelConfiguration: modelConfiguration)
-            let e = try MiniLMEmbedder(config: config)
-            try await e.prewarm(batchSize: 1)
-            return e
+            if #available(macOS 15.0, iOS 18.0, *) {
+                // Some CLI executable contexts are unstable with CoreML batch
+                // prediction APIs. Keep batch size at 1 so MiniLM runs through
+                // the single-prediction path for reliability.
+                let modelConfiguration = MLModelConfiguration()
+                modelConfiguration.computeUnits = .cpuOnly
+                let config = MiniLMEmbedder.Config(batchSize: 1, modelConfiguration: modelConfiguration)
+                let e = try MiniLMEmbedder(config: config)
+                try await e.prewarm(batchSize: 1)
+                embedder = e
+            } else {
+                embedder = nil
+            }
             #else
-            return nil
+            embedder = nil
             #endif
-        }()
+        }
 
         var config = OrchestratorConfig.default
         if embedder == nil {

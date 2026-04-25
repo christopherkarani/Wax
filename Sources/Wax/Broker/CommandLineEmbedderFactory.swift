@@ -23,7 +23,11 @@ package enum CommandLineEmbedderFactory {
 
         if embedderChoice.lowercased() == "arctic" {
             #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-            return DeferredCommandLineEmbedder(kind: .arctic, tuning: tuning)
+            if #available(macOS 15.0, iOS 18.0, *) {
+                return DeferredCommandLineEmbedder(kind: .arctic, tuning: tuning)
+            }
+            brokerWriteStderr("Warning: Arctic requires macOS 15.0 or iOS 18.0. Falling back to text-only search.")
+            return nil
             #else
             brokerWriteStderr("Warning: Arctic embeddings not available in this build. Falling back to text-only search.")
             return nil
@@ -31,7 +35,11 @@ package enum CommandLineEmbedderFactory {
         }
 
         #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-        return DeferredCommandLineEmbedder(kind: .minilm, tuning: tuning)
+        if #available(macOS 15.0, iOS 18.0, *) {
+            return DeferredCommandLineEmbedder(kind: .minilm, tuning: tuning)
+        }
+        brokerWriteStderr("Warning: MiniLM requires macOS 15.0 or iOS 18.0. Falling back to text-only search.")
+        return nil
         #else
         return nil
         #endif

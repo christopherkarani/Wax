@@ -12,6 +12,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMEmbeddingPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let text = factory.makeDocument(index: 0)
         let embedder = try MiniLMEmbedder()
@@ -26,6 +27,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMBatchEmbeddingThroughput() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let embedder = try MiniLMEmbedder()
@@ -46,6 +48,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMEmbeddingColdStartPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let text = factory.makeDocument(index: 0)
 
@@ -58,6 +61,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMOpenAndFirstRecallOnExistingStoreSamples() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
 
@@ -90,6 +94,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMIngestPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let timeout = max(scale.timeout, 240)
@@ -117,6 +122,7 @@ final class RAGMiniLMBenchmarks: XCTestCase {
 
     func testMiniLMRecallPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run MiniLM benchmarks.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
         let timeout = max(scale.timeout, 120)

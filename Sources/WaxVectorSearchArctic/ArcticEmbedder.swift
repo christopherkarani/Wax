@@ -8,6 +8,7 @@ import WaxBertTokenizer
 @preconcurrency import OSLog
 #endif
 
+@available(macOS 15.0, iOS 18.0, *)
 extension ArcticEmbeddings: @unchecked Sendable {}
 
 /// High-performance Snowflake Arctic Embed Small embedder with batch and query-aware support.
@@ -237,6 +238,7 @@ extension ArcticEmbedder {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 private extension ArcticEmbedder {
     static func describe(_ units: MLComputeUnits) -> String {
         switch units {

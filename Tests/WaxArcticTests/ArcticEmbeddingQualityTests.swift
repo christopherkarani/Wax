@@ -24,6 +24,7 @@ struct ArcticEmbeddingQualityTests {
 
     @Test
     func embeddingsProduceMeaningfulSimilarities() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
 
@@ -45,6 +46,7 @@ struct ArcticEmbeddingQualityTests {
 
     @Test
     func queryPrefixImprovesRetrieval() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try ArcticEmbedder()
         try await embedder.prewarm(batchSize: 1)
 

@@ -32,6 +32,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
         try await AsyncTimeout.run(timeout: timeoutDuration, operation: operation, body)
     }
 
+    @available(macOS 15.0, iOS 18.0, *)
     private func makeBenchmarkEmbedder() async throws -> MiniLMEmbedder {
         let configuration = MLModelConfiguration()
         // XCTest/CLI contexts are prone to CoreML/ANE compile stalls and GPU crashes; keep this benchmark bounded and deterministic.
@@ -47,6 +48,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     /// Test batch embedding vs sequential embedding performance
     func testBatchVsSequentialEmbedding() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding benchmark.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
 
         let embedder = try await makeBenchmarkEmbedder()
         let textCount = 32
@@ -122,6 +124,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     /// Test batch embedding with varying batch sizes
     func testBatchEmbeddingScaling() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run batch embedding scaling benchmark.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
 
         let embedder = try await makeBenchmarkEmbedder()
         let batchSizes = [8, 16, 32, 64]
@@ -163,6 +166,7 @@ final class BatchEmbeddingBenchmark: XCTestCase {
     /// Test full orchestrator ingest with batch embedding vs sequential fallback
     func testOrchestratorBatchEmbeddingPerformance() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_BENCHMARK_MINILM=1 to run orchestrator batch embedding benchmark.") }
+        guard #available(macOS 15.0, iOS 18.0, *) else { throw XCTSkip("MiniLM requires macOS 15.0 or iOS 18.0") }
         
         let documentCount = 100
         let iterations = 2

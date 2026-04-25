@@ -164,6 +164,10 @@ enum MCPMemoryFactory {
 
         if embedderChoice.lowercased() == "arctic" {
             #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+           guard #available(macOS 15.0, iOS 18.0, *) else {
+                writeStderr("Warning: Arctic requires macOS 15.0 or iOS 18.0; falling back to text-only search.")
+                return nil
+            }
             return DeferredCommandLineEmbedder(kind: .arctic, timeout: tuning.timeoutDuration, tuning: tuning)
             #else
             writeStderr("Warning: Arctic embeddings not available in this build. Falling back to text-only search.")
@@ -172,6 +176,10 @@ enum MCPMemoryFactory {
         }
 
         #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+        guard #available(macOS 15.0, iOS 18.0, *) else {
+            writeStderr("Warning: MiniLM requires macOS 15.0 or iOS 18.0; falling back to text-only search.")
+            return nil
+        }
         return DeferredCommandLineEmbedder(kind: .minilm, timeout: tuning.timeoutDuration, tuning: tuning)
         #else
         return nil
