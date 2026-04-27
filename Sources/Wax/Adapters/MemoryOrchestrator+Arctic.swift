@@ -2,6 +2,7 @@
 import Foundation
 import WaxVectorSearchArctic
 
+@available(macOS 15.0, iOS 18.0, *)
 package extension MemoryOrchestrator {
     static func openArctic(
         at url: URL,

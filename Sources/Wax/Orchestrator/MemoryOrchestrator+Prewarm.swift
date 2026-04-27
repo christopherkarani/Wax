@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 #endif
 
@@ -17,7 +17,8 @@ package enum WaxPrewarm {
         }
     }
 
-    #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+    #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+    @available(macOS 15.0, iOS 18.0, *)
     package static func miniLM(sampleText: String = "hello") async throws {
         let embedder = try MiniLMEmbedder()
         try await embedder.prewarm()

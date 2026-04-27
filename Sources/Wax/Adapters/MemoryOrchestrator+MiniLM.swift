@@ -1,7 +1,8 @@
-#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import Foundation
 import WaxVectorSearchMiniLM
 
+@available(macOS 15.0, iOS 18.0, *)
 package extension MemoryOrchestrator {
     static func openMiniLM(
         at url: URL,

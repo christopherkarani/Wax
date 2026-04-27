@@ -48,8 +48,8 @@ waxIntegrationLinuxExcludes = []
 let package = Package(
     name: "Wax",
     platforms: [
-        .iOS(.v18),
-        .macOS(.v15),
+        .iOS(.v17),
+        .macOS(.v14),
     ],
     products: [
         .library(
@@ -189,6 +189,7 @@ let package = Package(
             resources: [.process("RAG/Resources")],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
+                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),
@@ -288,7 +289,10 @@ let package = Package(
             ],
             exclude: waxIntegrationLinuxExcludes,
             resources: [.process("Fixtures")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+            ]
         ),
         .testTarget(
             name: "WaxArcticTests",

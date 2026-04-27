@@ -162,6 +162,10 @@ enum StoreSession {
         switch embedderChoice {
         case .arctic:
             #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+            guard #available(macOS 15.0, iOS 18.0, *) else {
+                return .unavailable("Arctic requires macOS 15.0 or iOS 18.0")
+            }
+
             if !skipPrewarm {
                 writeStderr("Loading Arctic embedder...")
             }
@@ -205,6 +209,10 @@ enum StoreSession {
             #endif
         case .minilm:
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+            guard #available(macOS 15.0, iOS 18.0, *) else {
+                return .unavailable("MiniLM requires macOS 15.0 or iOS 18.0")
+            }
+
             if !skipPrewarm {
                 writeStderr("Loading MiniLM embedder...")
             }

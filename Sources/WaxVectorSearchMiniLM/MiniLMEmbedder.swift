@@ -7,6 +7,7 @@ import WaxVectorSearch
 @preconcurrency import OSLog
 #endif
 
+@available(macOS 15.0, iOS 18.0, *)
 extension MiniLMEmbeddings: @unchecked Sendable {}
 
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
@@ -239,6 +240,7 @@ extension MiniLMEmbedder {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbedder {
     static func describe(_ units: MLComputeUnits) -> String {
         switch units {
