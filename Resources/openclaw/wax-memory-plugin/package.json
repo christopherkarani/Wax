@@ -1,0 +1,49 @@
+{
+  "name": "@wax/openclaw-wax-memory",
+  "version": "0.1.21",
+  "type": "module",
+  "description": "OpenClaw memory plugin for Wax-backed agent memory.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/christopherkarani/Wax.git",
+    "directory": "Resources/openclaw/wax-memory-plugin"
+  },
+  "homepage": "https://github.com/christopherkarani/Wax/tree/main/Resources/openclaw/wax-memory-plugin",
+  "bugs": {
+    "url": "https://github.com/christopherkarani/Wax/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "mcp",
+    "wax"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "target": "node20",
+      "format": "esm"
+    },
+    "install": {
+      "npmSpec": "@wax/openclaw-wax-memory",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.3.24-beta.2"
+    }
+  },
+  "files": [
+    "src",
+    "openclaw.plugin.json",
+    "README.md"
+  ]
+}

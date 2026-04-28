@@ -497,7 +497,13 @@ extension Wax {
                 previewText: previewText,
                 sources: item.sources,
                 rankingDiagnostics: rankingDiagnostics,
-                metadata: item.metadata
+                metadata: item.metadata,
+                explanations: Self.baseExplanations(
+                    sources: item.sources,
+                    rankingDiagnostics: rankingDiagnostics,
+                    metadata: item.metadata,
+                    scopeContext: request.scopeContext
+                )
             )
         }
 
@@ -508,6 +514,11 @@ extension Wax {
                 maxWindow: min(max(request.topK * 2, 10), 32)
             )
         }
+        filtered = Self.semanticMemoryRerank(
+            results: filtered,
+            scopeContext: request.scopeContext,
+            maxWindow: min(max(request.topK * 3, 12), 48)
+        )
 
         if filtered.isEmpty, request.allowTimelineFallback {
             filtered = await timelineFallbackResults(request: request, filter: filter)
@@ -565,7 +576,13 @@ extension Wax {
                     score: score,
                     previewText: previewText,
                     sources: [.timeline],
-                    metadata: meta.metadata?.entries ?? [:]
+                    metadata: meta.metadata?.entries ?? [:],
+                    explanations: Self.baseExplanations(
+                        sources: [.timeline],
+                        rankingDiagnostics: nil,
+                        metadata: meta.metadata?.entries ?? [:],
+                        scopeContext: request.scopeContext
+                    )
                 )
             )
 
@@ -575,6 +592,110 @@ extension Wax {
         }
 
         return results
+    }
+
+    private static func semanticMemoryRerank(
+        results: [SearchResponse.Result],
+        scopeContext: MemoryScopeContext?,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        maxWindow: Int
+    ) -> [SearchResponse.Result] {
+        let cappedWindow = min(max(0, maxWindow), results.count)
+        guard cappedWindow > 0 else { return results }
+
+        let scoredHead = results.prefix(cappedWindow).enumerated().compactMap { index, result -> (index: Int, composite: Float, adjustment: Float, result: SearchResponse.Result)? in
+            let semantic = MemorySemantics.rankingReasons(
+                metadata: result.metadata,
+                scope: scopeContext,
+                nowMs: nowMs
+            )
+            guard semantic.adjustment > -9.5 else { return nil }
+            var updated = result
+            if !semantic.reasons.isEmpty {
+                updated.explanations = dedupedExplanations(result.explanations + semantic.reasons)
+            }
+            return (index: index, composite: result.score + semantic.adjustment, adjustment: semantic.adjustment, result: updated)
+        }
+
+        guard !scoredHead.isEmpty else { return Array(results.dropFirst(cappedWindow)) }
+        let meaningfulAdjustmentExists = scoredHead.contains { abs($0.adjustment) >= 0.11 }
+        guard meaningfulAdjustmentExists else {
+            let retained = scoredHead.sorted { $0.index < $1.index }.map(\.result)
+            if cappedWindow == results.count {
+                return retained
+            }
+            var combined = retained
+            combined.reserveCapacity(results.count)
+            combined.append(contentsOf: results.dropFirst(cappedWindow).filter {
+                !MemorySemantics.parse(metadata: $0.metadata, nowMs: nowMs).isExpired
+            })
+            return combined
+        }
+
+        let rankedHead = scoredHead.sorted { lhs, rhs in
+            if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
+            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+            return lhs.index < rhs.index
+        }.map(\.result)
+
+        if cappedWindow == results.count {
+            return rankedHead
+        }
+        var combined = rankedHead
+        combined.reserveCapacity(results.count)
+        combined.append(contentsOf: results.dropFirst(cappedWindow).filter {
+            !MemorySemantics.parse(metadata: $0.metadata, nowMs: nowMs).isExpired
+        })
+        return combined
+    }
+
+    private static func baseExplanations(
+        sources: [SearchResponse.Source],
+        rankingDiagnostics: SearchResponse.RankingDiagnostics?,
+        metadata: [String: String],
+        scopeContext: MemoryScopeContext?,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) -> [String] {
+        var reasons: [String] = []
+        if sources.contains(.vector) {
+            reasons.append("semantic match")
+        }
+        if sources.contains(.text) {
+            reasons.append("keyword match")
+        }
+        if sources.contains(.structuredMemory) {
+            reasons.append("linked entity or fact evidence")
+        }
+        if sources.contains(.timeline) {
+            reasons.append("timeline fallback")
+        }
+        if let rankingDiagnostics {
+            if let bestLane = rankingDiagnostics.bestLaneRank, bestLane == 1 {
+                reasons.append("top lane result")
+            }
+            if rankingDiagnostics.tieBreakReason == SearchResponse.RankingTieBreakReason.rerankComposite {
+                reasons.append("intent-aware rerank")
+            }
+        }
+        let semantic = MemorySemantics.rankingReasons(
+            metadata: metadata,
+            scope: scopeContext,
+            nowMs: nowMs
+        )
+        reasons.append(contentsOf: semantic.reasons)
+        return dedupedExplanations(reasons)
+    }
+
+    private static func dedupedExplanations(_ reasons: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        ordered.reserveCapacity(reasons.count)
+        for reason in reasons {
+            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            ordered.append(normalized)
+        }
+        return ordered
     }
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {

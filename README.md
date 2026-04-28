@@ -301,6 +301,18 @@ npx -y waxmcp@latest mcp install --scope user
 The published installer stages the bundled runtime into a stable local directory and
 registers `wax-mcp` directly, so steady-state MCP sessions do not launch through raw `npx`.
 For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
+For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
+For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
+The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`,
+including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync`
+also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on
+`session_synthesize` / `memory_promote` or via environment variables.
+
+For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport:
+
+```bash
+./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+```
 
 ### 🔍 WaxRepo
 A semantic search TUI for your git history. Index any repository and find code or commits using natural language.

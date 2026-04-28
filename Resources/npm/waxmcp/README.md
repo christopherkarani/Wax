@@ -19,7 +19,9 @@ npx -y waxmcp@latest mcp install --scope user
 That install flow stages the bundled runtime into a stable local directory and registers the
 staged `wax-mcp` binary, so regular MCP sessions do not keep launching through raw `npx`.
 
-> Note: `waxmcp` currently supports Apple Silicon macOS only (`darwin-arm64`).
+> Note: the bundled npm runtime currently ships `darwin-arm64` artifacts. The underlying
+> `wax-mcp` server itself now supports local Swift builds on macOS and Linux, including
+> `--transport http` for remote MCP deployments.
 
 To publish a new version:
 
@@ -55,6 +57,12 @@ binary using this search order:
 2. Bundled `dist/darwin-arm64/wax-mcp` or `dist/darwin-x64/wax-mcp`
 3. `wax-mcp` in PATH
 4. `./.build/debug/wax-mcp` (current working directory)
+
+You can also serve Wax over HTTP instead of stdio:
+
+```bash
+./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+```
 
 ### CLI mode
 

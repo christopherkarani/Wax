@@ -20,6 +20,7 @@ package struct FastRAGContextBuilder: Sendable {
         session: WaxSession? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
+        scopeContext: MemoryScopeContext? = nil,
         accessStatsManager: AccessStatsManager? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
@@ -35,6 +36,7 @@ package struct FastRAGContextBuilder: Sendable {
             topK: clamped.searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            scopeContext: scopeContext,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
         )
@@ -103,7 +105,12 @@ package struct FastRAGContextBuilder: Sendable {
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: expanded,
-                            metadata: result.metadata
+                            metadata: result.metadata,
+                            explanations: enrichedExplanations(
+                                result.explanations,
+                                frameId: result.frameId,
+                                accessStatsMap: accessStatsMap
+                            )
                         )
                     )
                     break
@@ -243,7 +250,12 @@ package struct FastRAGContextBuilder: Sendable {
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: capped,
-                            metadata: result.metadata
+                            metadata: result.metadata,
+                            explanations: enrichedExplanations(
+                                result.explanations,
+                                frameId: result.frameId,
+                                accessStatsMap: accessStatsMap
+                            )
                         )
                     )
                     surrogateSourceFrameIds.insert(result.frameId)
@@ -331,7 +343,12 @@ package struct FastRAGContextBuilder: Sendable {
                             score: result.score,
                             sources: RAGContext.Source.fromSearchSources(result.sources),
                             text: capped,
-                            metadata: result.metadata
+                            metadata: result.metadata,
+                            explanations: enrichedExplanations(
+                                result.explanations,
+                                frameId: result.frameId,
+                                accessStatsMap: accessStatsMap
+                            )
                         )
                     )
                     remainingTokens -= tokens
@@ -361,6 +378,22 @@ package struct FastRAGContextBuilder: Sendable {
         c.answerRerankWindow = max(0, c.answerRerankWindow)
         c.answerDistractorPenalty = min(1, max(0, c.answerDistractorPenalty))
         return c
+    }
+
+    private func enrichedExplanations(
+        _ existing: [String],
+        frameId: UInt64,
+        accessStatsMap: [UInt64: FrameAccessStats]
+    ) -> [String] {
+        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId]).reasons
+        var seen = Set<String>()
+        var combined: [String] = []
+        for reason in existing + accessReasons {
+            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            combined.append(normalized)
+        }
+        return combined
     }
 
     static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent, analyzer: QueryAnalyzer) -> Bool {

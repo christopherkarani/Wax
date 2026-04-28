@@ -78,6 +78,10 @@ package actor AccessStatsManager {
         }
         return result
     }
+
+    package func snapshot() -> [UInt64: FrameAccessStats] {
+        stats
+    }
     
     /// Remove stats for frames that no longer exist.
     package func pruneStats(keepingOnly activeFrameIds: Set<UInt64>) {
