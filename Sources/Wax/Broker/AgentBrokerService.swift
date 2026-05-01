@@ -1165,7 +1165,11 @@ extension AgentBrokerService {
     func factRetract(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let factID = try args.requiredInt64("fact_id")
-        try await longTermMemory.retractFact(factId: FactRowID(rawValue: factID), atMs: nil, commit: true)
+        try await longTermMemory.retractFact(
+            factId: FactRowID(rawValue: factID),
+            atMs: try args.optionalInt64("at_ms"),
+            commit: true
+        )
         return .object([
             "status": .string("ok"),
             "fact_id": .from(factID),
@@ -1184,7 +1188,7 @@ extension AgentBrokerService {
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
-            asOfMs: Int64.max,
+            asOfMs: try args.optionalInt64("as_of") ?? Int64.max,
             limit: limit
         )
         let hits: [AgentBrokerValue] = result.hits.map { hit in

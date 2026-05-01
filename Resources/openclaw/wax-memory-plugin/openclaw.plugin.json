@@ -10,11 +10,11 @@
     "properties": {
       "endpoint": {
         "type": "string",
-        "description": "HTTP MCP endpoint for the Wax broker."
+        "description": "HTTP MCP endpoint for the Wax broker. Keep local-only unless an authenticated gateway is configured."
       },
       "command": {
         "type": "string",
-        "description": "Command used when OpenClaw launches the Wax MCP process directly."
+        "description": "Command used when OpenClaw launches the Wax MCP process directly. The Wax runtime must be installed separately."
       },
       "args": {
         "type": "array",

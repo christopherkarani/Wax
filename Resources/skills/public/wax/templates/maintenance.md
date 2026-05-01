@@ -1,34 +1,30 @@
-Template: Maintenance (Optimize / Compact / Flush / Close)
-Goal: Run maintenance tasks and safely persist the store.
+Template: Maintenance (Package-Internal)
+Goal: Run Wax maintenance while editing the Wax package itself.
 
-Placeholders:
-- <STORE_URL>
-- <EMBEDDER_TYPE>
-- <MAINTENANCE_OPTIONS>
+Status:
+Maintenance APIs such as `optimizeSurrogates(...)`, `compactIndexes(...)`, and
+the `MemoryOrchestrator` handle are package-internal in the current Wax target.
+Do not use this template for external package snippets.
 
-Steps:
-1. Open MemoryOrchestrator (read-write).
-2. Run surrogate optimization.
-3. Compact indexes.
-4. Flush and close.
-
-Swift Skeleton:
+Public alternative:
 ```swift
 import Foundation
 import Wax
 
-let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>()
-)
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: <STORE_URL>, config: config)
 
-let options = <MAINTENANCE_OPTIONS>
-let surrogateReport = try await orchestrator.optimizeSurrogates(options: options)
-let compactReport = try await orchestrator.compactIndexes(options: options)
-_ = (surrogateReport, compactReport)
-
-try await orchestrator.flush()
-try await orchestrator.close()
+try await memory.save("Maintenance note")
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+let context = try await memory.search("maintenance", options: options)
+_ = context.items
+try await memory.close()
 ```
+
+Internal implementation checklist:
+1. Open the package-internal orchestrator.
+2. Run surrogate optimization.
+3. Compact indexes.
+4. Close the handle.

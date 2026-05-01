@@ -8,14 +8,21 @@ on:
 jobs:
   waxcore-linux:
     runs-on: ubuntu-latest
+    container:
+      image: swift:6.1-noble
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Print Swift toolchain
+        run: |
+          swift --version
+          swift package --version
+
       - name: Install Linux codec dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev
+          apt-get update
+          apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev
 
       - name: Build WaxCore target
         run: swift build --target WaxCore -Xswiftc -DGRDBCUSTOMSQLITE

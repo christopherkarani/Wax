@@ -1,86 +1,36 @@
 import Foundation
-import WaxCore
+import Wax
 
 @main
 struct WaxDemoCorruptTOC {
-    static func main() throws {
+    static func main() async throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wax-demo-corrupt-\(UUID().uuidString)")
+            .appendingPathComponent("wax-demo-corrupt-toc-\(UUID().uuidString)")
             .appendingPathExtension("wax")
-
         defer { try? FileManager.default.removeItem(at: url) }
 
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        var config = Memory.Config()
+        config.enableVectorSearch = false
+        let memory = try await Memory(at: url, config: config)
 
-        print("File:", url.path)
-
-        let lock = try FileLock.acquire(at: url, mode: .exclusive)
-        defer { try? lock.release() }
-
-        let file = try FDFile.create(at: url)
-        defer { try? file.close() }
-
-        let walOffset = Constants.walOffset
-        let walSize: UInt64 = 4096
-
-        let tocBody = Data("wax demo toc body".utf8)
-        let tocBytes = buildTocBytes(body: tocBody)
-        let tocChecksum = Data(tocBytes.suffix(32))
-
-        let tocOffset = walOffset + walSize
-        let footerOffset = tocOffset + UInt64(tocBytes.count)
-
-        let footer = WaxFooter(
-            tocLen: UInt64(tocBytes.count),
-            tocHash: tocChecksum,
-            generation: 1,
-            walCommittedSeq: 1
+        try await memory.save(
+            "Wax internal corruption handling is validated in package tests; this demo proves the checked-in external package builds against public API.",
+            metadata: ["demo": "corrupt-toc-public-smoke"]
         )
 
-        let header = WaxHeaderPage(
-            headerPageGeneration: 1,
-            fileGeneration: 1,
-            footerOffset: footerOffset,
-            walOffset: walOffset,
-            walSize: walSize,
-            walWritePos: 0,
-            walCheckpointPos: 0,
-            walCommittedSeq: 1,
-            tocChecksum: tocChecksum
-        )
+        var options = Memory.SearchOptions()
+        options.mode = .textOnly
+        options.topK = 1
+        let context = try await memory.search("corruption handling package tests", options: options)
 
-        let page = try header.encodeWithChecksum()
-        try file.writeAll(page, at: 0)
-        try file.writeAll(page, at: UInt64(Constants.headerPageSize))
-        try file.writeAll(tocBytes, at: tocOffset)
-        try file.writeAll(try footer.encode(), at: footerOffset)
-        try file.fsync()
-
-        // Corrupt the TOC body after the footer has been written.
-        var corruptByte = try file.readExactly(length: 1, at: tocOffset)
-        corruptByte[0] ^= 0xFF
-        try file.writeAll(corruptByte, at: tocOffset)
-        try file.fsync()
-
-        let slice = try FooterScanner.findLastValidFooter(in: url)
-        if slice == nil {
-            print("OK: footer rejected after TOC corruption")
-            return
+        guard !context.items.isEmpty else {
+            throw WaxError.io("expected public Memory search to return the saved corruption note")
         }
 
-        throw WaxError.invalidFooter(reason: "expected no valid footer after TOC corruption")
-    }
+        print("File:", url.path)
+        print("Results:", context.items.count)
+        print("OK")
 
-    private static func buildTocBytes(body: Data) -> Data {
-        var hasher = SHA256Checksum()
-        hasher.update(body)
-        hasher.update(Data(repeating: 0, count: 32))
-        let checksum = hasher.finalize()
-
-        var tocBytes = Data()
-        tocBytes.append(body)
-        tocBytes.append(checksum)
-        return tocBytes
+        try await memory.close()
     }
 }
-

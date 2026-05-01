@@ -205,6 +205,7 @@ package struct AgentBrokerConfiguration: Sendable, Equatable {
 package enum AgentBrokerPathing {
     package static let defaultStorePath = "~/.wax/memory.wax"
     package static let defaultSessionRootPath = "~/.local/share/waxmcp/sessions"
+    private static let unixSocketPathByteLimit = 100
 
     package static func expandPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
@@ -272,11 +273,11 @@ package enum AgentBrokerPathing {
         let expandedSessionRoot = sessionRootPath == defaultSessionRootPath
             ? defaultSessionRoot()
             : expandPath(sessionRootPath)
-        let socketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
-        try FileManager.default.createDirectory(at: socketRoot, withIntermediateDirectories: true)
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"
         let socketName = "\(stableHexHash(key)).sock"
+        let preferredSocketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
+        let socketRoot = try usableSocketRoot(preferred: preferredSocketRoot, socketName: socketName)
         let socketPath = socketRoot.appendingPathComponent(socketName).path
 
         return AgentBrokerConfiguration(
@@ -289,6 +290,19 @@ package enum AgentBrokerPathing {
             requireVector: requireVector,
             embedderTuning: embedderTuning
         )
+    }
+
+    private static func usableSocketRoot(preferred: URL, socketName: String) throws -> URL {
+        let preferredPath = preferred.appendingPathComponent(socketName).path
+        if preferredPath.utf8.count < unixSocketPathByteLimit {
+            try FileManager.default.createDirectory(at: preferred, withIntermediateDirectories: true)
+            return preferred
+        }
+
+        let fallback = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxb-\(stableHexHash(preferred.path))", isDirectory: true)
+        try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+        return fallback
     }
 
     private static func stableHexHash(_ text: String) -> String {

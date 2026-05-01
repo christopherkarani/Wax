@@ -272,6 +272,7 @@ package actor WaxSession {
     ) async throws -> UInt64 {
         try ensureWritable()
         let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        try await ensureMemoryBindingCompatible(identity: identity)
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
@@ -287,6 +288,7 @@ package actor WaxSession {
     ) async throws -> UInt64 {
         try ensureWritable()
         let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        try await ensureMemoryBindingCompatible(identity: identity)
         let frameId = try await wax.put(content, options: merged, compression: compression, timestampMs: timestampMs)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
@@ -335,6 +337,7 @@ package actor WaxSession {
                 )
             }
         }
+        try await ensureMemoryBindingCompatible(identity: identity)
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression)
         guard frameIds.count == embeddings.count else {
             throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
@@ -372,6 +375,7 @@ package actor WaxSession {
                 )
             }
         }
+        try await ensureMemoryBindingCompatible(identity: identity)
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression, timestampsMs: timestampsMs)
         guard frameIds.count == embeddings.count else {
             throw WaxError.encodingError(reason: "putBatch: embeddings.count != frameIds.count")
@@ -500,6 +504,28 @@ package actor WaxSession {
         lastPendingEmbeddingSequence = snapshot.latestSequence
     }
 
+    private func ensureMemoryBindingCompatible(identity: EmbeddingIdentity?) async throws {
+        guard let identity else { return }
+        let binding = MemoryBindingCompatibility.binding(from: identity)
+        guard !binding.isEmpty else { return }
+
+        if let existing = await wax.memoryBinding() {
+            try Self.validateMemoryBinding(existing, identity: identity)
+            return
+        }
+
+        try await wax.setMemoryBindingIfMissing(binding)
+        if let existing = await wax.memoryBinding() {
+            try Self.validateMemoryBinding(existing, identity: identity)
+        }
+    }
+
+    private static func validateMemoryBinding(_ binding: MemoryBinding, identity: EmbeddingIdentity) throws {
+        guard !MemoryBindingCompatibility.isCompatible(binding, with: identity) else { return }
+        let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+        throw WaxError.io("memory binding mismatch with embedding identity (\(mismatch))")
+    }
+
     private static func resolveVectorDimensions(for wax: Wax, config: Config) async throws -> Int? {
         if let configured = config.vectorDimensions {
             return configured
@@ -544,6 +570,10 @@ package actor WaxSession {
         if let model = identity.model { metadata.entries["wax.embedding.model"] = model }
         if let dims = identity.dimensions { metadata.entries["wax.embedding.dimension"] = String(dims) }
         if let normalized = identity.normalized { metadata.entries["wax.embedding.normalized"] = String(normalized) }
+        if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
+        if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
+        if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
+        if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
         merged.metadata = metadata
         return merged
     }

@@ -1,10 +1,7 @@
 # Getting Started
 
-Create a memory orchestrator, remember text, and recall context in minutes.
-
-## Overview
-
-Wax provides persistent, on-device memory with semantic search. The fastest way to get started is with ``MemoryOrchestrator``, which handles ingestion, chunking, embedding, indexing, and retrieval automatically.
+Save text to a `.wax` file and retrieve relevant context with the public
+``Memory`` facade.
 
 ## Add the Dependency
 
@@ -12,160 +9,154 @@ Add Wax to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/user/Wax.git", from: "1.0.0"),
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8"),
 ]
 ```
 
-Then add it to your target:
+Then add the `Wax` product to your target:
 
 ```swift
 .target(
     name: "MyApp",
-    dependencies: ["Wax", "WaxVectorSearchMiniLM"]
+    dependencies: [
+        .product(name: "Wax", package: "Wax")
+    ]
 )
 ```
 
-## Create an Orchestrator
+## Open Text-Only Memory
+
+Use text-only mode when you do not provide an embedding model. This compiles and
+runs in external packages without touching package-internal orchestrator APIs.
 
 ```swift
+import Foundation
 import Wax
-import WaxVectorSearchMiniLM
 
-// Create the on-device embedding provider
-let embedder = try MiniLMEmbedder()
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("memory")
+    .appendingPathExtension("wax")
 
-// Initialize the orchestrator (creates or opens the .wax file)
-let orchestrator = try await MemoryOrchestrator(
-    at: URL(filePath: "memory.wax"),
-    config: .init(),
-    embedder: embedder
-)
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: storeURL, config: config)
 ```
 
-You can also use the convenience initializer:
-
-```swift
-let orchestrator = try await MemoryOrchestrator.openMiniLM(
-    at: URL(filePath: "memory.wax")
-)
-```
-
-The orchestrator creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.
+The store is created if it does not exist and recovered if Wax finds an existing
+file at the same URL.
 
 ## Remember Content
 
-Ingest text content with ``MemoryOrchestrator/remember(_:metadata:)``:
+Save one or more text memories:
 
 ```swift
-try await orchestrator.remember("Had coffee with Alice. She mentioned the Q4 roadmap.")
-try await orchestrator.remember("Team standup: discussed sprint velocity and blockers.")
+try await memory.save("Had coffee with Alice. She mentioned the Q4 roadmap.")
+try await memory.save("Team standup: discussed sprint velocity and blockers.")
 ```
 
-Behind the scenes, Wax:
-1. Chunks the text according to the configured ``ChunkingStrategy``
-2. Embeds each chunk using the provided embedding provider
-3. Indexes the text for BM25 full-text search
-4. Writes frames and embeddings to the `.wax` file
-5. Commits the changes
-
-## Recall Context
-
-Retrieve relevant context for a query with ``MemoryOrchestrator/recall(query:)``:
+Metadata is optional and remains available on returned context items:
 
 ```swift
-let context = try await orchestrator.recall(query: "What did Alice say about the roadmap?")
+try await memory.save(
+    "The Android launch is waiting on design signoff.",
+    metadata: ["source": "standup", "id": "note-42"]
+)
+```
+
+## Search Memory
+
+Ask Wax for ranked context:
+
+```swift
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = 5
+let context = try await memory.search(
+    "What did Alice say about the roadmap?",
+    options: options
+)
 
 for item in context.items {
-    print("[\(item.kind)] \(item.text)")
+    print("\(item.score): \(item.text)")
 }
+
 print("Total tokens: \(context.totalTokens)")
 ```
 
-The RAG pipeline:
-1. Classifies the query type (factual, semantic, temporal, exploratory)
-2. Searches across BM25, vector, and structured memory lanes
-3. Fuses results with reciprocal rank fusion (RRF)
-4. Assembles context within the configured token budget
+## Use A Custom Embedder
 
-## Search Directly
-
-For lower-level access, use ``MemoryOrchestrator/search(query:mode:topK:frameFilter:)``:
+For hybrid retrieval, provide a public ``EmbeddingProvider`` implementation and
+keep vector search enabled:
 
 ```swift
-let hits = try await orchestrator.search(
-    query: "sprint velocity",
-    mode: .hybrid(alpha: 0.5),
-    topK: 10
-)
+import Foundation
+import Wax
 
-for hit in hits {
-    print("\(hit.frameId): \(hit.score) — \(hit.previewText ?? "")")
+actor LocalEmbedder: EmbeddingProvider {
+    let dimensions = 384
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "Local",
+        model: "example-v1",
+        dimensions: 384,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        // Replace this with an on-device model.
+        [Float](repeating: 0, count: dimensions)
+    }
 }
-```
 
-If you store a structured payload alongside your content, the returned hit also
-includes `metadata`. That lets you recover app-specific identifiers such as an
-`id` field without re-parsing the original content.
-
-## Configuration
-
-Customize behavior via ``OrchestratorConfig``:
-
-```swift
-var config = OrchestratorConfig()
-
-// Search features
-config.enableTextSearch = true
-config.enableVectorSearch = true
-config.enableStructuredMemory = false
-
-// Chunking
-config.chunking = .tokenCount(400, overlap: 40)
-
-// RAG token budget
-config.ragConfig.maxContextTokens = 2000
-config.ragConfig.searchTopK = 32
-
-let orchestrator = try await MemoryOrchestrator(
+var semanticConfig = Memory.Config()
+semanticConfig.enableVectorSearch = true
+let semanticMemory = try await Memory(
     at: storeURL,
-    config: config,
-    embedder: embedder
+    config: semanticConfig,
+    embedding: LocalEmbedder()
+)
+
+try await semanticMemory.save("Alice prefers roadmap summaries before meetings.")
+
+var semanticOptions = Memory.SearchOptions()
+semanticOptions.mode = .hybrid
+semanticOptions.topK = 5
+let semanticContext = try await semanticMemory.search(
+    "meeting prep for Alice",
+    options: semanticOptions
 )
 ```
 
-## Text-Only Mode
-
-If you don't need vector search, pass `nil` for the embedder:
-
-```swift
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .init(),
-    embedder: nil
-)
-```
-
-This gives you BM25 full-text search without the embedding overhead.
+`MiniLMEmbedder` is currently package-internal to Wax. External packages should
+bring their own ``EmbeddingProvider`` or use the packaged CLI/MCP runtime when
+they want the bundled embedding path.
 
 ## Clean Up
 
-Always close the orchestrator when done:
+Close memory handles when your app or tool is done with the store:
 
 ```swift
-try await orchestrator.close()
+try await memory.close()
+try await semanticMemory.close()
 ```
 
-## Using Wax with Claude Code
+## Package-Internal Articles
 
-Wax ships with an MCP server that gives Claude Code persistent memory. Install and configure:
+The articles on `MemoryOrchestrator`, `WaxSession`, `SearchRequest`, Photo RAG,
+and Video RAG document Wax internals. They are useful when changing Wax itself,
+but they are not copy-paste examples for external packages unless the article
+explicitly says the snippet uses ``Memory``.
+
+## Using Wax With Coding Agents
+
+Wax ships with an MCP server for persistent coding-agent memory:
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-Then add the memory prompt to your `CLAUDE.md` — see the [README](https://github.com/christopherkarani/Wax#ai-coding-assistants) for the recommended snippet.
-
-### MCP Tools
+Add the Codex prompt to `AGENTS.md` or the Claude Code prompt to `CLAUDE.md`.
+Both use the current unprefixed tool names:
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
@@ -178,16 +169,5 @@ Then add the memory prompt to your `CLAUDE.md` — see the [README](https://gith
 | `handoff_latest` | Load the latest handoff | `project` |
 | `stats` | Runtime and storage stats | none |
 
-### Agent Workflow
-
-```
-Session start      →  handoff_latest(project: "my-app"), then session_start()
-During work        →  recall(query: "auth architecture", session_id: ...)
-Save task memory   →  remember(content: "Auth uses session cookies", session_id: ...)
-Cross-session look →  corpus_search(query: "previous auth migration", mode: "hybrid")
-Session end        →  handoff(content: "Migrated auth to cookies", session_id: ..., project: "my-app"), then session_end(session_id: ...)
-```
-
-The MCP server now sits in front of a local broker. Agents should not manage
-`SESSION_STORE`, `--store-path`, or `flush` in the normal workflow; the broker
-owns the long-term store and virtual session stores.
+Normal agent flows should not manage `SESSION_STORE`, `--store-path`, or
+`flush`; the broker owns long-term memory and virtual session stores.

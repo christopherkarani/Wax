@@ -20,8 +20,8 @@ That install flow stages the bundled runtime into a stable local directory and r
 staged `wax-mcp` binary, so regular MCP sessions do not keep launching through raw `npx`.
 
 > Note: the bundled npm runtime currently ships `darwin-arm64` artifacts. The underlying
-> `wax-mcp` server itself now supports local Swift builds on macOS and Linux, including
-> `--transport http` for remote MCP deployments.
+> `wax-mcp` server itself supports local Swift builds on macOS and Linux, including
+> `--transport http` for gateway deployments.
 
 To publish a new version:
 
@@ -32,12 +32,12 @@ npm publish --access public
 ```
 
 This repo also ships a release script that updates `version`, syncs
-`Sources/WaxMCPServer/main.swift`'s `serverVersion`, and rebuilds the Darwin binaries
+`WaxMCPServerMetadata.version`, and rebuilds the Darwin binaries
 and resource bundles:
 
 ```bash
 cd /path/to/Wax
-./scripts/release-waxmcp.sh 0.1.18
+./scripts/release-waxmcp.sh 0.1.21
 git add Resources/npm/waxmcp/package.json Sources/WaxMCPServer/main.swift Resources/npm/waxmcp/dist
 git commit -m "release: bump waxmcp version"
 ```
@@ -54,14 +54,15 @@ When invoked with no arguments or with `mcp serve`, the launcher directly invoke
 binary using this search order:
 
 1. `$WAX_MCP_BIN`
-2. Bundled `dist/darwin-arm64/wax-mcp` or `dist/darwin-x64/wax-mcp`
+2. Bundled `dist/darwin-arm64/wax-mcp`
 3. `wax-mcp` in PATH
 4. `./.build/debug/wax-mcp` (current working directory)
 
 You can also serve Wax over HTTP instead of stdio:
 
 ```bash
-./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+WAX_MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000 --http-max-body-bytes 1048576
 ```
 
 ### CLI mode
@@ -70,7 +71,7 @@ For all other subcommands (remember, recall, search, etc.), the launcher invokes
 binary using this search order:
 
 1. `$WAX_CLI_BIN`
-2. Bundled `dist/darwin-arm64/wax-cli` or `dist/darwin-x64/wax-cli`
+2. Bundled `dist/darwin-arm64/wax-cli`
 3. `wax-cli` in PATH
 4. `./.build/debug/wax-cli` (current working directory)
 

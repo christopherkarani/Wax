@@ -194,9 +194,6 @@ extension WaxCLI.MCP {
             if noEmbedder {
                 addArguments.append("--no-embedder")
             }
-            if featureLicense {
-                addArguments.append("--feature-license")
-            }
 
             let removeArguments = ["mcp", "remove", "-s", scope.rawValue, name]
 

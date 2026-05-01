@@ -139,6 +139,7 @@ private extension DaemonCommand {
         guard listen(listener, 16) == 0 else {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
+        _ = signal(SIGPIPE, SIG_IGN)
 
         let timeoutMS: Int32 = idleTimeoutSeconds > 0 ? Int32(idleTimeoutSeconds * 1000) : -1
         while true {
@@ -189,7 +190,8 @@ private extension DaemonCommand {
                 )
             }
         } else {
-            response = AgentBrokerResponse(ok: false, error: "Invalid request: empty payload")
+            try? fileHandle.close()
+            return false
         }
 
         try writeJSONLine(response, to: fileHandle)

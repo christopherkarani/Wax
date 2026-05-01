@@ -57,6 +57,12 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-endpoint"), help: "HTTP MCP endpoint path when --transport http is used.")
     var httpEndpoint = "/mcp"
 
+    @Option(name: .customLong("http-auth-token"), help: "Optional bearer token for HTTP transport (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    var httpAuthToken: String?
+
+    @Option(name: .customLong("http-max-body-bytes"), help: "Maximum HTTP request body size.")
+    var httpMaxBodyBytes = 1_048_576
+
     mutating func run() throws {
         let command = self
         Task(priority: .userInitiated) {
@@ -107,13 +113,7 @@ struct WaxMCPServerCommand: ParsableCommand {
             requireVector: false,
             embedderTuning: embedderTuning
         )
-        let brokerStarted = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
         let structuredMemoryEnabled = memoryConfig.enableStructuredMemory
-        defer {
-            if brokerStarted {
-                try? AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: brokerConfiguration)
-            }
-        }
 
         let activeToolNames = ToolSchemas.tools(structuredMemoryEnabled: memoryConfig.enableStructuredMemory)
             .map(\.name)
@@ -164,7 +164,9 @@ struct WaxMCPServerCommand: ParsableCommand {
                 configuration: .init(
                     host: httpHost,
                     port: httpPort,
-                    endpoint: httpEndpoint
+                    endpoint: httpEndpoint,
+                    authToken: resolvedHTTPAuthToken(),
+                    maxBodyBytes: resolvedHTTPMaxBodyBytes()
                 ),
                 serverFactory: { _, transport in
                     let server = await makeServer(
@@ -219,6 +221,26 @@ struct WaxMCPServerCommand: ParsableCommand {
 
     private func licenseValidationEnabled() -> Bool {
         featureFlagEnabled("WAX_MCP_FEATURE_LICENSE", default: false)
+    }
+
+    private func resolvedHTTPAuthToken() -> String? {
+        if let token = httpAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            return token
+        }
+        let envToken = ProcessInfo.processInfo.environment["WAX_MCP_HTTP_AUTH_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return envToken?.isEmpty == false ? envToken : nil
+    }
+
+    private func resolvedHTTPMaxBodyBytes() -> Int {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["WAX_MCP_HTTP_MAX_BODY_BYTES"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let value = Int(raw),
+           value > 0 {
+            return value
+        }
+        return httpMaxBodyBytes
     }
 
     private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {

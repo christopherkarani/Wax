@@ -29,7 +29,17 @@ export default definePluginEntry((api) => {
       transport: "mcp-http",
       endpoint: api.pluginConfig?.endpoint ?? DEFAULT_HTTP_ENDPOINT,
       command: api.pluginConfig?.command ?? "wax-mcp",
-      args: api.pluginConfig?.args ?? ["--no-embedder", "--transport", "http", "--http-port", "3000"],
+      args: api.pluginConfig?.args ?? [
+        "--no-embedder",
+        "--transport",
+        "http",
+        "--http-host",
+        "127.0.0.1",
+        "--http-port",
+        "3000",
+        "--http-endpoint",
+        "/mcp",
+      ],
     },
   });
 });

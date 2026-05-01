@@ -28,12 +28,11 @@ function platformDistDir() {
   }
 
   const arch = os.arch();
-  const mappedArch = arch === "x64" ? "x64" : arch === "arm64" ? "arm64" : null;
-  if (!mappedArch) {
+  if (arch !== "arm64") {
     return null;
   }
 
-  return path.join(__dirname, "..", "dist", `darwin-${mappedArch}`);
+  return path.join(__dirname, "..", "dist", "darwin-arm64");
 }
 
 function resolveBundledBinary(name) {
@@ -84,7 +83,9 @@ if (isMCPServe) {
     process.env.WAX_MCP_BIN
       ? `  1. $WAX_MCP_BIN = ${process.env.WAX_MCP_BIN}`
       : "  1. $WAX_MCP_BIN (not set)",
-    `  2. Bundled binary at dist/darwin-${os.arch()}/wax-mcp`,
+    os.platform() === "darwin" && os.arch() === "arm64"
+      ? "  2. Bundled binary at dist/darwin-arm64/wax-mcp"
+      : `  2. Bundled binary unavailable for ${os.platform()}-${os.arch()}`,
     "  3. 'wax-mcp' in PATH",
     `  4. ${path.join(process.cwd(), ".build", "debug", "wax-mcp")}`,
   ];
@@ -139,7 +140,9 @@ const checkedLocations = [
   process.env.WAX_CLI_BIN
     ? `  1. $WAX_CLI_BIN = ${process.env.WAX_CLI_BIN}`
     : "  1. $WAX_CLI_BIN (not set)",
-  `  2. Bundled binary at dist/darwin-${os.arch()}/wax-cli`,
+  os.platform() === "darwin" && os.arch() === "arm64"
+    ? "  2. Bundled binary at dist/darwin-arm64/wax-cli"
+    : `  2. Bundled binary unavailable for ${os.platform()}-${os.arch()}`,
   "  3. 'wax-cli' in PATH",
   `  4. ${path.join(process.cwd(), ".build", "debug", "wax-cli")}`,
 ];

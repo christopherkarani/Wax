@@ -56,8 +56,12 @@ swift build --product wax-mcp --traits default,MCPServer --disable-automatic-res
   --transport http \
   --http-host 127.0.0.1 \
   --http-port 3000 \
-  --http-endpoint /mcp
+  --http-endpoint /mcp \
+  --http-max-body-bytes 1048576
 ```
+
+Set `WAX_MCP_HTTP_AUTH_TOKEN` or pass `--http-auth-token` when a local gateway
+or OpenClaw host can send `Authorization: Bearer <token>` on each MCP request.
 
 ### OpenClaw plugin scaffold
 

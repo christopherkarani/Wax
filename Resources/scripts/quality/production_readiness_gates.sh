@@ -19,12 +19,31 @@ run_and_capture() {
   fi
 }
 
-assert_no_skips() {
+assert_no_unexpected_skips() {
   local log_file="$1"
-  if grep -E "(Test skipped|test skipped)" "$log_file" >/dev/null; then
+  local allowed_regex="${2:-}"
+  local skip_lines
+
+  skip_lines="$(grep -E "(Test skipped|test skipped|Test .*skipped|test .*skipped|tests skipped|skipped tests|Skipped test)" "$log_file" || true)"
+  if [[ -z "$skip_lines" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$allowed_regex" ]]; then
     echo "FAIL: skipped tests detected in $log_file" >&2
+    printf '%s\n' "$skip_lines" >&2
     return 1
   fi
+
+  local unexpected
+  unexpected="$(printf '%s\n' "$skip_lines" | grep -Ev "$allowed_regex|Executed [0-9]+ tests?, with [0-9]+ tests? skipped|Skipping tests matching|--skip" || true)"
+  if [[ -n "$unexpected" ]]; then
+    echo "FAIL: unexpected skipped tests detected in $log_file" >&2
+    printf '%s\n' "$unexpected" >&2
+    return 1
+  fi
+
+  echo "SKIP_CHECK: expected skips matched $allowed_regex"
 }
 
 assert_full_pass_rate() {
@@ -81,14 +100,14 @@ run_full() {
 
   run_and_capture "$log_file" \
     swift test --parallel --skip "$skip_regex"
-  assert_no_skips "$log_file"
+  assert_no_unexpected_skips "$log_file" "$skip_regex"
   assert_full_pass_rate "$log_file"
 
   require_swiftpm_traits
 
   run_and_capture "$mcp_log_file" \
     swift test --parallel --traits MCPServer --skip "$skip_regex"
-  assert_no_skips "$mcp_log_file"
+  assert_no_unexpected_skips "$mcp_log_file" "$skip_regex"
   assert_full_pass_rate "$mcp_log_file"
 
   bash "$ROOT_DIR/Resources/scripts/quality/check_corruption_assertions.sh"
@@ -106,13 +125,13 @@ run_soak_smoke() {
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-180}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-soak-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testSoakSmokeStability
-  assert_no_skips "$stability_log"
+  assert_no_unexpected_skips "$stability_log"
 
   run_and_capture "$wal_log" env \
     WAX_BENCHMARK_WAL_COMPACTION=1 \
     WAX_BENCHMARK_WAL_GUARDRAILS=1 \
     swift test --enable-xctest --disable-swift-testing --filter WALCompactionBenchmarks.testProactivePressureGuardrails
-  assert_no_skips "$wal_log"
+  assert_no_unexpected_skips "$wal_log"
 }
 
 run_burn_smoke() {
@@ -127,13 +146,13 @@ run_burn_smoke() {
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-260}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-burn-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testBurnSmokeStability
-  assert_no_skips "$stability_log"
+  assert_no_unexpected_skips "$stability_log"
 
   run_and_capture "$wal_log" env \
     WAX_BENCHMARK_WAL_COMPACTION=1 \
     WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 \
     swift test --enable-xctest --disable-swift-testing --filter WALCompactionBenchmarks.testReplayStateSnapshotGuardrails
-  assert_no_skips "$wal_log"
+  assert_no_unexpected_skips "$wal_log"
 }
 
 main() {

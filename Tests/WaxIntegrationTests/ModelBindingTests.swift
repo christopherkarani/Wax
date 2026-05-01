@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 
 private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int
@@ -101,6 +101,103 @@ private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
         let wax = try await Wax.open(at: url)
         let binding = await wax.memoryBinding()
         #expect(binding?.embeddingModel == "compat-v1")
+        try await wax.close()
+    }
+}
+
+@Test func waxSessionEmbeddingIdentityPersistsAndEnforcesBinding() async throws {
+    try await TempFiles.withTempFile { url in
+        let identity = EmbeddingIdentity(provider: "Session", model: "v1", dimensions: 4, normalized: true)
+        let mismatch = EmbeddingIdentity(provider: "Session", model: "v2", dimensions: 4, normalized: true)
+
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableTextSearch = false
+        config.enableStructuredMemory = false
+        config.enableVectorSearch = true
+        config.vectorEnginePreference = .cpuOnly
+        config.vectorDimensions = 4
+
+        let writer = try await wax.openSession(.readWrite(.fail), config: config)
+        _ = try await writer.put(
+            Data("session-bound vector".utf8),
+            embedding: [1.0, 0.0, 0.0, 0.0],
+            identity: identity,
+            options: FrameMetaSubset(searchText: "session-bound vector")
+        )
+        try await writer.commit()
+        await writer.close()
+
+        let binding = await wax.memoryBinding()
+        #expect(binding?.embeddingProvider == "Session")
+        #expect(binding?.embeddingModel == "v1")
+        #expect(binding?.embeddingDimensions == 4)
+        #expect(binding?.embeddingNormalized == true)
+
+        let mismatchedWriter = try await wax.openSession(.readWrite(.fail), config: config)
+        do {
+            _ = try await mismatchedWriter.put(
+                Data("wrong model".utf8),
+                embedding: [0.0, 1.0, 0.0, 0.0],
+                identity: mismatch,
+                options: FrameMetaSubset(searchText: "wrong model")
+            )
+            Issue.record("Expected WaxSession to reject a mismatched embedding identity")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                await mismatchedWriter.close()
+                try await wax.close()
+                return
+            }
+            #expect(message.contains("memory binding"))
+        }
+
+        await mismatchedWriter.close()
+        try await wax.close()
+    }
+}
+
+@Test func vectorSearchSessionEmbeddingIdentityPersistsBindingAndLegacyMetadata() async throws {
+    try await TempFiles.withTempFile { url in
+        let identity = EmbeddingIdentity(provider: "VectorSession", model: "v1", dimensions: 4, normalized: true)
+        let mismatch = EmbeddingIdentity(provider: "VectorSession", model: "v2", dimensions: 4, normalized: true)
+
+        let wax = try await Wax.create(at: url)
+        let vector = try await wax.enableVectorSearch(dimensions: 4, preference: .cpuOnly)
+        let frameId = try await vector.putWithEmbedding(
+            Data("vector-session-bound".utf8),
+            embedding: [1.0, 0.0, 0.0, 0.0],
+            identity: identity
+        )
+
+        let meta = try await wax.frameMetaIncludingPending(frameId: frameId)
+        #expect(meta.metadata?.entries["wax.embedding.provider"] == "VectorSession")
+        #expect(meta.metadata?.entries["wax.embedding.model"] == "v1")
+        #expect(meta.metadata?.entries["memvid.embedding.provider"] == "VectorSession")
+        #expect(meta.metadata?.entries["memvid.embedding.model"] == "v1")
+
+        let binding = await wax.memoryBinding()
+        #expect(binding?.embeddingProvider == "VectorSession")
+        #expect(binding?.embeddingModel == "v1")
+
+        do {
+            _ = try await vector.putWithEmbedding(
+                Data("wrong vector model".utf8),
+                embedding: [0.0, 1.0, 0.0, 0.0],
+                identity: mismatch
+            )
+            Issue.record("Expected WaxVectorSearchSession to reject a mismatched embedding identity")
+        } catch let error as WaxError {
+            guard case .io(let message) = error else {
+                Issue.record("Expected WaxError.io, got \(error)")
+                try await wax.close()
+                return
+            }
+            #expect(message.contains("memory binding"))
+        }
+
+        try await vector.commit()
         try await wax.close()
     }
 }

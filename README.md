@@ -226,19 +226,30 @@ commands now fail loudly instead of silently dropping to text-only mode.
 
 ### AI Coding Assistants
 
-If you use an AI coding assistant like **Claude Code**, **Cursor**, or **Windsurf**, there are two good setup paths:
+Wax has separate setup notes for Codex and Claude Code. Use the **Wax MCP
+server** for persistent memory, session handoffs, and cross-session search. Use
+the bundled **Wax skill** when you want an assistant to write Swift code against
+the public `Memory` facade.
 
-- Use the **Wax MCP server** when you want persistent memory, session handoffs, and cross-session search inside the assistant.
-- Use the bundled **Wax skill** when you want the assistant to write correct Wax framework code directly against the Swift API.
-
-**Install the MCP server (Claude Code):**
+**Codex MCP install:**
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-This install flow stages the bundled Wax runtime into a stable local directory and
-registers the staged `wax-mcp` binary with Claude Code. `npx` is only used for install/bootstrap.
+Then put the Codex memory workflow in `AGENTS.md`. Use the current unprefixed
+tool names: `handoff_latest`, `session_start`, `remember`, `recall`, `search`,
+`handoff`, and `session_end`.
+
+**Claude Code MCP install:**
+
+```bash
+npx -y waxmcp@latest mcp install --scope user
+```
+
+Then put the Claude Code memory workflow in `CLAUDE.md`. The install flow stages
+the bundled Wax runtime into a stable local directory and registers the staged
+`wax-mcp` binary. `npx` is only used for install/bootstrap.
 
 **Install the skill (Claude Code):**
 
@@ -247,7 +258,12 @@ registers the staged `wax-mcp` binary with Claude Code. `npx` is only used for i
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
 ```
 
-Once installed, your assistant can work against `Memory`, `VideoRAGOrchestrator`, `PhotoRAGOrchestrator`, hybrid search, structured memory, and the MCP server without extra prompt scaffolding.
+Once installed, your assistant can work against the public `Memory` facade,
+custom `EmbeddingProvider` implementations, `RAGContext`, and the MCP server
+without extra prompt scaffolding. Lower-level types such as
+`MemoryOrchestrator`, `WaxSession`, `SearchRequest`, and `MiniLMEmbedder` are
+package-internal in the current Wax target and should be used only in clearly
+labeled Wax contributor guidance.
 
 **Or paste this prompt to get started from scratch:**
 
@@ -262,8 +278,8 @@ Workflow rules:
 - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
 - Use `recall` for assembled context and `search` for raw ranked hits.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-- Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
+- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores; `flush` is an advanced operator/debugging tool.
+- Use `handoff` near the end of the session with `content`, optional `project`, `pending_tasks`, and optional `session_id`, then call `session_end`.
 - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
 - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
 
@@ -287,6 +303,12 @@ dependencies: [
 ]
 ```
 
+To verify public Swift snippets from an external-consumer package, run:
+
+```bash
+Resources/scripts/quality/verify_public_snippets.sh
+```
+
 ---
 
 ## Ecosystem Tools
@@ -300,7 +322,7 @@ npx -y waxmcp@latest mcp install --scope user
 
 The published installer stages the bundled runtime into a stable local directory and
 registers `wax-mcp` directly, so steady-state MCP sessions do not launch through raw `npx`.
-For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
+For the recommended Codex and Claude Code prompt/setup flows, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
 For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
 The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`,
@@ -308,10 +330,15 @@ including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_
 also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on
 `session_synthesize` / `memory_promote` or via environment variables.
 
-For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport:
+For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport.
+The built-in HTTP listener is intended for local-only development by default.
+Keep it bound to `127.0.0.1` unless you put it behind an authenticated gateway
+with rate limits, TLS, and network access controls. The server also supports an
+optional bearer token and request body cap for local gateway deployments:
 
 ```bash
-./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+WAX_MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp --http-max-body-bytes 1048576
 ```
 
 ### 🔍 WaxRepo

@@ -10,8 +10,7 @@
     "darwin"
   ],
   "cpu": [
-    "arm64",
-    "x64"
+    "arm64"
   ],
   "bin": {
     "waxmcp": "bin/waxmcp.js"

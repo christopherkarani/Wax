@@ -19,15 +19,29 @@ The Wax side is implemented and tested:
 - `DREAMS.md` approval flow for durable promotion
 - HTTP MCP transport for remote deployments
 
-What still needs to happen in a consuming OpenClaw deployment is installing the package, selecting it in `plugins.slots.memory`, and pointing it at a running Wax MCP endpoint.
+What still needs to happen in a consuming OpenClaw deployment is installing the
+plugin package, installing a Wax MCP runtime, selecting this plugin in
+`plugins.slots.memory`, and pointing it at a running Wax MCP endpoint.
 
 ## Recommended Wax Runtime
 
-Run Wax as a long-lived HTTP MCP service:
+This plugin does not bundle the Wax runtime. Install and verify `wax-mcp` first:
 
 ```bash
-wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+npx -y waxmcp@latest mcp doctor
 ```
+
+Run Wax as a long-lived local HTTP MCP service:
+
+```bash
+wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp
+```
+
+Keep HTTP bound to `127.0.0.1` unless an authenticated gateway provides rate
+limits, TLS, and network access controls. Wax's built-in HTTP transport also
+supports `--http-auth-token` / `WAX_MCP_HTTP_AUTH_TOKEN` and
+`--http-max-body-bytes` / `WAX_MCP_HTTP_MAX_BODY_BYTES`; only enable the bearer
+token when the OpenClaw host or gateway sends `Authorization: Bearer <token>`.
 
 Or use stdio when OpenClaw is colocated with the Wax process:
 
@@ -46,6 +60,12 @@ cd Resources/openclaw/wax-memory-plugin
 npm pack --dry-run
 ```
 
+Verify the Wax native-memory contract from the repo root:
+
+```bash
+scripts/verify-openclaw-native-memory.sh /tmp/wax-openclaw-native.json
+```
+
 Publish to npm:
 
 ```bash
@@ -55,7 +75,7 @@ npm publish --access public
 
 ## Install In OpenClaw
 
-Install from npm:
+Install the plugin from npm after the Wax runtime is available:
 
 ```bash
 openclaw plugins install @wax/openclaw-wax-memory
@@ -88,6 +108,19 @@ Select it as the memory plugin in `openclaw.json`:
 ```
 
 Restart the OpenClaw gateway after changing plugin config.
+
+## Runtime Verification
+
+Before debugging OpenClaw host behavior, verify these in order:
+
+1. `npx -y waxmcp@latest mcp doctor` reports a usable Wax runtime.
+2. `wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp` starts and stays running.
+3. `scripts/verify-openclaw-native-memory.sh /tmp/wax-openclaw-native.json` passes from a Wax checkout.
+4. `npm pack --dry-run` passes in this plugin directory.
+
+If OpenClaw launches the process directly, ensure `command` resolves on the
+OpenClaw host `PATH`, or configure an absolute path to the staged `wax-mcp`
+binary.
 
 ## Files
 

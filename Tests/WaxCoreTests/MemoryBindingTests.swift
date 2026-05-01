@@ -50,3 +50,19 @@ import Testing
     let decoded = try WaxTOC.decode(from: bytes)
     #expect(decoded.memoryBinding == nil)
 }
+
+@Test func rememberDedupEmbeddingIdentityMatchesLegacyMemvidMetadata() throws {
+    let identity = RememberDedupEmbeddingIdentity(
+        provider: "Local",
+        model: "legacy-v1",
+        dimensions: 4,
+        normalized: true
+    )
+
+    #expect(identity.matches(metadataEntries: [
+        "memvid.embedding.provider": "Local",
+        "memvid.embedding.model": "legacy-v1",
+        "memvid.embedding.dimension": "4",
+        "memvid.embedding.normalized": "true",
+    ]))
+}

@@ -106,20 +106,26 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
         self.normalized = normalized
     }
 
-    fileprivate func matches(metadataEntries: [String: String]) -> Bool {
-        if let provider, metadataEntries["wax.embedding.provider"] != provider {
+    package func matches(metadataEntries: [String: String]) -> Bool {
+        if let provider, metadataEntries.embeddingIdentityValue("provider") != provider {
             return false
         }
-        if let model, metadataEntries["wax.embedding.model"] != model {
+        if let model, metadataEntries.embeddingIdentityValue("model") != model {
             return false
         }
-        if let dimensions, metadataEntries["wax.embedding.dimension"] != String(dimensions) {
+        if let dimensions, metadataEntries.embeddingIdentityValue("dimension") != String(dimensions) {
             return false
         }
-        if let normalized, metadataEntries["wax.embedding.normalized"] != String(normalized) {
+        if let normalized, metadataEntries.embeddingIdentityValue("normalized") != String(normalized) {
             return false
         }
         return true
+    }
+}
+
+private extension Dictionary where Key == String, Value == String {
+    func embeddingIdentityValue(_ suffix: String) -> String? {
+        self["wax.embedding.\(suffix)"] ?? self["memvid.embedding.\(suffix)"]
     }
 }
 
@@ -1539,6 +1545,34 @@ package actor Wax {
             }
         }
 
+        let rollbackHeader = header
+        let rollbackTOC = toc
+        let rollbackSurrogateIndex = surrogateIndex
+        let rollbackEncodedCommittedFramePayloadCache = encodedCommittedFramePayloadCache
+        let rollbackStagedLexIndex = stagedLexIndex
+        let rollbackStagedVecIndex = stagedVecIndex
+        let rollbackStagedLexIndexStamp = stagedLexIndexStamp
+        let rollbackStagedVecIndexStamp = stagedVecIndexStamp
+        let rollbackDataEnd = dataEnd
+        let rollbackGeneration = generation
+        let rollbackDirty = dirty
+        var commitCompleted = false
+        defer {
+            if !commitCompleted {
+                header = rollbackHeader
+                toc = rollbackTOC
+                surrogateIndex = rollbackSurrogateIndex
+                encodedCommittedFramePayloadCache = rollbackEncodedCommittedFramePayloadCache
+                stagedLexIndex = rollbackStagedLexIndex
+                stagedVecIndex = rollbackStagedVecIndex
+                stagedLexIndexStamp = rollbackStagedLexIndexStamp
+                stagedVecIndexStamp = rollbackStagedVecIndexStamp
+                dataEnd = rollbackDataEnd
+                generation = rollbackGeneration
+                dirty = rollbackDirty
+            }
+        }
+
         let applied = try applyPendingMutationsIntoTOC()
         let appliedWalSeq = applied.maxSequence
         let cachedFramesPayload = try encodedCommittedFramePayloadForCommit(
@@ -1690,6 +1724,7 @@ package actor Wax {
         dirty = false
         generation = footer.generation
         dataEnd = footerOffset + Constants.footerSize
+        commitCompleted = true
     }
 
     // MARK: - Reads

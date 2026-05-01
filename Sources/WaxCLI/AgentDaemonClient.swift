@@ -48,7 +48,7 @@ enum AgentBrokerCLI {
             embedderTuning: embedderTuning
         )
         let response = try await AgentBrokerClient.perform(
-            request: AgentBrokerRequest(command: command, arguments: arguments),
+            request: AgentBrokerRequest(command: command, arguments: compactArguments(arguments)),
             configuration: configuration,
             shutdownIfStarted: true
         )
@@ -56,5 +56,9 @@ enum AgentBrokerCLI {
             throw CLIError(response.error ?? "Broker command failed")
         }
         return response
+    }
+
+    static func compactArguments(_ arguments: [String: AgentBrokerValue]) -> [String: AgentBrokerValue] {
+        arguments.filter { _, value in value != .null }
     }
 }

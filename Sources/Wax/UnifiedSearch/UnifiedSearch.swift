@@ -24,6 +24,22 @@ extension Wax {
         if requestedTopK == 0 {
             return SearchResponse(results: [])
         }
+        return try await search(
+            request,
+            engineOverrides: engineOverrides,
+            candidateLimit: Self.candidateLimit(for: requestedTopK)
+        )
+    }
+
+    private func search(
+        _ request: SearchRequest,
+        engineOverrides: UnifiedSearchEngineOverrides?,
+        candidateLimit: Int
+    ) async throws -> SearchResponse {
+        let requestedTopK = max(0, request.topK)
+        if requestedTopK == 0 {
+            return SearchResponse(results: [])
+        }
 
         let trimmedQuery = request.query?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,7 +71,6 @@ extension Wax {
             includeVector = true
         }
 
-        let candidateLimit = Self.candidateLimit(for: requestedTopK)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {
@@ -519,6 +534,22 @@ extension Wax {
             scopeContext: request.scopeContext,
             maxWindow: min(max(request.topK * 3, 12), 48)
         )
+
+        if filtered.count < requestedTopK,
+           Self.shouldRefillCandidates(
+               filteredCount: filtered.count,
+               requestedTopK: requestedTopK,
+               candidateLimit: candidateLimit,
+               textResultsCount: textResults.count,
+               vectorResultsCount: vectorResults.count,
+               baseResultsCount: baseResults.count
+           ) {
+            return try await search(
+                request,
+                engineOverrides: engineOverrides,
+                candidateLimit: Self.nextCandidateLimit(after: candidateLimit, topK: requestedTopK)
+            )
+        }
 
         if filtered.isEmpty, request.allowTimelineFallback {
             filtered = await timelineFallbackResults(request: request, filter: filter)
@@ -1348,6 +1379,34 @@ extension Wax {
         let expanded = topK > Int.max / 3 ? Int.max : topK * 3
         let capped = min(expanded, 1000)
         return max(topK, capped)
+    }
+
+    private static func maximumCandidateLimit(for topK: Int) -> Int {
+        guard topK > 0 else { return 0 }
+        let scaled = topK > Int.max / 128 ? Int.max : topK * 128
+        return min(max(1000, scaled), 10_000)
+    }
+
+    private static func nextCandidateLimit(after current: Int, topK: Int) -> Int {
+        let maximum = maximumCandidateLimit(for: topK)
+        guard current < maximum else { return current }
+        let doubled = current > Int.max / 2 ? Int.max : current * 2
+        return min(max(current + 1, doubled), maximum)
+    }
+
+    private static func shouldRefillCandidates(
+        filteredCount: Int,
+        requestedTopK: Int,
+        candidateLimit: Int,
+        textResultsCount: Int,
+        vectorResultsCount: Int,
+        baseResultsCount: Int
+    ) -> Bool {
+        guard filteredCount < requestedTopK else { return false }
+        guard nextCandidateLimit(after: candidateLimit, topK: requestedTopK) > candidateLimit else { return false }
+        return textResultsCount >= candidateLimit ||
+            vectorResultsCount >= candidateLimit ||
+            baseResultsCount >= candidateLimit
     }
 
     private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)

@@ -289,7 +289,8 @@ struct WaxCLIMemoryTests {
 
         #expect(first.socketPath == second.socketPath)
         #expect(first.socketPath != arctic.socketPath)
-        #expect(first.socketPath.hasPrefix(daemonRoot.path))
+        #expect(first.socketPath.utf8.count < 100)
+        #expect(first.socketPath.hasPrefix(daemonRoot.path) || first.socketPath.hasPrefix("/tmp/wxb-"))
     }
 
     @Test func agentDaemonConfigurationChangesWhenBinaryIdentityChanges() throws {
@@ -632,6 +633,61 @@ struct WaxCLIMemoryTests {
         try await reopened.close()
     }
 
+    @Test func brokerBackedCLICommandsOmitNilOptionalBrokerArguments() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-optional-broker-args-\(UUID().uuidString)", isDirectory: true)
+        let brokerRoot = tempRoot.appendingPathComponent("broker", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("optional-args.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: brokerRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let environment = ["WAX_BROKER_DIR": brokerRoot.path]
+
+        let handoff = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "handoff",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "Broker-backed handoff should omit a missing project argument.",
+            ],
+            environment: environment,
+            timeout: 20
+        )
+        #expect(handoff.status == EXIT_SUCCESS, "handoff stderr: \(handoff.stderr)")
+
+        let latest = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "handoff-latest",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--format", "json",
+            ],
+            environment: environment,
+            timeout: 20
+        )
+        #expect(latest.status == EXIT_SUCCESS, "handoff-latest stderr: \(latest.stderr)")
+        #expect(latest.stdout.contains(#""found" : true"#))
+        #expect(latest.stdout.contains(#""project" : null"#))
+
+        let facts = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "facts-query",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--format", "json",
+            ],
+            environment: environment,
+            timeout: 20
+        )
+        #expect(facts.status == EXIT_SUCCESS, "facts-query stderr: \(facts.stderr)")
+        #expect(facts.stdout.contains(#""hits" : ["#))
+    }
+
     @Test func mcpInstallRejectsBundledRuntimeWithChecksumMismatch() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-install-bad-checksum-\(UUID().uuidString)", isDirectory: true)
@@ -680,6 +736,78 @@ struct WaxCLIMemoryTests {
             expectVectorRuntime: false
         )
         #expect(validation.failures.contains { $0.contains("checksum mismatch for wax-mcp") })
+    }
+
+    @Test func mcpInstallFeatureLicenseDryRunUsesEnvironmentOnly() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-feature-license-\(UUID().uuidString)", isDirectory: true)
+        let server = tempRoot.appendingPathComponent("wax-mcp")
+        let storeURL = tempRoot.appendingPathComponent("feature-license.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try makeExecutableStub(at: server)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "install",
+                "--dry-run",
+                "--skip-build",
+                "--feature-license",
+                "--server-path", server.path,
+                "--store-path", storeURL.path,
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "mcp install dry-run stderr: \(output.stderr)")
+        #expect(output.stdout.contains("WAX_MCP_FEATURE_LICENSE=1"))
+        #expect(!output.stdout.contains(" --feature-license"))
+    }
+
+    @Test func releaseWaxMCPScriptsSyncMetadataVersion() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let checkedFiles = [
+            "scripts/release-waxmcp.sh",
+            "Resources/scripts/release-waxmcp.sh",
+            ".github/workflows/release-waxmcp.yml",
+        ]
+
+        for relativePath in checkedFiles {
+            let text = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(
+                text.contains("WaxMCPServerMetadata"),
+                "\(relativePath) must target WaxMCPServerMetadata.version"
+            )
+            #expect(
+                text.contains("static") && text.contains("let") && text.contains("version"),
+                "\(relativePath) must update or check the static metadata version"
+            )
+            #expect(!text.contains("serverVersion"), "\(relativePath) must not target the removed serverVersion symbol")
+        }
+    }
+
+    @Test func waxMCPPackageDoesNotAdvertiseMissingX64Artifacts() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let packageURL = root.appendingPathComponent("Resources/npm/waxmcp/package.json")
+        let data = try Data(contentsOf: packageURL)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let cpu = try #require(object["cpu"] as? [String])
+        let x64Dist = root.appendingPathComponent("Resources/npm/waxmcp/dist/darwin-x64", isDirectory: true)
+        let hasPackagedX64Artifacts =
+            FileManager.default.isExecutableFile(atPath: x64Dist.appendingPathComponent("wax-cli").path) &&
+            FileManager.default.isExecutableFile(atPath: x64Dist.appendingPathComponent("wax-mcp").path)
+
+        if !hasPackagedX64Artifacts {
+            #expect(!cpu.contains("x64"))
+        }
     }
 
     @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {

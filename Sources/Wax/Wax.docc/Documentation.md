@@ -1,35 +1,42 @@
 # ``Wax``
 
-High-level orchestration and RAG for persistent, on-device memory with semantic search.
+Persistent, on-device memory for Swift applications.
 
 ## Overview
 
-The Wax module is the primary public API surface for building memory-augmented applications. It provides:
+The Wax module exposes a small public facade for application code:
 
-- **``MemoryOrchestrator``** — The main text RAG orchestrator: ingest text, recall context, manage sessions
-- **``PhotoRAGOrchestrator``** — Multimodal RAG for photo libraries with OCR and CLIP embeddings
-- **``VideoRAGOrchestrator``** — Video segment RAG with transcript integration
-- **``WaxSession``** — Unified frame, search, and structured memory interface with read/write multiplexing
-- **Unified search** — BM25 + vector + structured memory fusion with reciprocal rank fusion (RRF)
-- **RAG pipeline** — Token-budget-aware context assembly with surrogate tiers and intent-aware reranking
+- **``Memory``** - save text into a `.wax` store and retrieve ranked ``RAGContext`` results.
+- **``Memory/Config``** and **``Memory/SearchOptions``** - configure text-only or hybrid retrieval without using package-internal session types.
+- **``EmbeddingProvider``** - provide your own local embedding model when you want vector search.
+- **``RAGContext``** - consume retrieval output with text, scores, sources, and token counts.
+
+Lower-level implementation types such as `MemoryOrchestrator`, `WaxSession`,
+`SearchRequest`, and `MiniLMEmbedder` are package-internal in this target. They
+are useful when working inside Wax itself, but external packages should build
+public examples around ``Memory``.
 
 ```swift
+import Foundation
 import Wax
 
-// Create an orchestrator with on-device embeddings
-let embedder = try MiniLMEmbedder()
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .init(),
-    embedder: embedder
-)
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("agent")
+    .appendingPathExtension("wax")
 
-// Remember content
-try await orchestrator.remember("Met with Alice about the Q4 roadmap")
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: storeURL, config: config)
 
-// Recall relevant context
-let context = try await orchestrator.recall(query: "What did Alice say?")
+try await memory.save("Met with Alice about the Q4 roadmap")
+
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = 5
+let context = try await memory.search("What did Alice say?", options: options)
+
 print(context.items.map(\.text))
+try await memory.close()
 ```
 
 ## Topics
@@ -38,40 +45,20 @@ print(context.items.map(\.text))
 
 - <doc:GettingStarted>
 - <doc:Architecture>
-
-### Orchestration
-
-- <doc:MemoryOrchestrator>
-- ``MemoryOrchestrator``
-- ``OrchestratorConfig``
-
-### Sessions
-
-- <doc:SessionManagement>
-- ``WaxSession``
-
-### RAG Pipeline
-
-- <doc:RAGPipeline>
-- ``FastRAGContextBuilder``
-- ``FastRAGConfig``
+- ``Memory``
 - ``RAGContext``
 
-### Search
+### Public Extension Points
 
+- ``EmbeddingProvider``
+- ``SearchStrategy``
+- ``ResultReranker``
+
+### Package-Internal Architecture
+
+- <doc:MemoryOrchestrator>
+- <doc:SessionManagement>
 - <doc:UnifiedSearch>
-- ``SearchRequest``
-- ``SearchResponse``
-- ``SearchMode``
-
-### Photo RAG
-
+- <doc:RAGPipeline>
 - <doc:PhotoRAG>
-- ``PhotoRAGOrchestrator``
-- ``PhotoRAGConfig``
-
-### Video RAG
-
 - <doc:VideoRAG>
-- ``VideoRAGOrchestrator``
-- ``VideoRAGConfig``

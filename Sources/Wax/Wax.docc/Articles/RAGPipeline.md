@@ -4,13 +4,17 @@ Understand the token-budget-aware context assembly with surrogate tiers and inte
 
 ## Overview
 
-The ``FastRAGContextBuilder`` assembles a ``RAGContext`` from search results within a configurable token budget. It uses a multi-stage pipeline: unified search, intent-aware reranking, expansion, surrogates, and snippets.
+The public ``Memory`` facade returns a ``RAGContext`` assembled within a token
+budget. Inside Wax, package-internal builders run unified search,
+intent-aware reranking, expansion, surrogates, and snippets.
 
 ## Pipeline Stages
 
 ### 1. Unified Search
 
-The builder issues a ``SearchRequest`` that runs across multiple search lanes simultaneously (see <doc:UnifiedSearch>). Results are fused using reciprocal rank fusion (RRF).
+Wax issues a package-internal search request that runs across multiple search
+lanes simultaneously (see <doc:UnifiedSearch>). Results are fused using
+reciprocal rank fusion (RRF).
 
 ### 2. Answer-Focused Reranking
 
@@ -28,7 +32,8 @@ Reranking factors:
 
 ### Intent Detection
 
-The ``QueryAnalyzer`` detects query intent patterns that influence scoring:
+The package-internal query analyzer detects query intent patterns that influence
+scoring:
 
 | Intent | Pattern Examples | Effect |
 |--------|-----------------|--------|
@@ -85,36 +90,22 @@ For certain query intents (location, date, ownership), snippets may be expanded 
 
 ## Configuration
 
-``FastRAGConfig`` controls all pipeline parameters:
+Package-internal configuration controls the full pipeline. External packages use
+``Memory/SearchOptions`` for the stable search controls currently exposed by
+Wax:
 
 ```swift
-var config = FastRAGConfig()
-
-// Mode
-config.mode = .fast  // .fast or .denseCached
-
-// Token budgets
-config.maxContextTokens = 2000
-config.expansionMaxTokens = 800
-config.snippetMaxTokens = 300
-config.surrogateMaxTokens = 80
-config.maxSnippets = 5
-config.maxSurrogates = 10
-
-// Search
-config.searchTopK = 32
-config.searchMode = .hybrid(alpha: 0.5)
-config.rrfK = 60
-
-// Reranking
-config.enableAnswerFocusedRanking = true
-config.answerRerankWindow = 12
-config.answerDistractorPenalty = 0.70
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = 8
+options.includeSurrogates = true
+let context = try await memory.search("architecture decisions", options: options)
 ```
 
 ## Surrogate Tier Selection
 
-The ``SurrogateTierSelector`` chooses which tier to use for each surrogate based on configurable policies:
+The package-internal surrogate tier selector chooses which tier to use for each
+surrogate based on configurable policies:
 
 | Policy | Strategy |
 |--------|----------|

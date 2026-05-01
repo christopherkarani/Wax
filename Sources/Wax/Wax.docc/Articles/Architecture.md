@@ -4,14 +4,17 @@ Understand the module dependency graph, actor model, and end-to-end data flow.
 
 ## Overview
 
-Wax is organized as a stack of Swift Package Manager library targets. Each layer adds capability while depending only on the layers below it.
+Wax is organized as a stack of Swift Package Manager library targets. External
+applications normally use the public ``Memory`` facade from the `Wax` product.
+The lower-level actor names in this article describe package-internal
+implementation boundaries.
 
 ## Module Dependency Graph
 
 ```
 ┌─────────────────────────────────────────┐
-│                 Wax                     │  Orchestration, RAG, Unified Search
-│  MemoryOrchestrator, PhotoRAG, VideoRAG │
+│                 Wax                     │  Public Memory facade, RAG output
+│     package-internal orchestrators      │
 └────────────┬──────────┬────────────┬────┘
              │          │            │
      ┌───────▼──┐  ┌────▼────────┐  │
@@ -39,15 +42,16 @@ Every major subsystem is an actor with its own serial executor:
 
 | Actor | Responsibility |
 |-------|---------------|
-| ``MemoryOrchestrator`` | Text ingestion, recall, session management |
-| ``PhotoRAGOrchestrator`` | Photo library sync, OCR, photo queries |
-| ``VideoRAGOrchestrator`` | Video ingestion, transcript handling, segment queries |
-| ``WaxSession`` | Frame writes, search delegation, structured memory |
+| ``Memory`` | Public facade for text memory and retrieval |
+| `MemoryOrchestrator` | Package-internal text ingestion, recall, session management |
+| `PhotoRAGOrchestrator` | Package-internal photo library sync, OCR, photo queries |
+| `VideoRAGOrchestrator` | Package-internal video ingestion, transcript handling, segment queries |
+| `WaxSession` | Package-internal frame writes, search delegation, structured memory |
 | `Wax` (WaxCore) | File I/O, WAL, frame storage, writer leasing |
 | `FTS5SearchEngine` | BM25 indexing/search, structured memory persistence |
 | `USearchVectorEngine` | CPU vector index |
 | `MetalVectorEngine` | GPU vector index |
-| `MiniLMEmbedder` | CoreML inference |
+| `MiniLMEmbedder` | Package-internal CoreML inference path used by Wax runtime builds |
 
 ### Actor Boundaries
 
@@ -61,7 +65,7 @@ Each actor maintains its own mutable state. Communication between actors happens
 User text
   │
   ▼
-MemoryOrchestrator.remember()
+Memory.save()
   │
   ├─ Chunk text (ChunkingStrategy)
   │
@@ -82,14 +86,14 @@ MemoryOrchestrator.remember()
 User query
   │
   ▼
-MemoryOrchestrator.recall()
+Memory.search()
   │
   ├─ Embed query (if vector search enabled)
   │
   ▼
 FastRAGContextBuilder.build()
   │
-  ├─ SearchRequest (unified search)
+  ├─ package-internal search request
   │   ├─ BM25 lane (FTS5SearchEngine.search())
   │   ├─ Vector lane (VectorEngine.search())
   │   ├─ Structured memory lane (entity/fact queries)
@@ -109,12 +113,14 @@ FastRAGContextBuilder.build()
 
 ## Read/Write Multiplexing
 
-``WaxSession`` abstracts the difference between read-only and read-write access:
+Internally, `WaxSession` abstracts the difference between read-only and
+read-write access:
 
 - **Read-only sessions** can search and read frames concurrently
 - **Read-write sessions** acquire a writer lease from the underlying `Wax` actor
 
-Multiple read-only sessions can operate simultaneously. Only one read-write session can be active at a time, controlled by the ``WaxSession/WriterPolicy``.
+Multiple read-only sessions can operate simultaneously. Only one read-write
+session can be active at a time.
 
 ## Persistence Model
 

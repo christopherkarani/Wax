@@ -39,6 +39,7 @@ output/
 Resources/website/node_modules/
 Resources/website/.docusaurus/
 Resources/website/build/
+Resources/npm/waxmcp/dist/
 *.xcresult
 
 # Internal tooling (not public-facing)

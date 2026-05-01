@@ -1746,3 +1746,62 @@
   - P2: WAL pending-entry decode errors are silently dropped while scan state advances. Distinguish trailing corruption from valid-record schema corruption.
   - P2: `fact_assert.relation` is accepted by broker/allowlist but omitted from the published MCP schema.
   - P2: CI should pin Swift before using package traits; Linux lane should pin/install Swift and use `--disable-automatic-resolution`.
+
+## Wax Audit Prompt Drafting 2026-04-30
+
+- Scope:
+  - Analyze the current Wax codebase enough to write a reusable prompt for finding bugs, implementation gaps, and DX improvements for coding agents and developers.
+  - Preserve the dirty worktree and avoid touching generated artifacts.
+  - Use existing memory and prior audit lessons, then verify assumptions against the current repo layout.
+- Plan:
+  - [x] Map the repo architecture, package traits, major source modules, tests, docs, npm wrapper, and OpenClaw plugin surface.
+  - [x] Run focused parallel review slices for core storage/search, MCP/CLI/agent runtime, and developer/agent DX.
+  - [x] Turn the review into a Wax-specific prompt with required evidence, commands, false-positive checks, and output format.
+  - [x] Review the prompt against prior audit lessons so it drives concrete findings instead of vague architecture commentary.
+- Assumptions to validate:
+  - Useful audits must be trait-aware because the MCP server is gated behind the `MCPServer` trait.
+  - The highest-value prompt should force reviewers to inspect code and run targeted verification rather than only reading docs.
+  - Agent/developer DX includes Swift package ergonomics, CLI/MCP behavior, npm install/publish flow, OpenClaw integration, docs examples, and test harness reliability.
+- Review:
+  - The prompt should split the review into storage/search correctness, MCP/CLI/broker agent runtime, and developer/agent DX rather than treating Wax as one monolithic Swift package.
+  - It should require current-code verification for known risky seams: `commitLocked()`/WAL/TOC recovery, pending-vs-committed search visibility, staged vector/text indexes, MCP schema/allowlist/broker parity, CLI optional-null handling, install/version/release drift, and external-consumer docs/API compile checks.
+  - It should force trait-aware verification with `--traits default,MCPServer` for MCP/CLI surfaces and warn that default Swift tests can miss agent-facing failures.
+  - It should explicitly avoid common false positives: generated artifacts, stale prior audit notes without re-checking current code, text-only fallback when no embedder is configured, OpenClaw/npm auth or scope ownership as code defects, and `mcp doctor` failures caused only by missing Claude CLI.
+
+## Wax Audit Remediation 2026-04-30
+
+- Scope:
+  - Fix the real issues identified by the 2026-04-30 audit across core storage/search, MCP/CLI/broker runtime, packaging/release, public docs/API examples, and developer/coding-agent DX.
+  - Preserve pre-existing worktree changes and generated/untracked artifacts.
+- Assumptions to validate:
+  - Trait-aware MCP/CLI verification must run with `--traits default,MCPServer`.
+  - Public docs should either compile for an external consumer or explicitly document only package-internal APIs.
+  - Runtime fixes need regression tests before behavior changes where feasible.
+- Plan:
+  - [x] Add focused regression tests for CLI optional nulls, MCP fact schema parity, install dry-run flags, WAL decode corruption, search stale-candidate refill, and external docs/demo packaging.
+  - [x] Fix broker/CLI/MCP schema/install/release/package mismatches.
+  - [x] Fix core recovery/search/vector identity behavior without broad refactors.
+  - [x] Stabilize broker-backed MCP process timeout paths and improve diagnostics.
+  - [x] Correct public docs, demo package, OpenClaw/npm/Codex install guidance, CI/toolchain/gate scripts.
+  - [x] Run requested and newly added verification gates, then record results here.
+- Review:
+  - Core fixes added rollback protection around failed commits, hard-failed WAL pending decode corruption, refilled unified-search candidates after stale/deleted hits, and aligned WaxSession/VectorSearchSession embedding identity metadata plus memory binding compatibility.
+  - Runtime fixes aligned MCP schemas, allowlists, and broker handlers for structured facts; removed stale `--feature-license` server args; compacted CLI broker null arguments; fixed release-version sync scripts; constrained npm CPU metadata to shipped artifacts; hardened broker socket pathing/startup probes; and bounded broker request/shutdown paths so MCP/OpenClaw verification no longer leaves idle test daemons behind.
+  - DX fixes moved public docs and skills to the public `Memory` facade, added external snippet/demo verification, made OpenClaw plugin metadata turn-key, refreshed MCP install guidance, and improved production-readiness gating.
+- Verification log:
+  - `git status --short`: completed; dirty tracked/untracked changes preserved.
+  - `swift build --disable-automatic-resolution`: passed.
+  - `swift build --product wax-cli --product wax-mcp --traits default,MCPServer --disable-automatic-resolution`: passed.
+  - `swift test --disable-automatic-resolution --filter WaxCoreTests`: passed; 332 tests passed, crash harness skipped unless `WAX_RUN_CRASH_HARNESS=1`.
+  - `swift test --disable-automatic-resolution --filter 'CrashRecoveryTests|WALReplayTests|DeleteSupersedeTests|UnifiedSearchTests|VectorSerializerTests|ConcurrencyStressTests'`: passed; 66 tests passed.
+  - `swift test --traits default,MCPServer --filter WaxCLITests --disable-automatic-resolution`: passed; 30 tests passed.
+  - `swift test --traits default,MCPServer --filter WaxMCPServerTests --disable-automatic-resolution`: passed; 73 tests passed.
+  - `swift build --package-path Resources/WaxDemo --disable-automatic-resolution`: passed.
+  - `Resources/scripts/quality/verify_public_snippets.sh`: passed.
+  - `scripts/verify-openclaw-adapter.sh`: passed.
+  - `scripts/verify-openclaw-native-memory.sh /tmp/wax-openclaw-native.json`: passed with `status: ok`.
+  - `scripts/verify-waxmcp-http.sh`: passed.
+  - `WAX_MCP_HTTP_PORT=3102 WAX_MCP_HTTP_AUTH_TOKEN=secret-token WAX_MCP_HTTP_MAX_BODY_BYTES=2048 scripts/verify-waxmcp-http.sh`: passed.
+  - `(cd Resources/npm/waxmcp && npm pack --dry-run)`: passed.
+  - `(cd Resources/openclaw/wax-memory-plugin && npm pack --dry-run)`: passed.
+  - `git diff --check`: passed.

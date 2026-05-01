@@ -157,6 +157,53 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func unifiedSearchRefillsWhenStaleVectorHitsFillInitialWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        var staleIds: [UInt64] = []
+        for index in 0..<6 {
+            let staleId = try await wax.put(Data("stale candidate \(index)".utf8))
+            staleIds.append(staleId)
+
+            if index.isMultiple(of: 2) {
+                try await wax.delete(frameId: staleId)
+            } else {
+                let replacement = try await wax.put(Data("replacement candidate \(index)".utf8))
+                try await wax.supersede(supersededId: staleId, supersedingId: replacement)
+            }
+        }
+
+        let liveA = try await wax.put(Data("live refill A".utf8))
+        let liveB = try await wax.put(Data("live refill B".utf8))
+
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 2,
+            results: (staleIds + [liveA, liveB]).enumerated().map { index, frameId in
+                (frameId: frameId, score: Float(100 - index))
+            }
+        )
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .vectorOnly,
+                topK: 2
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [liveA, liveB])
+
+        try await wax.close()
+    }
+}
+
 @Test func frameFilterMatchesMetadataEntries() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

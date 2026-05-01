@@ -659,17 +659,13 @@ enum ToolSchemas {
                         "required": ["data_base64"],
                         "additionalProperties": false,
                     ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["type": "string"],
-                            "value": .object([:]),
-                        ],
-                        "required": ["type", "value"],
-                        "additionalProperties": false,
-                    ],
                 ],
                 "description": "Fact object value: primitive or typed object (entity, time_ms, data_base64).",
+            ],
+            "relation": [
+                "type": "string",
+                "description": "Version relation for the asserted fact.",
+                "enum": ["sets", "updates", "extends", "retracts"],
             ],
             "valid_from": [
                 "type": "integer",

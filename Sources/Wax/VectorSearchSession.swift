@@ -65,18 +65,8 @@ package actor WaxVectorSearchSession {
             throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(embedding.count)")
         }
 
-        var merged = options
-        if let identity {
-            if let expectedDims = identity.dimensions, expectedDims != embedding.count {
-                throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embedding.count)")
-            }
-            var metadata = merged.metadata ?? Metadata()
-            if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
-            if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
-            if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
-            if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
-            merged.metadata = metadata
-        }
+        let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        try await ensureMemoryBindingCompatible(identity: identity)
 
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await addToEngine(frameId: frameId, vector: embedding)
@@ -108,18 +98,15 @@ package actor WaxVectorSearchSession {
 
         var mergedOptions = options
         if let identity {
-            for (index, _) in options.enumerated() {
-                if let expectedDims = identity.dimensions, expectedDims != embeddings[index].count {
-                    throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embeddings[index].count)")
-                }
-                var metadata = mergedOptions[index].metadata ?? Metadata()
-                if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
-                if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
-                if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
-                if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
-                mergedOptions[index].metadata = metadata
+            for (index, embedding) in embeddings.enumerated() {
+                mergedOptions[index] = try mergeOptions(
+                    mergedOptions[index],
+                    identity: identity,
+                    embeddingCount: embedding.count
+                )
             }
         }
+        try await ensureMemoryBindingCompatible(identity: identity)
 
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression)
         try await addBatchToEngine(frameIds: frameIds, vectors: embeddings)
@@ -176,6 +163,53 @@ package actor WaxVectorSearchSession {
 
     private func stageEngineForCommit() async throws {
         try await concreteEngine.stageForCommit(into: wax)
+    }
+
+    private func ensureMemoryBindingCompatible(identity: EmbeddingIdentity?) async throws {
+        guard let identity else { return }
+        let binding = MemoryBindingCompatibility.binding(from: identity)
+        guard !binding.isEmpty else { return }
+
+        if let existing = await wax.memoryBinding() {
+            try Self.validateMemoryBinding(existing, identity: identity)
+            return
+        }
+
+        try await wax.setMemoryBindingIfMissing(binding)
+        if let existing = await wax.memoryBinding() {
+            try Self.validateMemoryBinding(existing, identity: identity)
+        }
+    }
+
+    private static func validateMemoryBinding(_ binding: MemoryBinding, identity: EmbeddingIdentity) throws {
+        guard !MemoryBindingCompatibility.isCompatible(binding, with: identity) else { return }
+        let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+        throw WaxError.io("memory binding mismatch with embedding identity (\(mismatch))")
+    }
+
+    private func mergeOptions(
+        _ options: FrameMetaSubset,
+        identity: EmbeddingIdentity?,
+        embeddingCount: Int
+    ) throws -> FrameMetaSubset {
+        guard let identity else { return options }
+
+        if let expectedDims = identity.dimensions, expectedDims != embeddingCount {
+            throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embeddingCount)")
+        }
+
+        var merged = options
+        var metadata = merged.metadata ?? Metadata()
+        if let provider = identity.provider { metadata.entries["wax.embedding.provider"] = provider }
+        if let model = identity.model { metadata.entries["wax.embedding.model"] = model }
+        if let dims = identity.dimensions { metadata.entries["wax.embedding.dimension"] = String(dims) }
+        if let normalized = identity.normalized { metadata.entries["wax.embedding.normalized"] = String(normalized) }
+        if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
+        if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
+        if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
+        if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
+        merged.metadata = metadata
+        return merged
     }
 }
 

@@ -1,174 +1,87 @@
 # Memory Orchestrator
 
-Configure and use the primary text RAG orchestrator for ingestion and retrieval.
+Understand the package-internal text RAG orchestrator used by the public
+``Memory`` facade.
 
-## Overview
+## Public Entry Point
 
-``MemoryOrchestrator`` is the main entry point for text-based memory applications. It coordinates chunking, embedding, indexing, search, and RAG context assembly into a single actor with a high-level API.
-
-## Initialization
+External packages should use ``Memory`` for text memory:
 
 ```swift
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: config,
-    embedder: embedder  // nil for text-only mode
-)
+import Foundation
+import Wax
+
+let storeURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("memory")
+    .appendingPathExtension("wax")
+
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: storeURL, config: config)
+
+try await memory.save("Project timeline moved to Friday.")
+
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = 5
+let context = try await memory.search("When is the project timeline?", options: options)
+
+_ = context.items
+try await memory.close()
 ```
 
-The orchestrator creates a new `.wax` file if one doesn't exist at the URL, or opens an existing one with automatic crash recovery.
+`MemoryOrchestrator` itself is package-internal. Do not use it in public docs,
+skills, or downstream package snippets unless the snippet is explicitly for
+editing Wax internals.
+
+## Internal Role
+
+Inside Wax, `MemoryOrchestrator` coordinates chunking, embedding, indexing,
+search, and RAG context assembly into a single actor. The public ``Memory``
+facade delegates to it.
 
 ## Ingestion Pipeline
 
-When you call ``MemoryOrchestrator/remember(_:metadata:)``, the orchestrator:
+When ``Memory/save(_:metadata:)`` is called, the internal orchestrator:
 
-1. **Chunks** the text using the configured chunking strategy (default: token-count with 400 tokens and 40-token overlap)
-2. **Embeds** each chunk using the embedding provider (if provided), batching through `BatchEmbeddingProvider` when available
-3. **Writes** each chunk as a frame to the `.wax` file
-4. **Indexes** each chunk's text in the FTS5 full-text search engine
-5. **Adds** each chunk's embedding to the vector search engine
-6. **Commits** all changes atomically
-
-### Batching
-
-Ingestion respects two config parameters:
-
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `ingestBatchSize` | 32 | Chunks per commit batch |
-| `ingestConcurrency` | 1 | Parallel embedding tasks |
-
-### Embedding Cache
-
-A bounded LRU cache (default capacity: 2,048) avoids re-embedding identical text within a session.
+1. Chunks the text using the configured strategy.
+2. Embeds chunks when an ``EmbeddingProvider`` is available.
+3. Writes each chunk as a frame to the `.wax` file.
+4. Indexes chunk text in the full-text search engine.
+5. Adds embeddings to the vector search engine when vector search is enabled.
+6. Commits changes atomically.
 
 ## Recall
 
-``MemoryOrchestrator/recall(query:)`` returns a ``RAGContext`` assembled within the configured token budget:
+``Memory/search(_:options:)`` returns a ``RAGContext`` assembled within the
+configured token budget:
 
 ```swift
-let context = try await orchestrator.recall(query: "project timeline")
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = 3
+let context = try await memory.search("project timeline", options: options)
 ```
 
-### Embedding Policies
-
-Control when query embeddings are computed:
-
-| Policy | Behavior |
-|--------|----------|
-| `.never` | Text-only search (no vector lane) |
-| `.ifAvailable` | Use vector search if an embedder is configured |
-| `.always` | Require vector search; throw if no embedder |
+Use a custom ``EmbeddingProvider`` and `.hybrid` search mode when you need the
+vector lane:
 
 ```swift
-let context = try await orchestrator.recall(
-    query: "timeline",
-    embeddingPolicy: .ifAvailable
-)
+var options = Memory.SearchOptions()
+options.mode = .hybrid
+options.topK = 8
+let context = try await semanticMemory.search("roadmap dependencies", options: options)
 ```
 
-### Frame Filtering
+## Package-Internal Features
 
-Restrict recall to specific frames:
+These implementation details exist inside Wax but are not external Swift API:
 
-```swift
-let context = try await orchestrator.recall(
-    query: "meeting notes",
-    frameFilter: FrameFilter(
-        requiredTags: ["meetings"],
-        timeRange: TimeRange(after: weekAgoMs)
-    )
-)
-```
+| Internal Type | Purpose |
+|---------------|---------|
+| `MemoryOrchestrator` | Text ingestion, recall, session tagging, handoff storage |
+| `OrchestratorConfig` | Internal orchestration configuration |
+| `QueryEmbeddingPolicy` | Internal query embedding policy |
+| `MemorySearchHit` | Internal raw hit shape before public ``RAGContext`` assembly |
 
-## Direct Search
-
-For raw search results without RAG assembly, use ``MemoryOrchestrator/search(query:mode:topK:frameFilter:)``:
-
-```swift
-let hits = try await orchestrator.search(
-    query: "velocity",
-    mode: .hybrid(alpha: 0.5),
-    topK: 20
-)
-```
-
-Each hit includes the stored `frameId` and a `metadata` dictionary. If you save
-structured records as JSON plus stable identifiers, put the identifier in
-metadata and read it back from the returned hit or RAG item after recall.
-
-```swift
-if let best = hits.first {
-    print(best.metadata["id"] ?? "unknown")
-}
-```
-
-## Structured Memory
-
-When `enableStructuredMemory` is set in the config:
-
-```swift
-// Entities
-try await orchestrator.upsertEntity(
-    key: EntityKey("alice"),
-    kind: "Person",
-    aliases: ["Alice Smith"]
-)
-
-// Facts
-try await orchestrator.assertFact(
-    subject: EntityKey("alice"),
-    predicate: PredicateKey("role"),
-    object: .string("Engineering Lead"),
-    evidence: [...]
-)
-
-// Queries
-let facts = try await orchestrator.facts(
-    about: EntityKey("alice"),
-    predicate: nil,
-    asOfMs: nowMs
-)
-```
-
-## Session Handoffs
-
-Store and retrieve cross-session handoff records:
-
-```swift
-// Save handoff at session end
-try await orchestrator.rememberHandoff(
-    content: "Current project state summary...",
-    project: "my-app",
-    pendingTasks: ["Fix login bug", "Add dark mode"],
-    sessionId: sessionId
-)
-
-// Retrieve at next session start
-if let handoff = try await orchestrator.latestHandoff(project: "my-app") {
-    print(handoff.content)
-    print(handoff.pendingTasks)
-}
-```
-
-## Runtime Statistics
-
-```swift
-let stats = try await orchestrator.runtimeStats()
-print("Frames: \(stats.frameCount)")
-print("Vector search: \(stats.vectorSearchEnabled)")
-print("Embedder: \(stats.embedderIdentity?.model ?? "none")")
-```
-
-## Configuration Reference
-
-See ``OrchestratorConfig`` for the full configuration surface:
-
-| Category | Key Options |
-|----------|-------------|
-| Search | `enableTextSearch`, `enableVectorSearch`, `enableStructuredMemory` |
-| RAG | `ragConfig` (``FastRAGConfig``) |
-| Chunking | `chunking` (``ChunkingStrategy``) |
-| Embedding | `embeddingCacheCapacity`, `requireOnDeviceProviders` |
-| Vector | `useMetalVectorSearch`, `vectorEnginePreference` |
-| Maintenance | `liveSetRewriteSchedule` |
+For public code, use ``Memory/Config`` and ``Memory/SearchOptions`` instead.

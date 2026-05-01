@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStateStopsCollectingOnDecodeFailure() throws {
+@Test func walPendingScanWithStateThrowsOnDecodeFailure() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -143,11 +143,9 @@ import Testing
         let legacyState = try reader.scanState(from: 0)
         #expect(legacyState.lastSequence == 2)
 
-        // scanPendingMutationsWithState stops collecting pending mutations on decode
-        // failure but continues scanning for state positions (non-fatal).
-        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(result.pendingMutations.isEmpty)
-        #expect(result.state.lastSequence == 2)
+        #expect(throws: WaxError.self) {
+            _ = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+        }
     }
 }
 

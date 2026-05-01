@@ -1,61 +1,34 @@
-Template: VideoRAG Ingest / Recall (With Transcripts)
-Goal: Ingest local videos with host-supplied transcripts and recall by text.
+Template: Video RAG (Package-Internal)
+Goal: Orient Wax contributors working on the internal Video RAG implementation.
 
-Placeholders:
-- <STORE_URL>
-- <EMBEDDER_TYPE>
-- <DIMENSIONS>
-- <NORMALIZE>
-- <IDENTITY_PROVIDER>
-- <IDENTITY_MODEL>
-- <TRANSCRIPT_PROVIDER>
-- <VIDEO_FILES>
-- <QUERY>
+Status:
+`VideoRAGOrchestrator`, `VideoRAGConfig`, `VideoTranscriptProvider`,
+`VideoFile`, and `VideoQuery` are package-internal in the current Wax target.
+Do not use this template for external package snippets.
 
-Steps:
-1. Implement a multimodal embedder and transcript provider.
-2. Initialize VideoRAGOrchestrator.
-3. Ingest local files with stable IDs.
-4. Recall with a text query and flush.
-
-Swift Skeleton:
+Public alternative:
 ```swift
 import Foundation
 import Wax
-import CoreGraphics
 
-struct <EMBEDDER_TYPE>: MultimodalEmbeddingProvider {
-    let dimensions: Int = <DIMENSIONS>
-    let normalize: Bool = <NORMALIZE>
-    let identity: EmbeddingIdentity? = .init(
-        provider: "<IDENTITY_PROVIDER>",
-        model: "<IDENTITY_MODEL>",
-        dimensions: <DIMENSIONS>,
-        normalized: <NORMALIZE>
-    )
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: <STORE_URL>, config: config)
 
-    func embed(text: String) async throws -> [Float] { <#embed text#> }
-    func embed(image: CGImage) async throws -> [Float] { <#embed image#> }
-}
-
-struct <TRANSCRIPT_PROVIDER>: VideoTranscriptProvider {
-    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
-        [
-            VideoTranscriptChunk(startMs: <START_MS>, endMs: <END_MS>, text: <TEXT>)
-        ]
-    }
-}
-
-let storeURL = <STORE_URL>
-let rag = try await VideoRAGOrchestrator(
-    storeURL: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>(),
-    transcriptProvider: <TRANSCRIPT_PROVIDER>()
+try await memory.save(
+    "Video transcript note: <TEXT>",
+    metadata: ["source": "video-transcript"]
 )
 
-try await rag.ingest(files: <VIDEO_FILES>)
-let context = try await rag.recall(.init(text: <QUERY>))
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+let context = try await memory.search(<QUERY>, options: options)
 _ = context.items
-try await rag.flush()
+try await memory.close()
 ```
+
+Internal implementation checklist:
+1. Provide normalized multimodal embeddings.
+2. Provide host-supplied transcripts; Wax does not transcribe in v1.
+3. Ingest local files with stable IDs.
+4. Recall by text and verify segment evidence.

@@ -121,7 +121,7 @@ struct HandoffLatestCommand: AsyncParsableCommand {
                     "found": true,
                     "frame_id": brokerInt64(payload, "frame_id") ?? 0,
                     "timestamp_ms": brokerInt64(payload, "timestamp_ms") ?? 0,
-                    "project": brokerString(payload, "project") as Any,
+                    "project": brokerString(payload, "project") ?? NSNull(),
                     "pending_tasks": brokerArray(payload, "pending_tasks").compactMap(\.stringValue),
                     "content": brokerString(payload, "content") ?? "",
                 ])

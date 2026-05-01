@@ -1,48 +1,36 @@
-Template: Hybrid Search (Wax + SearchRequest)
-Goal: Run unified hybrid search with text + vector signals.
+Template: Hybrid Search (Public Memory Facade)
+Goal: Run hybrid search with the public Memory API and a host-supplied embedder.
 
 Placeholders:
 - <STORE_URL>
 - <QUERY>
-- <EMBEDDING>
-- <ALPHA>
+- <EMBEDDER_TYPE>
 - <TOP_K>
-- <MIN_SCORE>
 - <TIME_RANGE>
 
 Steps:
-1. Open Wax and a session with vector search enabled.
-2. Build a SearchRequest with `.hybrid(alpha:)` and an embedding.
-3. Execute `session.search` and handle results.
+1. Open `Memory` with a public `EmbeddingProvider`.
+2. Configure `Memory.SearchOptions` with `.hybrid`.
+3. Execute `memory.search` and handle `RAGContext` items.
 
 Swift Skeleton:
 ```swift
 import Foundation
 import Wax
 
-let wax = try await Wax.open(at: <STORE_URL>)
-let session = try await wax.openSession(
-    .readOnly,
-    config: .init(
-        enableTextSearch: true,
-        enableVectorSearch: true,
-        enableStructuredMemory: false,
-        vectorEnginePreference: .auto,
-        vectorMetric: .cosine,
-        vectorDimensions: <EMBEDDING>.count
-    )
-)
+var config = Memory.Config()
+config.enableVectorSearch = true
+let memory = try await Memory(at: <STORE_URL>, config: config, embedding: <EMBEDDER_TYPE>())
 
-let request = SearchRequest(
-    query: <QUERY>,
-    embedding: <EMBEDDING>,
-    vectorEnginePreference: .auto,
-    mode: .hybrid(alpha: <ALPHA>),
-    topK: <TOP_K>,
-    minScore: <MIN_SCORE>,
-    timeRange: <TIME_RANGE>
-)
+var options = Memory.SearchOptions()
+options.mode = .hybrid
+options.topK = <TOP_K>
+options.timeRange = <TIME_RANGE>
+let context = try await memory.search(<QUERY>, options: options)
 
-let response = try await session.search(request)
-_ = response.results
+_ = context.items
+try await memory.close()
 ```
+
+Package-internal note: raw `SearchRequest` and `WaxSession.search(_:)` are not
+external API in the current Wax target.

@@ -32,7 +32,7 @@ fi
 
 echo "-> Bump versions to $VERSION"
 perl -0pi -e 's/"version"\s*:\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
-perl -0pi -e 's/let serverVersion\s*=\s*"[^"]+"/let serverVersion = "'"$VERSION"'"/' "$SERVER_SWIFT"
+VERSION="$VERSION" perl -0pi -e 's/(enum\s+WaxMCPServerMetadata\s*\{[\s\S]*?static\s+let\s+version\s*=\s*)"[^"]+"/$1"$ENV{VERSION}"/' "$SERVER_SWIFT"
 
 echo "-> Build release binaries (darwin-arm64)"
 cd "$ROOT"

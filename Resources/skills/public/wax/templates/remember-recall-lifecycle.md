@@ -1,44 +1,38 @@
-Template: Remember / Recall Lifecycle
-Goal: Ingest content, retrieve RAG context, then persist and close.
+Template: Save / Search Lifecycle
+Goal: Ingest content, retrieve RAG context, then close the public Memory handle.
 
 Placeholders:
 - <STORE_URL>
-- <EMBEDDER_TYPE>
 - <CONTENT>
 - <QUERY>
 - <METADATA>
+- <TOP_K>
 
 Steps:
-1. Open MemoryOrchestrator.
-2. Optionally start a session.
-3. Remember content with metadata.
-4. Recall with a query.
-5. Flush and close when done.
+1. Open `Memory`.
+2. Save content with optional metadata.
+3. Search with a query.
+4. Close when done.
 
 Swift Skeleton:
 ```swift
 import Foundation
 import Wax
 
-let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>()
-)
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: <STORE_URL>, config: config)
 
-let sessionId = await orchestrator.startSession()
-_ = sessionId
+try await memory.save(<CONTENT>, metadata: <METADATA>)
 
-try await orchestrator.remember(
-    <CONTENT>,
-    metadata: <METADATA>
-)
-
-let context = try await orchestrator.recall(query: <QUERY>)
+var options = Memory.SearchOptions()
+options.mode = .textOnly
+options.topK = <TOP_K>
+let context = try await memory.search(<QUERY>, options: options)
 _ = context.items
 
-await orchestrator.endSession()
-try await orchestrator.flush()
-try await orchestrator.close()
+try await memory.close()
 ```
+
+MCP note: coding-agent sessions use `session_start`, `remember`, `recall`,
+`handoff`, and `session_end`; those are broker tools, not Swift `Memory` APIs.

@@ -387,20 +387,17 @@ private func deletePayload(frameId: UInt64) throws -> Data {
     }
 }
 
-@Test func walRingReaderScanPendingMutationsWithStateStopsCollectingOnDecodeFailure() throws {
-    // A valid WAL envelope carrying an invalid WALEntry opcode:
-    // - Collection of pending mutations stops at the bad record.
-    // - The state scan continues to the end of the ring.
+@Test func walRingReaderScanPendingMutationsWithStateThrowsOnDecodeFailure() throws {
+    // A valid WAL envelope carrying an invalid WALEntry opcode is fatal for
+    // pending replay; otherwise later valid mutations would be silently lost.
     try withWritableWalFile(walSize: 2048) { _, writer, reader in
         _ = try writer.append(payload: Data([0xFF])) // invalid opcode
         _ = try writer.append(payload: try deletePayload(frameId: 1))
         _ = try writer.append(payload: try deletePayload(frameId: 2))
 
-        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        // No pending mutations because decoding stops at the first invalid entry.
-        #expect(result.pendingMutations.isEmpty)
-        // But state scan advances past all three records.
-        #expect(result.state.lastSequence == 3)
+        #expect(throws: WaxError.self) {
+            _ = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+        }
     }
 }
 
@@ -441,11 +438,12 @@ private func deletePayload(frameId: UInt64) throws -> Data {
         defer { try? file.close() }
 
         let writer = WALRingWriter(file: file, walOffset: 0, walSize: walSize)
-        _ = try writer.append(payload: Data(repeating: 0xAA, count: 40))
-        _ = try writer.append(payload: Data(repeating: 0xBB, count: 40))
+        for frameId in UInt64(1)...4 {
+            _ = try writer.append(payload: try deletePayload(frameId: frameId))
+        }
         writer.recordCheckpoint()
-        _ = try writer.append(payload: Data(repeating: 0xCC, count: 40))
-        _ = try writer.append(payload: Data(repeating: 0xDD, count: 40))
+        _ = try writer.append(payload: try deletePayload(frameId: 5))
+        _ = try writer.append(payload: try deletePayload(frameId: 6))
 
         let reader = WALRingReader(file: file, walOffset: 0, walSize: walSize)
         let legacyState = try reader.scanState(from: writer.checkpointPos)

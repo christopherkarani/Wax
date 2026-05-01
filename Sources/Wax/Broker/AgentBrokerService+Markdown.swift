@@ -426,45 +426,51 @@ extension AgentBrokerService {
                 sessionMemory = try await openSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
                 shouldClose = true
             }
-            defer {
-                if shouldClose {
-                    Task { try? await sessionMemory.close() }
+
+            do {
+                let sessionDocuments = try await sessionMemory.corpusSourceDocuments()
+                let recallSignals = try BrokerSessionPersistence.recallSignals(
+                    from: BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+                )
+
+                for document in sessionDocuments {
+                    let proposal = BrokerMemoryInsights.proposePromotion(
+                        content: document.text,
+                        metadata: document.metadata,
+                        sessionID: manifest.sessionID,
+                        sourceFrameID: document.frameId,
+                        scope: scopeContext,
+                        longTermDocuments: longTermDocuments,
+                        recallSignals: recallSignals[document.frameId],
+                        settings: promotionSettings
+                    )
+                    guard proposal.shouldWrite else { continue }
+                    let hash = Self.stableHash(document.text)
+                    guard seenHashes.insert(hash).inserted else { continue }
+                    let marker = MarkdownProjectionMarker(
+                        managed: true,
+                        sourceKind: MarkdownProjectionKind.dreams.rawValue,
+                        hash: hash,
+                        sessionID: manifest.sessionID.uuidString,
+                        sourceFrameID: document.frameId,
+                        memoryType: proposal.suggestedType.rawValue,
+                        durability: proposal.suggestedDurability.rawValue,
+                        confidence: proposal.confidence
+                    )
+                    rendered.append((
+                        score: proposal.confidence + Float(proposal.recallCount) * 0.01,
+                        line: renderManagedMarkdownLine(text: document.text, marker: marker, checked: false)
+                    ))
                 }
+            } catch {
+                if shouldClose {
+                    try? await sessionMemory.close()
+                }
+                throw error
             }
 
-            let sessionDocuments = try await sessionMemory.corpusSourceDocuments()
-            let recallSignals = try BrokerSessionPersistence.recallSignals(
-                from: BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
-            )
-
-            for document in sessionDocuments {
-                let proposal = BrokerMemoryInsights.proposePromotion(
-                    content: document.text,
-                    metadata: document.metadata,
-                    sessionID: manifest.sessionID,
-                    sourceFrameID: document.frameId,
-                    scope: scopeContext,
-                    longTermDocuments: longTermDocuments,
-                    recallSignals: recallSignals[document.frameId],
-                    settings: promotionSettings
-                )
-                guard proposal.shouldWrite else { continue }
-                let hash = Self.stableHash(document.text)
-                guard seenHashes.insert(hash).inserted else { continue }
-                let marker = MarkdownProjectionMarker(
-                    managed: true,
-                    sourceKind: MarkdownProjectionKind.dreams.rawValue,
-                    hash: hash,
-                    sessionID: manifest.sessionID.uuidString,
-                    sourceFrameID: document.frameId,
-                    memoryType: proposal.suggestedType.rawValue,
-                    durability: proposal.suggestedDurability.rawValue,
-                    confidence: proposal.confidence
-                )
-                rendered.append((
-                    score: proposal.confidence + Float(proposal.recallCount) * 0.01,
-                    line: renderManagedMarkdownLine(text: document.text, marker: marker, checked: false)
-                ))
+            if shouldClose {
+                try await sessionMemory.close()
             }
         }
 

@@ -21,14 +21,28 @@ package enum AgentBrokerClient {
         defaultValue: 2.0
     )
 
+    private static let requestTimeoutSeconds = configuredSeconds(
+        envKey: "WAX_BROKER_REQUEST_TIMEOUT_SECS",
+        defaultValue: 30.0
+    )
+
     package static func perform(
         request: AgentBrokerRequest,
         configuration: AgentBrokerConfiguration,
         shutdownIfStarted: Bool = false
     ) async throws -> AgentBrokerResponse {
-        let startedBroker = try await ensureAvailable(configuration: configuration)
+        var startedBroker = false
         do {
-            guard let response = try sendIfAvailable(request, socketPath: configuration.socketPath) else {
+            let response: AgentBrokerResponse?
+            if let firstResponse = try sendIfAvailable(request, socketPath: configuration.socketPath) {
+                response = firstResponse
+            } else {
+                // Optimistically send the real request first. If the socket is
+                // absent or stale, start/restart once and retry the command.
+                startedBroker = try await ensureAvailable(configuration: configuration)
+                response = try sendIfAvailable(request, socketPath: configuration.socketPath)
+            }
+            guard let response else {
                 throw BrokerClientError("Broker did not respond after startup.")
             }
             if shutdownIfStarted, startedBroker, request.command != "shutdown" {
@@ -61,10 +75,7 @@ package enum AgentBrokerClient {
     }
 
     package static func ensureAvailable(configuration: AgentBrokerConfiguration) async throws -> Bool {
-        if let response = try sendIfAvailable(
-            AgentBrokerRequest(id: "__ping__", command: "stats"),
-            socketPath: configuration.socketPath
-        ), response.ok {
+        if try socketIsAcceptingConnections(socketPath: configuration.socketPath) {
             return false
         }
 
@@ -115,10 +126,7 @@ package enum AgentBrokerClient {
         var observedExitStatus: Int32?
         var observedStderr: String?
         while Date() < deadline {
-            if let response = try sendIfAvailable(
-                AgentBrokerRequest(id: "__ping__", command: "stats"),
-                socketPath: configuration.socketPath
-            ), response.ok {
+            if try socketIsAcceptingConnections(socketPath: configuration.socketPath) {
                 return true
             }
 
@@ -131,10 +139,7 @@ package enum AgentBrokerClient {
             Thread.sleep(forTimeInterval: 0.05)
         }
 
-        if let response = try sendIfAvailable(
-            AgentBrokerRequest(id: "__ping__", command: "stats"),
-            socketPath: configuration.socketPath
-        ), response.ok {
+        if try socketIsAcceptingConnections(socketPath: configuration.socketPath) {
             return observedExitStatus == nil
         }
 
@@ -193,7 +198,8 @@ package enum AgentBrokerClient {
 
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,
-        socketPath: String
+        socketPath: String,
+        timeoutSeconds: Double = requestTimeoutSeconds
     ) throws -> AgentBrokerResponse? {
         guard FileManager.default.fileExists(atPath: socketPath) else {
             return nil
@@ -241,7 +247,7 @@ package enum AgentBrokerClient {
         handle.write(Data([0x0A]))
         shutdown(fd, SHUT_WR)
 
-        let data = try handle.readToEnd() ?? Data()
+        let data = try readResponseData(fd: fd, timeoutSeconds: timeoutSeconds)
         guard let line = String(data: data, encoding: .utf8)?
             .split(whereSeparator: \.isNewline)
             .map(String.init)
@@ -249,6 +255,86 @@ package enum AgentBrokerClient {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
+    }
+
+    private static func socketIsAcceptingConnections(socketPath: String) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return false
+        }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            return false
+        }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw BrokerClientError("Broker socket path is too long: \(socketPath)")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if connectResult == 0 {
+            return true
+        }
+        if errno == ECONNREFUSED || errno == ENOENT {
+            try? FileManager.default.removeItem(atPath: socketPath)
+            return false
+        }
+        return false
+    }
+
+    private static func readResponseData(fd: Int32, timeoutSeconds: Double) throws -> Data {
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                throw BrokerClientError("Timed out waiting for broker response.")
+            }
+            let remainingMilliseconds = Int32(max(1, remaining * 1000))
+
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, remainingMilliseconds)
+            if pollResult == 0 {
+                throw BrokerClientError("Timed out waiting for broker response.")
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw BrokerClientError("Broker response poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                result.append(buffer, count: bytesRead)
+                continue
+            }
+            if bytesRead == 0 {
+                return result
+            }
+            if errno == EINTR {
+                continue
+            }
+            throw BrokerClientError("Broker response read failed: \(String(cString: strerror(errno)))")
+        }
     }
 
     private static func configuredSeconds(envKey: String, defaultValue: Double) -> Double {

@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${WAX_MCP_HTTP_PORT:-3101}"
 HOST="${WAX_MCP_HTTP_HOST:-127.0.0.1}"
 ENDPOINT="${WAX_MCP_HTTP_ENDPOINT:-/mcp}"
+AUTH_TOKEN="${WAX_MCP_HTTP_AUTH_TOKEN:-}"
+MAX_BODY_BYTES="${WAX_MCP_HTTP_MAX_BODY_BYTES:-1048576}"
 STORE="$(mktemp -u "${TMPDIR:-/tmp}/wax-http-XXXXXX.wax")"
 LOG="$(mktemp "${TMPDIR:-/tmp}/wax-http-log-XXXXXX.txt")"
 
@@ -27,17 +29,19 @@ swift build --product wax-mcp --traits default,MCPServer --disable-automatic-res
   --http-host "$HOST" \
   --http-port "$PORT" \
   --http-endpoint "$ENDPOINT" \
+  --http-max-body-bytes "$MAX_BODY_BYTES" \
   >"$LOG" 2>&1 &
 SERVER_PID=$!
 
-python3 - "$HOST" "$PORT" "$ENDPOINT" <<'PY'
+python3 - "$HOST" "$PORT" "$ENDPOINT" "$AUTH_TOKEN" "$MAX_BODY_BYTES" <<'PY'
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
 
-host, port, endpoint = sys.argv[1:4]
+host, port, endpoint, auth_token, max_body_bytes_raw = sys.argv[1:6]
+max_body_bytes = int(max_body_bytes_raw)
 url = f"http://{host}:{port}{endpoint}"
 
 def post(payload, session_id=None, timeout=15):
@@ -46,6 +50,8 @@ def post(payload, session_id=None, timeout=15):
         "Accept": "application/json, text/event-stream",
         "MCP-Protocol-Version": "2024-11-05",
     }
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
     if session_id:
         headers["MCP-Session-Id"] = session_id
     request = urllib.request.Request(
@@ -58,6 +64,21 @@ def post(payload, session_id=None, timeout=15):
         session_id = response.getheader("MCP-Session-Id") or response.getheader("Mcp-Session-Id")
         body = response.read().decode()
         return session_id, body
+
+def post_raw(body, timeout=15, include_auth=True):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2024-11-05",
+    }
+    if auth_token and include_auth:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
 
 def extract_json(sse_body):
     for line in sse_body.splitlines():
@@ -95,6 +116,16 @@ if not session_id:
 initialize_json = extract_json(initialize_body)
 if initialize_json.get("result", {}).get("serverInfo", {}).get("name") != "wax-mcp":
     raise RuntimeError(f"unexpected initialize response: {initialize_json}")
+
+if auth_token:
+    status, body = post_raw(json.dumps(initialize_payload).encode(), include_auth=False)
+    if status != 401:
+        raise RuntimeError(f"expected 401 for missing bearer token, got {status}: {body}")
+
+large_body = b"{" + b'"method":"' + (b"x" * max_body_bytes) + b'"}'
+status, body = post_raw(large_body)
+if status != 413:
+    raise RuntimeError(f"expected 413 for oversized request body, got {status}: {body}")
 
 _, tools_body = post({
     "jsonrpc": "2.0",

@@ -1,5 +1,5 @@
-Template: Initialize Store + Embedder
-Goal: Open or create a Wax store and wire an embedder for ingest + recall.
+Template: Initialize Public Memory + Embedder
+Goal: Open or create a Wax store using the public Memory facade.
 
 Placeholders:
 - <STORE_URL>
@@ -12,16 +12,15 @@ Placeholders:
 
 Steps:
 1. Build the store URL.
-2. Configure the orchestrator.
-3. Create the embedder (custom or MiniLM).
-4. Open the MemoryOrchestrator.
+2. Implement or provide a public `EmbeddingProvider`.
+3. Open `Memory` with the embedder and config overrides.
 
 Swift Skeleton:
 ```swift
 import Foundation
 import Wax
 
-struct <EMBEDDER_TYPE>: EmbeddingProvider {
+actor <EMBEDDER_TYPE>: EmbeddingProvider {
     let dimensions: Int = <DIMENSIONS>
     let normalize: Bool = <NORMALIZE>
     let identity: EmbeddingIdentity? = .init(
@@ -36,22 +35,20 @@ struct <EMBEDDER_TYPE>: EmbeddingProvider {
     }
 }
 
-let storeURL = <STORE_URL>
-var config = OrchestratorConfig.default
+var config = Memory.Config()
 <CONFIG_OVERRIDES>
-
-let embedder = <EMBEDDER_TYPE>()
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: config,
-    embedder: embedder
-)
+let memory = try await Memory(at: <STORE_URL>, config: config, embedding: <EMBEDDER_TYPE>())
 ```
 
-Alternative (MiniLM):
+Text-only alternative:
 ```swift
+import Foundation
 import Wax
 
-let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator.openMiniLM(at: storeURL)
+var config = Memory.Config()
+config.enableVectorSearch = false
+let memory = try await Memory(at: <STORE_URL>, config: config)
 ```
+
+Package-internal note: `MiniLMEmbedder` and `MemoryOrchestrator.openMiniLM(...)`
+are not external API in the current Wax target.

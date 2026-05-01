@@ -97,8 +97,8 @@ private extension WaxMCPTools {
         "markdown_sync": ["root_dir", "dry_run"],
         "entity_upsert": ["key", "kind", "aliases"],
         "fact_assert": ["subject", "predicate", "object", "relation", "valid_from", "valid_to"],
-        "fact_retract": ["fact_id"],
-        "facts_query": ["subject", "predicate", "limit"],
+        "fact_retract": ["fact_id", "at_ms"],
+        "facts_query": ["subject", "predicate", "as_of", "limit"],
         "entity_resolve": ["alias", "limit"],
     ]
 
@@ -1583,8 +1583,14 @@ private extension WaxMCPTools {
 
     static func compatFactRetract(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
-        let factID = try args.optionalInt("fact_id") ?? 0
-        try await memory.retractFact(factId: FactRowID(rawValue: Int64(factID)), atMs: nil, commit: true)
+        guard let factID = try args.optionalInt("fact_id") else {
+            throw ToolValidationError.invalid("Missing required argument 'fact_id'.")
+        }
+        try await memory.retractFact(
+            factId: FactRowID(rawValue: Int64(factID)),
+            atMs: try args.optionalInt64("at_ms"),
+            commit: true
+        )
         return jsonResult([
             "status": .string("ok"),
             "fact_id": .int(factID),
@@ -1598,7 +1604,7 @@ private extension WaxMCPTools {
         let result = try await memory.facts(
             about: try args.optionalString("subject").map { EntityKey($0) },
             predicate: try args.optionalString("predicate").map { PredicateKey($0) },
-            asOfMs: Int64.max,
+            asOfMs: try args.optionalInt64("as_of") ?? Int64.max,
             limit: limit
         )
         return jsonResult([

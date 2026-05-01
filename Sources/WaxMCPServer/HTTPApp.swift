@@ -13,19 +13,25 @@ actor MCPHTTPApplication {
         var endpoint: String
         var sessionTimeout: TimeInterval
         var retryInterval: Int?
+        var authToken: String?
+        var maxBodyBytes: Int
 
         init(
             host: String = "127.0.0.1",
             port: Int = 3000,
             endpoint: String = "/mcp",
             sessionTimeout: TimeInterval = 3600,
-            retryInterval: Int? = nil
+            retryInterval: Int? = nil,
+            authToken: String? = nil,
+            maxBodyBytes: Int = 1_048_576
         ) {
             self.host = host
             self.port = port
             self.endpoint = endpoint
             self.sessionTimeout = sessionTimeout
             self.retryInterval = retryInterval
+            self.authToken = authToken?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            self.maxBodyBytes = max(1024, maxBodyBytes)
         }
     }
 
@@ -71,7 +77,7 @@ actor MCPHTTPApplication {
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(HTTPHandler(app: self))
+                    channel.pipeline.addHandler(HTTPHandler(app: self, maxBodyBytes: self.configuration.maxBodyBytes))
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -101,6 +107,15 @@ actor MCPHTTPApplication {
     }
 
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
+        if let authToken = configuration.authToken,
+           request.header(HTTPHeaderName.authorization) != "Bearer \(authToken)" {
+            return .error(
+                statusCode: 401,
+                .invalidRequest("Unauthorized"),
+                extraHeaders: [HTTPHeaderName.wwwAuthenticate: "Bearer"]
+            )
+        }
+
         let sessionID = request.header(HTTPHeaderName.sessionID)
 
         if let sessionID, var session = sessions[sessionID] {
@@ -199,21 +214,28 @@ private func isInitializeRequest(_ body: Data) -> Bool {
     return (json["method"] as? String) == "initialize"
 }
 
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
     private let app: MCPHTTPApplication
+    private let maxBodyBytes: Int
 
     private struct RequestState {
         var head: HTTPRequestHead
         var bodyBuffer: ByteBuffer
+        var bodyTooLarge = false
     }
 
     private var requestState: RequestState?
 
-    init(app: MCPHTTPApplication) {
+    init(app: MCPHTTPApplication, maxBodyBytes: Int) {
         self.app = app
+        self.maxBodyBytes = maxBodyBytes
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -225,7 +247,15 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 bodyBuffer: context.channel.allocator.buffer(capacity: 0)
             )
         case .body(var buffer):
-            requestState?.bodyBuffer.writeBuffer(&buffer)
+            guard var state = requestState else { return }
+            let newSize = state.bodyBuffer.readableBytes + buffer.readableBytes
+            if newSize > maxBodyBytes {
+                state.bodyTooLarge = true
+                buffer.moveReaderIndex(forwardBy: buffer.readableBytes)
+            } else {
+                state.bodyBuffer.writeBuffer(&buffer)
+            }
+            requestState = state
         case .end:
             guard let state = requestState else { return }
             requestState = nil
@@ -243,6 +273,14 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
         guard path == endpoint else {
             await writeResponse(.error(statusCode: 404, .invalidRequest("Not Found")), version: head.version, context: context)
+            return
+        }
+        guard !state.bodyTooLarge else {
+            await writeResponse(
+                .error(statusCode: 413, .invalidRequest("Request body too large")),
+                version: head.version,
+                context: context
+            )
             return
         }
 
