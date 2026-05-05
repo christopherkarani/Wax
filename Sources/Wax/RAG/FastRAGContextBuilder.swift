@@ -76,11 +76,11 @@ package struct FastRAGContextBuilder: Sendable {
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
         let sourceFrameIds = rankedResults.map { $0.frameId }
-        async let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
-            ? wax.surrogateFrameIds(for: sourceFrameIds)
+        let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
+            ? await wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
-        async let sourceFrameMetasTask: [UInt64: FrameMeta] = shouldPrefetchSurrogates
-            ? wax.frameMetas(frameIds: sourceFrameIds)
+        let sourceFrameMetasTask: [UInt64: FrameMeta] = shouldPrefetchSurrogates
+            ? await wax.frameMetas(frameIds: sourceFrameIds)
             : [:]
 
         // 2) Expansion: first result with valid UTF-8 frame content
@@ -127,7 +127,7 @@ package struct FastRAGContextBuilder: Sendable {
             )
 
             // Batch resolve surrogate ids in a single actor hop to avoid TaskGroup churn.
-            let surrogateMap = await surrogateMapTask
+            let surrogateMap = surrogateMapTask
 
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
@@ -141,7 +141,7 @@ package struct FastRAGContextBuilder: Sendable {
 
             // Batch load surrogate contents to avoid per-frame actor hops.
             // If any surrogate is corrupted, fall back to per-frame loads and skip failures.
-            async let surrogateContentsTask: [UInt64: Data] = {
+            let surrogateContents: [UInt64: Data] = await {
                 do {
                     return try await wax.frameContents(frameIds: orderedSurrogateIds)
                 } catch {
@@ -170,7 +170,7 @@ package struct FastRAGContextBuilder: Sendable {
             )
 
             // Get only source frame metas needed for timestamp access.
-            let frameMetaMap = await sourceFrameMetasTask
+            let frameMetaMap = sourceFrameMetasTask
             // nowMs resolution order:
             // 1. deterministicNowMs if explicitly set (always the case when called via MemoryOrchestrator.recall)
             // 2. max frame timestamp — provides a stable, deterministic "now" for direct callers
@@ -180,8 +180,6 @@ package struct FastRAGContextBuilder: Sendable {
             let nowMs = clamped.deterministicNowMs
                 ?? frameMetaMap.values.map(\.timestamp).max()
                 ?? Int64(Date().timeIntervalSince1970 * 1000)
-
-            let surrogateContents = await surrogateContentsTask
 
             // Parallel tier selection and tier extraction, preserving response order.
             let surrogateWorkItems = rankedResults
@@ -529,11 +527,10 @@ package struct FastRAGContextBuilder: Sendable {
     ) async throws -> String? {
         guard maxTokens > 0, maxBytes > 0 else { return nil }
 
-        // Fetch meta and payload in parallel to reduce latency while preserving validation.
-        async let metaTask = wax.frameMetaIncludingPending(frameId: frameId)
-        async let dataTask = wax.frameContentIncludingPending(frameId: frameId)
+        // Fetch meta and payload sequentially to avoid Swift 6 async let actor isolation double-free crash.
+        let meta = try await wax.frameMetaIncludingPending(frameId: frameId)
+        let data = try await wax.frameContentIncludingPending(frameId: frameId)
 
-        let meta = try await metaTask
         let canonicalBytes: UInt64
         if meta.canonicalEncoding == .plain {
             canonicalBytes = meta.payloadLength
@@ -545,7 +542,6 @@ package struct FastRAGContextBuilder: Sendable {
         guard canonicalBytes > 0 else { return nil }
         guard canonicalBytes <= UInt64(maxBytes) else { return nil }
 
-        let data = try await dataTask
         try Self.validateExpansionPayloadSize(
             expectedBytes: canonicalBytes,
             actualBytes: data.count,
