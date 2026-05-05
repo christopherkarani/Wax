@@ -77,10 +77,10 @@ package struct FastRAGContextBuilder: Sendable {
             && clamped.maxContextTokens > 0
         let sourceFrameIds = rankedResults.map { $0.frameId }
         let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
-            ? try await wax.surrogateFrameIds(for: sourceFrameIds)
+            ? await wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
         let sourceFrameMetasTask: [UInt64: FrameMeta] = shouldPrefetchSurrogates
-            ? try await wax.frameMetas(frameIds: sourceFrameIds)
+            ? await wax.frameMetas(frameIds: sourceFrameIds)
             : [:]
 
         // 2) Expansion: first result with valid UTF-8 frame content
