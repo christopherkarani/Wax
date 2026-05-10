@@ -154,10 +154,12 @@ private extension CLIDaemonSession {
         switch modeString {
         case "text":
             mode = .text
+        case "vector":
+            mode = .vector
         case "hybrid":
             mode = .hybrid(alpha: 0.5)
         default:
-            throw CLIError("mode must be one of: text, hybrid")
+            throw CLIError("mode must be one of: text, vector, hybrid")
         }
 
         let topK = request.topK ?? 10

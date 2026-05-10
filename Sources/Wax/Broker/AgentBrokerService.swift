@@ -206,9 +206,12 @@ private extension AgentBrokerService {
             throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
         }
         let effectiveTopK = requestedTopK ?? limit
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = if case .text? = mode {
+        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch mode {
+        case .text?:
             .never
-        } else {
+        case .vector?:
+            .always
+        case .hybrid?, nil:
             .ifAvailable
         }
         let execution = try await memory.recallExecution(
@@ -593,6 +596,7 @@ private extension AgentBrokerService {
         }
         let corpusNoEmbedder: Bool = switch mode {
         case .text: true
+        case .vector: false
         case .hybrid: noEmbedder
         }
         let buildSummary: BrokerCorpusBuildSummary?
@@ -835,10 +839,12 @@ private extension AgentBrokerService {
         switch modeRaw {
         case "text":
             return .text
+        case "vector":
+            return .vector
         case "hybrid":
             return .hybrid(alpha: try validatedHybridAlpha(alpha ?? 0.5))
         default:
-            throw BrokerValidationError.invalid("mode must be one of: text, hybrid")
+            throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
         }
     }
 
@@ -850,10 +856,12 @@ private extension AgentBrokerService {
         switch modeRaw ?? "text" {
         case "text":
             return .text
+        case "vector":
+            return .vector
         case "hybrid":
             return .hybrid(alpha: validatedAlpha)
         default:
-            throw BrokerValidationError.invalid("mode must be one of: text, hybrid")
+            throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
         }
     }
 

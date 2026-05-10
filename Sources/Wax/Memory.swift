@@ -52,8 +52,15 @@ public actor Memory {
     }
 
     public enum RetrievalMode: Sendable, Equatable {
+        /// Search only the full-text index.
         case textOnly
-        case hybrid
+        /// Search only the vector index. Requires vector search and an embedding provider.
+        case vectorOnly
+        /// Blend full-text and vector results using Reciprocal Rank Fusion.
+        ///
+        /// The alpha value is clamped by Wax's search engine. Higher values favor
+        /// text results; lower values favor vector results.
+        case hybrid(alpha: Float = 0.5)
     }
 
     public struct SearchOptions: Sendable, Equatable {
@@ -66,7 +73,7 @@ public actor Memory {
             topK: Int = 10,
             includeSurrogates: Bool = false,
             timeRange: TimeRange? = nil,
-            mode: RetrievalMode = .hybrid
+            mode: RetrievalMode = .hybrid()
         ) {
             self.topK = topK
             self.includeSurrogates = includeSurrogates
@@ -124,6 +131,21 @@ public actor Memory {
         )
     }
 
+    /// Open memory with one of Wax's built-in embedding providers.
+    public init(
+        at url: URL,
+        config: Config = .default,
+        builtInEmbedding provider: BuiltInEmbeddingProvider,
+        embeddingOptions: BuiltInEmbeddingProviderOptions = .default
+    ) async throws {
+        let embedding = try await BuiltInEmbeddings.make(provider, options: embeddingOptions)
+        self.orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: Self.makeOrchestratorConfig(config),
+            embedder: embedding
+        )
+    }
+
     /// Persist text into memory.
     public func save(_ text: String, metadata: [String: String] = [:]) async throws {
         try await orchestrator.remember(text, metadata: metadata)
@@ -141,12 +163,16 @@ public actor Memory {
         let directMode: MemoryOrchestrator.DirectSearchMode = switch options.mode {
         case .textOnly:
             .text
-        case .hybrid:
-            .hybrid(alpha: 0.5)
+        case .vectorOnly:
+            .vector
+        case .hybrid(let alpha):
+            .hybrid(alpha: alpha)
         }
         let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch options.mode {
         case .textOnly:
             .never
+        case .vectorOnly:
+            .always
         case .hybrid:
             .ifAvailable
         }
