@@ -5,7 +5,7 @@ import Wax
 struct SearchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "search",
-        abstract: "Search memory frames by text or hybrid mode"
+        abstract: "Search memory frames by text, vector, or hybrid mode"
     )
 
     @OptionGroup var store: VectorStoreOptions
@@ -13,7 +13,7 @@ struct SearchCommand: AsyncParsableCommand {
     @Argument(help: "Search query")
     var query: String
 
-    @Option(name: .customLong("mode"), help: "Search mode: text or hybrid (default: text)")
+    @Option(name: .customLong("mode"), help: "Search mode: text, vector, or hybrid (default: text)")
     var mode: String = "text"
 
     @Option(name: .customLong("top-k"), help: "Maximum results to return (1-200, default 10)")
@@ -21,22 +21,24 @@ struct SearchCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         let modeLower = mode.lowercased()
-        guard modeLower == "text" || modeLower == "hybrid" else {
-            throw CLIError("mode must be one of: text, hybrid")
+        guard modeLower == "text" || modeLower == "vector" || modeLower == "hybrid" else {
+            throw CLIError("mode must be one of: text, vector, hybrid")
         }
         guard topK >= 1, topK <= 200 else {
             throw CLIError("top-k must be between 1 and 200")
         }
 
         let searchMode: MemoryOrchestrator.DirectSearchMode
-        let requireVector = store.requireVector || modeLower == "hybrid"
+        let requireVector = store.requireVector || modeLower == "vector" || modeLower == "hybrid"
         switch modeLower {
         case "text":
             searchMode = .text
+        case "vector":
+            searchMode = .vector
         case "hybrid":
             searchMode = .hybrid(alpha: 0.5)
         default:
-            throw CLIError("mode must be one of: text, hybrid")
+            throw CLIError("mode must be one of: text, vector, hybrid")
         }
 
         if AgentBrokerPolicy.shouldUseBroker(store: store) {

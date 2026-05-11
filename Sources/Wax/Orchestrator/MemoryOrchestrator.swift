@@ -14,6 +14,7 @@ package actor MemoryOrchestrator {
     /// Direct search mode for raw candidate retrieval.
     package enum DirectSearchMode: Sendable, Equatable {
         case text
+        case vector
         case hybrid(alpha: Float)
 
         package static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
@@ -907,6 +908,8 @@ package actor MemoryOrchestrator {
         let policy: QueryEmbeddingPolicy = switch mode {
         case .text:
             .never
+        case .vector:
+            .always
         case .hybrid:
             .ifAvailable
         }
@@ -1267,6 +1270,8 @@ package actor MemoryOrchestrator {
         switch mode {
         case .text:
             .textOnly
+        case .vector:
+            .vectorOnly
         case .hybrid(let alpha):
             .hybrid(alpha: clampHybridAlpha(alpha))
         }
@@ -1302,6 +1307,8 @@ package actor MemoryOrchestrator {
         switch mode {
         case .text:
             return "text"
+        case .vector:
+            return "vector"
         case .hybrid(let alpha):
             return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
         }
