@@ -23,6 +23,12 @@
   "publishConfig": {
     "access": "public"
   },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "devDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
   "openclaw": {
     "extensions": [
       "./src/index.ts"

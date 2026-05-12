@@ -366,6 +366,7 @@ extension AgentBrokerService {
             inferredScope: scopeContext
         )
 
+        try validateDurableWriteContent(content: content, metadata: normalized)
         try await longTermMemory.remember(content, metadata: normalized)
         try await longTermMemory.flush()
 

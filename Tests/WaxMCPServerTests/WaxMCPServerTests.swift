@@ -12,6 +12,32 @@ import MCP
 import Wax
 import XCTest
 
+private func withAgentBrokerService<T>(
+    _ body: (AgentBrokerService, URL) async throws -> T
+) async throws -> T {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-broker-test-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let result = try await body(service, sessionRootURL)
+        try await service.close()
+        return result
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
 @Test
 func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
@@ -199,6 +225,150 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("typed object"))
     }
+}
+
+@Test
+func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
+    try await withMemory { memory in
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let asserted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "object": .string("temporal"),
+                    "valid_from": .int(Int(nowMs)),
+                    "valid_to": .int(Int(nowMs + 100)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(asserted.isError != true)
+
+        let insideValidWindow = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "as_of": .int(Int(nowMs + 50)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(insideValidWindow.isError != true)
+        #expect(firstText(in: insideValidWindow).contains("temporal"))
+
+        let outsideValidWindow = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "as_of": .int(Int(nowMs + 150)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(outsideValidWindow.isError != true)
+        #expect(!firstText(in: outsideValidWindow).contains("temporal"))
+
+        let retractable = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "object": .string("temporal retraction"),
+                    "valid_from": .int(Int(nowMs)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(retractable.isError != true)
+        let retractableJSON = try parseJSONText(in: retractable)
+        let factID = try requireInt(retractableJSON, key: "fact_id")
+
+        let retract = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_retract",
+                arguments: [
+                    "fact_id": .int(factID),
+                    "at_ms": .int(Int(nowMs + 200)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(retract.isError != true)
+
+        let beforeRetractionTime = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "as_of": .int(Int(nowMs + 150)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(beforeRetractionTime.isError != true)
+        #expect(firstText(in: beforeRetractionTime).contains("temporal retraction"))
+
+        let afterRetractionTime = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "as_of": .int(Int(nowMs + 250)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(afterRetractionTime.isError != true)
+        #expect(!firstText(in: afterRetractionTime).contains("temporal retraction"))
+    }
+}
+
+@Test
+func httpRequestBodyLimitRejectsContentLengthAndStreamingOverflow() {
+    #expect(HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 0,
+        incomingBytes: 0,
+        contentLength: 1_049,
+        maxBytes: 1_048
+    ))
+    #expect(HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 1_000,
+        incomingBytes: 49,
+        contentLength: nil,
+        maxBytes: 1_048
+    ))
+    #expect(!HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 1_000,
+        incomingBytes: 48,
+        contentLength: nil,
+        maxBytes: 1_048
+    ))
+}
+
+@Test
+func openClawPackageDeclaresSDKPeerDependency() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let packageJSONURL = packageRoot
+        .appendingPathComponent("Resources/openclaw/wax-memory-plugin/package.json")
+    let data = try Data(contentsOf: packageJSONURL)
+    let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let peerDependencies = try #require(json["peerDependencies"] as? [String: Any])
+    let devDependencies = try #require(json["devDependencies"] as? [String: Any])
+
+    #expect(peerDependencies["openclaw"] as? String == ">=2026.3.24-beta.2")
+    #expect(devDependencies["openclaw"] as? String == ">=2026.3.24-beta.2")
 }
 
 @Test
@@ -1836,6 +2006,103 @@ func sessionSynthesizeAndPromoteFlowWorks() async throws {
                 && (($0["metadata"] as? [String: Any])?["wax.reviewed"] as? String == "true")
         }
         #expect(durableHit != nil)
+    }
+}
+
+@Test
+func brokerMarkdownSyncRejectsSecretLikeDurableMemoryImports() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-secret-sync-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        try """
+        # MEMORY
+
+        ## fact
+        - api_key=12345678901234567890
+        """.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let response = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+
+        #expect(response.ok == false)
+        #expect((response.error ?? "").contains("Refusing to store durable memory containing secret-like content"))
+    }
+}
+
+@Test
+func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+        let query = "QUERY_LOG_PRIVACY_ANCHOR"
+
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("Remember \(query) without storing raw retrieval queries."),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(query),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(search.ok == true)
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+        let retrievalEvents = events.filter { $0.kind == .retrievalHit }
+        #expect(!retrievalEvents.isEmpty)
+        for event in retrievalEvents {
+            #expect(event.payload["query"] == nil)
+            #expect(event.payload["query_hash"] != nil)
+        }
+    }
+}
+
+@Test
+func brokerImplicitMemoryPromotePreservesResolvedSessionProvenance() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("Decision: implicit promotion must preserve session provenance."),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let promote = await service.handle(.init(
+            command: "memory_promote",
+            arguments: ["approve": .bool(true)]
+        ))
+        #expect(promote.ok == true)
+        let promotePayload = try #require(promote.payload?.objectValue)
+        #expect(promotePayload["written"]?.boolValue == true)
+        let metadata = try #require(promotePayload["metadata"]?.objectValue)
+        #expect(metadata[MemoryMetadataKeys.promotedFromSession]?.stringValue == sessionIDString)
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+        #expect(events.contains { $0.kind == .promotionWritten })
     }
 }
 

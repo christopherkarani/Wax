@@ -13,19 +13,22 @@ actor MCPHTTPApplication {
         var endpoint: String
         var sessionTimeout: TimeInterval
         var retryInterval: Int?
+        var maxRequestBodyBytes: Int
 
         init(
             host: String = "127.0.0.1",
             port: Int = 3000,
             endpoint: String = "/mcp",
             sessionTimeout: TimeInterval = 3600,
-            retryInterval: Int? = nil
+            retryInterval: Int? = nil,
+            maxRequestBodyBytes: Int = 1_048_576
         ) {
             self.host = host
             self.port = port
             self.endpoint = endpoint
             self.sessionTimeout = sessionTimeout
             self.retryInterval = retryInterval
+            self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
         }
     }
 
@@ -38,6 +41,7 @@ actor MCPHTTPApplication {
     private var sessions: [String: SessionContext] = [:]
 
     nonisolated let logger: Logger
+    nonisolated let maxRequestBodyBytes: Int
 
     struct SessionContext {
         let server: Server
@@ -55,6 +59,7 @@ actor MCPHTTPApplication {
         self.configuration = configuration
         self.serverFactory = serverFactory
         self.validationPipeline = validationPipeline
+        self.maxRequestBodyBytes = configuration.maxRequestBodyBytes
         self.logger = logger ?? Logger(
             label: "wax.mcp.http",
             factory: { _ in SwiftLogNoOpLogHandler() }
@@ -199,6 +204,21 @@ private func isInitializeRequest(_ body: Data) -> Bool {
     return (json["method"] as? String) == "initialize"
 }
 
+enum HTTPRequestBodyLimit {
+    static func exceedsLimit(
+        currentBytes: Int,
+        incomingBytes: Int,
+        contentLength: Int?,
+        maxBytes: Int
+    ) -> Bool {
+        if let contentLength, contentLength > maxBytes {
+            return true
+        }
+        guard incomingBytes <= maxBytes else { return true }
+        return currentBytes > maxBytes - incomingBytes
+    }
+}
+
 private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
@@ -208,6 +228,7 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     private struct RequestState {
         var head: HTTPRequestHead
         var bodyBuffer: ByteBuffer
+        var exceededBodyLimit: Bool = false
     }
 
     private var requestState: RequestState?
@@ -220,12 +241,31 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         let part = unwrapInboundIn(data)
         switch part {
         case .head(let head):
+            let contentLength = head.headers.first(name: "content-length").flatMap(Int.init)
             requestState = RequestState(
                 head: head,
-                bodyBuffer: context.channel.allocator.buffer(capacity: 0)
+                bodyBuffer: context.channel.allocator.buffer(capacity: 0),
+                exceededBodyLimit: HTTPRequestBodyLimit.exceedsLimit(
+                    currentBytes: 0,
+                    incomingBytes: 0,
+                    contentLength: contentLength,
+                    maxBytes: app.maxRequestBodyBytes
+                )
             )
         case .body(var buffer):
-            requestState?.bodyBuffer.writeBuffer(&buffer)
+            guard var state = requestState else { return }
+            if state.exceededBodyLimit || HTTPRequestBodyLimit.exceedsLimit(
+                currentBytes: state.bodyBuffer.readableBytes,
+                incomingBytes: buffer.readableBytes,
+                contentLength: nil,
+                maxBytes: app.maxRequestBodyBytes
+            ) {
+                state.exceededBodyLimit = true
+                requestState = state
+                return
+            }
+            state.bodyBuffer.writeBuffer(&buffer)
+            requestState = state
         case .end:
             guard let state = requestState else { return }
             requestState = nil
@@ -240,6 +280,11 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         let head = state.head
         let path = head.uri.split(separator: "?").first.map(String.init) ?? head.uri
         let endpoint = await app.endpoint
+
+        guard !state.exceededBodyLimit else {
+            await writeResponse(.error(statusCode: 413, .invalidRequest("Payload Too Large")), version: head.version, context: context)
+            return
+        }
 
         guard path == endpoint else {
             await writeResponse(.error(statusCode: 404, .invalidRequest("Not Found")), version: head.version, context: context)

@@ -57,6 +57,9 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-endpoint"), help: "HTTP MCP endpoint path when --transport http is used.")
     var httpEndpoint = "/mcp"
 
+    @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
+    var httpMaxBodyBytes = 1_048_576
+
     mutating func run() throws {
         let command = self
         Task(priority: .userInitiated) {
@@ -164,7 +167,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                 configuration: .init(
                     host: httpHost,
                     port: httpPort,
-                    endpoint: httpEndpoint
+                    endpoint: httpEndpoint,
+                    maxRequestBodyBytes: httpMaxBodyBytes
                 ),
                 serverFactory: { _, transport in
                     let server = await makeServer(

@@ -547,6 +547,7 @@ extension AgentBrokerService {
         let content: String
         var sourceMetadata: [String: String] = [:]
         var sourceFrameId = requestedSourceFrameId
+        var resolvedPromotionSessionID = sessionID
 
         if let explicitContent, !explicitContent.isEmpty {
             content = explicitContent
@@ -555,6 +556,7 @@ extension AgentBrokerService {
                   let session = activeSessions[resolvedSessionID] else {
                 throw BrokerValidationError.invalid("Provide content or an active session_id for promotion")
             }
+            resolvedPromotionSessionID = resolvedSessionID
             let documents = try await session.memory.corpusSourceDocuments()
             let sourceDocument: MemoryOrchestrator.CorpusSourceDocument?
             if let requestedSourceFrameId {
@@ -577,22 +579,22 @@ extension AgentBrokerService {
             sessionID: nil,
             inferredScope: scopeContext
         )
-        if let sessionID {
-            normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = sessionID.uuidString
+        if let resolvedPromotionSessionID {
+            normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
         }
         if let sourceFrameId {
             normalizedMetadata[MemoryMetadataKeys.promotedFromFrame] = String(sourceFrameId)
         }
         let recallSignal: BrokerSessionRecallSignals?
-        if let sessionID, let sourceFrameId {
-            recallSignal = try await sessionSignals(for: sessionID)[sourceFrameId]
+        if let resolvedPromotionSessionID, let sourceFrameId {
+            recallSignal = try await sessionSignals(for: resolvedPromotionSessionID)[sourceFrameId]
         } else {
             recallSignal = nil
         }
         let proposal = BrokerMemoryInsights.proposePromotion(
             content: content,
             metadata: normalizedMetadata,
-            sessionID: sessionID,
+            sessionID: resolvedPromotionSessionID,
             sourceFrameID: sourceFrameId,
             scope: scopeContext,
             longTermDocuments: longTermDocuments,
@@ -612,10 +614,10 @@ extension AgentBrokerService {
             try await longTermMemory.remember(content, metadata: normalizedMetadata)
             try await longTermMemory.flush()
         }
-        if let sessionID {
-            try await refreshSessionManifest(sessionID)
+        if let resolvedPromotionSessionID {
+            try await refreshSessionManifest(resolvedPromotionSessionID)
             try await appendSessionEvent(
-                sessionID: sessionID,
+                sessionID: resolvedPromotionSessionID,
                 kind: approve && proposal.shouldWrite ? .promotionWritten : .promotionReviewed,
                 payload: [
                     "frame_id": sourceFrameId.map(String.init) ?? "",
@@ -1165,10 +1167,12 @@ extension AgentBrokerService {
     func factRetract(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let factID = try args.requiredInt64("fact_id")
-        try await longTermMemory.retractFact(factId: FactRowID(rawValue: factID), atMs: nil, commit: true)
+        let atMs = try args.optionalInt64("at_ms")
+        try await longTermMemory.retractFact(factId: FactRowID(rawValue: factID), atMs: atMs, commit: true)
         return .object([
             "status": .string("ok"),
             "fact_id": .from(factID),
+            "at_ms": .from(atMs),
             "committed": .bool(true),
         ])
     }
@@ -1181,10 +1185,11 @@ extension AgentBrokerService {
         }
         let subject = try args.optionalString("subject").map { EntityKey($0) }
         let predicate = try args.optionalString("predicate").map { PredicateKey($0) }
+        let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
-            asOfMs: Int64.max,
+            asOfMs: asOfMs,
             limit: limit
         )
         let hits: [AgentBrokerValue] = result.hits.map { hit in
@@ -1200,6 +1205,7 @@ extension AgentBrokerService {
         return .object([
             "count": .from(result.hits.count),
             "truncated": .from(result.wasTruncated),
+            "as_of": .from(asOfMs),
             "hits": .array(hits),
         ])
     }
@@ -1398,7 +1404,6 @@ extension AgentBrokerService {
                     "frame_id": String(canonicalFrameID),
                     "score": String(hit.score),
                     "query_hash": queryHash,
-                    "query": query,
                 ]
             )
         }
