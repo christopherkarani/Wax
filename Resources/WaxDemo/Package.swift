@@ -1,10 +1,10 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
     name: "WaxDemo",
     platforms: [
-        .macOS(.v26),
+        .macOS(.v15),
     ],
     dependencies: [
         .package(path: "../.."),

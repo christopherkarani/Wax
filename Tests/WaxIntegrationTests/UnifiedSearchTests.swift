@@ -204,6 +204,37 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func vectorOnlySearchReturnsPreviewForPendingFrame() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let pendingId = try await wax.put(Data("pending vector preview".utf8))
+
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 2,
+            results: [(frameId: pendingId, score: 1)]
+        )
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .vectorOnly,
+                topK: 1
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [pendingId])
+        #expect(response.results.first?.previewText == "pending vector preview")
+
+        try await wax.close()
+    }
+}
+
 @Test func frameFilterMatchesMetadataEntries() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

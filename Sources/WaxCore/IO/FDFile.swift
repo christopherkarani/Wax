@@ -3,14 +3,18 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 @inline(__always)
 private func posixClose(_ fd: Int32) -> Int32 {
     #if canImport(Darwin)
     Darwin.close(fd)
-    #else
+    #elseif canImport(Glibc)
     Glibc.close(fd)
+    #else
+    Musl.close(fd)
     #endif
 }
 
@@ -18,8 +22,21 @@ private func posixClose(_ fd: Int32) -> Int32 {
 private func posixFsync(_ fd: Int32) -> Int32 {
     #if canImport(Darwin)
     Darwin.fsync(fd)
-    #else
+    #elseif canImport(Glibc)
     Glibc.fsync(fd)
+    #else
+    Musl.fsync(fd)
+    #endif
+}
+
+@inline(__always)
+private func posixMsync(_ addr: UnsafeMutableRawPointer, _ length: Int, _ flags: Int32) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.msync(addr, length, flags)
+    #elseif canImport(Glibc)
+    Glibc.msync(addr, length, flags)
+    #else
+    Musl.msync(addr, length, flags)
     #endif
 }
 
@@ -27,8 +44,10 @@ private func posixFsync(_ fd: Int32) -> Int32 {
 private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32) -> Int32 {
     #if canImport(Darwin)
     Darwin.open(path, flags)
-    #else
+    #elseif canImport(Glibc)
     Glibc.open(path, flags)
+    #else
+    Musl.open(path, flags)
     #endif
 }
 
@@ -36,8 +55,10 @@ private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32) -> Int32 {
 private func posixOpen(_ path: UnsafePointer<CChar>, _ flags: Int32, _ mode: mode_t) -> Int32 {
     #if canImport(Darwin)
     Darwin.open(path, flags, mode)
-    #else
+    #elseif canImport(Glibc)
     Glibc.open(path, flags, mode)
+    #else
+    Musl.open(path, flags, mode)
     #endif
 }
 
@@ -322,13 +343,22 @@ package final class FDFile {
         guard length > 0 else {
             throw WaxError.io("mapWritable length must be > 0")
         }
-        let endOffset = offset + UInt64(length)
+        let (endOffset, overflowedEndOffset) = offset.addingReportingOverflow(UInt64(length))
+        guard !overflowedEndOffset else {
+            throw WaxError.io("mapWritable range overflows: offset \(offset), length \(length)")
+        }
         try ensureSize(atLeast: endOffset)
 
         let pageSize = UInt64(getpagesize())
         let alignedOffset = (offset / pageSize) * pageSize
         let offsetDelta = Int(offset - alignedOffset)
-        let mapLength = length + offsetDelta
+        guard alignedOffset <= UInt64(Int64.max) else {
+            throw WaxError.io("mapWritable offset too large: \(alignedOffset)")
+        }
+        let (mapLength, overflowedMapLength) = length.addingReportingOverflow(offsetDelta)
+        guard !overflowedMapLength else {
+            throw WaxError.io("mapWritable mapLength overflows: length \(length), offsetDelta \(offsetDelta)")
+        }
 
         guard mapLength > 0 else {
             throw WaxError.io("mapWritable mapLength invalid: \(mapLength)")
@@ -477,6 +507,21 @@ package final class MappedWritableRegion: @unchecked Sendable {
     package func copyBytes(from data: Data) {
         precondition(data.count <= buffer.count, "data length exceeds mapped buffer")
         buffer.copyBytes(from: data)
+    }
+
+    package func synchronize() throws {
+        try closeLock.withLock {
+            if isClosed {
+                throw WaxError.io("mapped region is closed")
+            }
+            guard posixMsync(basePointer, mappedLength, MS_SYNC) == 0 else {
+                throw WaxError.io("msync failed: \(Self.stringError())")
+            }
+        }
+    }
+
+    private static func stringError() -> String {
+        String(cString: strerror(errno))
     }
 
     deinit {

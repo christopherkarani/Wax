@@ -6,6 +6,7 @@ import Glibc
 #endif
 
 package enum AgentBrokerClient {
+#if os(macOS) || os(Linux)
     private static let startTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_START_TIMEOUT_SECS",
         defaultValue: 5.0
@@ -81,7 +82,36 @@ package enum AgentBrokerClient {
 
         return try startBrokerIfNeeded(configuration: configuration)
     }
+#else
+    package static func perform(
+        request: AgentBrokerRequest,
+        configuration: AgentBrokerConfiguration,
+        shutdownIfStarted: Bool = false
+    ) async throws -> AgentBrokerResponse {
+        _ = request
+        _ = configuration
+        _ = shutdownIfStarted
+        throw BrokerClientError("Wax broker client is unavailable on this platform.")
+    }
 
+    package static func ping(configuration: AgentBrokerConfiguration) async throws -> AgentBrokerResponse {
+        _ = configuration
+        throw BrokerClientError("Wax broker client is unavailable on this platform.")
+    }
+
+    package static func shutdownOwnedBrokerIfReachable(
+        configuration: AgentBrokerConfiguration
+    ) throws {
+        _ = configuration
+    }
+
+    package static func ensureAvailable(configuration: AgentBrokerConfiguration) async throws -> Bool {
+        _ = configuration
+        throw BrokerClientError("Wax broker client is unavailable on this platform.")
+    }
+#endif
+
+#if os(macOS) || os(Linux)
     private static func startBrokerIfNeeded(configuration: AgentBrokerConfiguration) throws -> Bool {
         guard FileManager.default.isExecutableFile(atPath: configuration.brokerExecutablePath) else {
             throw BrokerClientError(
@@ -355,6 +385,7 @@ package enum AgentBrokerClient {
         }
         return String(data: data, encoding: .utf8)
     }
+#endif
 }
 
 private struct BrokerClientError: LocalizedError {

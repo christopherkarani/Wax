@@ -225,3 +225,31 @@ import Testing
         #expect(decoded == payload)
     }
 }
+
+@Test func mappedWritableRegionSynchronizePersistsCopiedBytes() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        let payload = Data("mapped-durable-payload".utf8)
+        let region = try file.mapWritable(length: payload.count, at: 128)
+        defer { region.close() }
+        region.copyBytes(from: payload)
+        try region.synchronize()
+        try file.fsync()
+
+        #expect(try file.readExactly(length: payload.count, at: 128) == payload)
+    }
+}
+
+@Test func mapWritableRejectsOverflowingRangeBeforeTruncating() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        #expect(throws: WaxError.self) {
+            _ = try file.mapWritable(length: 2, at: UInt64.max)
+        }
+        #expect(try file.size() == 0)
+    }
+}

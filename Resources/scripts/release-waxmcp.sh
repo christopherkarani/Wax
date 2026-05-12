@@ -17,8 +17,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_JSON="$ROOT/Resources/npm/waxmcp/package.json"
 SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
-DIST_DIR="$ROOT/Resources/npm/waxmcp/dist/darwin-arm64"
-BUILD_DIR="$ROOT/.build/arm64-apple-macosx/release"
+BUILD_SCRIPT="$ROOT/Resources/scripts/build-waxmcp-binaries.sh"
 
 if [[ ! -f "$PKG_JSON" ]]; then
   echo "error: missing $PKG_JSON" >&2
@@ -30,34 +29,24 @@ if [[ ! -f "$SERVER_SWIFT" ]]; then
   exit 2
 fi
 
+if [[ ! -x "$BUILD_SCRIPT" ]]; then
+  echo "error: missing executable $BUILD_SCRIPT" >&2
+  exit 2
+fi
+
 echo "-> Bump versions to $VERSION"
 perl -0pi -e 's/"version"\s*:\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
 VERSION="$VERSION" perl -0pi -e 's/(enum\s+WaxMCPServerMetadata\s*\{[\s\S]*?static\s+let\s+version\s*=\s*)"[^"]+"/$1"$ENV{VERSION}"/' "$SERVER_SWIFT"
 
-echo "-> Build release binaries (darwin-arm64)"
+echo "-> Build release binaries (darwin-arm64, darwin-x64)"
 cd "$ROOT"
-swift build -c release --product wax-cli --traits default,MCPServer
-swift build -c release --product wax-mcp --traits default,MCPServer
-
-echo "-> Stage dist artifacts"
-mkdir -p "$DIST_DIR"
-cp -f "$BUILD_DIR/wax-cli" "$DIST_DIR/wax-cli"
-cp -f "$BUILD_DIR/wax-mcp" "$DIST_DIR/wax-mcp"
-
-# Copy all SwiftPM resource bundles next to the binaries so Bundle.module resolves at runtime.
-for b in "$BUILD_DIR"/*.bundle; do
-  name="$(basename "$b")"
-  rm -rf "$DIST_DIR/$name"
-  ditto "$b" "$DIST_DIR/$name"
-done
-
-shasum -a 256 "$DIST_DIR/wax-cli" | awk '{print $1 "  wax-cli"}' > "$DIST_DIR/wax-cli.sha256"
-shasum -a 256 "$DIST_DIR/wax-mcp" | awk '{print $1 "  wax-mcp"}' > "$DIST_DIR/wax-mcp.sha256"
+"$BUILD_SCRIPT" darwin-arm64 arm64-apple-macosx15.0
+"$BUILD_SCRIPT" darwin-x64 x86_64-apple-macosx15.0
 
 echo "-> Done"
 echo "Next:"
 echo "  git status -sb"
 echo "  git diff"
 echo "  # optional local smoke checks:"
-echo "  $DIST_DIR/wax-cli vector-health --store-path /tmp/waxmcp-release.wax --format text"
-echo "  $DIST_DIR/wax-cli mcp doctor --server-path $DIST_DIR/wax-mcp --store-path /tmp/waxmcp-release.wax"
+echo "  Resources/npm/waxmcp/dist/darwin-arm64/wax-cli vector-health --store-path /tmp/waxmcp-release.wax --format text"
+echo "  Resources/npm/waxmcp/dist/darwin-arm64/wax-cli mcp doctor --server-path Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp --store-path /tmp/waxmcp-release.wax"

@@ -135,7 +135,11 @@ package enum VectorSerializer {
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
-            let expectedTotal = VecSegmentHeaderV1.encodedSize + Int(header.payloadLength)
+            let expectedTotal = try checkedSum(
+                VecSegmentHeaderV1.encodedSize,
+                Int(header.payloadLength),
+                label: "vec segment length"
+            )
             guard data.count == expectedTotal else {
                 throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
             }
@@ -146,18 +150,36 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
             let vectorLength = Int(header.payloadLength)
-            let expectedVectorBytes = Int(header.vectorCount) * Int(header.dimension) * MemoryLayout<Float>.stride
+            let expectedVectorBytes = try checkedProduct(
+                [
+                    checkedInt(header.vectorCount, label: "vec vectorCount"),
+                    checkedInt(UInt64(header.dimension), label: "vec dimension"),
+                    MemoryLayout<Float>.stride,
+                ],
+                label: "vec vector data length"
+            )
             guard vectorLength == expectedVectorBytes else {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
 
             var offset = VecSegmentHeaderV1.encodedSize
-            guard data.count >= offset + vectorLength + MemoryLayout<UInt64>.stride else {
+            let frameIdLengthOffset = try checkedSum(
+                offset,
+                vectorLength,
+                label: "vec frameIds length offset"
+            )
+            let minimumLength = try checkedSum(
+                frameIdLengthOffset,
+                MemoryLayout<UInt64>.stride,
+                label: "vec minimum length"
+            )
+            guard data.count >= minimumLength else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
-            let vectorsData = data[offset..<offset + vectorLength]
-            offset += vectorLength
+            let vectorsEnd = frameIdLengthOffset
+            let vectorsData = data[offset..<vectorsEnd]
+            offset = vectorsEnd
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
@@ -166,11 +188,21 @@ package enum VectorSerializer {
             guard frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
             }
-            let expectedFrameIdBytes = Int(header.vectorCount) * MemoryLayout<UInt64>.stride
+            let expectedFrameIdBytes = try checkedProduct(
+                [
+                    checkedInt(header.vectorCount, label: "vec vectorCount"),
+                    MemoryLayout<UInt64>.stride,
+                ],
+                label: "vec frameId data length"
+            )
             guard Int(frameIdLength) == expectedFrameIdBytes else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }
-            let expectedTotal = offset + Int(frameIdLength)
+            let expectedTotal = try checkedSum(
+                offset,
+                Int(frameIdLength),
+                label: "vec segment length"
+            )
             guard data.count == expectedTotal else {
                 throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
             }
@@ -194,6 +226,33 @@ package enum VectorSerializer {
 
     private static func saveUSearchPayload(_ index: USearchIndex) throws -> Data {
         try index.serializeToData()
+    }
+
+    private static func checkedInt(_ value: UInt64, label: String) throws -> Int {
+        guard value <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "\(label) exceeds Int.max: \(value)")
+        }
+        return Int(value)
+    }
+
+    private static func checkedSum(_ lhs: Int, _ rhs: Int, label: String) throws -> Int {
+        let (value, overflowed) = lhs.addingReportingOverflow(rhs)
+        guard !overflowed else {
+            throw WaxError.invalidToc(reason: "\(label) overflows Int")
+        }
+        return value
+    }
+
+    private static func checkedProduct(_ values: [Int], label: String) throws -> Int {
+        var product = 1
+        for value in values {
+            let (next, overflowed) = product.multipliedReportingOverflow(by: value)
+            guard !overflowed else {
+                throw WaxError.invalidToc(reason: "\(label) overflows Int")
+            }
+            product = next
+        }
+        return product
     }
 
     private struct VecSegmentHeaderV1 {

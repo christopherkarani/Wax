@@ -792,6 +792,7 @@ package actor Wax {
             guard requiredEnd <= fileSize else {
                 throw WaxError.invalidToc(reason: "pending WAL references bytes beyond file size")
             }
+            try Self.validatePendingPutPayloads(pendingMutations, file: file)
             if repair, fileSize > requiredEnd {
                 try file.truncate(to: requiredEnd)
                 fileSize = requiredEnd
@@ -1105,6 +1106,8 @@ package actor Wax {
                     }
                     cursor += storedBytes.count
                 }
+                try region.synchronize()
+                try file.fsync()
             }
         }
 
@@ -1575,6 +1578,7 @@ package actor Wax {
 
         let applied = try applyPendingMutationsIntoTOC()
         let appliedWalSeq = applied.maxSequence
+        try await validateFramePayloadsBeforeCommit(applied.appendedFrames)
         let cachedFramesPayload = try encodedCommittedFramePayloadForCommit(
             appendedFrames: applied.appendedFrames,
             invalidated: applied.modifiedCommittedFrames
@@ -2051,14 +2055,14 @@ package actor Wax {
             var emptyIds: [UInt64] = []
             var plainPlans: [PlainPreviewPlan] = []
             var compressedFrames: [FrameMeta] = []
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
 
-            let maxId = UInt64(toc.frames.count)
             emptyIds.reserveCapacity(frameIds.count)
             plainPlans.reserveCapacity(frameIds.count)
             compressedFrames.reserveCapacity(frameIds.count)
 
-            for frameId in frameIds where frameId < maxId {
-                let frame = toc.frames[Int(frameId)]
+            for frameId in frameIds {
+                guard let frame = metas[frameId] else { continue }
                 if frame.payloadLength == 0 {
                     emptyIds.append(frameId)
                     continue
@@ -2214,6 +2218,39 @@ package actor Wax {
         let file = self.file
         return try await io.run {
             try file.readExactly(length: Int(frame.payloadLength), at: frame.payloadOffset)
+        }
+    }
+
+    private func validateFramePayloadsBeforeCommit(_ frames: [FrameMeta]) async throws {
+        guard !frames.isEmpty else { return }
+        let file = self.file
+        try await io.run {
+            try Self.validateFramePayloads(frames, file: file)
+        }
+    }
+
+    private static func validatePendingPutPayloads(_ mutations: [PendingMutation], file: FDFile) throws {
+        guard !mutations.isEmpty else { return }
+        var frames: [FrameMeta] = []
+        frames.reserveCapacity(mutations.count)
+        for mutation in mutations {
+            guard case .putFrame(let put) = mutation.entry else { continue }
+            frames.append(try FrameMeta.fromPut(put))
+        }
+        try validateFramePayloads(frames, file: file)
+    }
+
+    private static func validateFramePayloads(_ frames: [FrameMeta], file: FDFile) throws {
+        for frame in frames {
+            if frame.payloadLength == 0 { continue }
+            guard frame.payloadLength <= UInt64(Int.max) else {
+                throw WaxError.io("payload too large: \(frame.payloadLength)")
+            }
+            let stored = try file.readExactly(length: Int(frame.payloadLength), at: frame.payloadOffset)
+            let storedChecksum = try validateStoredPayloadChecksum(stored, frame: frame)
+            guard frame.canonicalEncoding != .plain || storedChecksum == frame.checksum else {
+                throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
+            }
         }
     }
 

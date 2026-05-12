@@ -43,6 +43,7 @@ enum WaxMCPTools {
 
             try validateToolAvailability(name: params.name, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: params.name, arguments: params.arguments)
+            try validateNullArgumentPolicy(arguments: params.arguments)
 
             let response = try await AgentBrokerClient.perform(
                 request: AgentBrokerRequest(
@@ -85,7 +86,6 @@ private extension WaxMCPTools {
         "memory_health": [],
         "knowledge_capture": ["content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object"],
         "corpus_search": ["query", "rebuild", "recursive", "mode", "alpha", "topK"],
-        "flush": [],
         "stats": [],
         "session_start": ["session_id", "agent_id", "run_id"],
         "session_resume": ["session_id", "agent_id", "run_id"],
@@ -120,6 +120,21 @@ private extension WaxMCPTools {
         }
     }
 
+    static func validateNullArgumentPolicy(arguments: [String: Value]?) throws {
+        guard let arguments else { return }
+        let nullArguments = arguments.compactMap { key, value -> String? in
+            if case .null = value {
+                return key
+            }
+            return nil
+        }
+        guard nullArguments.isEmpty else {
+            throw ToolValidationError.invalid(
+                "null optional argument(s) must be omitted instead: \(nullArguments.sorted().joined(separator: ", "))"
+            )
+        }
+    }
+
     static func migratedName(for name: String) -> String? {
         switch name {
         case "wax_memory_append": return "memory_append"
@@ -134,7 +149,6 @@ private extension WaxMCPTools {
         case "wax_memory_health": return "memory_health"
         case "wax_knowledge_capture": return "knowledge_capture"
         case "wax_corpus_search": return "corpus_search"
-        case "wax_flush": return "flush"
         case "wax_stats": return "stats"
         case "wax_session_start": return "session_start"
         case "wax_session_resume": return "session_resume"
@@ -370,10 +384,9 @@ extension WaxMCPTools {
         let sessionRegistry = await compatSessionRegistries.registry(for: memory)
         do {
             let normalizedName = migratedName(for: params.name) ?? params.name.replacingOccurrences(of: "wax_", with: "")
-            if normalizedName != "flush" {
-                try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
-            }
+            try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: normalizedName, arguments: params.arguments)
+            try validateNullArgumentPolicy(arguments: params.arguments)
 
             switch normalizedName {
             case "memory_append":
@@ -400,8 +413,6 @@ extension WaxMCPTools {
                 return try await compatKnowledgeCapture(params.arguments, memory: memory)
             case "corpus_search":
                 return try await compatCorpusSearch(params.arguments, noEmbedder: noEmbedder, embedderChoice: embedderChoice)
-            case "flush":
-                return try await compatFlush(memory)
             case "stats":
                 return try await compatStats(memory, sessionRegistry: sessionRegistry)
             case "session_start":

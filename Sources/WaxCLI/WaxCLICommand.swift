@@ -2,6 +2,13 @@ import ArgumentParser
 import Dispatch
 import Foundation
 import WaxCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 @main
 struct WaxCLI: ParsableCommand {
@@ -338,7 +345,8 @@ extension WaxCLI.MCP {
                         arguments: arguments,
                         environment: env,
                         input: request,
-                        expectedToolName: "remember"
+                        expectedToolName: "remember",
+                        timeoutSeconds: mcpDoctorTimeoutSeconds()
                     )
                     if output.timedOut {
                         failures.append(
@@ -423,6 +431,18 @@ private func lowDiskWarning(forStorePath rawPath: String) -> String? {
 
     let formatted = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
     return "Low disk space on the store volume (\(formatted) available). Wax store creation or flushes may fail."
+}
+
+private func mcpDoctorTimeoutSeconds() -> TimeInterval {
+    let raw = ProcessInfo.processInfo.environment["WAX_MCP_DOCTOR_TIMEOUT_SECS"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let raw,
+          !raw.isEmpty,
+          let value = TimeInterval(raw),
+          value > 0 else {
+        return 5
+    }
+    return value
 }
 
 private struct CapturedProcessOutput {
@@ -638,13 +658,18 @@ private enum ProcessRunner {
         let waitResult = state.semaphore.wait(timeout: .now() + timeoutSeconds)
         let timedOut = waitResult == .timedOut
 
+        if timedOut {
+            ProcessRunner.terminateAndWait(process, gracefulTimeout: 0.5)
+        }
+
         // Close stdin to request graceful shutdown; also stop active readers.
         try? stdinPipe.fileHandleForWriting.close()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
 
-        // Wait for clean exit.
-        process.waitUntilExit()
+        if !timedOut {
+            ProcessRunner.waitForExitOrKill(process, timeout: 2.0)
+        }
 
         // Drain any remaining output.
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
@@ -670,6 +695,41 @@ private enum ProcessRunner {
             foundExpectedTool: foundExpectedTool,
             timedOut: timedOut
         )
+    }
+
+    private static func terminateAndWait(_ process: Process, gracefulTimeout: TimeInterval) {
+        guard process.isRunning else {
+            process.waitUntilExit()
+            return
+        }
+
+        process.terminate()
+        let deadline = Date().addingTimeInterval(gracefulTimeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            let killDeadline = Date().addingTimeInterval(1)
+            while process.isRunning, Date() < killDeadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+        }
+        if !process.isRunning {
+            process.waitUntilExit()
+        }
+    }
+
+    private static func waitForExitOrKill(_ process: Process, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            terminateAndWait(process, gracefulTimeout: 0.5)
+        } else {
+            process.waitUntilExit()
+        }
     }
 }
 

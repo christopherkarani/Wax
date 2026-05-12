@@ -3,6 +3,13 @@ import Dispatch
 import Testing
 import Wax
 @testable import wax_cli
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 @Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
@@ -688,6 +695,126 @@ struct WaxCLIMemoryTests {
         #expect(facts.stdout.contains(#""hits" : ["#))
     }
 
+    @Test func brokerDaemonStdinRejectsOversizedEnvelope() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-daemon-stdin-bound-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("stdin-bound.wax")
+        let sessionRoot = tempRoot.appendingPathComponent("sessions", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "daemon",
+                "--store-path", storeURL.path,
+                "--session-root", sessionRoot.path,
+                "--no-embedder",
+            ],
+            environment: ["WAX_BROKER_MAX_REQUEST_BYTES": "32"],
+            input: String(repeating: "x", count: 64) + "\n",
+            timeout: 10
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "daemon stderr: \(output.stderr)")
+        #expect(output.stdout.contains("maximum envelope size of 32 bytes"))
+    }
+
+    @Test func brokerDaemonSocketRejectsOversizedEnvelopeWithoutWaitingForEOF() throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wdb-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("socket-bound.wax")
+        let sessionRoot = tempRoot.appendingPathComponent("sessions", isDirectory: true)
+        let socketURL = tempRoot.appendingPathComponent("broker.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [
+            "daemon",
+            "--store-path", storeURL.path,
+            "--session-root", sessionRoot.path,
+            "--socket-path", socketURL.path,
+            "--idle-timeout-secs", "30",
+            "--no-embedder",
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_MAX_REQUEST_BYTES"] = "32"
+        environment["WAX_BROKER_SOCKET_READ_TIMEOUT_SECS"] = "2"
+        process.environment = environment
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        try waitForSocket(at: socketURL, timeout: 5)
+        let response = try sendRawBrokerSocketLine(
+            String(repeating: "x", count: 64) + "\n",
+            socketPath: socketURL.path,
+            timeout: 5
+        )
+
+        #expect(response.contains("maximum envelope size of 32 bytes"))
+    }
+
+    @Test func mcpDoctorKillsHungSmokeCheckProcessAfterTimeout() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-timeout-\(UUID().uuidString)", isDirectory: true)
+        let bin = tempRoot.appendingPathComponent("bin", isDirectory: true)
+        let pidFile = tempRoot.appendingPathComponent("wax-mcp.pid")
+        let storeURL = tempRoot.appendingPathComponent("doctor.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+
+        let server = bin.appendingPathComponent("wax-mcp")
+        try """
+        #!/bin/sh
+        echo $$ > "\(pidFile.path)"
+        trap '' TERM
+        while true; do sleep 1; done
+        """.write(to: server, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: server.path)
+        try makeExecutableStub(at: bin.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: bin.appendingPathComponent("claude"))
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", server.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: [
+                "PATH": "\(bin.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")",
+                "WAX_MCP_DOCTOR_TIMEOUT_SECS": "1",
+            ],
+            timeout: 10
+        )
+
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("Smoke check timed out"))
+        let pidText = (try? String(contentsOf: pidFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pid = pidText.flatMap(Int32.init) {
+            Thread.sleep(forTimeInterval: 0.2)
+            #expect(kill(pid, 0) != 0, "hung wax-mcp smoke-check process should be reaped or killed")
+        } else {
+            Issue.record("fake wax-mcp did not write a pid file")
+        }
+    }
+
     @Test func mcpInstallRejectsBundledRuntimeWithChecksumMismatch() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-install-bad-checksum-\(UUID().uuidString)", isDirectory: true)
@@ -769,8 +896,14 @@ struct WaxCLIMemoryTests {
 
     @Test func releaseWaxMCPScriptsSyncMetadataVersion() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let rootScript = try String(
+            contentsOf: root.appendingPathComponent("scripts/release-waxmcp.sh"),
+            encoding: .utf8
+        )
+        #expect(rootScript.contains("Resources/scripts/release-waxmcp.sh"))
+        #expect(!rootScript.contains("perl -0pi"))
+
         let checkedFiles = [
-            "scripts/release-waxmcp.sh",
             "Resources/scripts/release-waxmcp.sh",
             ".github/workflows/release-waxmcp.yml",
         ]
@@ -789,10 +922,12 @@ struct WaxCLIMemoryTests {
                 "\(relativePath) must update or check the static metadata version"
             )
             #expect(!text.contains("serverVersion"), "\(relativePath) must not target the removed serverVersion symbol")
+            #expect(text.contains("darwin-arm64"), "\(relativePath) must include the arm64 release artifact")
+            #expect(text.contains("darwin-x64"), "\(relativePath) must include the x64 release artifact")
         }
     }
 
-    @Test func waxMCPPackageDoesNotAdvertiseMissingX64Artifacts() throws {
+    @Test func waxMCPPackageAdvertisesReleaseArchitectures() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let packageURL = root.appendingPathComponent("Resources/npm/waxmcp/package.json")
         let data = try Data(contentsOf: packageURL)
@@ -800,14 +935,56 @@ struct WaxCLIMemoryTests {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         let cpu = try #require(object["cpu"] as? [String])
-        let x64Dist = root.appendingPathComponent("Resources/npm/waxmcp/dist/darwin-x64", isDirectory: true)
-        let hasPackagedX64Artifacts =
-            FileManager.default.isExecutableFile(atPath: x64Dist.appendingPathComponent("wax-cli").path) &&
-            FileManager.default.isExecutableFile(atPath: x64Dist.appendingPathComponent("wax-mcp").path)
+        #expect(cpu.contains("arm64"))
+        #expect(cpu.contains("x64"))
 
-        if !hasPackagedX64Artifacts {
-            #expect(!cpu.contains("x64"))
-        }
+        let launcher = try String(
+            contentsOf: root.appendingPathComponent("Resources/npm/waxmcp/bin/waxmcp.js"),
+            encoding: .utf8
+        )
+        #expect(launcher.contains("arch !== \"arm64\" && arch !== \"x64\""))
+        #expect(launcher.contains("darwin-${arch}"))
+
+        let workflow = try String(
+            contentsOf: root.appendingPathComponent(".github/workflows/release-waxmcp.yml"),
+            encoding: .utf8
+        )
+        #expect(workflow.contains("platform: darwin-arm64"))
+        #expect(workflow.contains("platform: darwin-x64"))
+        #expect(workflow.contains("path: Resources/npm/waxmcp/dist/darwin-arm64"))
+        #expect(workflow.contains("path: Resources/npm/waxmcp/dist/darwin-x64"))
+    }
+
+    @Test func publicWebsiteIntroUsesPublicMemoryFacade() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let intro = try String(
+            contentsOf: root.appendingPathComponent("Resources/website/docs/intro.md"),
+            encoding: .utf8
+        )
+
+        #expect(intro.contains("https://github.com/christopherkarani/Wax.git"))
+        #expect(intro.contains("from: \"0.1.21\""))
+        #expect(intro.contains("exact: \"0.1.21\""))
+        #expect(intro.contains("let memory = try await Memory("))
+        #expect(intro.contains("try await memory.save("))
+        #expect(intro.contains("try await memory.search("))
+        #expect(!intro.contains("https://github.com/user/Wax.git"))
+        #expect(!intro.contains("MemoryOrchestrator"))
+        #expect(!intro.contains("MiniLMEmbedder"))
+        #expect(!intro.contains("1.0.0"))
+    }
+
+    @Test func waxDemoMatchesRootPackageBaseline() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let rootManifest = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let demoManifest = try String(contentsOf: root.appendingPathComponent("Resources/WaxDemo/Package.swift"), encoding: .utf8)
+
+        let rootToolsLine = try #require(rootManifest.split(separator: "\n").first)
+        let demoToolsLine = try #require(demoManifest.split(separator: "\n").first)
+        #expect(demoToolsLine == rootToolsLine)
+        #expect(rootManifest.contains(".macOS(.v15)"))
+        #expect(demoManifest.contains(".macOS(.v15)"))
+        #expect(!demoManifest.contains(".macOS(.v26)"))
     }
 
     @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {
@@ -1006,6 +1183,108 @@ struct WaxCLIMemoryTests {
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private func waitForSocket(at url: URL, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw CLIError("Timed out waiting for socket at \(url.path)")
+    }
+
+    private func sendRawBrokerSocketLine(
+        _ line: String,
+        socketPath: String,
+        timeout: TimeInterval
+    ) throws -> String {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw CLIError("Unable to create test socket")
+        }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw CLIError("Socket path too long: \(socketPath)")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            throw CLIError("Unable to connect to broker socket at \(socketPath)")
+        }
+
+        let payload = Data(line.utf8)
+        try payload.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < payload.count {
+                let written = write(fd, baseAddress.advanced(by: offset), payload.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if errno == EINTR {
+                    continue
+                }
+                throw CLIError("Unable to write broker request")
+            }
+        }
+        shutdown(fd, SHUT_WR)
+
+        var response = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let remaining = max(1, deadline.timeIntervalSinceNow * 1000)
+            let pollResult = poll(&descriptor, 1, Int32(remaining))
+            if pollResult == 0 {
+                continue
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker response poll failed")
+            }
+            let count = read(fd, &buffer, buffer.count)
+            if count > 0 {
+                response.append(buffer, count: count)
+                if response.contains(0x0A) {
+                    break
+                }
+                continue
+            }
+            if count == 0 {
+                break
+            }
+            if errno == EINTR {
+                continue
+            }
+            throw CLIError("Broker response read failed")
+        }
+
+        guard !response.isEmpty else {
+            throw CLIError("Timed out waiting for broker response")
+        }
+        return String(data: response, encoding: .utf8) ?? ""
     }
 
     private func runMCPSmokeProcess(

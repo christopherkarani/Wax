@@ -73,6 +73,41 @@ import Testing
     }
 }
 
+@Test func corruptPendingPayloadIsRejectedBeforeCommitAndOnReopen() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let frameId = try await wax.put(Data("pending payload".utf8))
+    guard let pendingMeta = await wax.pendingFrameMeta(frameId: frameId) else {
+        Issue.record("Expected pending metadata for uncommitted frame")
+        try await wax.close()
+        return
+    }
+
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+        try file.writeAll(Data("corrupt payload".utf8), at: pendingMeta.payloadOffset)
+        try file.fsync()
+    }
+
+    do {
+        try await wax.commit()
+        Issue.record("Expected corrupt pending payload commit to fail")
+    } catch is WaxError {}
+
+    do {
+        try await wax.close()
+        Issue.record("Expected corrupt pending payload close to fail")
+    } catch is WaxError {}
+
+    do {
+        _ = try await Wax.open(at: url)
+        Issue.record("Expected reopen with corrupt pending payload to fail")
+    } catch is WaxError {}
+}
+
 @Test func openUsesNewestFooterWhenHeaderPointsToOlderValidFooter() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }

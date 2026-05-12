@@ -26,6 +26,10 @@ enum WaxMCPServerMetadata {
     static let version = "0.1.21"
 }
 
+private func terminateProcess(_ status: Int32) -> Never {
+    exit(status)
+}
+
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -68,13 +72,13 @@ struct WaxMCPServerCommand: ParsableCommand {
         Task(priority: .userInitiated) {
             do {
                 try await command.runServer()
-                Darwin.exit(EXIT_SUCCESS)
+                terminateProcess(EXIT_SUCCESS)
             } catch let error as LicenseValidator.ValidationError {
                 writeStderr(error.localizedDescription)
-                Darwin.exit(EXIT_FAILURE)
+                terminateProcess(EXIT_FAILURE)
             } catch {
                 writeStderr("wax-mcp failed: \(error)")
-                Darwin.exit(EXIT_FAILURE)
+                terminateProcess(EXIT_FAILURE)
             }
         }
 
@@ -320,6 +324,8 @@ WaxMCPServerCommand.main()
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 import Foundation
 

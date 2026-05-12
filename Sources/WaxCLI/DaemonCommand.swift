@@ -5,6 +5,8 @@ import Wax
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 struct DaemonCommand: AsyncParsableCommand {
@@ -63,33 +65,183 @@ struct DaemonCommand: AsyncParsableCommand {
 }
 
 private extension DaemonCommand {
+    var maxRequestBytes: Int {
+        configuredPositiveInt(envKey: "WAX_BROKER_MAX_REQUEST_BYTES", defaultValue: 1_048_576)
+    }
+
+    var socketReadTimeoutSeconds: Double {
+        configuredPositiveDouble(envKey: "WAX_BROKER_SOCKET_READ_TIMEOUT_SECS", defaultValue: 5.0)
+    }
+
     func runLoop(
         service: AgentBrokerService,
         input: FileHandle,
         output: FileHandle
     ) async throws {
-        for try await line in input.bytes.lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
+        var pending = Data()
+        var droppingOversizedEnvelope = false
 
-            let request: AgentBrokerRequest
-            do {
-                request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
-            } catch {
-                let response = AgentBrokerResponse(
-                    ok: false,
-                    error: "Invalid request: \(error.localizedDescription)"
-                )
-                try writeJSONLine(response, to: output)
+        for try await byte in input.bytes {
+            if byte == 0x0A {
+                if droppingOversizedEnvelope {
+                    try writeJSONLine(Self.requestTooLargeResponse(maxBytes: maxRequestBytes), to: output)
+                    pending.removeAll(keepingCapacity: true)
+                    droppingOversizedEnvelope = false
+                    continue
+                }
+
+                let shouldExit = try await handleRequestEnvelope(pending, service: service, output: output)
+                pending.removeAll(keepingCapacity: true)
+                if shouldExit {
+                    return
+                }
                 continue
             }
 
-            let response = await service.handle(request)
-            try writeJSONLine(response, to: output)
-            if response.shouldExit {
-                return
+            if droppingOversizedEnvelope {
+                continue
+            }
+
+            pending.append(byte)
+            if pending.count > maxRequestBytes {
+                pending.removeAll(keepingCapacity: true)
+                droppingOversizedEnvelope = true
             }
         }
+
+        if droppingOversizedEnvelope {
+            try writeJSONLine(Self.requestTooLargeResponse(maxBytes: maxRequestBytes), to: output)
+        } else if !pending.isEmpty {
+            _ = try await handleRequestEnvelope(pending, service: service, output: output)
+        }
+    }
+
+    func handleRequestEnvelope(
+        _ envelope: Data,
+        service: AgentBrokerService,
+        output: FileHandle
+    ) async throws -> Bool {
+        let line = String(data: envelope, encoding: .utf8) ?? ""
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let request: AgentBrokerRequest
+        do {
+            request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
+        } catch {
+            let response = AgentBrokerResponse(
+                ok: false,
+                error: "Invalid request: \(error.localizedDescription)"
+            )
+            try writeJSONLine(response, to: output)
+            return false
+        }
+
+        let response = await service.handle(request)
+        try writeJSONLine(response, to: output)
+        return response.shouldExit
+    }
+
+    static func requestTooLargeResponse(maxBytes: Int) -> AgentBrokerResponse {
+        AgentBrokerResponse(
+            ok: false,
+            error: "Broker request exceeds maximum envelope size of \(maxBytes) bytes"
+        )
+    }
+
+    static func requestReadTimeoutResponse(timeoutSeconds: Double) -> AgentBrokerResponse {
+        AgentBrokerResponse(
+            ok: false,
+            error: "Timed out waiting for complete broker request after \(timeoutSeconds) seconds"
+        )
+    }
+
+    static func socketReadFailureResponse(_ error: Error) -> AgentBrokerResponse {
+        AgentBrokerResponse(
+            ok: false,
+            error: "Invalid request: \(error.localizedDescription)"
+        )
+    }
+
+    func readSocketRequestEnvelope(fd: Int32) throws -> Data? {
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let deadline = Date().addingTimeInterval(socketReadTimeoutSeconds)
+
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw BrokerDaemonReadError.timeout(socketReadTimeoutSeconds)
+            }
+
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, Int32(max(1, remaining * 1000)))
+            if pollResult == 0 {
+                throw BrokerDaemonReadError.timeout(socketReadTimeoutSeconds)
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker request poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                if let newline = buffer[..<bytesRead].firstIndex(of: 0x0A) {
+                    let count = newline
+                    guard result.count + count <= maxRequestBytes else {
+                        throw BrokerDaemonReadError.tooLarge(maxRequestBytes)
+                    }
+                    result.append(buffer, count: count)
+                    return result
+                }
+                guard result.count + bytesRead <= maxRequestBytes else {
+                    throw BrokerDaemonReadError.tooLarge(maxRequestBytes)
+                }
+                result.append(buffer, count: bytesRead)
+                continue
+            }
+
+            if bytesRead == 0 {
+                return result.isEmpty ? nil : result
+            }
+
+            if errno == EINTR {
+                continue
+            }
+
+            throw CLIError("Broker request read failed: \(String(cString: strerror(errno)))")
+        }
+    }
+
+    func responseForReadError(_ readError: Error) -> AgentBrokerResponse {
+        switch readError {
+        case BrokerDaemonReadError.tooLarge(let maxBytes):
+            return Self.requestTooLargeResponse(maxBytes: maxBytes)
+        case BrokerDaemonReadError.timeout(let timeoutSeconds):
+            return Self.requestReadTimeoutResponse(timeoutSeconds: timeoutSeconds)
+        default:
+            return Self.socketReadFailureResponse(readError)
+        }
+    }
+
+    func configuredPositiveInt(envKey: String, defaultValue: Int) -> Int {
+        guard let raw = ProcessInfo.processInfo.environment[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let value = Int(raw),
+              value > 0 else {
+            return defaultValue
+        }
+        return value
+    }
+
+    func configuredPositiveDouble(envKey: String, defaultValue: Double) -> Double {
+        guard let raw = ProcessInfo.processInfo.environment[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let value = Double(raw),
+              value > 0 else {
+            return defaultValue
+        }
+        return value
     }
 
     func runSocketServer(
@@ -173,15 +325,21 @@ private extension DaemonCommand {
 
     func handleSocketClient(service: AgentBrokerService, fd: Int32) async throws -> Bool {
         let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        let data = try fileHandle.readToEnd() ?? Data()
         let response: AgentBrokerResponse
 
-        if let line = String(data: data, encoding: .utf8)?
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+        do {
+            guard let data = try readSocketRequestEnvelope(fd: fd) else {
+                try? fileHandle.close()
+                return false
+            }
+            let line = String(data: data, encoding: .utf8) ?? ""
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                try? fileHandle.close()
+                return false
+            }
             do {
-                let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
+                let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
                 response = await service.handle(request)
             } catch {
                 response = AgentBrokerResponse(
@@ -189,9 +347,8 @@ private extension DaemonCommand {
                     error: "Invalid request: \(error.localizedDescription)"
                 )
             }
-        } else {
-            try? fileHandle.close()
-            return false
+        } catch {
+            response = responseForReadError(error)
         }
 
         try writeJSONLine(response, to: fileHandle)
@@ -203,5 +360,19 @@ private extension DaemonCommand {
         let data = try JSONEncoder().encode(response)
         output.write(data)
         output.write(Data([0x0A]))
+    }
+}
+
+private enum BrokerDaemonReadError: LocalizedError {
+    case tooLarge(Int)
+    case timeout(Double)
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge(let maxBytes):
+            return "Broker request exceeds maximum envelope size of \(maxBytes) bytes"
+        case .timeout(let seconds):
+            return "Timed out waiting for complete broker request after \(seconds) seconds"
+        }
     }
 }

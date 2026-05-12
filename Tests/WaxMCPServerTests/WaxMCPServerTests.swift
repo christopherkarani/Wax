@@ -645,6 +645,44 @@ func handoffRejectsLegacyCommitArgument() async throws {
 }
 
 @Test
+func nullOptionalArgumentsAreRejectedInsteadOfForwardedToBroker() async throws {
+    try await withMemory { memory in
+        let handoffResult = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "handoff",
+                arguments: [
+                    "content": .string("null project should be omitted"),
+                    "project": .null,
+                ]
+            ),
+            memory: memory
+        )
+        #expect(handoffResult.isError == true)
+        #expect(firstText(in: handoffResult).contains("must be omitted instead"))
+        #expect(firstText(in: handoffResult).contains("project"))
+    }
+}
+
+@Test
+func hiddenFlushToolIsRejectedConsistently() async throws {
+    try await withMemory { memory in
+        let flush = await WaxMCPTools.handleCall(
+            params: .init(name: "flush", arguments: [:]),
+            memory: memory
+        )
+        #expect(flush.isError == true)
+        #expect(firstText(in: flush).contains("Unknown tool"))
+
+        let legacyFlush = await WaxMCPTools.handleCall(
+            params: .init(name: "wax_flush", arguments: [:]),
+            memory: memory
+        )
+        #expect(legacyFlush.isError == true)
+        #expect(firstText(in: legacyFlush).contains("Unknown tool"))
+    }
+}
+
+@Test
 func recallAndSearchSupportMetadataExactFilters() async throws {
     try await withMemory { memory in
         let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -2848,12 +2886,12 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(2)))
-    func legacyWaxFlushReportsRenameInsteadOfUnknownTool() async throws {
+    func legacyWaxFlushIsRejectedBecauseFlushIsNotPublished() async throws {
         let harness = try MCPServerProcessHarness()
         try harness.start()
         defer { harness.terminateIfNeeded() }
 
-        _ = try await harness.bootstrap(clientName: "wax-mcp-legacy-flush-test")
+        _ = try await harness.bootstrap(clientName: "wax-mcp-hidden-flush-test")
 
         let flush = try await harness.callTool(
             id: 2,
@@ -2861,8 +2899,7 @@ struct WaxMCPProcessTests {
             arguments: [:],
             timeout: 20
         )
-        #expect(flush.contains("tool_renamed"))
-        #expect(flush.contains("renamed to 'flush'"))
+        #expect(flush.contains("Unknown tool"))
     }
 
     @Test(.timeLimit(.minutes(2)))

@@ -101,6 +101,41 @@ import WaxCore
     }
 }
 
+@Test func metalSegmentDecodeRejectsVectorByteOverflow() throws {
+    let vectorCount = UInt64(Int.max / (MemoryLayout<Float>.stride * 2) + 1)
+    let data = buildSegment(
+        encoding: 2,
+        dimension: 2,
+        vectorCount: vectorCount,
+        payloadLength: 0,
+        payload: Data()
+    )
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
+@Test func metalSegmentDecodeRejectsFrameIdLengthOverflow() throws {
+    var payload = Data()
+    var vector: Float = 1
+    withUnsafeBytes(of: &vector) { payload.append(contentsOf: $0) }
+    var frameIdLength = UInt64(Int.max).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { payload.append(contentsOf: $0) }
+
+    let data = buildSegment(
+        encoding: 2,
+        dimension: 1,
+        vectorCount: 1,
+        payloadLength: UInt64(MemoryLayout<Float>.stride),
+        payload: payload
+    )
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
 // MARK: - Helpers
 
 private func buildMinimalHeader(encoding: UInt8) -> Data {
@@ -144,5 +179,25 @@ private func buildMetalSegment(
         encoder.encodeFixedBytes(Data(buffer: buf))
     }
 
+    return encoder.data
+}
+
+private func buildSegment(
+    encoding: UInt8,
+    dimension: UInt32,
+    vectorCount: UInt64,
+    payloadLength: UInt64,
+    payload: Data
+) -> Data {
+    var encoder = BinaryEncoder()
+    encoder.encodeFixedBytes(Data([0x4D, 0x56, 0x32, 0x56]))
+    encoder.encode(UInt16(1))
+    encoder.encode(encoding)
+    encoder.encode(UInt8(0))
+    encoder.encode(dimension)
+    encoder.encode(vectorCount)
+    encoder.encode(payloadLength)
+    encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+    encoder.encodeFixedBytes(payload)
     return encoder.data
 }
