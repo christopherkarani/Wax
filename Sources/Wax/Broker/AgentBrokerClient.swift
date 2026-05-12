@@ -178,11 +178,29 @@ package enum AgentBrokerClient {
 
         let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
         while Date() < deadline {
-            if !FileManager.default.fileExists(atPath: configuration.socketPath) {
+            if try brokerShutdownCompleted(
+                socketPath: configuration.socketPath,
+                storePath: configuration.storePath
+            ) {
                 return
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+    }
+
+    private static func brokerShutdownCompleted(
+        socketPath: String,
+        storePath: String
+    ) throws -> Bool {
+        guard !FileManager.default.fileExists(atPath: socketPath) else {
+            return false
+        }
+
+        try StoreLockProbe.preflightExclusiveAccess(
+            at: URL(fileURLWithPath: storePath),
+            timeout: .milliseconds(50)
+        )
+        return true
     }
 
     private static func sendIfAvailable(

@@ -52,6 +52,7 @@ package struct SearchResponse: Sendable, Equatable {
         package var sources: [Source]
         package var rankingDiagnostics: RankingDiagnostics?
         package var metadata: [String: String]
+        package var explanations: [String]
 
         package init(
             frameId: UInt64,
@@ -59,7 +60,8 @@ package struct SearchResponse: Sendable, Equatable {
             previewText: String? = nil,
             sources: [Source],
             rankingDiagnostics: RankingDiagnostics? = nil,
-            metadata: [String: String] = [:]
+            metadata: [String: String] = [:],
+            explanations: [String] = []
         ) {
             self.frameId = frameId
             self.score = score
@@ -67,6 +69,7 @@ package struct SearchResponse: Sendable, Equatable {
             self.sources = sources
             self.rankingDiagnostics = rankingDiagnostics
             self.metadata = metadata
+            self.explanations = explanations
         }
     }
 

@@ -34,6 +34,23 @@ private enum BaselineFixtureLoader {
     }
 }
 
+private enum MiniLMAssetLoader {
+    static func modelDirectory() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/WaxVectorSearchMiniLM/Resources/all-MiniLM-L6-v2.mlmodelc")
+    }
+
+    static func modelMIL() throws -> String {
+        try String(
+            contentsOf: modelDirectory().appendingPathComponent("model.mil"),
+            encoding: .utf8
+        )
+    }
+}
+
 private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     var dot: Float = 0
     var lhsNorm: Float = 0
@@ -53,6 +70,19 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
 
 private func isMiniLMInferenceEnabled() -> Bool {
     ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1"
+}
+
+@Test func minilmBundledModelDoesNotUseKnownBadW8A8Quantization() throws {
+    let mil = try MiniLMAssetLoader.modelMIL()
+
+    #expect(
+        !mil.contains("constexpr_blockwise_shift_scale"),
+        "MiniLM model must not use the W8A8 constexpr blockwise quantization path that produced NaN embeddings on macOS 26.3."
+    )
+    #expect(
+        !mil.contains("fp16(nan)"),
+        "MiniLM model must not contain NaN quantization scales."
+    )
 }
 
 @available(macOS 15.0, iOS 18.0, *)

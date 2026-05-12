@@ -15,6 +15,7 @@ package struct SearchRequest: Sendable, Equatable {
     package var frameFilter: FrameFilter?
     package var asOfMs: Int64
     package var structuredMemory: StructuredMemorySearchOptions
+    package var scopeContext: MemoryScopeContext?
 
     package var rrfK: Int
     package var previewMaxBytes: Int
@@ -38,6 +39,7 @@ package struct SearchRequest: Sendable, Equatable {
         frameFilter: FrameFilter? = nil,
         asOfMs: Int64 = Int64.max,
         structuredMemory: StructuredMemorySearchOptions = .init(),
+        scopeContext: MemoryScopeContext? = nil,
         rrfK: Int = 60,
         previewMaxBytes: Int = 512,
         metadataLoadingThreshold: Int = 50,
@@ -57,6 +59,7 @@ package struct SearchRequest: Sendable, Equatable {
         self.frameFilter = frameFilter
         self.asOfMs = asOfMs
         self.structuredMemory = structuredMemory
+        self.scopeContext = scopeContext
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
         self.metadataLoadingThreshold = metadataLoadingThreshold

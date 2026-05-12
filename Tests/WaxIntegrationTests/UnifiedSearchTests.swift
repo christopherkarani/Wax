@@ -792,3 +792,122 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+@Test func semanticScopeRerankPrefersRepoDecisionMemory() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let globalID = try await wax.put(
+            Data("Auth rollout decision uses refresh tokens.".utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "note",
+                "wax.durability": "working",
+                "wax.repo": "other-repo",
+                "wax.project": "other-repo",
+            ]))
+        )
+        try await text.index(frameId: globalID, text: "Auth rollout decision uses refresh tokens.")
+
+        let repoID = try await wax.put(
+            Data("Auth rollout decision uses refresh tokens.".utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "decision",
+                "wax.durability": "durable",
+                "wax.repo": "Wax",
+                "wax.project": "Wax",
+            ]))
+        )
+        try await text.index(frameId: repoID, text: "Auth rollout decision uses refresh tokens.")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "auth rollout decision",
+                mode: .textOnly,
+                topK: 2,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            )
+        )
+
+        #expect(response.results.map(\.frameId).first == repoID)
+        #expect(response.results.first?.explanations.contains("same repo") == true)
+        #expect(response.results.first?.explanations.contains("decision memory") == true)
+
+        try await wax.close()
+    }
+}
+
+@Test func expiredMemoriesAreExcludedFromUnifiedSearch() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+        let expiredID = try await wax.put(
+            Data("Legacy rollout note".utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "task_state",
+                "wax.durability": "ephemeral",
+                "wax.created_at_ms": String(nowMs - 10_000),
+                "wax.expires_at_ms": String(nowMs - 1_000),
+            ]))
+        )
+        try await text.index(frameId: expiredID, text: "Legacy rollout note")
+
+        let activeID = try await wax.put(
+            Data("Current rollout note".utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "decision",
+                "wax.durability": "durable",
+                "wax.created_at_ms": String(nowMs),
+            ]))
+        )
+        try await text.index(frameId: activeID, text: "Current rollout note")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(query: "rollout note", mode: .textOnly, topK: 5)
+        )
+
+        #expect(response.results.map(\.frameId).contains(activeID))
+        #expect(!response.results.map(\.frameId).contains(expiredID))
+
+        try await wax.close()
+    }
+}
+
+@Test func unifiedSearchExplainsSemanticReasons() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let frameID = try await wax.put(
+            Data("Chris prefers concise release notes.".utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "user_preference",
+                "wax.durability": "durable",
+                "wax.repo": "Wax",
+                "wax.project": "Wax",
+            ]))
+        )
+        try await text.index(frameId: frameID, text: "Chris prefers concise release notes.")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "concise release notes",
+                mode: .textOnly,
+                topK: 3,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            )
+        )
+
+        let explanations = response.results.first?.explanations ?? []
+        #expect(explanations.contains("keyword match"))
+        #expect(explanations.contains("same repo"))
+        #expect(explanations.contains("user preference"))
+
+        try await wax.close()
+    }
+}

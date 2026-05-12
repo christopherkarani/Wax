@@ -77,7 +77,7 @@ let package = Package(
         ),
         .init(
             name: "MCPServer",
-            description: "Builds the WaxMCPServer stdio MCP server executable (macOS only)",
+            description: "Builds the WaxMCPServer executable with stdio and HTTP transports",
             enabledTraits: ["MiniLMEmbeddings"]
         ),
         .init(
@@ -95,6 +95,7 @@ let package = Package(
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3"),
         .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
         .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
@@ -206,6 +207,21 @@ let package = Package(
                 .product(
                     name: "ArgumentParser",
                     package: "swift-argument-parser",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "NIOCore",
+                    package: "swift-nio",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "NIOPosix",
+                    package: "swift-nio",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "NIOHTTP1",
+                    package: "swift-nio",
                     condition: .when(traits: ["MCPServer"])
                 ),
                 .target(

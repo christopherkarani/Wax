@@ -237,6 +237,19 @@ package enum AgentBrokerPathing {
         #endif
     }
 
+    package static func defaultSessionRoot() -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["WAX_SESSION_ROOT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            return expandPath(raw)
+        }
+        if let raw = env["WAX_SESSION_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            return expandPath(raw)
+        }
+        return expandPath(defaultSessionRootPath)
+    }
+
     package static func resolveBrokerCLIPath(
         currentExecutablePath: String
     ) -> String {
@@ -257,14 +270,17 @@ package enum AgentBrokerPathing {
         brokerExecutablePath: String,
         storePath: String,
         sessionRootPath: String = defaultSessionRootPath,
+        socketRootPath: String? = nil,
         embedderChoice: String,
         noEmbedder: Bool,
         requireVector: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) throws -> AgentBrokerConfiguration {
         let expandedStore = expandPath(storePath)
-        let expandedSessionRoot = expandPath(sessionRootPath)
-        let socketRoot = brokerSocketRoot()
+        let expandedSessionRoot = sessionRootPath == defaultSessionRootPath
+            ? defaultSessionRoot()
+            : expandPath(sessionRootPath)
+        let socketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
         try FileManager.default.createDirectory(at: socketRoot, withIntermediateDirectories: true)
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"

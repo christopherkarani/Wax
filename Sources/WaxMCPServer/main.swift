@@ -1,11 +1,18 @@
 #if MCPServer
 import ArgumentParser
-import Darwin
 import Dispatch
 import Foundation
 import MCP
 import Wax
 import WaxCore
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
@@ -15,11 +22,15 @@ import WaxVectorSearchMiniLM
 import WaxVectorSearchArctic
 #endif
 
+enum WaxMCPServerMetadata {
+    static let version = "0.1.21"
+}
+
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-mcp",
-        abstract: "Stdio MCP server exposing Wax memory and multimodal RAG tools."
+        abstract: "MCP server exposing Wax memory and multimodal RAG tools over stdio or HTTP."
     )
 
     @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.wax)")
@@ -33,6 +44,21 @@ struct WaxMCPServerCommand: ParsableCommand {
 
     @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")
     var noEmbedder = false
+
+    @Option(name: .customLong("transport"), help: "Transport to serve: stdio (default) or http.")
+    var transport = "stdio"
+
+    @Option(name: .customLong("http-host"), help: "HTTP bind host when --transport http is used.")
+    var httpHost = "127.0.0.1"
+
+    @Option(name: .customLong("http-port"), help: "HTTP bind port when --transport http is used.")
+    var httpPort = 3000
+
+    @Option(name: .customLong("http-endpoint"), help: "HTTP MCP endpoint path when --transport http is used.")
+    var httpEndpoint = "/mcp"
+
+    @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
+    var httpMaxBodyBytes = 1_048_576
 
     mutating func run() throws {
         let command = self
@@ -53,6 +79,10 @@ struct WaxMCPServerCommand: ParsableCommand {
     }
 
     private func runServer() async throws {
+        let normalizedTransport = transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedTransport == "stdio" || normalizedTransport == "http" else {
+            throw MCP.MCPError.invalidRequest("transport must be 'stdio' or 'http'")
+        }
         let licenseEnabled = licenseValidationEnabled()
         if licenseEnabled {
             let resolvedLicense = normalizedLicense()
@@ -81,6 +111,7 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedderTuning: embedderTuning
         )
         let brokerStarted = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
+        let structuredMemoryEnabled = memoryConfig.enableStructuredMemory
         defer {
             if brokerStarted {
                 try? AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: brokerConfiguration)
@@ -92,6 +123,7 @@ struct WaxMCPServerCommand: ParsableCommand {
 
         writeStderr(
             "wax-mcp config: broker=\"\(brokerConfiguration.socketPath)\" store=\"\(brokerConfiguration.storePath)\" " +
+                "transport=\(normalizedTransport) " +
                 "structuredMemory=\(memoryConfig.enableStructuredMemory) " +
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
@@ -101,43 +133,85 @@ struct WaxMCPServerCommand: ParsableCommand {
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
         // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
-        let serverVersion = "0.1.21"
+        let serverVersion = WaxMCPServerMetadata.version
         writeStderr("wax-mcp v\(serverVersion) starting")
+        switch normalizedTransport {
+        case "stdio":
+            let server = await makeServer(
+                version: serverVersion,
+                brokerConfiguration: brokerConfiguration,
+                structuredMemoryEnabled: structuredMemoryEnabled
+            )
+            let signalSources = installSignalHandlers {
+                await server.stop()
+            }
+
+            var runError: Error?
+            do {
+                let transport = GracefulStdioTransport()
+                try await server.start(transport: transport)
+                await server.waitUntilCompleted()
+            } catch {
+                runError = error
+            }
+
+            for source in signalSources { source.cancel() }
+            await server.stop()
+
+            if let runError {
+                throw runError
+            }
+
+        case "http":
+            let app = MCPHTTPApplication(
+                configuration: .init(
+                    host: httpHost,
+                    port: httpPort,
+                    endpoint: httpEndpoint,
+                    maxRequestBodyBytes: httpMaxBodyBytes
+                ),
+                serverFactory: { _, transport in
+                    let server = await makeServer(
+                        version: serverVersion,
+                        brokerConfiguration: brokerConfiguration,
+                        structuredMemoryEnabled: structuredMemoryEnabled
+                    )
+                    return server
+                }
+            )
+            let signalSources = installSignalHandlers {
+                await app.stop()
+            }
+            defer {
+                for source in signalSources { source.cancel() }
+            }
+            writeStderr("wax-mcp HTTP listening on http://\(httpHost):\(httpPort)\(httpEndpoint)")
+            try await app.start()
+
+        default:
+            break
+        }
+    }
+
+    private func makeServer(
+        version: String,
+        brokerConfiguration: AgentBrokerConfiguration,
+        structuredMemoryEnabled: Bool
+    ) async -> Server {
         let server = Server(
             name: "wax-mcp",
-            version: serverVersion,
-            instructions: "Use these tools to store, search, and recall Wax memory. Server v\(serverVersion).",
+            version: version,
+            instructions: "Use these tools to store, search, and recall Wax memory. Server v\(version).",
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,
-            structuredMemoryEnabled: memoryConfig.enableStructuredMemory,
+            structuredMemoryEnabled: structuredMemoryEnabled,
             noEmbedder: noEmbedder
         )
-
-        // Install signal handlers so SIGINT/SIGTERM trigger graceful shutdown
-        // instead of immediate process termination (which would skip flush/close).
-        let signalSources = installSignalHandlers(server: server)
-
-        var runError: Error?
-        do {
-            let transport = GracefulStdioTransport()
-            try await server.start(transport: transport)
-            await server.waitUntilCompleted()
-        } catch {
-            runError = error
-        }
-
-        // Cancel signal sources now that we're shutting down.
-        for source in signalSources { source.cancel() }
-
-        await server.stop()
-
-        if let runError {
-            throw runError
-        }
+        return server
     }
 
     private func normalizedLicense() -> String? {
@@ -202,14 +276,14 @@ private func resolveExecutableOnPath(named executable: String) -> URL? {
     return nil
 }
 
-private func installSignalHandlers(server: Server) -> [DispatchSourceSignal] {
+private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
     var sources: [DispatchSourceSignal] = []
     for sig in [SIGINT, SIGTERM] {
         signal(sig, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         source.setEventHandler {
             writeStderr("Received signal \(sig), shutting down gracefully…")
-            Task { await server.stop() }
+            Task { await stop() }
         }
         source.resume()
         sources.append(source)

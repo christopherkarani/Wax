@@ -22,6 +22,7 @@ package struct OrchestratorConfig: Sendable {
 
     package var requireOnDeviceProviders: Bool = true
     package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
+    package var defaultScopeContext: MemoryScopeContext? = nil
 
     @available(*, deprecated, message: "Use vectorEnginePreference instead")
     package var useMetalVectorSearch: Bool {

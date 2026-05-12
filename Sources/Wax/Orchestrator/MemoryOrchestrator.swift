@@ -37,19 +37,22 @@ package actor MemoryOrchestrator {
         package var previewText: String?
         package var sources: [SearchResponse.Source]
         package var metadata: [String: String]
+        package var explanations: [String]
 
         package init(
             frameId: UInt64,
             score: Float,
             previewText: String?,
             sources: [SearchResponse.Source],
-            metadata: [String: String] = [:]
+            metadata: [String: String] = [:],
+            explanations: [String] = []
         ) {
             self.frameId = frameId
             self.score = score
             self.previewText = previewText
             self.sources = sources
             self.metadata = metadata
+            self.explanations = explanations
         }
     }
 
@@ -847,11 +850,25 @@ package actor MemoryOrchestrator {
             session: session,
             frameFilter: frameFilter,
             timeRange: resolvedTimeRange,
+            scopeContext: config.defaultScopeContext,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
+        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
+            await accessStatsManager.getStats(frameIds: context.items.map(\.frameId))
+        } else {
+            [:]
+        }
+        let enrichedItems = context.items.map { item in
+            var item = item
+            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId]).reasons
+            if !accessReasons.isEmpty {
+                item.explanations = dedupedExplanations(item.explanations + accessReasons)
+            }
+            return item
+        }
         await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return context
+        return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
     /// Performs direct search without context assembly.
@@ -928,17 +945,25 @@ package actor MemoryOrchestrator {
             topK: topK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            scopeContext: config.defaultScopeContext,
             previewMaxBytes: config.rag.previewMaxBytes
         )
         let response = try await session.search(request)
 
+        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
+            await accessStatsManager.getStats(frameIds: response.results.map(\.frameId))
+        } else {
+            [:]
+        }
         let hits = response.results.map { result in
-            MemorySearchHit(
+            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[result.frameId]).reasons
+            return MemorySearchHit(
                 frameId: result.frameId,
                 score: result.score,
                 previewText: result.previewText,
                 sources: result.sources,
-                metadata: result.metadata
+                metadata: result.metadata,
+                explanations: dedupedExplanations(result.explanations + accessReasons)
             )
         }
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
@@ -969,6 +994,22 @@ package actor MemoryOrchestrator {
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embedder?.identity
         )
+    }
+
+    package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
+        await accessStatsManager.snapshot()
+    }
+
+    private func dedupedExplanations(_ reasons: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        ordered.reserveCapacity(reasons.count)
+        for reason in reasons {
+            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            ordered.append(normalized)
+        }
+        return ordered
     }
 
     package func sessionRuntimeStats() async throws -> SessionRuntimeStats {
@@ -1122,8 +1163,12 @@ package actor MemoryOrchestrator {
 
         var metadata = Metadata()
         metadata.entries["kind"] = "handoff"
+        metadata.entries[MemoryMetadataKeys.type] = MemoryType.handoff.rawValue
+        metadata.entries[MemoryMetadataKeys.durability] = MemoryDurability.ephemeral.rawValue
+        metadata.entries[MemoryMetadataKeys.createdAtMs] = String(Int64(Date().timeIntervalSince1970 * 1000))
         if let project, !project.isEmpty {
             metadata.entries["project"] = project
+            metadata.entries[MemoryMetadataKeys.project] = project
         }
         if !pending.isEmpty {
             metadata.entries["pending_tasks"] = pending.joined(separator: "\n")

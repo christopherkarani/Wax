@@ -12,19 +12,57 @@ import MCP
 import Wax
 import XCTest
 
+private func withAgentBrokerService<T>(
+    _ body: (AgentBrokerService, URL) async throws -> T
+) async throws -> T {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-broker-test-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let result = try await body(service, sessionRootURL)
+        try await service.close()
+        return result
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
 @Test
 func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
+    #expect(names.contains("memory_append"))
+    #expect(names.contains("memory_search"))
+    #expect(names.contains("memory_get"))
     #expect(names.contains("remember"))
     #expect(names.contains("recall"))
     #expect(names.contains("search"))
+    #expect(names.contains("session_synthesize"))
+    #expect(names.contains("memory_promote"))
+    #expect(names.contains("promote"))
+    #expect(names.contains("memory_health"))
+    #expect(names.contains("knowledge_capture"))
     #expect(names.contains("corpus_search"))
     #expect(!names.contains("flush"))
     #expect(names.contains("stats"))
     #expect(names.contains("session_start"))
+    #expect(names.contains("session_resume"))
     #expect(names.contains("session_end"))
     #expect(names.contains("handoff"))
     #expect(names.contains("handoff_latest"))
+    #expect(names.contains("compact_context"))
+    #expect(names.contains("markdown_export"))
+    #expect(names.contains("markdown_sync"))
     #expect(names.contains("entity_upsert"))
     #expect(names.contains("fact_assert"))
     #expect(names.contains("fact_retract"))
@@ -61,7 +99,7 @@ func toolSchemaRegression() {
     }
 
     // Core tools must be present (regression: renaming or removing breaks clients)
-    let requiredTools = ["remember", "recall", "search", "corpus_search", "stats"]
+    let requiredTools = ["memory_append", "memory_search", "memory_get", "remember", "recall", "search", "session_synthesize", "memory_promote", "promote", "memory_health", "knowledge_capture", "corpus_search", "stats", "session_resume", "compact_context", "markdown_export", "markdown_sync"]
     for required in requiredTools {
         #expect(uniqueNames.contains(required), "Required tool '\(required)' is missing from schema")
     }
@@ -69,15 +107,27 @@ func toolSchemaRegression() {
     // Tool inputSchemas must be well-formed objects, and tools with required inputs
     // must preserve those requirements in the published schema.
     let schemas: [(name: String, schema: Value, requiresNonEmptyFields: Bool)] = [
+        ("memory_append", ToolSchemas.waxMemoryAppend, true),
+        ("memory_search", ToolSchemas.waxMemorySearch, true),
+        ("memory_get", ToolSchemas.waxMemoryGet, true),
         ("remember", ToolSchemas.waxRemember, true),
         ("recall", ToolSchemas.waxRecall, true),
         ("search", ToolSchemas.waxSearch, true),
+        ("session_synthesize", ToolSchemas.waxSessionSynthesize, false),
+        ("memory_promote", ToolSchemas.waxMemoryPromote, false),
+        ("promote", ToolSchemas.waxPromote, false),
+        ("memory_health", ToolSchemas.waxMemoryHealth, false),
+        ("knowledge_capture", ToolSchemas.waxKnowledgeCapture, true),
         ("corpus_search", ToolSchemas.waxCorpusSearch, true),
         ("stats", ToolSchemas.waxStats, false),
         ("session_start", ToolSchemas.waxSessionStart, false),
+        ("session_resume", ToolSchemas.waxSessionResume, false),
         ("session_end", ToolSchemas.waxSessionEnd, false),
         ("handoff", ToolSchemas.waxHandoff, true),
         ("handoff_latest", ToolSchemas.waxHandoffLatest, false),
+        ("compact_context", ToolSchemas.waxCompactContext, true),
+        ("markdown_export", ToolSchemas.waxMarkdownExport, true),
+        ("markdown_sync", ToolSchemas.waxMarkdownSync, true),
         ("entity_upsert", ToolSchemas.waxEntityUpsert, true),
         ("fact_assert", ToolSchemas.waxFactAssert, true),
         ("fact_retract", ToolSchemas.waxFactRetract, true),
@@ -175,6 +225,150 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("typed object"))
     }
+}
+
+@Test
+func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
+    try await withMemory { memory in
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let asserted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "object": .string("temporal"),
+                    "valid_from": .int(Int(nowMs)),
+                    "valid_to": .int(Int(nowMs + 100)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(asserted.isError != true)
+
+        let insideValidWindow = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "as_of": .int(Int(nowMs + 50)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(insideValidWindow.isError != true)
+        #expect(firstText(in: insideValidWindow).contains("temporal"))
+
+        let outsideValidWindow = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "as_of": .int(Int(nowMs + 150)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(outsideValidWindow.isError != true)
+        #expect(!firstText(in: outsideValidWindow).contains("temporal"))
+
+        let retractable = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "object": .string("temporal retraction"),
+                    "valid_from": .int(Int(nowMs)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(retractable.isError != true)
+        let retractableJSON = try parseJSONText(in: retractable)
+        let factID = try requireInt(retractableJSON, key: "fact_id")
+
+        let retract = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_retract",
+                arguments: [
+                    "fact_id": .int(factID),
+                    "at_ms": .int(Int(nowMs + 200)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(retract.isError != true)
+
+        let beforeRetractionTime = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "as_of": .int(Int(nowMs + 150)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(beforeRetractionTime.isError != true)
+        #expect(firstText(in: beforeRetractionTime).contains("temporal retraction"))
+
+        let afterRetractionTime = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("retractable"),
+                    "as_of": .int(Int(nowMs + 250)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(afterRetractionTime.isError != true)
+        #expect(!firstText(in: afterRetractionTime).contains("temporal retraction"))
+    }
+}
+
+@Test
+func httpRequestBodyLimitRejectsContentLengthAndStreamingOverflow() {
+    #expect(HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 0,
+        incomingBytes: 0,
+        contentLength: 1_049,
+        maxBytes: 1_048
+    ))
+    #expect(HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 1_000,
+        incomingBytes: 49,
+        contentLength: nil,
+        maxBytes: 1_048
+    ))
+    #expect(!HTTPRequestBodyLimit.exceedsLimit(
+        currentBytes: 1_000,
+        incomingBytes: 48,
+        contentLength: nil,
+        maxBytes: 1_048
+    ))
+}
+
+@Test
+func openClawPackageDeclaresSDKPeerDependency() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let packageJSONURL = packageRoot
+        .appendingPathComponent("Resources/openclaw/wax-memory-plugin/package.json")
+    let data = try Data(contentsOf: packageJSONURL)
+    let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let peerDependencies = try #require(json["peerDependencies"] as? [String: Any])
+    let devDependencies = try #require(json["devDependencies"] as? [String: Any])
+
+    #expect(peerDependencies["openclaw"] as? String == ">=2026.3.24-beta.2")
+    #expect(devDependencies["openclaw"] as? String == ">=2026.3.24-beta.2")
 }
 
 @Test
@@ -349,6 +543,108 @@ func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
         #expect(!execution.hits.isEmpty)
         #expect(execution.hits.contains { ($0.previewText ?? "").contains("telemetry") })
         #expect(!execution.hits.contains { ($0.previewText ?? "").contains("navigation") })
+    }
+}
+
+@Test
+func corpusSearchBuildReusesExistingCorpusWhenSourcesUnchanged() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+        let source = sessionsDir.appendingPathComponent("session-a.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
+
+        try await writeSessionStore(
+            at: source,
+            documents: [("Manifest reuse session covering thruster telemetry.", ["session_id": "session-a"])]
+        )
+
+        let firstBuild = try await CorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(firstBuild.documentsIndexed == 1)
+
+        let targetValuesBefore = try corpus.resourceValues(forKeys: [.contentModificationDateKey])
+        let manifestURL = CorpusBuildManifestStore.manifestURL(for: corpus)
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        let secondBuild = try await CorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(secondBuild.storesDiscovered == 1)
+        #expect(secondBuild.storesIndexed == 0)
+        #expect(secondBuild.documentsIndexed == 0)
+
+        let targetValuesAfter = try corpus.resourceValues(forKeys: [.contentModificationDateKey])
+        #expect(targetValuesAfter.contentModificationDate == targetValuesBefore.contentModificationDate)
+    }
+}
+
+@Test
+func brokerCorpusSearchRebuildsWhenSourceFingerprintChanges() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+        let source = sessionsDir.appendingPathComponent("session-a.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
+
+        try await writeSessionStore(
+            at: source,
+            documents: [("First corpus rebuild note about early telemetry.", ["session_id": "session-a"])]
+        )
+
+        _ = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+
+        try FileManager.default.removeItem(at: source)
+        try await writeSessionStore(
+            at: source,
+            documents: [("Updated corpus rebuild note with navigation lock.", ["session_id": "session-a"])]
+        )
+
+        let rebuild = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(rebuild.storesDiscovered == 1)
+        #expect(rebuild.storesIndexed == 1)
+        #expect(rebuild.documentsIndexed == 1)
+
+        let execution = try await MCPMemoryFactory.withOpenMemory(
+            at: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            structuredMemoryEnabled: false
+        ) { memory in
+            try await memory.searchExecution(
+                query: "navigation lock",
+                mode: .text,
+                topK: 5,
+                frameFilter: nil,
+                timeRange: nil
+            )
+        }
+
+        #expect(!execution.hits.isEmpty)
+        #expect(execution.hits.contains { ($0.previewText ?? "").contains("navigation") })
     }
 }
 
@@ -886,6 +1182,141 @@ func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
         )
         #expect(search.isError == true)
         #expect(firstText(in: search).contains("session_id is not active"))
+    }
+}
+
+@Test
+func compatMemoryGetReadsEpisodicIDsReturnedByMemorySearch() async throws {
+    try await withMemory { memory in
+        let start = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(start.isError != true)
+        let sessionID = try requireString(try parseJSONText(in: start), key: "session_id")
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("EPISODIC_MEMORY_GET_ROUNDTRIP compatibility memory should remain readable after the session ends."),
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "session_end", arguments: ["session_id": .string(sessionID)]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+
+        let document = try #require(try await memory.corpusSourceDocuments().first(where: {
+            $0.metadata["session_id"] == sessionID &&
+            $0.text.contains("EPISODIC_MEMORY_GET_ROUNDTRIP")
+        }))
+        let memoryID = "episodic:\(sessionID):\(document.frameId)"
+
+        let get = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_get", arguments: ["memory_id": .string(memoryID)]),
+            memory: memory
+        )
+        #expect(get.isError != true)
+        #expect(firstText(in: get).contains("EPISODIC_MEMORY_GET_ROUNDTRIP"))
+    }
+}
+
+@Test
+func compatCompactContextScopesToRequestedSession() async throws {
+    try await withMemory { memory in
+        let startA = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startA.isError != true)
+        let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
+
+        let startB = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(startB.isError != true)
+        let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
+
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER durable memory must stay out of session A checkpoints."),
+                ]
+            ),
+            memory: memory
+        )
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER session A memory must remain in session A checkpoints."),
+                    "session_id": .string(sessionA),
+                ]
+            ),
+            memory: memory
+        )
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER session B memory must not leak into session A checkpoints."),
+                    "session_id": .string(sessionB),
+                ]
+            ),
+            memory: memory
+        )
+
+        let compact = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "compact_context",
+                arguments: [
+                    "query": .string("COMPACT_CONTEXT_SCOPE_MARKER"),
+                    "session_id": .string(sessionA),
+                    "mode": .string("text"),
+                    "max_items": .int(6),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(compact.isError != true)
+        let payload = try parseJSONResource(in: compact, uriSuffix: "/compact-context-summary")
+        let shortContext = try requireArray(payload, key: "short_context")
+        #expect(!shortContext.isEmpty)
+        #expect(shortContext.contains { entry in
+            guard let object = try? requireObject(entry) else { return false }
+            return (object["preview"] as? String)?.contains("session A memory must remain") == true
+        })
+        #expect(!shortContext.contains { entry in
+            guard let object = try? requireObject(entry) else { return false }
+            return (object["preview"] as? String)?.contains("durable memory must stay out") == true
+        })
+        #expect(!shortContext.contains { entry in
+            guard let object = try? requireObject(entry) else { return false }
+            return (object["preview"] as? String)?.contains("session B memory must not leak") == true
+        })
+        #expect(shortContext.allSatisfy { entry in
+            guard let object = try? requireObject(entry),
+                  let memoryID = object["memory_id"] as? String else { return false }
+            return memoryID.hasPrefix("working:\(sessionA):")
+        })
+
+        let firstItem = try #require(shortContext.compactMap { try? requireObject($0) }.first)
+        let memoryID = try requireString(firstItem, key: "memory_id")
+        let get = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_get", arguments: ["memory_id": .string(memoryID)]),
+            memory: memory
+        )
+        #expect(get.isError != true)
+        #expect(firstText(in: get).contains("session A memory must remain"))
     }
 }
 
@@ -1456,6 +1887,372 @@ func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
     #expect(text.localizedCaseInsensitiveContains("timeout") || text.localizedCaseInsensitiveContains("timed out"))
 }
 
+@Test
+func rememberRejectsSecretLikeDurableMemory() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "content": .string("OPENAI_API_KEY=sk-1234567890abcdefghijklmnop"),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+            ]),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("secret-like content"))
+    }
+}
+
+@Test
+func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
+    try await withMemory { memory in
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "content": .string("Chris prefers concise summaries for release notes."),
+                "memory_type": .string("user_preference"),
+                "durability": .string("durable"),
+                "project": .string("Wax"),
+                "repo": .string("Wax"),
+                "reviewed": .bool(true),
+            ]),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(name: "search", arguments: [
+                "query": .string("concise summaries"),
+                "mode": .string("text"),
+            ]),
+            memory: memory
+        )
+        #expect(search.isError != true)
+        let searchJSON = try parseJSONResource(in: search, uriSuffix: "search-summary")
+        let first = ((searchJSON["results"] as? [[String: Any]]) ?? []).first
+        let explanations = first?["explanations"] as? [String] ?? []
+        let metadata = first?["metadata"] as? [String: Any] ?? [:]
+        #expect(metadata["wax.memory_type"] as? String == "user_preference")
+        #expect(explanations.contains("keyword match"))
+        #expect(explanations.contains("user preference"))
+
+        let recall = await WaxMCPTools.handleCall(
+            params: .init(name: "recall", arguments: [
+                "query": .string("release notes preference"),
+                "limit": .int(3),
+            ]),
+            memory: memory
+        )
+        #expect(recall.isError != true)
+        let recallJSON = try parseJSONResource(in: recall, uriSuffix: "recall-summary")
+        let recallFirst = ((recallJSON["results"] as? [[String: Any]]) ?? []).first
+        let recallExplanations = recallFirst?["explanations"] as? [String] ?? []
+        #expect(recallExplanations.contains("user preference"))
+    }
+}
+
+@Test
+func sessionSynthesizeAndPromoteFlowWorks() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        let startedJSON = try parseJSONText(in: started)
+        let sessionID = try #require(startedJSON["session_id"] as? String)
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("Decision: Wax should default repo-scoped recall before global recall."),
+            ]),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        let synthesize = await WaxMCPTools.handleCall(
+            params: .init(name: "session_synthesize", arguments: [
+                "session_id": .string(sessionID),
+            ]),
+            memory: memory
+        )
+        #expect(synthesize.isError != true)
+        let synthesizeJSON = try parseJSONResource(in: synthesize, uriSuffix: "session-synthesize-summary")
+        let candidates = synthesizeJSON["durable_candidates"] as? [[String: Any]] ?? []
+        #expect(!candidates.isEmpty)
+        #expect(candidates.contains { ($0["suggested_type"] as? String) == "decision" })
+
+        let promote = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_promote", arguments: [
+                "session_id": .string(sessionID),
+                "approve": .bool(true),
+            ]),
+            memory: memory
+        )
+        #expect(promote.isError != true)
+        let promoteJSON = try parseJSONText(in: promote)
+        #expect((promoteJSON["written"] as? Bool) == true)
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(name: "search", arguments: [
+                "query": .string("repo-scoped recall"),
+                "mode": .string("text"),
+            ]),
+            memory: memory
+        )
+        let searchJSON = try parseJSONResource(in: search, uriSuffix: "search-summary")
+        let results = searchJSON["results"] as? [[String: Any]] ?? []
+        let durableHit = results.first {
+            (($0["metadata"] as? [String: Any])?["wax.memory_type"] as? String == "decision")
+                && (($0["metadata"] as? [String: Any])?["wax.reviewed"] as? String == "true")
+        }
+        #expect(durableHit != nil)
+    }
+}
+
+@Test
+func brokerMarkdownSyncRejectsSecretLikeDurableMemoryImports() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-secret-sync-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        try """
+        # MEMORY
+
+        ## fact
+        - api_key=12345678901234567890
+        """.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let response = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+
+        #expect(response.ok == false)
+        #expect((response.error ?? "").contains("Refusing to store durable memory containing secret-like content"))
+    }
+}
+
+@Test
+func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+        let query = "QUERY_LOG_PRIVACY_ANCHOR"
+
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("Remember \(query) without storing raw retrieval queries."),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(query),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(search.ok == true)
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+        let retrievalEvents = events.filter { $0.kind == .retrievalHit }
+        #expect(!retrievalEvents.isEmpty)
+        for event in retrievalEvents {
+            #expect(event.payload["query"] == nil)
+            #expect(event.payload["query_hash"] != nil)
+        }
+    }
+}
+
+@Test
+func brokerImplicitMemoryPromotePreservesResolvedSessionProvenance() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("Decision: implicit promotion must preserve session provenance."),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let promote = await service.handle(.init(
+            command: "memory_promote",
+            arguments: ["approve": .bool(true)]
+        ))
+        #expect(promote.ok == true)
+        let promotePayload = try #require(promote.payload?.objectValue)
+        #expect(promotePayload["written"]?.boolValue == true)
+        let metadata = try #require(promotePayload["metadata"]?.objectValue)
+        #expect(metadata[MemoryMetadataKeys.promotedFromSession]?.stringValue == sessionIDString)
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+        #expect(events.contains { $0.kind == .promotionWritten })
+    }
+}
+
+@Test
+func memorySearchSignalsInfluenceCompatSessionSynthesis() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        let startedJSON = try parseJSONText(in: started)
+        let sessionID = try #require(startedJSON["session_id"] as? String)
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("Decision: memory_search retrieval signals should influence synthesis and promotion."),
+            ]),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        for query in ["retrieval signals", "synthesis promotion"] {
+            let search = await WaxMCPTools.handleCall(
+                params: .init(name: "memory_search", arguments: [
+                    "query": .string(query),
+                    "session_id": .string(sessionID),
+                    "mode": .string("text"),
+                    "topK": .int(5),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]),
+                memory: memory
+            )
+            #expect(search.isError != true)
+        }
+
+        let synthesize = await WaxMCPTools.handleCall(
+            params: .init(name: "session_synthesize", arguments: [
+                "session_id": .string(sessionID),
+            ]),
+            memory: memory
+        )
+        #expect(synthesize.isError != true)
+        let synthesizeJSON = try parseJSONResource(in: synthesize, uriSuffix: "session-synthesize-summary")
+        let candidates = synthesizeJSON["durable_candidates"] as? [[String: Any]] ?? []
+        let matchingCandidate = candidates.first {
+            (($0["summary"] as? String) ?? "").contains("memory_search retrieval signals")
+        }
+        let matching = try #require(matchingCandidate)
+        #expect((matching["recall_count"] as? Int ?? 0) >= 2)
+        #expect((matching["unique_query_count"] as? Int ?? 0) >= 2)
+        #expect((matching["average_relevance_score"] as? Double ?? 0) > 0)
+    }
+}
+
+@Test
+func memoryPromotePreservesLockedOverride() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        let startedJSON = try parseJSONText(in: started)
+        let sessionID = try #require(startedJSON["session_id"] as? String)
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("Decision: keep broker-backed promotion overrides intact."),
+            ]),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        let promote = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_promote", arguments: [
+                "session_id": .string(sessionID),
+                "approve": .bool(true),
+                "locked": .bool(true),
+            ]),
+            memory: memory
+        )
+        #expect(promote.isError != true)
+        let promoteJSON = try parseJSONText(in: promote)
+        let metadata = try #require(promoteJSON["metadata"] as? [String: Any])
+        #expect(metadata["wax.durability"] as? String == "locked")
+        #expect(metadata["wax.reviewed"] as? String == "true")
+    }
+}
+
+@Test
+func knowledgeCaptureAndMemoryHealthWork() async throws {
+    try await withMemory { memory in
+        let capture = await WaxMCPTools.handleCall(
+            params: .init(name: "knowledge_capture", arguments: [
+                "content": .string("Wax uses a broker-owned long-term store."),
+                "subject": .string("project:wax"),
+                "kind": .string("project"),
+                "predicate": .string("architecture"),
+                "object": .string("broker-owned"),
+            ]),
+            memory: memory
+        )
+        #expect(capture.isError != true)
+        let captureJSON = try parseJSONText(in: capture)
+        #expect(captureJSON["durability"] as? String == "durable")
+
+        let duplicateA = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "content": .string("Lesson: keep broker-owned long-term store access single-owner."),
+                "memory_type": .string("lesson"),
+            ]),
+            memory: memory
+        )
+        #expect(duplicateA.isError != true)
+
+        let duplicateB = await WaxMCPTools.handleCall(
+            params: .init(name: "remember", arguments: [
+                "content": .string("Lesson: keep broker-owned long-term store access single owner."),
+                "memory_type": .string("lesson"),
+            ]),
+            memory: memory
+        )
+        #expect(duplicateB.isError != true)
+
+        let conflictingFact = await WaxMCPTools.handleCall(
+            params: .init(name: "fact_assert", arguments: [
+                "subject": .string("project:wax"),
+                "predicate": .string("architecture"),
+                "object": .string("direct-store"),
+            ]),
+            memory: memory
+        )
+        #expect(conflictingFact.isError != true)
+
+        let health = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_health", arguments: [:]),
+            memory: memory
+        )
+        #expect(health.isError != true)
+        let healthJSON = try parseJSONResource(in: health, uriSuffix: "memory-health-summary")
+        let duplicates = healthJSON["duplicate_pairs"] as? [[String: Any]] ?? []
+        let contradictions = healthJSON["contradictions"] as? [String] ?? []
+        #expect(!duplicates.isEmpty)
+        #expect(!contradictions.isEmpty)
+    }
+}
+
 private func firstText(in result: CallTool.Result) -> String {
     for content in result.content {
         if case .text(text: let text, annotations: _, _meta: _) = content {
@@ -1500,18 +2297,30 @@ private func parseToolTextJSON(fromResponseLine line: String) throws -> [String:
     let object = try JSONSerialization.jsonObject(with: data)
     guard let dict = object as? [String: Any],
           let result = dict["result"] as? [String: Any],
-          let content = result["content"] as? [[String: Any]],
-          let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String,
-          let textData = text.data(using: .utf8)
+          let content = result["content"] as? [[String: Any]]
     else {
         throw NSError(domain: "WaxMCPServerTests", code: 9, userInfo: [NSLocalizedDescriptionKey: "Missing tool text payload"])
     }
 
-    let textObject = try JSONSerialization.jsonObject(with: textData)
-    guard let textDict = textObject as? [String: Any] else {
-        throw NSError(domain: "WaxMCPServerTests", code: 10, userInfo: [NSLocalizedDescriptionKey: "Tool text payload is not a JSON object"])
+    if let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String,
+       let textData = text.data(using: .utf8),
+       let textObject = try? JSONSerialization.jsonObject(with: textData),
+       let textDict = textObject as? [String: Any] {
+        return textDict
     }
-    return textDict
+
+    if let resource = content.first(where: {
+        ($0["type"] as? String) == "resource" &&
+            ((($0["resource"] as? [String: Any])?["uri"] as? String)?.hasSuffix("tool/result") == true)
+    })?["resource"] as? [String: Any],
+       let text = resource["text"] as? String,
+       let textData = text.data(using: .utf8),
+       let resourceObject = try? JSONSerialization.jsonObject(with: textData),
+       let resourceDict = resourceObject as? [String: Any] {
+        return resourceDict
+    }
+
+    throw NSError(domain: "WaxMCPServerTests", code: 10, userInfo: [NSLocalizedDescriptionKey: "Tool payload is not a JSON object"])
 }
 
 private func parseToolResourceJSON(fromResponseLine line: String, uriSuffix: String) throws -> [String: Any] {
@@ -1653,11 +2462,15 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     private var stderrPending = Data()
     private var stderrLines: [String] = []
     private let brokerConfiguration: AgentBrokerConfiguration
+    private let harnessRootURL: URL
+    private let harnessHomeURL: URL
+    private let harnessBrokerRootURL: URL
 
     let storeURL: URL
     var brokerSessionRootURL: URL {
         URL(fileURLWithPath: brokerConfiguration.sessionRootPath, isDirectory: true)
     }
+    var brokerSocketPath: String { brokerConfiguration.socketPath }
 
     init(useRealEmbedder: Bool = false, storeURL: URL? = nil) throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -1675,7 +2488,18 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             args.append("--no-embedder")
         }
         process.arguments = args
+        let envRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wmh-\(Self.stableTestHash(self.storeURL.path))", isDirectory: true)
+        harnessRootURL = envRoot
+        harnessHomeURL = envRoot.appendingPathComponent("h", isDirectory: true)
+        harnessBrokerRootURL = envRoot.appendingPathComponent("b", isDirectory: true)
+        try FileManager.default.createDirectory(at: harnessHomeURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: harnessBrokerRootURL, withIntermediateDirectories: true)
+        let sessionRootPath = envRoot.appendingPathComponent("s", isDirectory: true).path
         var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = harnessHomeURL.path
+        environment["WAX_BROKER_DIR"] = harnessBrokerRootURL.path
+        environment["WAX_SESSION_ROOT_DIR"] = sessionRootPath
         environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
         process.environment = environment
         process.standardInput = stdinPipe
@@ -1686,24 +2510,16 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
                 currentExecutablePath: executableURL.path
             ),
             storePath: self.storeURL.path,
+            sessionRootPath: sessionRootPath,
+            socketRootPath: harnessBrokerRootURL.path,
             embedderChoice: "minilm",
             noEmbedder: !useRealEmbedder
         )
     }
 
     func start() throws {
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self.appendOutput(data, toStdout: true)
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self.appendOutput(data, toStdout: false)
-        }
+        try Self.setNonBlocking(stdoutPipe.fileHandleForReading.fileDescriptor)
+        try Self.setNonBlocking(stderrPipe.fileHandleForReading.fileDescriptor)
         try process.run()
         Thread.sleep(forTimeInterval: 0.05)
     }
@@ -1711,11 +2527,21 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     func terminateIfNeeded() {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
+        try? stdinPipe.fileHandleForWriting.close()
         if process.isRunning {
             process.terminate()
-            process.waitUntilExit()
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+                let forceDeadline = Date().addingTimeInterval(1)
+                while process.isRunning, Date() < forceDeadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }
         }
-        try? stdinPipe.fileHandleForWriting.close()
         try? shutdownBrokerIfRunning()
     }
 
@@ -1743,11 +2569,14 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
                 "clientInfo": ["name": clientName, "version": "1.0"],
             ],
         ])
+
+        let initialize = try await waitForResponseLine(id: initializeID, timeout: initializeTimeout)
         try sendJSONLine([
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
             "params": [:],
         ])
+
         if includeToolsList {
             try sendJSONLine([
                 "jsonrpc": "2.0",
@@ -1757,7 +2586,6 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             ])
         }
 
-        let initialize = try await waitForResponseLine(id: initializeID, timeout: initializeTimeout)
         let toolsList = includeToolsList
             ? try await waitForResponseLine(id: toolsListID, timeout: toolsListTimeout)
             : nil
@@ -1796,6 +2624,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     func waitForResponseLine(id: Int, timeout: TimeInterval = 5) async throws -> String {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            drainAvailableOutput()
             if let line = withLocked({ stdoutLines.first(where: { Self.responseLineMatchesID($0, id: id) }) }) {
                 return line
             }
@@ -1824,6 +2653,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     func waitForExit(timeout: TimeInterval = 5) async throws -> Int32 {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            drainAvailableOutput()
             if !process.isRunning {
                 drainPipes()
                 return process.terminationStatus
@@ -1836,6 +2666,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     func waitForStderrContaining(_ needle: String, timeout: TimeInterval = 5) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            drainAvailableOutput()
             if withLocked({ stderrLines.joined(separator: "\n") }).contains(needle) {
                 return
             }
@@ -1850,13 +2681,30 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     }
 
     private func drainPipes() {
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        if let remaining = try? stdoutPipe.fileHandleForReading.readToEnd(), !remaining.isEmpty {
-            appendOutput(remaining, toStdout: true)
-        }
-        if let remaining = try? stderrPipe.fileHandleForReading.readToEnd(), !remaining.isEmpty {
-            appendOutput(remaining, toStdout: false)
+        drainAvailableOutput()
+    }
+
+    private func drainAvailableOutput() {
+        drainAvailableData(from: stdoutPipe.fileHandleForReading, toStdout: true)
+        drainAvailableData(from: stderrPipe.fileHandleForReading, toStdout: false)
+    }
+
+    private func drainAvailableData(from handle: FileHandle, toStdout: Bool) {
+        let fd = handle.fileDescriptor
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                appendOutput(Data(buffer[..<bytesRead]), toStdout: toStdout)
+                continue
+            }
+            if bytesRead == 0 {
+                return
+            }
+            if errno == EAGAIN || errno == EWOULDBLOCK {
+                return
+            }
+            return
         }
     }
 
@@ -1928,6 +2776,33 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         )
     }
 
+    private static func stableTestHash(_ text: String) -> String {
+        var hash: UInt64 = 14695981039346656037
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func setNonBlocking(_ fileDescriptor: Int32) throws {
+        let flags = fcntl(fileDescriptor, F_GETFL)
+        guard flags >= 0 else {
+            throw NSError(
+                domain: "MCPServerProcessHarness",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to read file status flags for fd \(fileDescriptor)"]
+            )
+        }
+        guard fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            throw NSError(
+                domain: "MCPServerProcessHarness",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to set nonblocking mode for fd \(fileDescriptor)"]
+            )
+        }
+    }
+
     func stderrSnapshot() -> String {
         withLocked { stderrLines.joined(separator: "\n") }
     }
@@ -1941,11 +2816,23 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if !FileManager.default.fileExists(atPath: brokerConfiguration.socketPath) {
+            if try brokerShutdownCompleted() {
                 return
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+    }
+
+    private func brokerShutdownCompleted() throws -> Bool {
+        guard !FileManager.default.fileExists(atPath: brokerConfiguration.socketPath) else {
+            return false
+        }
+
+        try StoreLockProbe.preflightExclusiveAccess(
+            at: URL(fileURLWithPath: brokerConfiguration.storePath),
+            timeout: .milliseconds(50)
+        )
+        return true
     }
 
     private static func sendBrokerRequest(
@@ -2052,6 +2939,27 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
 
 @Suite("Wax MCP Process Tests", .serialized)
 struct WaxMCPProcessTests {
+    @Test
+    func processHarnessUsesShortBrokerSocketPaths() throws {
+        let harness = try MCPServerProcessHarness()
+        defer { harness.terminateIfNeeded() }
+
+        #expect(harness.brokerSocketPath.utf8.count < 104)
+        #expect(harness.brokerSessionRootURL.path.hasPrefix("/tmp/wmh-"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedSessionsUseHarnessIsolatedSessionRoot() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-session-root-isolation-test", includeToolsList: true)
+        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        #expect(started.contains("store_path"))
+        #expect(started.contains(harness.brokerSessionRootURL.path))
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func brokerBackedRememberRejectsReservedMetadataSessionID() async throws {
         let harness = try MCPServerProcessHarness()
@@ -2199,6 +3107,852 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func brokerBackedStatsReflectActiveSessionState() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-stats-session-test",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(id: 81, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: sessionStart), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 82,
+            name: "remember",
+            arguments: [
+                "content": "SESSION_STATS_VISIBLE broker-managed session note",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let stats = try await harness.callTool(
+            id: 83,
+            name: "stats",
+            arguments: [:],
+            timeout: 20
+        )
+        let statsJSON = try parseToolTextJSON(fromResponseLine: stats)
+        let session = try requireObject(statsJSON, key: "session")
+        #expect((session["active"] as? Bool) == true)
+        #expect((session["session_id"] as? String) == sessionID)
+        #expect((session["sessionFrameCount"] as? Int ?? 0) >= 1)
+        #expect((session["activeSessionCount"] as? Int) == 1)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedSessionSynthesizePromotesDefaultSessionWrites() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-synthesize-test",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(id: 9, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: sessionStart), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 10,
+            name: "remember",
+            arguments: [
+                "content": "Decision: promote default session notes when they clearly encode a decision.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let synthesize = try await harness.callTool(
+            id: 11,
+            name: "session_synthesize",
+            arguments: ["session_id": sessionID],
+            timeout: 20
+        )
+        let synthesisJSON = try parseToolResourceJSON(
+            fromResponseLine: synthesize,
+            uriSuffix: "session-synthesize-summary"
+        )
+        let candidates = try requireArray(synthesisJSON, key: "durable_candidates")
+        #expect(candidates.contains { candidate in
+            guard let object = try? requireObject(candidate) else {
+                return false
+            }
+            return object["suggested_type"] as? String == "decision"
+        })
+
+        let promote = try await harness.callTool(
+            id: 12,
+            name: "memory_promote",
+            arguments: [
+                "session_id": sessionID,
+                "approve": true,
+            ],
+            timeout: 20
+        )
+        let promoteJSON = try parseToolTextJSON(fromResponseLine: promote)
+        let metadata = try requireObject(promoteJSON, key: "metadata")
+        #expect(try requireString(metadata, key: "wax.memory_type") == "decision")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedMemorySearchSignalsInfluenceSynthesis() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-memory-search-signals",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(id: 70, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: sessionStart), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 71,
+            name: "remember",
+            arguments: [
+                "content": "Decision: broker memory_search retrieval signals should influence synthesis and promotion.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        for (id, query) in [(72, "retrieval signals"), (73, "synthesis promotion")] {
+            _ = try await harness.callTool(
+                id: id,
+                name: "memory_search",
+                arguments: [
+                    "query": query,
+                    "session_id": sessionID,
+                    "mode": "text",
+                    "topK": 5,
+                    "include_working": true,
+                    "include_episodic": false,
+                    "include_durable": false,
+                ],
+                timeout: 20
+            )
+        }
+
+        let synthesize = try await harness.callTool(
+            id: 74,
+            name: "session_synthesize",
+            arguments: ["session_id": sessionID],
+            timeout: 20
+        )
+        let synthesisJSON = try parseToolResourceJSON(
+            fromResponseLine: synthesize,
+            uriSuffix: "session-synthesize-summary"
+        )
+        let candidates = try requireArray(synthesisJSON, key: "durable_candidates")
+        let matching = try #require(candidates.first(where: { candidate in
+            guard let object = try? requireObject(candidate) else { return false }
+            return ((object["summary"] as? String) ?? "").contains("broker memory_search retrieval signals")
+        }))
+        let matchingObject = try requireObject(matching)
+        #expect((matchingObject["recall_count"] as? Int ?? 0) >= 2)
+        #expect((matchingObject["unique_query_count"] as? Int ?? 0) >= 2)
+        #expect((matchingObject["average_relevance_score"] as? Double ?? 0) > 0)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerRecordRetrievalHitsCanonicalizesChunkFrameIDs() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-broker-retrieval-signals-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = rootURL.appendingPathComponent("memory.wax")
+        let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let service = try await AgentBrokerService(
+            storePath: storeURL.path,
+            sessionRootPath: sessionRootURL.path,
+            noEmbedder: true,
+            embedderChoice: "auto",
+            requireVector: false
+        )
+
+        var deferredError: Error?
+        do {
+            let started = await service.handle(.init(command: "session_start"))
+            #expect(started.ok == true)
+            let startedPayload = try #require(started.payload?.objectValue)
+            let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+            let sessionID = try #require(UUID(uuidString: sessionIDString))
+
+            let content = Array(
+                repeating: "CHUNK_SIGNAL_ANCHOR repeated broker session content to force chunk creation and retrieval accounting coverage.",
+                count: 80
+            ).joined(separator: " ")
+            let append = await service.handle(.init(
+                command: "memory_append",
+                arguments: [
+                    "content": .string(content),
+                    "session_id": .string(sessionIDString),
+                ]
+            ))
+            #expect(append.ok == true)
+
+            let search = await service.handle(.init(
+                command: "search",
+                arguments: [
+                    "query": .string("CHUNK_SIGNAL_ANCHOR"),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                    "session_id": .string(sessionIDString),
+                ]
+            ))
+            #expect(search.ok == true)
+            let searchPayload = try #require(search.payload?.objectValue)
+            let searchResults = try #require(searchPayload["results"]?.arrayValue)
+            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
+                result.objectValue?["frameId"]?.intValue.map(UInt64.init)
+            }.first)
+
+            let memorySearch = await service.handle(.init(
+                command: "memory_search",
+                arguments: [
+                    "query": .string("CHUNK_SIGNAL_ANCHOR"),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                    "session_id": .string(sessionIDString),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ))
+            #expect(memorySearch.ok == true)
+            let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
+            let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
+            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
+                result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
+            }.first)
+            #expect(canonicalFrameID != rawFrameID)
+
+            let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+            let signals = BrokerSessionPersistence.recallSignals(
+                from: try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+            )
+            #expect(signals[rawFrameID] == nil)
+            let signal = try #require(signals[canonicalFrameID])
+            #expect(signal.recallCount == 2)
+            #expect(signal.uniqueQueryCount == 1)
+            #expect(signal.averageScore > 0)
+        } catch {
+            deferredError = error
+        }
+
+        do {
+            try await service.close()
+        } catch {
+            if deferredError == nil {
+                deferredError = error
+            }
+        }
+        try? FileManager.default.removeItem(at: rootURL)
+        if let deferredError {
+            throw deferredError
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedMemoryPromotePreservesLockedOverride() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-promote-override-test",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(id: 13, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: sessionStart), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 14,
+            name: "remember",
+            arguments: [
+                "content": "Decision: preserve promote overrides for locked durable memories.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let promote = try await harness.callTool(
+            id: 15,
+            name: "memory_promote",
+            arguments: [
+                "session_id": sessionID,
+                "approve": true,
+                "locked": true,
+            ],
+            timeout: 20
+        )
+        let promoteJSON = try parseToolTextJSON(fromResponseLine: promote)
+        let metadata = try requireObject(promoteJSON, key: "metadata")
+        #expect(try requireString(metadata, key: "wax.durability") == "locked")
+        #expect(try requireString(metadata, key: "wax.reviewed") == "true")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedKnowledgeCaptureDefaultsToDurable() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-knowledge-capture-test",
+            includeToolsList: true
+        )
+
+        let capture = try await harness.callTool(
+            id: 16,
+            name: "knowledge_capture",
+            arguments: [
+                "content": "Wax keeps durable broker knowledge in the long-term store by default.",
+            ],
+            timeout: 20
+        )
+        let captureJSON = try parseToolTextJSON(fromResponseLine: capture)
+        #expect(try requireString(captureJSON, key: "durability") == "durable")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedMemorySearchAndGetExposeStableMemoryIDs() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-broker-memory-search-get-test",
+            includeToolsList: true
+        )
+
+        let sessionStart = try await harness.callTool(
+            id: 17,
+            name: "session_start",
+            arguments: ["agent_id": "openclaw-agent", "run_id": "run-001"],
+            timeout: 20
+        )
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: sessionStart), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 18,
+            name: "remember",
+            arguments: [
+                "content": "Durable memory anchor: Wax is the long-term source of truth.",
+                "memory_type": "decision",
+                "durability": "durable",
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 19,
+            name: "memory_append",
+            arguments: [
+                "content": "Working memory anchor: current task is OpenClaw adapter implementation.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let search = try await harness.callTool(
+            id: 20,
+            name: "memory_search",
+            arguments: [
+                "query": "anchor",
+                "session_id": sessionID,
+                "topK": 6,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+        let searchJSON = try parseToolResourceJSON(fromResponseLine: search, uriSuffix: "memory-search-summary")
+        let results = try requireArray(searchJSON, key: "results")
+        #expect(results.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["horizon"] as? String) == "working"
+        })
+        #expect(results.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["horizon"] as? String) == "durable"
+        })
+
+        let pattern = #"working:[0-9A-F-]+:[0-9]+"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let searchRange = NSRange(search.startIndex..<search.endIndex, in: search)
+        let match = try #require(regex.firstMatch(in: search, range: searchRange))
+        let workingRange = try #require(Range(match.range, in: search))
+        let workingID = String(search[workingRange])
+
+        let get = try await harness.callTool(
+            id: 21,
+            name: "memory_get",
+            arguments: ["memory_id": workingID],
+            timeout: 20
+        )
+        #expect(get.contains("OpenClaw adapter implementation"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedSessionResumeReopensPersistedSessionAfterRestart() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-session-resume-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        _ = try await first.bootstrap(clientName: "wax-mcp-session-resume-first", includeToolsList: true)
+
+        let started = try await first.callTool(
+            id: 31,
+            name: "session_start",
+            arguments: ["agent_id": "openclaw-agent", "run_id": "resume-run"],
+            timeout: 20
+        )
+        let startedJSON = try parseToolTextJSON(fromResponseLine: started)
+        let sessionID = try requireString(startedJSON, key: "session_id")
+
+        _ = try await first.callTool(
+            id: 32,
+            name: "memory_append",
+            arguments: [
+                "content": "Resume anchor: persisted session memory survives broker restart.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        first.terminateIfNeeded()
+
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try second.start()
+        defer { second.terminateIfNeeded() }
+        _ = try await second.bootstrap(clientName: "wax-mcp-session-resume-second", includeToolsList: true)
+
+        let resumed = try await second.callTool(
+            id: 33,
+            name: "session_resume",
+            arguments: ["session_id": sessionID],
+            timeout: 20
+        )
+        let resumedJSON = try parseToolTextJSON(fromResponseLine: resumed)
+        #expect((resumedJSON["resumed"] as? Bool) == true)
+
+        let search = try await second.callTool(
+            id: 34,
+            name: "memory_search",
+            arguments: [
+                "query": "resume anchor",
+                "session_id": sessionID,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+        let searchJSON = try parseToolResourceJSON(fromResponseLine: search, uriSuffix: "memory-search-summary")
+        let results = try requireArray(searchJSON, key: "results")
+        #expect(results.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["preview"] as? String)?.contains("persisted session memory survives broker restart") == true
+        })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedCompactContextDoesNotLoseSessionMemoryAcrossRepeatedCheckpoints() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-compact-context-test",
+            includeToolsList: true
+        )
+
+        let started = try await harness.callTool(id: 41, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: started), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 42,
+            name: "memory_append",
+            arguments: [
+                "content": "Checkpoint anchor: do not lose session memory after repeated compact_context calls.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 43,
+            name: "memory_append",
+            arguments: [
+                "content": "Context budget anchor: preserve session notes while compacting.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let compactA = try await harness.callTool(
+            id: 44,
+            name: "compact_context",
+            arguments: [
+                "query": "checkpoint anchor",
+                "session_id": sessionID,
+                "token_budget": 512,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+        let compactAJSON = try parseToolResourceJSON(fromResponseLine: compactA, uriSuffix: "compact-context-summary")
+        #expect(try requireString(compactAJSON, key: "compacted_text").contains("Checkpoint anchor"))
+
+        _ = try await harness.callTool(
+            id: 45,
+            name: "compact_context",
+            arguments: [
+                "query": "context budget anchor",
+                "session_id": sessionID,
+                "token_budget": 512,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+
+        let search = try await harness.callTool(
+            id: 46,
+            name: "memory_search",
+            arguments: [
+                "query": "checkpoint anchor",
+                "session_id": sessionID,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+        let searchJSON = try parseToolResourceJSON(fromResponseLine: search, uriSuffix: "memory-search-summary")
+        let results = try requireArray(searchJSON, key: "results")
+        #expect(results.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["preview"] as? String)?.contains("do not lose session memory") == true
+        })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedMemorySearchDoesNotLeakAcrossSessions() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-cross-session-isolation-test",
+            includeToolsList: true
+        )
+
+        let startedA = try await harness.callTool(id: 47, name: "session_start", arguments: [:], timeout: 20)
+        let sessionA = try requireString(try parseToolTextJSON(fromResponseLine: startedA), key: "session_id")
+        let startedB = try await harness.callTool(id: 48, name: "session_start", arguments: [:], timeout: 20)
+        let sessionB = try requireString(try parseToolTextJSON(fromResponseLine: startedB), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 49,
+            name: "memory_append",
+            arguments: [
+                "content": "SESSION_A_PRIVATE_ANCHOR do not leak this note into other session searches.",
+                "session_id": sessionA,
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 50,
+            name: "memory_append",
+            arguments: [
+                "content": "SESSION_B_PRIVATE_ANCHOR this note belongs only to session B.",
+                "session_id": sessionB,
+            ],
+            timeout: 20
+        )
+
+        let isolated = try await harness.callTool(
+            id: 51,
+            name: "memory_search",
+            arguments: [
+                "query": "SESSION_B_PRIVATE_ANCHOR",
+                "session_id": sessionA,
+                "mode": "text",
+                "topK": 5,
+            ],
+            timeout: 20
+        )
+        let isolatedJSON = try parseToolResourceJSON(fromResponseLine: isolated, uriSuffix: "memory-search-summary")
+        let isolatedResults = try requireArray(isolatedJSON, key: "results")
+        #expect(!isolatedResults.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["preview"] as? String)?.contains("SESSION_B_PRIVATE_ANCHOR") == true
+        })
+
+        let visible = try await harness.callTool(
+            id: 52,
+            name: "memory_search",
+            arguments: [
+                "query": "SESSION_A_PRIVATE_ANCHOR",
+                "session_id": sessionA,
+                "mode": "text",
+                "topK": 5,
+            ],
+            timeout: 20
+        )
+        let visibleJSON = try parseToolResourceJSON(fromResponseLine: visible, uriSuffix: "memory-search-summary")
+        let visibleResults = try requireArray(visibleJSON, key: "results")
+        #expect(!visibleResults.isEmpty)
+        #expect(visibleResults.contains { result in
+            guard let object = try? requireObject(result) else { return false }
+            return (object["session_id"] as? String) == sessionA && (object["horizon"] as? String) == "working"
+        })
+    }
+
+    @Test(.timeLimit(.minutes(2)))
+    func brokerBackedHighVolumeWorkingMemoryRemainsSearchable() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-high-volume-session-test",
+            includeToolsList: true
+        )
+
+        let started = try await harness.callTool(id: 53, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: started), key: "session_id")
+
+        for index in 0..<8 {
+            _ = try await harness.callTool(
+                id: 100 + index,
+                name: "memory_append",
+                arguments: [
+                    "content": "HIGH_VOLUME_ANCHOR_\(index) broker session memory event \(index) for endurance coverage.",
+                    "session_id": sessionID,
+                ],
+                timeout: 20
+            )
+        }
+
+        _ = try await harness.callTool(
+            id: 180,
+            name: "compact_context",
+            arguments: [
+                "query": "HIGH_VOLUME_ANCHOR_5",
+                "session_id": sessionID,
+                "token_budget": 768,
+                "mode": "text",
+            ],
+            timeout: 20
+        )
+
+        let search = try await harness.callTool(
+            id: 181,
+            name: "memory_search",
+            arguments: [
+                "query": "HIGH_VOLUME_ANCHOR_5",
+                "session_id": sessionID,
+                "mode": "text",
+                "topK": 8,
+            ],
+            timeout: 20
+        )
+        let searchJSON = try parseToolResourceJSON(fromResponseLine: search, uriSuffix: "memory-search-summary")
+        let results = try requireArray(searchJSON, key: "results")
+        #expect(!results.isEmpty)
+        #expect(search.contains("HIGH_VOLUME_ANCHOR_5"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func brokerBackedMarkdownExportProjectsCompatibilityFiles() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-markdown-export-test",
+            includeToolsList: true
+        )
+
+        let started = try await harness.callTool(id: 51, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: started), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 52,
+            name: "remember",
+            arguments: [
+                "content": "Markdown export anchor: durable facts should project into MEMORY.md.",
+                "memory_type": "fact",
+                "durability": "durable",
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 53,
+            name: "remember",
+            arguments: [
+                "content": "Decision: use Markdown approvals to promote durable OpenClaw learnings.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 54,
+            name: "handoff",
+            arguments: [
+                "content": "Markdown export handoff anchor.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let outputDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-export-\(UUID().uuidString)", isDirectory: true)
+
+        let export = try await harness.callTool(
+            id: 55,
+            name: "markdown_export",
+            arguments: [
+                "output_dir": outputDir.path,
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        let exportJSON = try parseToolTextJSON(fromResponseLine: export)
+        let memoryPath = try requireString(exportJSON, key: "memory_md_path")
+        let memoryText = try String(contentsOfFile: memoryPath, encoding: .utf8)
+        #expect(memoryText.contains("Markdown export anchor"))
+
+        let handoffPath = try #require(exportJSON["handoff_summary_path"] as? String)
+        let handoffText = try String(contentsOfFile: handoffPath, encoding: .utf8)
+        #expect(handoffText.contains("Markdown export handoff anchor"))
+
+        let dreamsPath = try #require(exportJSON["dreams_path"] as? String)
+        let dreamsText = try String(contentsOfFile: dreamsPath, encoding: .utf8)
+        #expect(dreamsText.contains("Markdown approvals"))
+        #expect(dreamsText.contains("- [ ]"))
+    }
+
+    @Test(.timeLimit(.minutes(2)))
+    func brokerBackedMarkdownSyncReconcilesManagedFilesAndApprovesDreams() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(
+            clientName: "wax-mcp-markdown-sync-test",
+            includeToolsList: true
+        )
+
+        let started = try await harness.callTool(id: 61, name: "session_start", arguments: [:], timeout: 20)
+        let sessionID = try requireString(try parseToolTextJSON(fromResponseLine: started), key: "session_id")
+
+        _ = try await harness.callTool(
+            id: 62,
+            name: "remember",
+            arguments: [
+                "content": "Original markdown-managed fact anchor.",
+                "memory_type": "fact",
+                "durability": "durable",
+            ],
+            timeout: 20
+        )
+        _ = try await harness.callTool(
+            id: 63,
+            name: "remember",
+            arguments: [
+                "content": "Decision: promote DREAMS approvals into durable memory.",
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+
+        let outputDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-sync-\(UUID().uuidString)", isDirectory: true)
+        let export = try await harness.callTool(
+            id: 64,
+            name: "markdown_export",
+            arguments: [
+                "output_dir": outputDir.path,
+                "session_id": sessionID,
+            ],
+            timeout: 20
+        )
+        let exportJSON = try parseToolTextJSON(fromResponseLine: export)
+        let memoryPath = try requireString(exportJSON, key: "memory_md_path")
+        let dreamsPath = try #require(exportJSON["dreams_path"] as? String)
+        let dailyPaths = try requireArray(exportJSON, key: "daily_note_paths")
+        let dailyPath = try #require(dailyPaths.first as? String)
+
+        var memoryText = try String(contentsOfFile: memoryPath, encoding: .utf8)
+        memoryText = memoryText.replacingOccurrences(
+            of: "Original markdown-managed fact anchor.",
+            with: "Updated markdown-managed fact anchor."
+        )
+        try memoryText.write(toFile: memoryPath, atomically: true, encoding: .utf8)
+
+        var dailyText = try String(contentsOfFile: dailyPath, encoding: .utf8)
+        dailyText.append("\n- Imported daily note anchor.\n")
+        try dailyText.write(toFile: dailyPath, atomically: true, encoding: .utf8)
+
+        var dreamsText = try String(contentsOfFile: dreamsPath, encoding: .utf8)
+        dreamsText = dreamsText.replacingOccurrences(of: "- [ ]", with: "- [x]", options: [], range: dreamsText.range(of: "- [ ]"))
+        try dreamsText.write(toFile: dreamsPath, atomically: true, encoding: .utf8)
+
+        let sync = try await harness.callTool(
+            id: 65,
+            name: "markdown_sync",
+            arguments: [
+                "root_dir": outputDir.path,
+            ],
+            timeout: 60
+        )
+        let syncJSON = try parseToolTextJSON(fromResponseLine: sync)
+        let counts = try requireObject(syncJSON, key: "counts")
+        #expect((counts["updated"] as? Int ?? 0) >= 1)
+        #expect((counts["created"] as? Int ?? 0) >= 1)
+        #expect((counts["approved_dreams"] as? Int ?? 0) >= 1)
+
+        let updatedFact = try await harness.callTool(
+            id: 66,
+            name: "search",
+            arguments: [
+                "query": "Updated markdown-managed fact anchor",
+                "topK": 5,
+            ],
+            timeout: 20
+        )
+        #expect(updatedFact.contains("Updated markdown-managed fact anchor"))
+
+        let importedDaily = try await harness.callTool(
+            id: 67,
+            name: "search",
+            arguments: [
+                "query": "Imported daily note anchor",
+                "topK": 5,
+            ],
+            timeout: 20
+        )
+        #expect(importedDaily.contains("Imported daily note anchor"))
+
+        let approvedDream = try await harness.callTool(
+            id: 68,
+            name: "search",
+            arguments: [
+                "query": "promote DREAMS approvals into durable memory",
+                "topK": 5,
+            ],
+            timeout: 20
+        )
+        #expect(approvedDream.contains("DREAMS approvals"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func brokerAutoStartHandlesConcurrentFirstAccess() async throws {
         let sharedStoreURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-concurrent-start-\(UUID().uuidString)")
@@ -2295,7 +4049,7 @@ struct WaxMCPProcessTests {
         try harness.closeInput()
         #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
         let stderr = harness.stderrSnapshot()
-        #expect(stderr.contains("wax-mcp v0.1.20 starting"))
+        #expect(stderr.contains("wax-mcp v\(WaxMCPServerMetadata.version) starting"))
     }
 
     @Test(.timeLimit(.minutes(1)))
