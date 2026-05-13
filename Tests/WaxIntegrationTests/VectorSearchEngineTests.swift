@@ -52,6 +52,34 @@ import WaxVectorSearch
     #expect(info.vectorCount == 1)
 }
 
+@Test func uSearchVectorEngineLoadPrefersStagedVectorIndexBytes() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+
+    let stagedVecBytes = try VectorSerializer.serializeFlatVectors(
+        [1.0, 0.0],
+        frameIds: [42],
+        metric: .cosine,
+        dimensions: 2
+    )
+    try await wax.stageVecIndexForNextCommit(
+        bytes: stagedVecBytes,
+        vectorCount: 1,
+        dimension: 2,
+        similarity: .cosine
+    )
+
+    let engine = try await USearchVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
+    let hits = try await engine.search(vector: [1.0, 0.0], topK: 1)
+    #expect(hits.map(\.frameId) == [42])
+
+    try await wax.close()
+}
+
 @Test func uSearchVectorEngineRejectsNonFiniteVectors() async throws {
     let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
 

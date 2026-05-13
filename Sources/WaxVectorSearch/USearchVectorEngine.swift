@@ -69,7 +69,9 @@ package actor USearchVectorEngine {
 
     package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> USearchVectorEngine {
         let engine = try USearchVectorEngine(metric: metric, dimensions: dimensions)
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
+        if let staged = await wax.readStagedVecIndexBytes() {
+            try await engine.deserialize(staged.bytes)
+        } else if let bytes = try await wax.readCommittedVecIndexBytes() {
             try await engine.deserialize(bytes)
         }
         let pending = await wax.pendingEmbeddingMutations()
