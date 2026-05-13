@@ -14,6 +14,19 @@ func readmeQuickStartImportsFoundationBeforeWax() throws {
     #expect(readme.contains("```swift\nimport Foundation\nimport Wax"))
 }
 
+@Test
+func npmReadmeLocalDevelopmentUsesRepoRootPackagePath() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let readmeURL = repoRoot.appendingPathComponent("Resources/npm/waxmcp/README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+
+    #expect(!readme.contains("npx --yes ./npm/waxmcp mcp doctor"))
+    #expect(readme.contains("npx --yes ./Resources/npm/waxmcp mcp doctor"))
+}
+
 // MARK: - Test Embedder for README examples
 
 private actor TestReadmeEmbedder: EmbeddingProvider {
