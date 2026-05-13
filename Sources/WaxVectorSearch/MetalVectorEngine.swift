@@ -820,9 +820,14 @@ package actor MetalVectorEngine {
             guard data.count - offset >= frameIdLengthInt else {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId data")
             }
-            frameIds = Array(data[offset..<offset+frameIdLengthInt].withUnsafeBytes {
-                Array($0.bindMemory(to: UInt64.self))
-            })
+            frameIds = data.withUnsafeBytes { rawBuffer in
+                var decoded: [UInt64] = []
+                decoded.reserveCapacity(Int(savedVectorCount))
+                for byteOffset in stride(from: offset, to: offset + frameIdLengthInt, by: MemoryLayout<UInt64>.stride) {
+                    decoded.append(UInt64(littleEndian: rawBuffer.loadUnaligned(fromByteOffset: byteOffset, as: UInt64.self)))
+                }
+                return decoded
+            }
             offset += frameIdLengthInt
             guard offset == data.count else {
                 throw WaxError.invalidToc(reason: "Metal segment has trailing bytes")

@@ -151,6 +151,19 @@ import WaxVectorSearch
 }
 #endif
 
+@Test func metalVectorEngineDeserializeAvoidsAlignedUInt64Binding() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine.swift"),
+        encoding: .utf8
+    )
+
+    #expect(!source.contains("bindMemory(to: UInt64.self)"))
+}
+
 @Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
