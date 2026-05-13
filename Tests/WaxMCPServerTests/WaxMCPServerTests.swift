@@ -2149,6 +2149,54 @@ func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
 }
 
 @Test
+func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
+    try await withAgentBrokerService { service, _ in
+        let first = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("selector-agent"),
+                "run_id": .string("selector-run"),
+            ]
+        ))
+        #expect(first.ok == true)
+        let firstPayload = try #require(first.payload?.objectValue)
+        let firstSessionID = try #require(firstPayload["session_id"]?.stringValue)
+
+        try await Task.sleep(for: .milliseconds(2))
+
+        let second = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("selector-agent"),
+                "run_id": .string("selector-run"),
+            ]
+        ))
+        #expect(second.ok == true)
+        let secondPayload = try #require(second.payload?.objectValue)
+        let secondSessionID = try #require(secondPayload["session_id"]?.stringValue)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(secondSessionID)]
+        ))
+        #expect(ended.ok == true)
+
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: [
+                "agent_id": .string("selector-agent"),
+                "run_id": .string("selector-run"),
+            ]
+        ))
+
+        #expect(resumed.ok == true)
+        let resumedPayload = try #require(resumed.payload?.objectValue)
+        #expect(resumedPayload["session_id"]?.stringValue == firstSessionID)
+        #expect(resumedPayload["resumed"]?.boolValue == true)
+    }
+}
+
+@Test
 func brokerImplicitMemoryPromotePreservesResolvedSessionProvenance() async throws {
     try await withAgentBrokerService { service, sessionRootURL in
         let started = await service.handle(.init(command: "session_start"))

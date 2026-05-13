@@ -1329,6 +1329,7 @@ extension AgentBrokerService {
 
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
         let filtered = manifests.filter { manifest in
+            guard manifest.status == .active else { return false }
             if let agentID, manifest.agentID != agentID { return false }
             if let runID, manifest.runID != runID { return false }
             return true
