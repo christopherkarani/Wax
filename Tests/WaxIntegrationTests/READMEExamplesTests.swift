@@ -2,6 +2,18 @@ import Foundation
 import Testing
 import Wax
 
+@Test
+func readmeQuickStartImportsFoundationBeforeWax() throws {
+    let readmeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+
+    #expect(readme.contains("```swift\nimport Foundation\nimport Wax"))
+}
+
 // MARK: - Test Embedder for README examples
 
 private actor TestReadmeEmbedder: EmbeddingProvider {

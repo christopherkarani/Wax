@@ -120,6 +120,7 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 ### Swift
 
 ```swift
+import Foundation
 import Wax
 
 // Use a sandbox-safe, writable location (works in apps and CLI tools)
@@ -179,6 +180,7 @@ struct ContentView: View {
 <summary><strong>CLI tool (main.swift)</strong></summary>
 
 ```swift
+import Foundation
 import Wax
 
 @main
