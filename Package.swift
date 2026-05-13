@@ -237,6 +237,7 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),
+                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),
