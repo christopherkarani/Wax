@@ -18,6 +18,7 @@ package actor AgentBrokerService {
     let noEmbedder: Bool
     let embedderChoice: String
     let embedderTuning: CommandLineEmbedderRuntimeTuning
+    let enableAccessStatsScoring: Bool
     let scopeContext: MemoryScopeContext
     let promotionSettings: BrokerPromotionSettings
     let brokerInstanceID = UUID().uuidString
@@ -29,6 +30,7 @@ package actor AgentBrokerService {
         noEmbedder: Bool,
         embedderChoice: String,
         requireVector: Bool,
+        enableAccessStatsScoring: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
@@ -36,6 +38,7 @@ package actor AgentBrokerService {
         self.noEmbedder = noEmbedder
         self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
+        self.enableAccessStatsScoring = enableAccessStatsScoring
         self.scopeContext = MemorySemantics.inferScopeContext()
         self.promotionSettings = BrokerPromotionSettings.fromEnvironment()
 
@@ -63,6 +66,7 @@ package actor AgentBrokerService {
         }
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false
@@ -1959,6 +1963,7 @@ extension AgentBrokerService {
         )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = false
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false
@@ -1985,6 +1990,7 @@ extension AgentBrokerService {
         )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false

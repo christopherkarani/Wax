@@ -37,6 +37,10 @@ struct DaemonCommand: AsyncParsableCommand {
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder.rawValue,
             requireVector: store.requireVector,
+            enableAccessStatsScoring: featureFlagEnabled(
+                "WAX_MCP_FEATURE_ACCESS_STATS",
+                default: false
+            ),
             embedderTuning: store.embedderTuning
         )
 
@@ -301,3 +305,21 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+
+private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty
+    else {
+        return defaultValue
+    }
+
+    switch raw.lowercased() {
+    case "1", "true", "yes", "on":
+        return true
+    case "0", "false", "no", "off":
+        return false
+    default:
+        return defaultValue
+    }
+}

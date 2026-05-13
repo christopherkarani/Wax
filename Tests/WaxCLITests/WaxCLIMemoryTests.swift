@@ -305,6 +305,34 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func brokerStatsHonorAccessStatsFeatureFlag() throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxas-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = brokerRoot.appendingPathComponent("access-stats.wax")
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "stats",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--format", "json",
+            ],
+            environment: [
+                "WAX_BROKER_DIR": brokerRoot.path,
+                "WAX_MCP_FEATURE_ACCESS_STATS": "1",
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "broker-backed stats should succeed: \(output.stderr)")
+        let object = try #require(JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any])
+        let features = try #require(object["features"] as? [String: Any])
+        #expect(features["accessStatsScoringEnabled"] as? Bool == true)
+    }
+
     @Test func agentDaemonPolicyPrefersDaemonForVectorCommands() throws {
         let vectorStore = try VectorStoreOptions.parse([])
         let textStore = try VectorStoreOptions.parse(["--no-embedder"])
