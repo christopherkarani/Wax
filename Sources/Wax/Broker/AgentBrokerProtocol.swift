@@ -311,7 +311,7 @@ package enum AgentBrokerPathing {
     private static func usableSocketRoot(preferred: URL, socketName: String) throws -> URL {
         let preferredPath = preferred.appendingPathComponent(socketName).path
         if preferredPath.utf8.count < unixSocketPathByteLimit {
-            try FileManager.default.createDirectory(at: preferred, withIntermediateDirectories: true)
+            try ensurePrivateDirectory(preferred)
             return preferred
         }
 

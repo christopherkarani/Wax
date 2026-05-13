@@ -652,6 +652,56 @@ struct WaxCLIMemoryTests {
         #expect(configuration.socketPath.utf8.count < 100)
     }
 
+    @Test func brokerSocketEnvironmentRootUsesPrivateDirectory() throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbr-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
+        defer { unsetenv("WAX_BROKER_DIR") }
+
+        let configuration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+            storePath: brokerRoot.appendingPathComponent("private-root.wax").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false
+        )
+
+        #expect(configuration.socketPath.hasPrefix(brokerRoot.path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: brokerRoot.path)
+        let permissionNumber = try #require(attributes[.posixPermissions] as? NSNumber)
+        let ownerNumber = try #require(attributes[.ownerAccountID] as? NSNumber)
+        #expect(permissionNumber.intValue & 0o777 == 0o700)
+        #expect(ownerNumber.uint32Value == UInt32(getuid()))
+    }
+
+    @Test func brokerSocketEnvironmentRootRejectsSymlink() throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbr-symlink-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let targetRoot = tempRoot.appendingPathComponent("target", isDirectory: true)
+        let symlinkRoot = tempRoot.appendingPathComponent("link", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: symlinkRoot, withDestinationURL: targetRoot)
+        setenv("WAX_BROKER_DIR", symlinkRoot.path, 1)
+        defer { unsetenv("WAX_BROKER_DIR") }
+
+        do {
+            _ = try AgentBrokerPathing.configuration(
+                brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+                storePath: tempRoot.appendingPathComponent("symlink-root.wax").path,
+                embedderChoice: "minilm",
+                noEmbedder: true,
+                requireVector: false
+            )
+            Issue.record("Expected broker socket root to reject symlink directories")
+        } catch {
+            #expect(error.localizedDescription.contains("must not be a symlink"))
+        }
+    }
+
     @Test func brokerBackedVectorRequirementFailsFastWhenNoEmbedderIsConfigured() async throws {
         let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxbv-\(UUID().uuidString.prefix(8))", isDirectory: true)
