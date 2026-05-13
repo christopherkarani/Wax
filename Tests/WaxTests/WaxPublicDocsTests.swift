@@ -35,6 +35,31 @@ func waxDocsDoNotAdvertisePackageOnlyWaxSessionAsPublicAPI() throws {
     }
 }
 
+@Test
+func sessionDocsDoNotAdvertiseNonexistentTextPutOverloads() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/WaxSession.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("package func put(\n        _ content: Data"))
+    #expect(!source.contains("func put(text:"))
+    #expect(!source.contains("func putBatch(\n        texts:"))
+
+    for relativePath in waxSessionDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+
+        #expect(!doc.contains("session.put(text:"))
+        #expect(!doc.contains("timestamp: nowMs"))
+        #expect(!doc.contains("embedding: vectorData"))
+        #expect(!doc.contains("putBatch(\n    texts:"))
+    }
+}
+
 private let waxSessionDocPaths = [
     "Sources/Wax/Wax.docc/Articles/SessionManagement.md",
     "Resources/website/docs/orchestrator/session-management.md",
