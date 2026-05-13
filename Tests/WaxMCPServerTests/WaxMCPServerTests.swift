@@ -896,6 +896,25 @@ func searchRejectsNonArrayLabelsFilter() async throws {
 }
 
 @Test
+func searchRejectsNonIntegerTimeFilters() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": "bad time filter",
+                    "filters": .object(["time_after_ms": .string("not-an-int")]),
+                ]
+            ),
+            memory: memory
+        )
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("filters.time_after_ms must be an integer"))
+    }
+}
+
+@Test
 func toolsReturnValidationErrorForMissingArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
