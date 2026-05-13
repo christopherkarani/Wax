@@ -468,17 +468,18 @@ final class BasicTokenizer: @unchecked Sendable {
 
     func tokenize(text: String) -> [String] {
         let foldedText = text.folding(options: .diacriticInsensitive, locale: nil)
-        let splitTokens = foldedText.components(separatedBy: NSCharacterSet.whitespaces)
+        let splitTokens = foldedText.split(whereSeparator: \.isWhitespace)
 
         let tokens: [String] = splitTokens.flatMap { token -> [String] in
-            if neverSplit.contains(token) {
-                return [token]
+            let tokenText = String(token)
+            if neverSplit.contains(tokenText) {
+                return [tokenText]
             }
 
             var tokenFragments: [String] = []
             var currentFragment = ""
 
-            for character in token.lowercased() {
+            for character in tokenText.lowercased() {
                 if character.isLetter || character.isNumber || character == "°" {
                     currentFragment.append(character)
                 } else if !currentFragment.isEmpty {

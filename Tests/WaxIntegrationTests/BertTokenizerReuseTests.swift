@@ -49,4 +49,14 @@ func sharedTokenizerProducesSameTokensForBothTargets() throws {
     let recovered = try tokenizer.idsToTokens(tokenIds: ids)
     #expect(recovered == tokens)
 }
+
+@Test
+func bertTokenizerTreatsNewlinesAsWhitespace() throws {
+    let tokenizer = try BertTokenizer()
+
+    let newlineSeparatedTokens = tokenizer.tokenize(text: "Hello\nworld\nthis is Wax")
+    let whitespaceSeparatedTokens = tokenizer.tokenize(text: "Hello world this is Wax")
+
+    #expect(newlineSeparatedTokens == whitespaceSeparatedTokens)
+}
 #endif
