@@ -73,6 +73,44 @@ require_swiftpm_traits() {
   fi
 }
 
+assert_default_mcp_trait_tests_omitted() {
+  local log_file="$1"
+  if grep -E "^wax_mcpTests\.(WaxMCPProcessTests[/.]|toolsListContainsExpectedTools\(\)|toolsRememberRecallSearchFlushStatsHappyPath\(\)|vectorSearchRememberFlushRecallHappyPath\(\))" "$log_file" >/dev/null; then
+    echo "FAIL: default SwiftPM test list unexpectedly includes MCP trait suites." >&2
+    return 1
+  fi
+  echo "MCP_TRAIT_DEFAULT_LIST: real MCP trait suites omitted as expected"
+}
+
+assert_mcp_trait_tests_listed() {
+  local log_file="$1"
+  if ! grep -E "^wax_mcpTests\.WaxMCPProcessTests[/.]" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing wax_mcpTests.WaxMCPProcessTests." >&2
+    return 1
+  fi
+  if ! grep -E "^wax_mcpTests\.toolsListContainsExpectedTools\(\)" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing wax_mcpTests.toolsListContainsExpectedTools()." >&2
+    return 1
+  fi
+
+  local count
+  count="$(grep -Ec "^wax_mcpTests\." "$log_file")"
+  echo "MCP_TRAIT_TESTS: listed=$count"
+}
+
+assert_mcp_trait_test_inventory() {
+  local default_list_log="/tmp/wax-gate-default-test-list.log"
+  local mcp_list_log="/tmp/wax-gate-mcp-test-list.log"
+
+  run_and_capture "$default_list_log" \
+    swift test --disable-automatic-resolution list
+  assert_default_mcp_trait_tests_omitted "$default_list_log"
+
+  run_and_capture "$mcp_list_log" \
+    swift test --traits MCPServer --disable-automatic-resolution list
+  assert_mcp_trait_tests_listed "$mcp_list_log"
+}
+
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
   local mcp_log_file="/tmp/wax-gate-full-mcp.log"
@@ -85,6 +123,7 @@ run_full() {
   assert_full_pass_rate "$log_file"
 
   require_swiftpm_traits
+  assert_mcp_trait_test_inventory
 
   run_and_capture "$mcp_log_file" \
     swift test --parallel --traits MCPServer --skip "$skip_regex"

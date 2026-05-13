@@ -71,4 +71,21 @@ assert_rejects_skip_output \
   "swift-testing-test-skipped" \
   "Test testRequiresFixture() skipped: requires local fixture"
 
+DEFAULT_TEST_LIST="$TMP_DIR/default-tests.txt"
+cat >"$DEFAULT_TEST_LIST" <<'EOF'
+waxTests.PackageTraitManifestTests/waxMCPProductEnablesMiniLMCompileDefine()
+wax_mcpTests.mcpServerTestsRequireTrait()
+EOF
+
+assert_default_mcp_trait_tests_omitted "$DEFAULT_TEST_LIST"
+
+MCP_TEST_LIST="$TMP_DIR/mcp-tests.txt"
+cat >"$MCP_TEST_LIST" <<'EOF'
+waxTests.PackageTraitManifestTests/waxMCPProductEnablesMiniLMCompileDefine()
+wax_mcpTests.WaxMCPProcessTests/brokerAutoStartHandlesConcurrentFirstAccess()
+wax_mcpTests.toolsListContainsExpectedTools()
+EOF
+
+assert_mcp_trait_tests_listed "$MCP_TEST_LIST"
+
 echo "production_readiness_gates_tests: ok"
