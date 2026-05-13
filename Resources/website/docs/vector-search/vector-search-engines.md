@@ -63,13 +63,7 @@ Transient buffers (query vectors, distance arrays) are pooled and reused across 
 
 ### Availability
 
-```swift
-if MetalVectorEngine.isAvailable {
-    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 384)
-}
-```
-
-`MetalVectorEngine.isAvailable` checks for a Metal-capable GPU device. It is always available on Apple Silicon Macs and iPhones.
+Wax package internals check Metal availability before selecting this backend. Metal is normally available on Apple Silicon Macs and iPhones.
 
 ### Limitations
 

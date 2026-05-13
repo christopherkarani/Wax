@@ -66,6 +66,25 @@ func vectorSearchDocsDoNotInstantiatePackageOnlyUSearchEngineAsPublicAPI() throw
     }
 }
 
+@Test
+func vectorSearchDocsDoNotInstantiatePackageOnlyMetalEngineAsPublicAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("package actor MetalVectorEngine"))
+
+    for relativePath in vectorSearchDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(!doc.contains("MetalVectorEngine("))
+    }
+}
+
 private let vectorSearchDocPaths = [
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Documentation.md",
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/VectorSearchEngines.md",
