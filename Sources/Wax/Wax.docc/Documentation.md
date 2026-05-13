@@ -58,9 +58,6 @@ print(context.items.map(\.text))
 ### Search
 
 - <doc:UnifiedSearch>
-- ``SearchRequest``
-- ``SearchResponse``
-- ``SearchMode``
 
 ### Photo RAG
 
