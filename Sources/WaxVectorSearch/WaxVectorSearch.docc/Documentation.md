@@ -26,7 +26,6 @@ The module also defines the ``EmbeddingProvider`` protocol for text-to-vector co
 
 - ``USearchVectorEngine``
 - ``MetalVectorEngine``
-- ``VectorEnginePreference``
 
 ### Metrics
 

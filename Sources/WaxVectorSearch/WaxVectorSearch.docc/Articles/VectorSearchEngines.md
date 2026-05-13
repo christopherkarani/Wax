@@ -66,19 +66,9 @@ Wax package internals check Metal availability before selecting this backend. Me
 - **Cosine similarity only** — The Metal kernels assume the query vector is pre-normalized
 - **Brute-force search** — O(n) per query, best for indexes under ~100K vectors where GPU parallelism compensates
 
-## Choosing an Engine
+## Engine Selection
 
-Use ``VectorEnginePreference`` to let the system decide:
-
-```swift
-let preference: VectorEnginePreference = .auto
-```
-
-| Preference | Behavior |
-|------------|----------|
-| `.auto` | Metal when available and appropriate, otherwise CPU |
-| `.gpuOnly` | Require Metal; throw if unavailable |
-| `.cpuOnly` | Always CPU |
+Wax package internals choose the backend when a vector index is loaded or created. The selection logic prefers a compatible Metal backend when it is available and falls back to the CPU backend when required by platform capability or stored index format.
 
 ## Common Operations
 

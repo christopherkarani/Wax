@@ -87,7 +87,6 @@ The package-only recall flow:
 | `enableOCR` | Whether to run OCR on ingested photos |
 | `enableRegions` | Whether to extract bounding box regions |
 | `ingestConcurrency` | Parallel ingestion tasks |
-| `vectorEnginePreference` | CPU vs GPU vector engine |
 | `hybridAlpha` | BM25 vs vector blend (0 = vector, 1 = text) |
 | `searchTopK` | Candidates to retrieve |
 | `requireOnDeviceProviders` | Reject network-dependent providers |

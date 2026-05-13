@@ -164,5 +164,5 @@ See `OrchestratorConfig` for the full configuration surface:
 | RAG | `ragConfig` (`FastRAGConfig`) |
 | Chunking | `chunking` (`ChunkingStrategy`) |
 | Embedding | `embeddingCacheCapacity`, `requireOnDeviceProviders` |
-| Vector | `useMetalVectorSearch`, `vectorEnginePreference` |
+| Vector | Vector search enablement and embedding provider availability |
 | Maintenance | `liveSetRewriteSchedule` |

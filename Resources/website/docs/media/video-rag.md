@@ -86,7 +86,6 @@ Results are grouped by source video and sorted by relevance within each group. S
 | `maxTranscriptBytesPerSegment` | Transcript budget per segment |
 | `searchTopK` | Candidates to retrieve |
 | `hybridAlpha` | BM25/vector blend |
-| `vectorEnginePreference` | Vector search engine preference |
 | `timelineFallbackLimit` | Constraint-only fallback limit |
 | `requireOnDeviceProviders` | Reject network-dependent providers |
 | `includeThumbnailsInContext` | Include thumbnails in recall context |
