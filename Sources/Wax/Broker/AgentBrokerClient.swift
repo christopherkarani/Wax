@@ -28,6 +28,11 @@ package enum AgentBrokerClient {
         envKey: "WAX_BROKER_SHUTDOWN_TIMEOUT_SECS",
         defaultValue: 2.0
     )
+    private static let responseTimeoutSeconds = configuredSeconds(
+        envKey: "WAX_BROKER_RESPONSE_TIMEOUT_SECS",
+        defaultValue: 30.0
+    )
+    private static let maxSocketResponseBytes = 1_048_576
 
     package static func perform(
         request: AgentBrokerRequest,
@@ -253,14 +258,49 @@ package enum AgentBrokerClient {
         handle.write(Data([0x0A]))
         shutdown(fd, socketShutdownWrite)
 
-        let data = try handle.readToEnd() ?? Data()
-        guard let line = String(data: data, encoding: .utf8)?
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+        guard let line = try readSocketResponseLine(fd: fd) else {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
+    }
+
+    private static func readSocketResponseLine(fd: Int32) throws -> String? {
+        var buffer = Data()
+        let timeoutMS = Int32(responseTimeoutSeconds * 1000)
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, timeoutMS)
+            if pollResult == 0 {
+                throw BrokerClientError("Timed out waiting for broker response")
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw BrokerClientError("Broker response poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw BrokerClientError("Broker response read failed: \(String(cString: strerror(errno)))")
+            }
+
+            buffer.append(contentsOf: chunk.prefix(count))
+            guard buffer.count <= maxSocketResponseBytes else {
+                throw BrokerClientError("Broker response exceeds \(maxSocketResponseBytes) bytes")
+            }
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: buffer[..<newlineIndex], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return line.isEmpty ? nil : line
+            }
+        }
+
+        guard !buffer.isEmpty else { return nil }
+        let line = String(decoding: buffer, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : line
     }
 
     private static func configuredSeconds(envKey: String, defaultValue: Double) -> Double {

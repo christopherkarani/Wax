@@ -3,6 +3,11 @@ import Dispatch
 import Testing
 import Wax
 @testable import wax_cli
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 @Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
@@ -501,6 +506,50 @@ struct WaxCLIMemoryTests {
         #expect(FileManager.default.fileExists(atPath: victimURL.path))
         let preserved = try String(contentsOf: victimURL, encoding: .utf8)
         #expect(preserved == "do not unlink\n")
+    }
+
+    @Test func daemonSocketClientTimeoutDoesNotBlockLaterRequests() throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxds-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [
+            "daemon",
+            "--store-path", storeURL.path,
+            "--no-embedder",
+            "--socket-path", socketURL.path,
+            "--idle-timeout-secs", "10",
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        try waitForSocket(atPath: socketURL.path, timeout: 5)
+
+        let stalledClient = try connectUnixSocket(path: socketURL.path)
+        defer { close(stalledClient) }
+        _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
+
+        let responseLine = try sendBrokerSocketRequest(
+            AgentBrokerRequest(command: "stats"),
+            socketPath: socketURL.path,
+            timeoutSeconds: 3
+        )
+        let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
+        #expect(response.ok)
     }
 
     @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() throws {
@@ -1152,6 +1201,118 @@ struct WaxCLIMemoryTests {
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private func waitForSocket(atPath path: String, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: path) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw CLIError("Timed out waiting for socket at \(path)")
+    }
+
+    private func connectUnixSocket(path: String) throws -> Int32 {
+        #if canImport(Darwin)
+        let socketType = SOCK_STREAM
+        #else
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #endif
+        let fd = socket(AF_UNIX, socketType, 0)
+        guard fd >= 0 else {
+            throw CLIError("Unable to create Unix socket: \(String(cString: strerror(errno)))")
+        }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            close(fd)
+            throw CLIError("Unix socket path is too long: \(path)")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            let message = String(cString: strerror(errno))
+            close(fd)
+            throw CLIError("Unable to connect to Unix socket at \(path): \(message)")
+        }
+        return fd
+    }
+
+    private func sendBrokerSocketRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double
+    ) throws -> String {
+        let fd = try connectUnixSocket(path: socketPath)
+        defer { close(fd) }
+
+        var payload = try JSONEncoder().encode(request)
+        payload.append(0x0A)
+        try payload.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            let written = write(fd, base, payload.count)
+            guard written == payload.count else {
+                throw CLIError("Unable to write broker socket request")
+            }
+        }
+        #if canImport(Darwin)
+        shutdown(fd, SHUT_WR)
+        #else
+        shutdown(fd, Int32(SHUT_WR))
+        #endif
+
+        return try readSocketLine(fd: fd, timeoutSeconds: timeoutSeconds)
+    }
+
+    private func readSocketLine(fd: Int32, timeoutSeconds: Double) throws -> String {
+        var buffer = Data()
+        let timeoutMS = Int32(timeoutSeconds * 1000)
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let result = poll(&descriptor, 1, timeoutMS)
+            if result == 0 {
+                throw CLIError("Timed out waiting for broker socket response")
+            }
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker socket poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker socket read failed: \(String(cString: strerror(errno)))")
+            }
+            buffer.append(contentsOf: chunk.prefix(count))
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                return String(decoding: buffer[..<newlineIndex], as: UTF8.self)
+            }
+        }
+
+        guard !buffer.isEmpty else {
+            throw CLIError("Broker socket closed without a response")
+        }
+        return String(decoding: buffer, as: UTF8.self)
     }
 
     private func runMCPSmokeProcess(

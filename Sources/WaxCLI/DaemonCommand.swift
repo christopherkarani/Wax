@@ -68,6 +68,8 @@ private extension DaemonCommand {
     #elseif canImport(Glibc)
     var unixStreamSocketType: Int32 { Int32(SOCK_STREAM.rawValue) }
     #endif
+    var socketClientReadTimeoutMS: Int32 { 1_000 }
+    var maxSocketRequestBytes: Int { 1_048_576 }
 
     func runLoop(
         service: AgentBrokerService,
@@ -189,13 +191,9 @@ private extension DaemonCommand {
 
     func handleSocketClient(service: AgentBrokerService, fd: Int32) async throws -> Bool {
         let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        let data = try fileHandle.readToEnd() ?? Data()
         let response: AgentBrokerResponse
 
-        if let line = String(data: data, encoding: .utf8)?
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+        if let line = try readSocketRequestLine(fd: fd) {
             do {
                 let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
                 response = await service.handle(request)
@@ -239,6 +237,44 @@ private extension DaemonCommand {
         if response.shouldExit {
             throw ExitRequested()
         }
+    }
+
+    func readSocketRequestLine(fd: Int32) throws -> String? {
+        var buffer = Data()
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, socketClientReadTimeoutMS)
+            if pollResult == 0 {
+                return nil
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker client poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker client read failed: \(String(cString: strerror(errno)))")
+            }
+
+            buffer.append(contentsOf: chunk.prefix(count))
+            guard buffer.count <= maxSocketRequestBytes else {
+                throw CLIError("Broker socket request exceeds \(maxSocketRequestBytes) bytes")
+            }
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: buffer[..<newlineIndex], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return line.isEmpty ? nil : line
+            }
+        }
+
+        guard !buffer.isEmpty else { return nil }
+        let line = String(decoding: buffer, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : line
     }
 
     func removeExistingSocket(at path: String) throws {
