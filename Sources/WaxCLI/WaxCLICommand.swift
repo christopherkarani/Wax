@@ -74,12 +74,12 @@ extension WaxCLI.MCP {
             if noEmbedder {
                 arguments.append("--no-embedder")
             }
-            if let key = normalizedKey(licenseKey) {
-                arguments.append(contentsOf: ["--license-key", key])
-            }
 
             var env = ProcessInfo.processInfo.environment
             env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
+            if let key = normalizedKey(licenseKey) {
+                env["WAX_LICENSE_KEY"] = key
+            }
             env.merge(embedderRuntime.resolvedTuning().environmentOverrides(), uniquingKeysWith: { _, new in new })
 
             let status = try ProcessRunner.run(
@@ -208,7 +208,7 @@ extension WaxCLI.MCP {
                     print("# Staging bundled waxmcp runtime into a stable install path before registration.")
                 }
                 print("claude \(removeArguments.joined(separator: " "))")
-                print("claude \(addArguments.joined(separator: " "))")
+                print("claude \(redactedArgumentsForDisplay(addArguments).joined(separator: " "))")
                 return
             }
 
@@ -1033,6 +1033,15 @@ private func normalizedKey(_ key: String?) -> String? {
     let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     return trimmed
+}
+
+private func redactedArgumentsForDisplay(_ arguments: [String]) -> [String] {
+    arguments.map { argument in
+        if argument.hasPrefix("WAX_LICENSE_KEY=") {
+            return "WAX_LICENSE_KEY=<redacted>"
+        }
+        return argument
+    }
 }
 
 /// Resolve a tool to its full path, checking PATH first and then well-known locations.

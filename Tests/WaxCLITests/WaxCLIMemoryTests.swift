@@ -807,6 +807,72 @@ struct WaxCLIMemoryTests {
         #expect(!mcpChecksum.contains(fixtureRoot.path))
     }
 
+    @Test func mcpInstallDryRunRedactsLicenseKey() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-redaction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let secret = "wax_secret_\(UUID().uuidString)"
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "install",
+                "--dry-run",
+                "--skip-build",
+                "--server-path", fakeServer.path,
+                "--license-key", secret,
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "mcp install --dry-run should succeed")
+        #expect(!output.stdout.contains(secret), "dry-run stdout must not include the raw license key")
+        #expect(!output.stderr.contains(secret), "dry-run stderr must not include the raw license key")
+        #expect(output.stdout.contains("WAX_LICENSE_KEY=<redacted>"))
+    }
+
+    @Test func mcpServePassesLicenseKeyInEnvironmentOnly() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-serve-license-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let argvFile = tempRoot.appendingPathComponent("argv.txt")
+        let envFile = tempRoot.appendingPathComponent("env.txt")
+        let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
+        try """
+        #!/bin/sh
+        printf '%s\n' "$*" > "\(argvFile.path)"
+        printf '%s\n' "$WAX_LICENSE_KEY" > "\(envFile.path)"
+        exit 0
+        """.write(to: fakeServer, atomically: true, encoding: .utf8)
+        try setExecutable(fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let secret = "wax_secret_\(UUID().uuidString)"
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "serve",
+                "--server-path", fakeServer.path,
+                "--store-path", tempRoot.appendingPathComponent("memory.wax").path,
+                "--license-key", secret,
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "mcp serve should propagate the stub server exit status")
+        let argv = try String(contentsOf: argvFile, encoding: .utf8)
+        let env = try String(contentsOf: envFile, encoding: .utf8)
+        #expect(!argv.contains(secret), "mcp serve must not expose the raw license key in child argv")
+        #expect(env.trimmingCharacters(in: .whitespacesAndNewlines) == secret)
+    }
+
     @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-commit-flag-\(UUID().uuidString)", isDirectory: true)
