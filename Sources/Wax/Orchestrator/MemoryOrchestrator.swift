@@ -1281,16 +1281,27 @@ package actor MemoryOrchestrator {
         topK: Int?,
         requestedMode: DirectSearchMode?
     ) async throws -> RecallExecution {
-        let queryEmbedding = try await queryEmbeddingResult(for: query, policy: embeddingPolicy)
         let recallConfig = ragConfigForRecall()
         let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            let modeSummary = Self.modeSummary(requestedSearchMode)
+            return RecallExecution(
+                context: RAGContext(query: query, items: [], totalTokens: 0),
+                requestedModeSummary: modeSummary,
+                effectiveModeSummary: modeSummary,
+                queryEmbeddingState: .notRequested
+            )
+        }
+
+        let queryEmbedding = try await queryEmbeddingResult(for: trimmedQuery, policy: embeddingPolicy)
         let effectiveSearchMode = Self.resolveSearchMode(
             requested: requestedSearchMode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
 
         let context = try await buildRecallContext(
-            query: query,
+            query: trimmedQuery,
             embedding: queryEmbedding.embedding,
             frameFilter: frameFilter,
             timeRange: timeRange,

@@ -95,3 +95,44 @@ func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
         }
     }
 }
+
+@Test
+func whitespaceOnlyRecallDoesNotRequestEmbedding() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+
+        let embedder = WhitespaceRecallCountingEmbedder()
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+
+        let context = try await orchestrator.recall(query: " \n\t ", embeddingPolicy: .ifAvailable)
+
+        #expect(context.items.isEmpty)
+        #expect(await embedder.callCount == 0)
+
+        try await orchestrator.close()
+    }
+}
+
+private actor WhitespaceRecallCountingEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "Counting",
+        dimensions: 2,
+        normalized: true
+    )
+
+    private var calls = 0
+
+    var callCount: Int {
+        calls
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        calls += 1
+        return VectorMath.normalizeL2([1.0, 0.0])
+    }
+}
