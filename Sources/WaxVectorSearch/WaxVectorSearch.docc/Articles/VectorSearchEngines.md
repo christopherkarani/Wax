@@ -87,9 +87,9 @@ let preference: VectorEnginePreference = .auto
 
 | Preference | Behavior |
 |------------|----------|
-| `.auto` | Metal if available, otherwise USearch |
-| `.metalPreferred` | Metal if available, otherwise USearch |
-| `.cpuOnly` | Always USearch |
+| `.auto` | Metal when available and appropriate, otherwise CPU |
+| `.gpuOnly` | Require Metal; throw if unavailable |
+| `.cpuOnly` | Always CPU |
 
 ## Common Operations
 
