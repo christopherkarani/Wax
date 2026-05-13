@@ -138,10 +138,11 @@ fi
 for bin in "$CLI_BIN_PATH" "$MCP_BIN_PATH"; do
   if [[ -f "$bin" ]]; then
     if command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 "$bin" > "$bin.sha256"
+      digest="$(shasum -a 256 "$bin" | awk '{print $1}')"
     else
-      sha256sum "$bin" > "$bin.sha256"
+      digest="$(sha256sum "$bin" | awk '{print $1}')"
     fi
+    printf '%s  %s\n' "$digest" "$(basename "$bin")" > "$bin.sha256"
     echo "Wrote $bin.sha256"
   fi
 done

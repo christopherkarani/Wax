@@ -19,9 +19,9 @@ npx -y waxmcp@latest mcp install --scope user
 That install flow stages the bundled runtime into a stable local directory and registers the
 staged `wax-mcp` binary, so regular MCP sessions do not keep launching through raw `npx`.
 
-> Note: the bundled npm runtime currently ships `darwin-arm64` artifacts. The underlying
+> Note: the bundled npm runtime currently ships `darwin-arm64` and `darwin-x64` artifacts. The underlying
 > `wax-mcp` server itself now supports local Swift builds on macOS and Linux, including
-> `--transport http` for remote MCP deployments.
+> `--transport http` for gateway deployments.
 
 To publish a new version:
 
@@ -54,7 +54,7 @@ When invoked with no arguments or with `mcp serve`, the launcher directly invoke
 binary using this search order:
 
 1. `$WAX_MCP_BIN`
-2. Bundled `dist/darwin-arm64/wax-mcp` or `dist/darwin-x64/wax-mcp`
+2. Bundled `dist/darwin-${arch}/wax-mcp` on macOS arm64/x64
 3. `wax-mcp` in PATH
 4. `./.build/debug/wax-mcp` (current working directory)
 
@@ -70,7 +70,7 @@ For all other subcommands (remember, recall, search, etc.), the launcher invokes
 binary using this search order:
 
 1. `$WAX_CLI_BIN`
-2. Bundled `dist/darwin-arm64/wax-cli` or `dist/darwin-x64/wax-cli`
+2. Bundled `dist/darwin-${arch}/wax-cli` on macOS arm64/x64
 3. `wax-cli` in PATH
 4. `./.build/debug/wax-cli` (current working directory)
 

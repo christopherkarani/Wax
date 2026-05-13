@@ -568,6 +568,45 @@ struct WaxCLIMemoryTests {
         #expect(first.socketPath != second.socketPath)
     }
 
+    @Test func brokerSocketFallbackUsesPrivateUserDirectory() throws {
+        let longRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-broker-long-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(String(repeating: "nested-", count: 12), isDirectory: true)
+        var fallbackDirectory: URL?
+        defer {
+            if let fallbackDirectory {
+                try? FileManager.default.removeItem(at: fallbackDirectory)
+            }
+            try? FileManager.default.removeItem(at: longRoot.deletingLastPathComponent())
+        }
+
+        let configuration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+            storePath: longRoot.appendingPathComponent("fallback.wax").path,
+            socketRootPath: longRoot.path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false
+        )
+
+        let socketURL = URL(fileURLWithPath: configuration.socketPath)
+        let socketDirectory = socketURL.deletingLastPathComponent()
+        fallbackDirectory = socketDirectory
+        let privateRoot = socketDirectory.deletingLastPathComponent()
+        #expect(privateRoot.lastPathComponent == "wax-broker-\(getuid())")
+        #expect(socketDirectory.lastPathComponent.hasPrefix("wxb-"))
+        #expect(!configuration.socketPath.hasPrefix("/tmp/wxb-"))
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: socketDirectory.path)
+        let permissionNumber = try #require(attributes[.posixPermissions] as? NSNumber)
+        let ownerNumber = try #require(attributes[.ownerAccountID] as? NSNumber)
+        let permissions = permissionNumber.intValue & 0o777
+        let owner = ownerNumber.uint32Value
+        #expect(permissions == 0o700)
+        #expect(owner == UInt32(getuid()))
+        #expect(configuration.socketPath.utf8.count < 100)
+    }
+
     @Test func brokerBackedVectorRequirementFailsFastWhenNoEmbedderIsConfigured() async throws {
         let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxbv-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -682,6 +721,47 @@ struct WaxCLIMemoryTests {
         #expect(validation.failures.contains { $0.contains("checksum mismatch for wax-mcp") })
     }
 
+    @Test func buildWaxMCPBinariesWritesRelocatableChecksums() throws {
+        let sourceRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-build-checksums-\(UUID().uuidString)", isDirectory: true)
+        let scriptsDir = fixtureRoot.appendingPathComponent("Resources/scripts", isDirectory: true)
+        let distDir = fixtureRoot.appendingPathComponent("Resources/npm/waxmcp/dist/darwin-arm64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+        try FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: distDir, withIntermediateDirectories: true)
+        let scriptURL = scriptsDir.appendingPathComponent("build-waxmcp-binaries.sh")
+        try FileManager.default.copyItem(
+            at: sourceRoot.appendingPathComponent("Resources/scripts/build-waxmcp-binaries.sh"),
+            to: scriptURL
+        )
+        try setExecutable(scriptURL)
+        try makeExecutableStub(at: distDir.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: distDir.appendingPathComponent("wax-mcp"))
+
+        let output = try runProcess(
+            executableURL: scriptURL,
+            arguments: ["darwin-arm64"],
+            currentDirectoryURL: fixtureRoot,
+            timeout: 10
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "build helper stderr: \(output.stderr)")
+        let cliChecksum = try String(
+            contentsOf: distDir.appendingPathComponent("wax-cli.sha256"),
+            encoding: .utf8
+        )
+        let mcpChecksum = try String(
+            contentsOf: distDir.appendingPathComponent("wax-mcp.sha256"),
+            encoding: .utf8
+        )
+        #expect(cliChecksum.contains("  wax-cli\n"))
+        #expect(mcpChecksum.contains("  wax-mcp\n"))
+        #expect(!cliChecksum.contains(fixtureRoot.path))
+        #expect(!mcpChecksum.contains(fixtureRoot.path))
+    }
+
     @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-commit-flag-\(UUID().uuidString)", isDirectory: true)
@@ -780,6 +860,10 @@ struct WaxCLIMemoryTests {
 
     private func makeExecutableStub(at url: URL) throws {
         try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+        try setExecutable(url)
+    }
+
+    private func setExecutable(_ url: URL) throws {
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o755))],
             ofItemAtPath: url.path

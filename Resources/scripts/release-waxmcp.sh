@@ -14,7 +14,7 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG_JSON="$ROOT/Resources/npm/waxmcp/package.json"
 SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
 DIST_DIR="$ROOT/Resources/npm/waxmcp/dist/darwin-arm64"

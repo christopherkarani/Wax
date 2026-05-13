@@ -1,5 +1,13 @@
 import Foundation
 
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
 package enum AgentBrokerValue: Sendable, Equatable, Codable {
     case null
     case bool(Bool)
@@ -205,6 +213,7 @@ package struct AgentBrokerConfiguration: Sendable, Equatable {
 package enum AgentBrokerPathing {
     package static let defaultStorePath = "~/.wax/memory.wax"
     package static let defaultSessionRootPath = "~/.local/share/waxmcp/sessions"
+    private static let unixSocketPathByteLimit = 100
 
     package static func expandPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
@@ -280,11 +289,11 @@ package enum AgentBrokerPathing {
         let expandedSessionRoot = sessionRootPath == defaultSessionRootPath
             ? defaultSessionRoot()
             : expandPath(sessionRootPath)
-        let socketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
-        try FileManager.default.createDirectory(at: socketRoot, withIntermediateDirectories: true)
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"
         let socketName = "\(stableHexHash(key)).sock"
+        let preferredSocketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
+        let socketRoot = try usableSocketRoot(preferred: preferredSocketRoot, socketName: socketName)
         let socketPath = socketRoot.appendingPathComponent(socketName).path
 
         return AgentBrokerConfiguration(
@@ -297,6 +306,76 @@ package enum AgentBrokerPathing {
             requireVector: requireVector,
             embedderTuning: embedderTuning
         )
+    }
+
+    private static func usableSocketRoot(preferred: URL, socketName: String) throws -> URL {
+        let preferredPath = preferred.appendingPathComponent(socketName).path
+        if preferredPath.utf8.count < unixSocketPathByteLimit {
+            try FileManager.default.createDirectory(at: preferred, withIntermediateDirectories: true)
+            return preferred
+        }
+
+        let privateRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wax-broker-\(currentUserID())", isDirectory: true)
+        try ensurePrivateDirectory(privateRoot)
+
+        let fallback = privateRoot
+            .appendingPathComponent("wxb-\(stableHexHash(preferred.path))", isDirectory: true)
+        let fallbackPath = fallback.appendingPathComponent(socketName).path
+        guard fallbackPath.utf8.count < unixSocketPathByteLimit else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(ENAMETOOLONG),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Broker socket path is too long even after private fallback: \(fallbackPath)",
+                ]
+            )
+        }
+        try ensurePrivateDirectory(fallback)
+        return fallback
+    }
+
+    private static func ensurePrivateDirectory(_ url: URL) throws {
+        let fileManager = FileManager.default
+        if (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(ELOOP),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Broker socket directory must not be a symlink: \(url.path)",
+                ]
+            )
+        }
+
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o700))],
+            ofItemAtPath: url.path
+        )
+
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value
+        let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        guard owner == currentUserID(), permissions.map({ ($0 & 0o777) == 0o700 }) == true else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EACCES),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Broker socket directory must be owned by the current user with 0700 permissions: \(url.path)",
+                ]
+            )
+        }
+    }
+
+    private static func currentUserID() -> UInt32 {
+        #if canImport(Glibc) || canImport(Musl) || canImport(Darwin)
+        return UInt32(getuid())
+        #else
+        return 0
+        #endif
     }
 
     private static func stableHexHash(_ text: String) -> String {
