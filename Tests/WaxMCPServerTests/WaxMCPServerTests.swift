@@ -81,6 +81,7 @@ func toolsListHonorsStructuredMemoryFlag() {
     #expect(withStructuredMemory.contains("entity_upsert"))
     #expect(!withoutStructuredMemory.contains("entity_upsert"))
     #expect(!withoutStructuredMemory.contains("fact_assert"))
+    #expect(!withoutStructuredMemory.contains("knowledge_capture"))
 }
 
 @Test
@@ -991,6 +992,23 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("structured memory"))
+
+        let knowledgeCapture = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "knowledge_capture",
+                arguments: [
+                    "content": "Codex prefers focused regressions.",
+                    "subject": "agent:codex",
+                    "kind": "agent",
+                    "predicate": "prefers",
+                    "object": "focused regressions",
+                ]
+            ),
+            memory: memory,
+            structuredMemoryEnabled: false
+        )
+        #expect(knowledgeCapture.isError == true)
+        #expect(firstText(in: knowledgeCapture).contains("structured memory"))
     }
 }
 

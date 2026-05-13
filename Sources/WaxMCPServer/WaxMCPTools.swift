@@ -71,7 +71,7 @@ enum WaxMCPTools {
 
 private extension WaxMCPTools {
     static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
-    static let structuredCommands: Set<String> = ["entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
+    static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
     static let commandArguments: [String: Set<String>] = [
         "memory_append": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked"],
         "memory_search": ["query", "topK", "session_id", "mode", "alpha", "include_working", "include_episodic", "include_durable"],

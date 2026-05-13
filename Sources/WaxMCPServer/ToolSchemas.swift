@@ -60,11 +60,6 @@ enum ToolSchemas {
             inputSchema: waxMemoryHealth
         ),
         Tool(
-            name: "knowledge_capture",
-            description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
-            inputSchema: waxKnowledgeCapture
-        ),
-        Tool(
             name: "corpus_search",
             description: "Search broker-managed session history with provenance-rich results.",
             inputSchema: waxCorpusSearch
@@ -118,6 +113,11 @@ enum ToolSchemas {
 
         if structuredMemoryEnabled {
             tools.append(contentsOf: [
+                Tool(
+                    name: "knowledge_capture",
+                    description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
+                    inputSchema: waxKnowledgeCapture
+                ),
                 Tool(
                     name: "entity_upsert",
                     description: "Upsert a structured-memory entity by key.",
