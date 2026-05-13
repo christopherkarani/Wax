@@ -255,6 +255,33 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func directStatsAndFlushHonorRequireVectorWithNoEmbedder() throws {
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-direct-require-vector-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        for command in ["stats", "flush"] {
+            let output = try runProcess(
+                executableURL: executable,
+                arguments: [
+                    command,
+                    "--direct-store",
+                    "--no-embedder",
+                    "--require-vector",
+                    "--store-path",
+                    tempDir.appendingPathComponent("\(command).wax").path,
+                ],
+                timeout: 15
+            )
+
+            #expect(output.status != 0, "\(command) should fail when vector search is required but no embedder is configured")
+            #expect((output.stderr + output.stdout).contains("Vector search required"))
+            #expect((output.stderr + output.stdout).contains("--no-embedder"))
+        }
+    }
+
     @Test func agentDaemonPolicyPrefersDaemonForVectorCommands() throws {
         let vectorStore = try VectorStoreOptions.parse([])
         let textStore = try VectorStoreOptions.parse(["--no-embedder"])
