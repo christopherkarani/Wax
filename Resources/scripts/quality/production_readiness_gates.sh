@@ -21,7 +21,7 @@ run_and_capture() {
 
 assert_no_skips() {
   local log_file="$1"
-  if grep -E "(Test skipped|test skipped)" "$log_file" >/dev/null; then
+  if grep -E "([Tt]est skipped|(^|[[:space:]])(Suite|Test)[[:space:]].* skipped:)" "$log_file" >/dev/null; then
     echo "FAIL: skipped tests detected in $log_file" >&2
     return 1
   fi

@@ -39,6 +39,18 @@ assert_rejects_summary() {
   fi
 }
 
+assert_rejects_skip_output() {
+  local name="$1"
+  local output="$2"
+  local log_file="$TMP_DIR/$name.log"
+  printf '%s\n' "$output" >"$log_file"
+
+  if assert_no_skips "$log_file" >/dev/null 2>&1; then
+    echo "FAIL: expected skipped-test rejection for $name" >&2
+    return 1
+  fi
+}
+
 assert_accepts_summary \
   "swift-testing-singular" \
   "Executed 1 test, with 0 failures"
@@ -50,5 +62,13 @@ assert_accepts_summary \
 assert_rejects_summary \
   "swift-testing-failure" \
   "Executed 2 tests, with 1 failure"
+
+assert_rejects_skip_output \
+  "swift-testing-suite-skipped" \
+  "Suite FeatureFlaggedTests skipped: requires local fixture"
+
+assert_rejects_skip_output \
+  "swift-testing-test-skipped" \
+  "Test testRequiresFixture() skipped: requires local fixture"
 
 echo "production_readiness_gates_tests: ok"
