@@ -149,6 +149,18 @@ import WaxVectorSearch
         try await reloaded.deserialize(blob)
     }
 }
+
+@Test func metalVectorEngineNormalizesScaledSearchQueries() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 2)
+    try await engine.add(frameId: 42, vector: [1.0, 0.0])
+
+    let hits = try await engine.search(vector: [10.0, 0.0], topK: 1)
+
+    let hit = try #require(hits.first)
+    #expect(hit.frameId == 42)
+    #expect(abs(hit.score - 1.0) < 0.0001)
+}
 #endif
 
 @Test func metalVectorEngineDeserializeAvoidsAlignedUInt64Binding() throws {

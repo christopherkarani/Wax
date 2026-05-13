@@ -456,8 +456,9 @@ package actor MetalVectorEngine {
             let transientDistancesBuffer = transientBuffers.distances
             let transientCountBuffer = transientBuffers.count
 
+            let query = Self.normalizedCosineQuery(vector)
             let queryPtr = transientQueryBuffer.contents().assumingMemoryBound(to: Float.self)
-            queryPtr.update(from: vector, count: vector.count)
+            queryPtr.update(from: query, count: query.count)
 
             var currentVectorCount = UInt32(vectorCount)
             withUnsafeBytes(of: &currentVectorCount) { raw in
@@ -858,6 +859,19 @@ package actor MetalVectorEngine {
         if topK < 1 { return 1 }
         if topK > maxResults { return maxResults }
         return topK
+    }
+
+    private static func normalizedCosineQuery(_ vector: [Float]) -> [Float] {
+        var sumOfSquares: Float = 0
+        for value in vector {
+            sumOfSquares += value * value
+        }
+
+        guard sumOfSquares > 0 else { return vector }
+        let magnitude = sumOfSquares.squareRoot()
+        guard magnitude > 0 else { return vector }
+
+        return vector.map { $0 / magnitude }
     }
 
     private static func reductionThreadgroupSize(maxThreads: Int) -> Int {
