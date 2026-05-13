@@ -176,6 +176,31 @@ import WaxVectorSearch
     #expect(!source.contains("bindMemory(to: UInt64.self)"))
 }
 
+@Test func metalVectorEngineChecksCommandBufferFailureAfterCompletion() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine.swift"),
+        encoding: .utf8
+    )
+
+    let completionRange = try #require(source.range(of: "commandBuffer.commit()"))
+    let validationRange = try #require(source.range(of: "try Self.validateCommandBufferCompleted(commandBuffer)"))
+    let gpuResultsRange = try #require(source.range(of: "finalTopKBuffer.contents()"))
+    let cpuResultsRange = try #require(source.range(of: "transientDistancesBuffer.contents()"))
+    let validatorRange = try #require(source.range(of: "private static func validateCommandBufferCompleted"))
+
+    #expect(completionRange.upperBound < validationRange.lowerBound)
+    #expect(validationRange.upperBound < gpuResultsRange.lowerBound)
+    #expect(validationRange.upperBound < cpuResultsRange.lowerBound)
+
+    let validatorBody = source[validatorRange.lowerBound...]
+    #expect(validatorBody.contains("commandBuffer.status"))
+    #expect(validatorBody.contains("commandBuffer.error"))
+}
+
 @Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)

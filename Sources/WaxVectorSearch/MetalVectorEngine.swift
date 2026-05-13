@@ -573,6 +573,7 @@ package actor MetalVectorEngine {
                 }
                 commandBuffer.commit()
             }
+            try Self.validateCommandBufferCompleted(commandBuffer)
 
             if useGpuTopK, let finalTopKBuffer {
                 guard let resultsBuffer = device.makeBuffer(
@@ -872,6 +873,15 @@ package actor MetalVectorEngine {
         guard magnitude > 0 else { return vector }
 
         return vector.map { $0 / magnitude }
+    }
+
+    private static func validateCommandBufferCompleted(_ commandBuffer: MTLCommandBuffer) throws {
+        guard commandBuffer.status == .completed else {
+            let detail = commandBuffer.error.map { ": \($0.localizedDescription)" } ?? ""
+            throw WaxError.invalidToc(
+                reason: "Metal command buffer failed with status \(commandBuffer.status)\(detail)"
+            )
+        }
     }
 
     private static func reductionThreadgroupSize(maxThreads: Int) -> Int {
