@@ -283,6 +283,7 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .define("WaxRepo", .when(traits: ["WaxRepo"])),
+                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
         ),

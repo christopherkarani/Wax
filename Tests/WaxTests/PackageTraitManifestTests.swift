@@ -8,6 +8,13 @@ import Testing
     #expect(target.contains(miniLMCompileDefine))
 }
 
+@Test func waxRepoProductEnablesMiniLMCompileDefine() throws {
+    let manifest = try PackageManifest.load()
+    let target = try manifest.executableTarget(named: "WaxRepo")
+
+    #expect(target.contains(miniLMCompileDefine))
+}
+
 private let miniLMCompileDefine =
     #".define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"]))"#
 
