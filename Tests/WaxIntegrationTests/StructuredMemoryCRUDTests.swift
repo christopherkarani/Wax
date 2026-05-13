@@ -16,6 +16,55 @@ import Wax
     #expect(matches.map(\.key) == [EntityKey("person:alice")])
 }
 
+@Test func structuredMemoryRejectsInvalidEntityAndPredicateKeys() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let overlong = String(repeating: "x", count: 4_097)
+
+    for raw in ["", " \n\t ", overlong] {
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.upsertEntity(
+                key: EntityKey(raw),
+                kind: "person",
+                aliases: [],
+                nowMs: 0
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey(raw),
+                predicate: PredicateKey("status"),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey(raw),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey("manager"),
+                object: .entity(EntityKey(raw)),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+    }
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(

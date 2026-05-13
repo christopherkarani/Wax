@@ -8,6 +8,10 @@ package enum StructuredMemoryHasher {
         object: FactValue,
         qualifiersHash: Data?
     ) throws -> Data {
+        try StructuredMemoryValidation.validateEntityKey(subject, field: "fact subject")
+        try StructuredMemoryValidation.validatePredicateKey(predicate, field: "fact predicate")
+        try StructuredMemoryValidation.validateFactValue(object)
+
         var buffer = HashBuffer()
         buffer.appendTag(0xA1)
         buffer.appendString(subject.rawValue)

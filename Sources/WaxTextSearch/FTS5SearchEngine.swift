@@ -169,6 +169,7 @@ package actor FTS5SearchEngine {
         aliases: [String],
         nowMs: Int64
     ) async throws -> EntityRowID {
+        try StructuredMemoryValidation.validateEntityKey(key)
         enqueueStructuredOp(.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs))
         try await flushPendingStructuredOpsIfThresholdExceeded()
         try await flushPendingStructuredOpsIfNeeded()
@@ -223,6 +224,9 @@ package actor FTS5SearchEngine {
         system: StructuredTimeRange,
         evidence: [StructuredEvidence]
     ) async throws -> FactRowID {
+        try StructuredMemoryValidation.validateEntityKey(subject, field: "fact subject")
+        try StructuredMemoryValidation.validatePredicateKey(predicate, field: "fact predicate")
+        try StructuredMemoryValidation.validateFactValue(object)
         guard valid.toMs == nil || valid.toMs! > valid.fromMs else {
             throw WaxError.encodingError(reason: "valid_to_ms must be greater than valid_from_ms")
         }
@@ -276,6 +280,12 @@ package actor FTS5SearchEngine {
         asOf: StructuredMemoryAsOf,
         limit: Int
     ) async throws -> StructuredFactsResult {
+        if let subject {
+            try StructuredMemoryValidation.validateEntityKey(subject, field: "facts subject")
+        }
+        if let predicate {
+            try StructuredMemoryValidation.validatePredicateKey(predicate, field: "facts predicate")
+        }
         try await flushPendingOpsIfNeeded()
         let capped = max(0, min(limit, Self.maxResults))
         let dbQueue = self.dbQueue
