@@ -1,17 +1,17 @@
 # Text Search Engine
 
-Index text, search with BM25 scoring, and manage structured knowledge — all through a single actor.
+Understand the package-only text search actor used by Wax internals.
 
 ## Overview
 
-``FTS5SearchEngine`` is an actor that combines SQLite FTS5 full-text search with a complete structured memory system. It handles batching, serialization, and persistence automatically.
+``FTS5SearchEngine`` is a package-only actor that combines SQLite FTS5 full-text search with a complete structured memory system. It is not public API; downstream applications should use the public Wax memory APIs instead. This article documents the implementation surface for Wax contributors.
 
-## Creating an Engine
+## Package-Internal Setup
 
-There are three ways to create an engine:
+Inside Wax package targets and tests, the engine can be created from memory, serialized state, or a Wax store:
 
 ```swift
-// In-memory (fresh)
+// Package-internal: in-memory (fresh)
 let engine = try await FTS5SearchEngine.inMemory()
 
 // From serialized data
