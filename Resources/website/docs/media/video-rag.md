@@ -4,11 +4,17 @@ title: "Video RAG"
 sidebar_label: "Video RAG"
 ---
 
-Search video content by transcript and visual segments with semantic queries.
+Understand the package-only Video RAG pipeline for contributor work.
+
+## Status
+
+Video RAG is an experimental, package-only implementation. The current `VideoRAGOrchestrator` actor and related video types use Swift `package` access, so they are not public API for application or downstream package consumers.
+
+Use this page as internal implementation documentation for Wax contributors. Public integration docs should wait for a stable public facade or an explicit access-level change.
 
 ## Overview
 
-`VideoRAGOrchestrator` provides retrieval-augmented generation for video content. It segments videos into time windows, extracts keyframes, integrates transcripts, and enables natural-language queries that return specific video segments.
+The package-scoped pipeline indexes video content by transcript and visual segments. It segments videos into time windows, extracts keyframes, attaches optional host-supplied transcripts, and builds retrieval context for natural-language queries over specific video ranges.
 
 ## Architecture
 
@@ -19,43 +25,29 @@ Each video is represented as a hierarchy of frames:
 | `root` | Video metadata (source, duration, capture date) |
 | `segment` | Time-windowed segment with transcript and keyframe embedding |
 
-Segments are created with configurable duration and overlap, allowing queries to pinpoint specific moments in long videos.
+Segments are created with configurable duration and overlap, allowing searches to identify specific moments in long videos.
 
-## Setup
+## Internal Components
 
-```swift
-let orchestrator = try await VideoRAGOrchestrator(
-    storeURL: storeURL,
-    config: VideoRAGConfig(),
-    embedder: embedder,                      // Text/multimodal embedding provider
-    transcriptProvider: myTranscriptProvider  // Optional
-)
-```
+| Component | Role |
+|-----------|------|
+| `VideoRAGOrchestrator` | Package-scoped actor that owns ingestion, indexing, recall, deletion, and flush flows |
+| `VideoRAGConfig` | Package-scoped configuration for segmentation, embedding, vector search, and context budgets |
+| `VideoTranscriptProvider` | Package-scoped protocol for host-supplied transcript chunks |
+| `VideoFile` | Package-scoped local-file descriptor used by ingestion |
+| `VideoQuery` | Package-scoped query model for text, time, video ID, and context constraints |
+| `VideoRAGContext` | Package-scoped recall result grouped into video items and segment hits |
 
-### Transcript Provider
+## Ingestion Behavior
 
-The `VideoTranscriptProvider` protocol supplies per-video transcripts. Transcripts are segmented and indexed alongside visual embeddings for hybrid text+semantic search.
+The package-only ingestion path currently supports:
 
-## Ingestion
+- Local files, deduplicated by normalized file URL and optional caller-provided ID
+- Photos-library videos when Photos is available, with iCloud-only assets treated as degraded metadata-only entries
+- Optional transcript chunks supplied by a package-scoped transcript provider
+- Segment keyframe embeddings from an on-device multimodal embedding provider
 
-### From Local Files
-
-```swift
-let files = [
-    VideoFile(url: videoURL1),
-    VideoFile(url: videoURL2)
-]
-try await orchestrator.ingest(files: files)
-```
-
-### From Photos Library
-
-```swift
-try await orchestrator.syncLibrary(scope: .all)
-try await orchestrator.ingest(photoAssetIDs: ["video-asset-1"])
-```
-
-### Metadata
+## Metadata
 
 Each video and segment stores metadata:
 
@@ -63,7 +55,7 @@ Each video and segment stores metadata:
 |-----|-------------|
 | `source` | `local` or `photos` |
 | `sourceID` | Asset or file identifier |
-| `fileURL` | Local file path (if applicable) |
+| `fileURL` | Local file path, when applicable |
 | `captureMs` | Capture timestamp |
 | `durationMs` | Total video duration |
 | `isLocal` | Whether the video is available locally |
@@ -74,55 +66,51 @@ Each video and segment stores metadata:
 | `segmentEndMs` | Segment end time |
 | `segmentMidMs` | Segment midpoint |
 
-## Querying
+## Recall Behavior
 
-```swift
-let context = try await orchestrator.recall(VideoQuery(
-    text: "discussion about architecture decisions",
-    topK: 5
-))
+The package-only recall flow combines vector and text retrieval when both query text and embeddings are available. It can also fall back to timeline-constrained segment lookup for constraint-only queries.
 
-for segment in context.segments {
-    print("Video: \(segment.sourceID)")
-    print("Time: \(segment.startMs)ms - \(segment.endMs)ms")
-    print("Transcript: \(segment.transcript ?? "")")
-}
-```
-
-Results are grouped by source video and sorted by relevance within each group.
+Results are grouped by source video and sorted by relevance within each group. Segment hits can include vector evidence, text snippets, timeline evidence, transcript snippets, and optional thumbnails when configured.
 
 ## Configuration
 
-`VideoRAGConfig` controls segmentation and search:
+`VideoRAGConfig` controls internal segmentation and search:
 
 | Parameter | Description |
 |-----------|-------------|
-| `segmentDurationMs` | Duration of each segment in milliseconds |
-| `segmentOverlapMs` | Overlap between adjacent segments |
-| `transcriptBudget` | Max transcript tokens per segment |
-| `keyframeCount` | Keyframes to extract per segment |
-| `vectorEnginePreference` | CPU vs GPU vector engine |
-| `hybridAlpha` | BM25 vs vector blend |
+| `segmentDurationSeconds` | Duration of each segment |
+| `segmentOverlapSeconds` | Overlap between adjacent segments |
+| `maxSegmentsPerVideo` | Segment cap for long videos |
+| `segmentWriteBatchSize` | Write batching for segment ingestion |
+| `embedMaxPixelSize` | Keyframe resize bound before embedding |
+| `maxTranscriptBytesPerSegment` | Transcript budget per segment |
 | `searchTopK` | Candidates to retrieve |
+| `hybridAlpha` | BM25/vector blend |
+| `vectorEnginePreference` | Vector search engine preference |
+| `timelineFallbackLimit` | Constraint-only fallback limit |
 | `requireOnDeviceProviders` | Reject network-dependent providers |
+| `includeThumbnailsInContext` | Include thumbnails in recall context |
+| `thumbnailMaxPixelSize` | Thumbnail resize bound |
+| `queryEmbeddingCacheCapacity` | Query embedding cache size |
 
 ## Segment Chunking
 
 Videos are divided into overlapping time windows:
 
 ```
-Video: [0s ────────────────────────── 120s]
+Video: [0s -------------------------- 120s]
 
-Segment 1: [0s ──── 30s]
-Segment 2:      [25s ──── 55s]     (5s overlap)
-Segment 3:           [50s ──── 80s]
-Segment 4:                [75s ──── 105s]
-Segment 5:                     [100s ── 120s]
+Segment 1: [0s ---- 30s]
+Segment 2:      [25s ---- 55s]     (5s overlap)
+Segment 3:           [50s ---- 80s]
+Segment 4:                [75s ---- 105s]
+Segment 5:                     [100s -- 120s]
 ```
 
 Each segment gets:
-- A keyframe embedding (visual content)
-- A transcript slice (if available)
+
+- A keyframe embedding for visual content
+- A transcript slice, when available
 - Metadata with precise start/end timestamps
 
 This overlap ensures that content near segment boundaries is captured by at least two segments.
