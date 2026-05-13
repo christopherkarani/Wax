@@ -58,7 +58,7 @@ Search returns results ranked by BM25 relevance:
 let results = try await engine.search(query: "quarterly review", topK: 10)
 ```
 
-Each ``TextSearchResult`` contains:
+Each package-internal search hit contains:
 
 - **`frameId`** — The matching frame's identifier
 - **`score`** — BM25 relevance score (higher is better)

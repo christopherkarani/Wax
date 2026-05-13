@@ -26,6 +26,29 @@ func textSearchDocsDoNotAdvertisePackageOnlyFTS5EngineAsPublicAPI() throws {
     }
 }
 
+@Test
+func textSearchDocsDoNotAdvertisePackageOnlyTextSearchResultAsPublicAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxTextSearch/TextSearchResult.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("package struct TextSearchResult"))
+
+    for relativePath in textSearchDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+
+        #expect(!doc.contains("``TextSearchResult``"))
+        #expect(!doc.contains("`TextSearchResult`"))
+        #expect(!doc.contains("Each ``TextSearchResult`` contains"))
+        #expect(!doc.contains("Each `TextSearchResult` contains"))
+    }
+}
+
 private let textSearchDocPaths = [
     "Sources/WaxTextSearch/WaxTextSearch.docc/Documentation.md",
     "Sources/WaxTextSearch/WaxTextSearch.docc/Articles/TextSearchEngine.md",
