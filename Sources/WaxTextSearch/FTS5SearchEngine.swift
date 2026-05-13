@@ -130,6 +130,8 @@ package actor FTS5SearchEngine {
         try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
+        let matchQuery = Self.literalMatchQuery(for: trimmed)
+        guard !matchQuery.isEmpty else { return [] }
         let limit = Self.clampTopK(topK)
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -144,7 +146,7 @@ package actor FTS5SearchEngine {
                     ORDER BY rank ASC, m.frame_id ASC
                     LIMIT ?
                     """
-                let rows = try Row.fetchAll(db, sql: sql, arguments: [trimmed, limit])
+                let rows = try Row.fetchAll(db, sql: sql, arguments: [matchQuery, limit])
                 return rows.compactMap { row in
                     guard let frameIdValue: Int64 = row["frame_id"], frameIdValue >= 0 else { return nil }
                     let rank: Double = row["rank"] ?? 0
@@ -997,6 +999,28 @@ package actor FTS5SearchEngine {
             throw WaxError.io("sqlite connection unavailable")
         }
         return connection
+    }
+
+    private static func literalMatchQuery(for query: String) -> String {
+        var tokens: [String] = []
+        var current = String()
+
+        for scalar in query.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+
+        return tokens
+            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .joined(separator: " ")
     }
 
     private static func scoreFromBM25Rank(_ rank: Double) -> Double {

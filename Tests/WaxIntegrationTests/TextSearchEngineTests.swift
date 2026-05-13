@@ -101,6 +101,15 @@ private enum SQLiteBlobInspector {
     #expect(results[0].snippet?.isEmpty == false)
 }
 
+@Test func searchTreatsFTS5SyntaxAndPunctuationAsLiteralText() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 42, text: "task F076 literal NEAR unclosed quote token survives")
+
+    let results = try await engine.search(query: #"task:(F076) NEAR(unclosed "quote"#, topK: 10)
+
+    #expect(results.map(\.frameId) == [42])
+}
+
 @Test func indexBatchFlushesBeforeSearch() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.indexBatch(
