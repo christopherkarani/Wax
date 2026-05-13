@@ -86,6 +86,18 @@ import WaxCore
     #expect(decodedFrameIds == frameIds)
 }
 
+@Test func flatSegmentDecodeRejectsVectorByteCountOverflow() throws {
+    let data = buildFlatHeaderOnlySegment(
+        dimension: UInt32.max,
+        vectorCount: UInt64(Int.max / 2),
+        payloadLength: 0
+    )
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
 // MARK: - decodeUSearchPayload returns error on Metal
 
 @Test func decodeUSearchPayloadRejectsMetalEncoding() throws {
@@ -111,6 +123,23 @@ private func buildMinimalHeader(encoding: UInt8) -> Data {
     data.append(encoding)
     data.append(0) // similarity = cosine
     return data
+}
+
+private func buildFlatHeaderOnlySegment(
+    dimension: UInt32,
+    vectorCount: UInt64,
+    payloadLength: UInt64
+) -> Data {
+    var encoder = BinaryEncoder()
+    encoder.encodeFixedBytes(Data([0x4D, 0x56, 0x32, 0x56]))
+    encoder.encode(UInt16(1))
+    encoder.encode(UInt8(3))
+    encoder.encode(UInt8(0))
+    encoder.encode(dimension)
+    encoder.encode(vectorCount)
+    encoder.encode(payloadLength)
+    encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+    return encoder.data
 }
 
 private func buildMetalSegment(

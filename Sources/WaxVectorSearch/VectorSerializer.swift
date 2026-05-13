@@ -146,13 +146,17 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
             let vectorLength = Int(header.payloadLength)
-            let expectedVectorBytes = Int(header.vectorCount) * Int(header.dimension) * MemoryLayout<Float>.stride
-            guard vectorLength == expectedVectorBytes else {
+            let expectedVectorBytes = try checkedVectorByteCount(
+                vectorCount: header.vectorCount,
+                dimension: header.dimension
+            )
+            guard header.payloadLength == expectedVectorBytes else {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
 
             var offset = VecSegmentHeaderV1.encodedSize
-            guard data.count >= offset + vectorLength + MemoryLayout<UInt64>.stride else {
+            let frameIdLengthOffset = offset + vectorLength
+            guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
@@ -166,8 +170,8 @@ package enum VectorSerializer {
             guard frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
             }
-            let expectedFrameIdBytes = Int(header.vectorCount) * MemoryLayout<UInt64>.stride
-            guard Int(frameIdLength) == expectedFrameIdBytes else {
+            let expectedFrameIdBytes = try checkedFrameIdByteCount(vectorCount: header.vectorCount)
+            guard frameIdLength == expectedFrameIdBytes else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }
             let expectedTotal = offset + Int(frameIdLength)
@@ -186,6 +190,32 @@ package enum VectorSerializer {
         default:
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
         }
+    }
+
+    private static func checkedVectorByteCount(vectorCount: UInt64, dimension: UInt32) throws -> UInt64 {
+        let dimProduct = vectorCount.multipliedReportingOverflow(by: UInt64(dimension))
+        guard !dimProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec vector data length overflow")
+        }
+        let byteProduct = dimProduct.partialValue.multipliedReportingOverflow(by: UInt64(MemoryLayout<Float>.stride))
+        guard !byteProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec vector data length overflow")
+        }
+        guard byteProduct.partialValue <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "vec vector data length exceeds Int.max: \(byteProduct.partialValue)")
+        }
+        return byteProduct.partialValue
+    }
+
+    private static func checkedFrameIdByteCount(vectorCount: UInt64) throws -> UInt64 {
+        let byteProduct = vectorCount.multipliedReportingOverflow(by: UInt64(MemoryLayout<UInt64>.stride))
+        guard !byteProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec frameId data length overflow")
+        }
+        guard byteProduct.partialValue <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "vec frameId data length exceeds Int.max: \(byteProduct.partialValue)")
+        }
+        return byteProduct.partialValue
     }
 
     package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
