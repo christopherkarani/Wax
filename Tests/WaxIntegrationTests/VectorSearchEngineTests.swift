@@ -35,6 +35,34 @@ import WaxVectorSearch
     #expect(hits.contains(where: { $0.frameId == 1 }))
 }
 
+@Test func uSearchVectorEngineRejectsNonFiniteVectors() async throws {
+    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
+
+    await #expect(throws: WaxError.self) {
+        try await engine.add(frameId: 1, vector: [.nan, 0.0])
+    }
+    await #expect(throws: WaxError.self) {
+        try await engine.addBatch(frameIds: [1], vectors: [[.infinity, 0.0]])
+    }
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.search(vector: [0.0, -.infinity], topK: 1)
+    }
+}
+
+@Test func accelerateVectorEngineRejectsNonFiniteVectors() async throws {
+    let engine = try AccelerateVectorEngine(metric: .cosine, dimensions: 2)
+
+    await #expect(throws: WaxError.self) {
+        try await engine.add(frameId: 1, vector: [.nan, 0.0])
+    }
+    await #expect(throws: WaxError.self) {
+        try await engine.addBatch(frameIds: [1], vectors: [[.infinity, 0.0]])
+    }
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.search(vector: [0.0, -.infinity], topK: 1)
+    }
+}
+
 #if canImport(Metal)
 @Test func metalVectorEngineAddBatchUpdatesExistingIdsCorrectly() async throws {
     guard MTLCreateSystemDefaultDevice() != nil else { return }
@@ -47,6 +75,21 @@ import WaxVectorSearch
 
     let hits = try await engine.search(vector: [0.7, 0.7], topK: 1)
     #expect(hits.first?.frameId == 20)
+}
+
+@Test func metalVectorEngineRejectsNonFiniteVectors() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 2)
+
+    await #expect(throws: WaxError.self) {
+        try await engine.add(frameId: 1, vector: [.nan, 0.0])
+    }
+    await #expect(throws: WaxError.self) {
+        try await engine.addBatch(frameIds: [1], vectors: [[.infinity, 0.0]])
+    }
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.search(vector: [0.0, -.infinity], topK: 1)
+    }
 }
 #endif
 

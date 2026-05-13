@@ -18,3 +18,20 @@ package protocol VectorSearchEngine: Sendable {
     func remove(frameId: UInt64) async throws
     func stageForCommit(into wax: Wax) async throws
 }
+
+package enum VectorValidation {
+    package static func validate(_ vector: [Float], dimensions: Int) throws {
+        guard vector.count == dimensions else {
+            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
+        }
+        guard vector.count <= Constants.maxEmbeddingDimensions else {
+            throw WaxError.capacityExceeded(
+                limit: UInt64(Constants.maxEmbeddingDimensions),
+                requested: UInt64(vector.count)
+            )
+        }
+        guard vector.allSatisfy(\.isFinite) else {
+            throw WaxError.encodingError(reason: "vector contains non-finite values")
+        }
+    }
+}

@@ -110,17 +110,8 @@ package actor USearchVectorEngine {
 
         try await withWriteLock {
             // Validate all vectors first (fast, no I/O)
-            let expectedDims = dimensions
             for vector in vectors {
-                guard vector.count == expectedDims else {
-                    throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(expectedDims), got \(vector.count)")
-                }
-                guard vector.count <= Constants.maxEmbeddingDimensions else {
-                    throw WaxError.capacityExceeded(
-                        limit: UInt64(Constants.maxEmbeddingDimensions),
-                        requested: UInt64(vector.count)
-                    )
-                }
+                try validate(vector)
             }
 
             let index = self.index
@@ -200,8 +191,8 @@ package actor USearchVectorEngine {
 
     package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         try await withReadLock {
-            guard vectorCount > 0 else { return [] }
             try validate(vector)
+            guard vectorCount > 0 else { return [] }
             let limit = Self.clampTopK(topK)
 
             let index = self.index
@@ -317,15 +308,7 @@ package actor USearchVectorEngine {
     }
 
     private func validate(_ vector: [Float]) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
-        guard vector.count <= Constants.maxEmbeddingDimensions else {
-            throw WaxError.capacityExceeded(
-                limit: UInt64(Constants.maxEmbeddingDimensions),
-                requested: UInt64(vector.count)
-            )
-        }
+        try VectorValidation.validate(vector, dimensions: dimensions)
     }
 
     private static func clampTopK(_ topK: Int) -> Int {

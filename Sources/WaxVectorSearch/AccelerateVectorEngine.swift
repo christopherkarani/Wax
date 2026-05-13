@@ -107,8 +107,8 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     }
 
     package func search(vector query: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        guard !frameIds.isEmpty else { return [] }
         try validate(query)
+        guard !frameIds.isEmpty else { return [] }
 
         let limit = min(Self.clampTopK(topK), frameIds.count)
         let preparedQuery = preparedVector(query)
@@ -261,15 +261,7 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     }
 
     private func validate(_ vector: [Float]) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
-        guard vector.count <= Constants.maxEmbeddingDimensions else {
-            throw WaxError.capacityExceeded(
-                limit: UInt64(Constants.maxEmbeddingDimensions),
-                requested: UInt64(vector.count)
-            )
-        }
+        try VectorValidation.validate(vector, dimensions: dimensions)
     }
 
     private static func clampTopK(_ topK: Int) -> Int {

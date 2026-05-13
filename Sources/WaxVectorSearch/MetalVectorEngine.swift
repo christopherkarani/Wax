@@ -364,17 +364,8 @@ package actor MetalVectorEngine {
         }
 
         try await withWriteLock {
-            let expectedDims = dimensions
             for vector in vectors {
-                guard vector.count == expectedDims else {
-                    throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(expectedDims), got \(vector.count)")
-                }
-                guard vector.count <= Constants.maxEmbeddingDimensions else {
-                    throw WaxError.capacityExceeded(
-                        limit: UInt64(Constants.maxEmbeddingDimensions),
-                        requested: UInt64(vector.count)
-                    )
-                }
+                try validate(vector)
             }
 
             let maxNewCount = vectorCount + UInt64(frameIds.count)
@@ -446,8 +437,8 @@ package actor MetalVectorEngine {
 
     package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         try await withReadLock {
-            guard vectorCount > 0 else { return [] }
             try validate(vector)
+            guard vectorCount > 0 else { return [] }
             let limit = Self.clampTopK(topK)
             let topKCount = min(limit, Int(vectorCount))
             let reductionThreadsPerThreadgroup = Self.reductionThreadgroupSize(
@@ -834,15 +825,7 @@ package actor MetalVectorEngine {
     }
 
     private func validate(_ vector: [Float]) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
-        guard vector.count <= Constants.maxEmbeddingDimensions else {
-            throw WaxError.capacityExceeded(
-                limit: UInt64(Constants.maxEmbeddingDimensions),
-                requested: UInt64(vector.count)
-            )
-        }
+        try VectorValidation.validate(vector, dimensions: dimensions)
     }
 
     private static func clampTopK(_ topK: Int) -> Int {
