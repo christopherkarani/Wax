@@ -260,7 +260,7 @@ extension AgentBrokerService {
 
     func remember(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         let sessionID = try parseOptionalSessionID(args)
         let rawMetadata = try coerceMetadata(try args.optionalObject("metadata"))
         if rawMetadata["session_id"] != nil {
@@ -546,7 +546,7 @@ extension AgentBrokerService {
         let sessionID = try parseOptionalSessionID(args)
         let approve = try args.optionalBool("approve") ?? false
         let requestedSourceFrameId = try args.optionalUInt64("frame_id")
-        let explicitContent = try args.optionalString("content")
+        let explicitContent = try args.optionalStringPreservingWhitespace("content")
         let writeSemantics = try parseWriteSemantics(args)
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         let settings = try parsePromotionSettings(args)
@@ -682,7 +682,7 @@ extension AgentBrokerService {
 
     func knowledgeCapture(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         var writeSemantics = try parseWriteSemantics(args)
         if !writeSemantics.lock, writeSemantics.durability == nil {
             writeSemantics.durability = .durable
@@ -997,7 +997,7 @@ extension AgentBrokerService {
 
     func handoff(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
         let sessionID = try parseOptionalSessionID(args)
@@ -2479,12 +2479,26 @@ struct BrokerArguments {
         return raw
     }
 
+    func requiredStringPreservingWhitespace(_ key: String, maxBytes: Int) throws -> String {
+        guard let raw = try optionalStringPreservingWhitespace(key) else {
+            throw BrokerValidationError.missing(key)
+        }
+        guard raw.utf8.count <= maxBytes else {
+            throw BrokerValidationError.invalid("\(key) exceeds \(maxBytes) bytes")
+        }
+        return raw
+    }
+
     func optionalString(_ key: String) throws -> String? {
+        try optionalStringPreservingWhitespace(key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func optionalStringPreservingWhitespace(_ key: String) throws -> String? {
         guard let value = values[key] else { return nil }
         guard let stringValue = value.stringValue else {
             throw BrokerValidationError.invalid("\(key) must be a string")
         }
-        return stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stringValue
     }
 
     func optionalStringArray(_ key: String) throws -> [String]? {

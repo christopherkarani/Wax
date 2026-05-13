@@ -2149,6 +2149,58 @@ func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
 }
 
 @Test
+func brokerRememberPreservesContentWhitespace() async throws {
+    try await withAgentBrokerService { service, _ in
+        let content = "  WHITESPACE_KEEP_TOKEN\n"
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: ["content": .string(content)]
+        ))
+        #expect(append.ok == true)
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string("WHITESPACE_KEEP_TOKEN"),
+                "mode": .string("text"),
+                "topK": .int(1),
+            ]
+        ))
+        #expect(search.ok == true)
+        let searchPayload = try #require(search.payload?.objectValue)
+        let results = try #require(searchPayload["results"]?.arrayValue)
+        let first = try #require(results.first?.objectValue)
+        let memoryID = try #require(first["memory_id"]?.stringValue)
+
+        let get = await service.handle(.init(
+            command: "memory_get",
+            arguments: ["memory_id": .string(memoryID)]
+        ))
+        #expect(get.ok == true)
+        let getPayload = try #require(get.payload?.objectValue)
+        #expect(getPayload["text"]?.stringValue == content)
+
+        let handoffContent = "  HANDOFF_KEEP_TOKEN\n"
+        let handoff = await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string(handoffContent),
+                "project": .string("whitespace-project"),
+            ]
+        ))
+        #expect(handoff.ok == true)
+
+        let latest = await service.handle(.init(
+            command: "handoff_latest",
+            arguments: ["project": .string("whitespace-project")]
+        ))
+        #expect(latest.ok == true)
+        let latestPayload = try #require(latest.payload?.objectValue)
+        #expect(latestPayload["content"]?.stringValue == handoffContent)
+    }
+}
+
+@Test
 func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
     try await withAgentBrokerService { service, _ in
         let first = await service.handle(.init(

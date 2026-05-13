@@ -54,9 +54,8 @@ extension MemoryOrchestrator {
 
         for meta in documentMetas {
             guard let data = contentsByID[meta.id],
-                  let text = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else {
+                  let text = String(data: data, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
 

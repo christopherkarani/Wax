@@ -1143,18 +1143,17 @@ package actor MemoryOrchestrator {
         sessionId: UUID? = nil,
         commit: Bool = true
     ) async throws -> UInt64 {
-        let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         let pending = pendingTasks
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         let text: String
         if pending.isEmpty {
-            text = normalizedContent
+            text = content
         } else {
             let items = pending.map { "- \($0)" }.joined(separator: "\n")
             text = """
-            \(normalizedContent)
+            \(content)
 
             Pending tasks:
             \(items)
