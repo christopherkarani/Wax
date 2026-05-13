@@ -877,6 +877,25 @@ func searchRejectsUnknownFilterKeys() async throws {
 }
 
 @Test
+func searchRejectsNonArrayLabelsFilter() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": "bad labels filter",
+                    "filters": .object(["labels": .string("not-an-array")]),
+                ]
+            ),
+            memory: memory
+        )
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("filters.labels must be an array of strings"))
+    }
+}
+
+@Test
 func toolsReturnValidationErrorForMissingArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
