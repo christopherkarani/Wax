@@ -112,10 +112,62 @@ func waxCoreDocCTopicsDoNotLinkPackageOnlySymbols() throws {
     #expect(topics.contains("- ``WaxError``"))
 }
 
+@Test
+func waxCoreStructuredMemoryDocsDoNotAdvertisePackageOnlyTypesAsPublicAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let packageOnlySources = [
+        "Sources/WaxCore/StructuredMemory/EntityKey.swift",
+        "Sources/WaxCore/StructuredMemory/PredicateKey.swift",
+        "Sources/WaxCore/StructuredMemory/FactValue.swift",
+        "Sources/WaxCore/StructuredMemory/StructuredEvidence.swift",
+        "Sources/WaxCore/StructuredMemory/StructuredMemoryAsOf.swift",
+        "Sources/WaxCore/StructuredMemory/StructuredTimeRange.swift",
+        "Sources/WaxTextSearch/FTS5SearchEngine.swift",
+    ]
+
+    for relativePath in packageOnlySources {
+        let source = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(source.contains("package struct")
+            || source.contains("package enum")
+            || source.contains("package actor"))
+    }
+
+    for relativePath in waxCoreStructuredMemoryDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+
+        #expect(doc.contains("package-only"))
+        #expect(doc.contains("not public API"))
+        #expect(!doc.contains("``EntityKey``"))
+        #expect(!doc.contains("`EntityKey`"))
+        #expect(!doc.contains("EntityKey("))
+        #expect(!doc.contains("``PredicateKey``"))
+        #expect(!doc.contains("`PredicateKey`"))
+        #expect(!doc.contains("PredicateKey("))
+        #expect(!doc.contains("``FactValue``"))
+        #expect(!doc.contains("`FactValue`"))
+        #expect(!doc.contains("``StructuredMemoryAsOf``"))
+        #expect(!doc.contains("`StructuredMemoryAsOf`"))
+        #expect(!doc.contains("``StructuredEvidence``"))
+        #expect(!doc.contains("`StructuredEvidence`"))
+        #expect(!doc.contains("StructuredEvidence("))
+        #expect(!doc.contains("engine.retractFact"))
+        #expect(!doc.contains("FTS5SearchEngine"))
+    }
+}
+
 private let waxCoreDocPaths = [
     "Sources/WaxCore/WaxCore.docc/Documentation.md",
     "Sources/WaxCore/WaxCore.docc/Articles/GettingStarted.md",
     "Sources/WaxCore/WaxCore.docc/Articles/ConcurrencyModel.md",
     "Resources/website/docs/core/getting-started.md",
     "Resources/website/docs/core/concurrency-model.md",
+]
+
+private let waxCoreStructuredMemoryDocPaths = [
+    "Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md",
+    "Resources/website/docs/core/structured-memory.md",
 ]
