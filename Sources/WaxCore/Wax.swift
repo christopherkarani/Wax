@@ -1444,6 +1444,12 @@ package actor Wax {
                     requested: UInt64(dimension)
                 )
             }
+            try Self.validateVecIndexSegment(
+                bytes,
+                vectorCount: vectorCount,
+                dimension: dimension,
+                similarity: similarity
+            )
 
             if let committed = toc.indexes.vec {
                 guard committed.dimension == dimension else {
@@ -1514,6 +1520,112 @@ package actor Wax {
             stagedVecIndexStampCounter &+= 1
             stagedVecIndexStamp = stagedVecIndexStampCounter
             dirty = true
+        }
+    }
+
+    private static func validateVecIndexSegment(
+        _ data: Data,
+        vectorCount expectedVectorCount: UInt64,
+        dimension expectedDimension: UInt32,
+        similarity expectedSimilarity: VecSimilarity
+    ) throws {
+        let headerSize = 36
+        guard data.count >= headerSize else {
+            throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
+        }
+        guard data.prefix(4) == Data([0x4D, 0x56, 0x32, 0x56]) else {
+            throw WaxError.invalidToc(reason: "vec segment magic mismatch")
+        }
+
+        let version = UInt16(littleEndian: data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 4, as: UInt16.self)
+        })
+        guard version == 1 else {
+            throw WaxError.invalidToc(reason: "unsupported vec segment version \(version)")
+        }
+
+        let encoding = data[6]
+        guard encoding == 1 || encoding == 2 || encoding == 3 else {
+            throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encoding)")
+        }
+        let similarityRaw = data[7]
+        guard let similarity = VecSimilarity(rawValue: similarityRaw) else {
+            throw WaxError.invalidToc(reason: "vec similarity must be 0..2 (got \(similarityRaw))")
+        }
+        guard similarity == expectedSimilarity else {
+            throw WaxError.invalidToc(
+                reason: "staged vec similarity mismatch vs segment: expected \(expectedSimilarity), got \(similarity)"
+            )
+        }
+
+        let dimension = UInt32(littleEndian: data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+        })
+        guard dimension == expectedDimension else {
+            throw WaxError.invalidToc(
+                reason: "staged vec dimension mismatch vs segment: expected \(expectedDimension), got \(dimension)"
+            )
+        }
+
+        let vectorCount = UInt64(littleEndian: data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 12, as: UInt64.self)
+        })
+        guard vectorCount == expectedVectorCount else {
+            throw WaxError.invalidToc(
+                reason: "staged vec vector count mismatch vs segment: expected \(expectedVectorCount), got \(vectorCount)"
+            )
+        }
+
+        let payloadLength = UInt64(littleEndian: data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 20, as: UInt64.self)
+        })
+        guard payloadLength <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(payloadLength)")
+        }
+        guard data[28..<36].allSatisfy({ $0 == 0 }) else {
+            throw WaxError.invalidToc(reason: "vec segment reserved bytes must be zero")
+        }
+
+        switch encoding {
+        case 1:
+            let expectedTotal = headerSize + Int(payloadLength)
+            guard data.count == expectedTotal else {
+                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
+            }
+        case 2, 3:
+            let dimProduct = vectorCount.multipliedReportingOverflow(by: UInt64(dimension))
+            guard !dimProduct.overflow else {
+                throw WaxError.invalidToc(reason: "vec vector data length overflow")
+            }
+            let byteProduct = dimProduct.partialValue.multipliedReportingOverflow(by: UInt64(MemoryLayout<Float>.stride))
+            guard !byteProduct.overflow else {
+                throw WaxError.invalidToc(reason: "vec vector data length overflow")
+            }
+            let vectorBytes = byteProduct.partialValue
+            guard payloadLength == vectorBytes else {
+                throw WaxError.invalidToc(reason: "vec vector data length mismatch")
+            }
+            let vectorLength = Int(payloadLength)
+            let frameIdLengthOffset = headerSize + vectorLength
+            guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
+                throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
+            }
+            let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
+                $0.loadUnaligned(fromByteOffset: frameIdLengthOffset, as: UInt64.self)
+            })
+            let expectedFrameIdBytes = vectorCount * UInt64(MemoryLayout<UInt64>.stride)
+            guard frameIdLength == expectedFrameIdBytes else {
+                throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
+            }
+            guard frameIdLength <= UInt64(Int.max) else {
+                throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
+            }
+            let expectedTotal = frameIdLengthOffset + MemoryLayout<UInt64>.stride + Int(frameIdLength)
+            guard data.count == expectedTotal else {
+                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
+            }
+        default:
+            throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encoding)")
         }
     }
 

@@ -277,9 +277,15 @@ import WaxVectorSearch
     let wax = try await Wax.create(at: fileURL)
     let frameId = try await wax.put(Data("payload".utf8))
     try await wax.putEmbedding(frameId: frameId, vector: [1.0, 0.0, 0.0, 0.0])
+    let mismatchedVecBytes = try VectorSerializer.serializeFlatVectors(
+        [],
+        frameIds: [],
+        metric: .cosine,
+        dimensions: 5
+    )
 
     do {
-        try await wax.stageVecIndexForNextCommit(bytes: Data([0x01]), vectorCount: 0, dimension: 5, similarity: .cosine)
+        try await wax.stageVecIndexForNextCommit(bytes: mismatchedVecBytes, vectorCount: 0, dimension: 5, similarity: .cosine)
         Issue.record("Expected error for pending embedding dimension mismatch vs staged vec index")
     } catch {
         // Expected: pending embedding dimension mismatch
@@ -309,8 +315,14 @@ import WaxVectorSearch
 
     let frame0 = try await wax.put(Data("first".utf8))
     try await wax.putEmbedding(frameId: frame0, vector: [1.0, 0.0, 0.0, 0.0])
+    let stagedVecBytes = try VectorSerializer.serializeFlatVectors(
+        [1.0, 0.0, 0.0, 0.0],
+        frameIds: [frame0],
+        metric: .cosine,
+        dimensions: 4
+    )
     try await wax.stageVecIndexForNextCommit(
-        bytes: Data([0x01]),
+        bytes: stagedVecBytes,
         vectorCount: 1,
         dimension: 4,
         similarity: .cosine
