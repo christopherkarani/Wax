@@ -89,43 +89,11 @@ The engine also stores and queries an entity-fact knowledge graph. See the WaxCo
 
 ### Entity Management
 
-```swift
-// Create or update an entity
-let entityId = try await engine.upsertEntity(
-    key: EntityKey("alice"),
-    kind: "Person",
-    aliases: ["Alice Smith", "A. Smith"],
-    nowMs: Int64(Date().timeIntervalSince1970 * 1000)
-)
-
-// Fuzzy-match entities by alias
-let matches = try await engine.resolveEntities(
-    matchingAlias: "alice",
-    limit: 10
-)
-```
+Wax package internals use the structured-memory engine to upsert canonical entities, store aliases, and resolve fuzzy alias matches during broker and orchestrator workflows.
 
 ### Fact Assertion and Querying
 
-```swift
-// Assert a fact with temporal bounds
-let factId = try await engine.assertFact(
-    subject: EntityKey("alice"),
-    predicate: PredicateKey("works_at"),
-    object: .string("Acme Corp"),
-    valid: StructuredTimeRange(fromMs: startMs, toMs: nil),
-    system: StructuredTimeRange(fromMs: nowMs, toMs: nil),
-    evidence: [evidence]
-)
-
-// Query facts
-let result = try await engine.facts(
-    about: EntityKey("alice"),
-    predicate: nil,
-    asOf: StructuredMemoryAsOf(systemTimeMs: nowMs, validTimeMs: nowMs),
-    limit: 100
-)
-```
+Structured fact writes include subject, predicate, object, valid time, system time, and evidence links. Fact reads apply bitemporal filters and return package-internal result values for the higher-level Wax APIs to translate.
 
 ## Persistence
 

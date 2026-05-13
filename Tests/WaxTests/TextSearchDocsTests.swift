@@ -49,6 +49,32 @@ func textSearchDocsDoNotAdvertisePackageOnlyTextSearchResultAsPublicAPI() throws
     }
 }
 
+@Test
+func textSearchDocsDoNotShowPackageOnlyStructuredMemoryExamplesAsPublicAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxTextSearch/FTS5SearchEngine.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("package func upsertEntity"))
+    #expect(source.contains("package func assertFact"))
+
+    for relativePath in textSearchDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+
+        #expect(!doc.contains("engine.upsertEntity"))
+        #expect(!doc.contains("engine.assertFact"))
+        #expect(!doc.contains("engine.facts"))
+        #expect(!doc.contains("EntityKey("))
+        #expect(!doc.contains("StructuredTimeRange("))
+        #expect(!doc.contains("StructuredMemoryAsOf("))
+    }
+}
+
 private let textSearchDocPaths = [
     "Sources/WaxTextSearch/WaxTextSearch.docc/Documentation.md",
     "Sources/WaxTextSearch/WaxTextSearch.docc/Articles/TextSearchEngine.md",
