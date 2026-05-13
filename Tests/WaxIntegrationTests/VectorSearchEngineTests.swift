@@ -201,6 +201,30 @@ import WaxVectorSearch
     #expect(validatorBody.contains("commandBuffer.error"))
 }
 
+@Test func loadedVectorSearchEngineChecksVectorCountConversions() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift"),
+        encoding: .utf8
+    )
+
+    #expect(!source.contains("Int(manifest.vectorCount)"))
+    #expect(!source.contains("Int(info.vectorCount)"))
+    #expect(source.contains("checkedVectorCount"))
+}
+
+@Test func loadedVectorSearchEngineRejectsProjectedVectorCountOverflow() throws {
+    #expect(throws: WaxError.self) {
+        _ = try LoadedVectorSearchEngine.checkedProjectedVectorCount(
+            committedOrStaged: Int.max,
+            pendingCount: 1
+        )
+    }
+}
+
 @Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)

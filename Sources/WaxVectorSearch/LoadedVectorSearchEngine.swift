@@ -184,9 +184,12 @@ package enum LoadedVectorSearchEngine: Sendable {
         var committedOrStaged = 0
         if let staged = await wax.readStagedVecIndexBytes() {
             let decoded = try VectorSerializer.decodeVecSegment(from: staged.bytes)
-            committedOrStaged = segmentVectorCount(for: decoded)
+            committedOrStaged = try segmentVectorCount(for: decoded)
         } else if let manifest = await wax.committedVecIndexManifest() {
-            committedOrStaged = Int(manifest.vectorCount)
+            committedOrStaged = try checkedVectorCount(
+                manifest.vectorCount,
+                context: "committed vec index manifest"
+            )
         }
 
         let snapshot: PendingEmbeddingSnapshot
@@ -200,7 +203,10 @@ package enum LoadedVectorSearchEngine: Sendable {
                 count += 1
             }
         }
-        return committedOrStaged + pendingCount
+        return try checkedProjectedVectorCount(
+            committedOrStaged: committedOrStaged,
+            pendingCount: pendingCount
+        )
     }
 
     private static func resolveKind(
@@ -239,12 +245,27 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
-    private static func segmentVectorCount(for payload: VectorSerializer.VecSegmentPayload) -> Int {
+    private static func segmentVectorCount(for payload: VectorSerializer.VecSegmentPayload) throws -> Int {
         switch payload {
         case .uSearch(let info, _):
-            return Int(info.vectorCount)
+            return try checkedVectorCount(info.vectorCount, context: "uSearch vec segment")
         case .metal(let info, _, _):
-            return Int(info.vectorCount)
+            return try checkedVectorCount(info.vectorCount, context: "Metal vec segment")
         }
+    }
+
+    private static func checkedVectorCount(_ vectorCount: UInt64, context: String) throws -> Int {
+        guard vectorCount <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "\(context) vector count exceeds Int.max")
+        }
+        return Int(vectorCount)
+    }
+
+    package static func checkedProjectedVectorCount(committedOrStaged: Int, pendingCount: Int) throws -> Int {
+        let total = committedOrStaged.addingReportingOverflow(pendingCount)
+        guard !total.overflow else {
+            throw WaxError.invalidToc(reason: "projected vector count exceeds Int.max")
+        }
+        return total.partialValue
     }
 }
