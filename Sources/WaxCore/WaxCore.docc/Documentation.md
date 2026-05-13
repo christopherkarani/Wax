@@ -16,7 +16,7 @@ WaxCore is an implementation module. The package-only ``Wax`` actor manages indi
 
 For app and package consumers, import the top-level `Wax` product and use the public orchestration APIs documented there. WaxCore documentation is most useful when you need to understand the file format, WAL behavior, structured-memory storage model, or concurrency primitives behind those public APIs.
 
-> Note: the symbol topics below include internal/package symbols that DocC can render for package contributors. Their presence does not make the package-only ``Wax`` actor a public consumer surface.
+Package-only implementation symbols are intentionally omitted from the public topic list below.
 
 ## Topics
 
@@ -24,73 +24,16 @@ For app and package consumers, import the top-level `Wax` product and use the pu
 
 - <doc:GettingStarted>
 - <doc:FileFormat>
-
-### Persistence
-
-- ``Wax``
-- ``WaxOptions``
-- ``WaxStats``
-- ``WaxWALStats``
 - ``WaxError``
-
-### File Format
-
-- ``WaxHeaderPage``
-- ``WaxFooter``
-- ``WaxTOC``
-- ``FrameMeta``
-- ``FrameRole``
-- ``FrameStatus``
-- ``CanonicalEncoding``
 
 ### Write-Ahead Log
 
 - <doc:WALAndCrashRecovery>
-- ``WALRecord``
-- ``WALEntry``
-- ``WALFsyncPolicy``
-- ``WALRingWriter``
-- ``WALRingReader``
-
-### Binary Codec
-
-- ``BinaryEncoder``
-- ``BinaryDecoder``
-- ``BinaryEncodable``
-- ``BinaryDecodable``
 
 ### Structured Memory
 
 - <doc:StructuredMemory>
-- ``EntityKey``
-- ``PredicateKey``
-- ``FactValue``
-- ``StructuredFact``
-- ``StructuredFactHit``
-- ``StructuredFactsResult``
-- ``StructuredEvidence``
-- ``StructuredMemoryQueryContext``
-- ``StructuredMemoryAsOf``
-
-### Frame Operations
-
-- ``PutFrame``
-- ``DeleteFrame``
-- ``SupersedeFrame``
-- ``PutEmbedding``
-- ``PendingEmbeddingSnapshot``
 
 ### Concurrency
 
 - <doc:ConcurrencyModel>
-- ``AsyncReadWriteLock``
-- ``AsyncMutex``
-- ``ReadWriteLock``
-- ``UnfairLock``
-- ``FileLock``
-- ``BlockingIOExecutor``
-- ``WaxWriterPolicy``
-
-### I/O
-
-- ``FDFile``
