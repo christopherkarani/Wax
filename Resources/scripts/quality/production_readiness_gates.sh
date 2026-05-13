@@ -45,7 +45,7 @@ assert_full_pass_rate() {
   local executed skipped failures runnable passed
   executed="$(echo "$summary" | sed -E 's/.*Executed ([0-9]+) tests?.*/\1/')"
   skipped="$(echo "$summary" | sed -nE 's/.*with ([0-9]+) test skipped.*/\1/p')"
-  failures="$(echo "$summary" | sed -E 's/.* and ([0-9]+) failures.*/\1/')"
+  failures="$(echo "$summary" | sed -nE 's/.*(and|with) ([0-9]+) failures?.*/\2/p')"
   skipped="${skipped:-0}"
 
   runnable=$((executed - skipped))
