@@ -35,6 +35,23 @@ import WaxVectorSearch
     #expect(hits.contains(where: { $0.frameId == 1 }))
 }
 
+@Test func uSearchVectorEngineAddBatchDuplicateIdsDoNotOvercount() async throws {
+    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
+
+    try await engine.addBatch(frameIds: [7, 7], vectors: [[1.0, 0.0], [0.0, 1.0]])
+
+    let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
+    #expect(hits.map(\.frameId) == [7])
+
+    let blob = try await engine.serialize()
+    let decoded = try VectorSerializer.decodeVecSegment(from: blob)
+    guard case .uSearch(let info, _) = decoded else {
+        Issue.record("Expected USearch payload")
+        return
+    }
+    #expect(info.vectorCount == 1)
+}
+
 @Test func uSearchVectorEngineRejectsNonFiniteVectors() async throws {
     let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
 

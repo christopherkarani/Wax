@@ -114,16 +114,17 @@ package actor USearchVectorEngine {
                 try validate(vector)
             }
 
+            let batch = Self.deduplicate(frameIds: frameIds, vectors: vectors)
             let index = self.index
             let isEmpty = vectorCount == 0
             
             // Pre-calculate required capacity to avoid multiple reserve calls
-            let maxNewCount = vectorCount &+ UInt64(frameIds.count)
+            let maxNewCount = vectorCount &+ UInt64(batch.frameIds.count)
             try await reserveIfNeeded(for: maxNewCount)
 
             // Capture arrays for Sendable closure - avoid capturing self
-            let frameIdArray = frameIds
-            let vectorArray = vectors
+            let frameIdArray = batch.frameIds
+            let vectorArray = batch.vectors
 
             // Single I/O block for all operations - minimizes async context switches
             let addedCount = try await io.run { () throws -> Int in
@@ -315,6 +316,25 @@ package actor USearchVectorEngine {
         if topK < 1 { return 1 }
         if topK > maxResults { return maxResults }
         return topK
+    }
+
+    private static func deduplicate(frameIds: [UInt64], vectors: [[Float]]) -> (frameIds: [UInt64], vectors: [[Float]]) {
+        var positions: [UInt64: Int] = [:]
+        var uniqueFrameIds: [UInt64] = []
+        var uniqueVectors: [[Float]] = []
+        uniqueFrameIds.reserveCapacity(frameIds.count)
+        uniqueVectors.reserveCapacity(vectors.count)
+
+        for (frameId, vector) in zip(frameIds, vectors) {
+            if let index = positions[frameId] {
+                uniqueVectors[index] = vector
+            } else {
+                positions[frameId] = uniqueFrameIds.count
+                uniqueFrameIds.append(frameId)
+                uniqueVectors.append(vector)
+            }
+        }
+        return (uniqueFrameIds, uniqueVectors)
     }
 
     private func reserveIfNeeded(for requiredCount: UInt64) async throws {
