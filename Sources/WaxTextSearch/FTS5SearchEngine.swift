@@ -132,7 +132,7 @@ package actor FTS5SearchEngine {
         guard !trimmed.isEmpty else { return [] }
         let matchQuery = Self.literalMatchQuery(for: trimmed)
         guard !matchQuery.isEmpty else { return [] }
-        let limit = Self.clampTopK(topK)
+        let limit = try Self.validatedTopK(topK)
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.read { db in
@@ -1030,8 +1030,10 @@ package actor FTS5SearchEngine {
         return -rank
     }
 
-    private static func clampTopK(_ topK: Int) -> Int {
-        if topK < 1 { return 1 }
+    private static func validatedTopK(_ topK: Int) throws -> Int {
+        if topK < 1 {
+            throw WaxError.encodingError(reason: "topK must be greater than zero")
+        }
         if topK > maxResults { return maxResults }
         return topK
     }

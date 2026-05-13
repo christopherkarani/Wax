@@ -110,6 +110,15 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [42])
 }
 
+@Test func searchRejectsNonPositiveTopK() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 7, text: "topK validation")
+
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.search(query: "topK", topK: 0)
+    }
+}
+
 @Test func indexBatchFlushesBeforeSearch() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.indexBatch(
