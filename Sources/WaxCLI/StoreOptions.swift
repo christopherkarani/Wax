@@ -43,6 +43,10 @@ struct VectorStoreOptions: ParsableArguments {
     var embedderTuning: CommandLineEmbedderRuntimeTuning {
         runtime.resolvedTuning()
     }
+
+    func validate() throws {
+        try runtime.validateRuntimeOptions()
+    }
 }
 
 struct EmbedderRuntimeOptions: ParsableArguments {
@@ -76,6 +80,26 @@ struct EmbedderRuntimeOptions: ParsableArguments {
         help: "Timeout for embedder initialization in seconds."
     )
     var timeoutSeconds: Double?
+
+    func validateRuntimeOptions() throws {
+        for raw in computeUnits {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  CommandLineEmbedderComputeUnit(rawValue: trimmed) != nil
+            else {
+                throw ValidationError("Invalid --embedder-compute-unit '\(raw)'")
+            }
+        }
+        if let batchSize, batchSize <= 0 {
+            throw ValidationError("--embedder-batch-size must be greater than zero")
+        }
+        if let prewarmBatchSize, prewarmBatchSize <= 0 {
+            throw ValidationError("--embedder-prewarm-batch-size must be greater than zero")
+        }
+        if let timeoutSeconds, timeoutSeconds <= 0 {
+            throw ValidationError("--embedder-timeout-secs must be greater than zero")
+        }
+    }
 
     func resolvedTuning(
         environment: [String: String] = ProcessInfo.processInfo.environment

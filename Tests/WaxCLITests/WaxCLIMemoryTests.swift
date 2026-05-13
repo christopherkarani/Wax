@@ -282,6 +282,24 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func invalidEmbedderRuntimeFlagsAreRejected() throws {
+        let invalidArgumentSets = [
+            ["--embedder-compute-unit", "definitelyInvalid"],
+            ["--embedder-compute-unit", " "],
+            ["--embedder-batch-size", "0"],
+            ["--embedder-batch-size", "-1"],
+            ["--embedder-prewarm-batch-size", "0"],
+            ["--embedder-timeout-secs", "0"],
+            ["--embedder-timeout-secs", "-0.1"],
+        ]
+
+        for arguments in invalidArgumentSets {
+            #expect(throws: Error.self, "Expected invalid runtime arguments to be rejected: \(arguments)") {
+                _ = try VectorStoreOptions.parse(arguments)
+            }
+        }
+    }
+
     @Test func agentDaemonPolicyPrefersDaemonForVectorCommands() throws {
         let vectorStore = try VectorStoreOptions.parse([])
         let textStore = try VectorStoreOptions.parse(["--no-embedder"])
