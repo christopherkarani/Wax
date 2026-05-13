@@ -12,15 +12,11 @@ WaxCore defines the `.wax` file format and provides the low-level primitives tha
 - **Structured memory** through an entity-fact-predicate graph with temporal (bitemporal) queries
 - **Concurrency** with actor isolation, async reader-writer locks, file locks, and a blocking I/O executor
 
-The primary entry point is the ``Wax`` actor, which manages a single `.wax` file and exposes APIs for reading and writing frames, managing writer leases, and committing changes.
+WaxCore is an implementation module. The package-only ``Wax`` actor manages individual `.wax` files for other targets in this package, but it is not public API for downstream applications.
 
-```swift
-// Create a new memory store
-let store = try await Wax.create(at: storeURL)
+For app and package consumers, import the top-level `Wax` product and use the public orchestration APIs documented there. WaxCore documentation is most useful when you need to understand the file format, WAL behavior, structured-memory storage model, or concurrency primitives behind those public APIs.
 
-// Open an existing store
-let store = try await Wax.open(at: storeURL)
-```
+> Note: the symbol topics below include internal/package symbols that DocC can render for package contributors. Their presence does not make the package-only ``Wax`` actor a public consumer surface.
 
 ## Topics
 
