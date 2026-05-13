@@ -4,7 +4,7 @@ Compare the CPU and GPU backends and understand their performance characteristic
 
 ## Overview
 
-WaxVectorSearch ships two ``VectorSearchEngine`` implementations. Both are actors with the same async API, making them interchangeable at runtime.
+WaxVectorSearch ships package-only CPU and GPU vector engines for Wax internals. They conform to the package-only ``VectorSearchEngine`` protocol, which is not public API for downstream applications. This article documents the contributor-facing implementation surface.
 
 ## USearchVectorEngine (CPU)
 
@@ -93,7 +93,7 @@ let preference: VectorEnginePreference = .auto
 
 ## Common Operations
 
-Both engines share the ``VectorSearchEngine`` protocol:
+Both package-only engines use the same operation flow:
 
 ```swift
 // Add vectors
