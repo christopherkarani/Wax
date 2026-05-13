@@ -692,6 +692,19 @@ private extension WaxMCPTools {
         var timeBeforeMs: Int64?
 
         if let filters {
+            let allowedFilterKeys: Set<String> = [
+                "metadata",
+                "labels",
+                "include_surrogates",
+                "time_after_ms",
+                "time_before_ms",
+            ]
+            let unknownFilterKeys = Set(filters.keys).subtracting(allowedFilterKeys)
+            guard unknownFilterKeys.isEmpty else {
+                let names = unknownFilterKeys.sorted().map { "filters.\($0)" }.joined(separator: ", ")
+                throw ToolValidationError.invalid("unsupported filter key(s): \(names)")
+            }
+
             if let metadataRaw = filters["metadata"] {
                 guard case .object(let metadataObject) = metadataRaw else {
                     throw ToolValidationError.invalid("filters.metadata must be an object")

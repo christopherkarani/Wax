@@ -858,6 +858,25 @@ func recallValidatesModeAndSearchControls() async throws {
 }
 
 @Test
+func searchRejectsUnknownFilterKeys() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": "unknown filter key",
+                    "filters": .object(["unsupported": .bool(true)]),
+                ]
+            ),
+            memory: memory
+        )
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("filters.unsupported"))
+    }
+}
+
+@Test
 func toolsReturnValidationErrorForMissingArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
