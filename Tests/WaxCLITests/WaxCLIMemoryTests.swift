@@ -312,8 +312,8 @@ struct WaxCLIMemoryTests {
     }
 
     @Test func agentDaemonConfigurationUsesStableSocketPaths() throws {
-        let daemonRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wax-cli-daemon-config-\(UUID().uuidString)", isDirectory: true)
+        let daemonRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxdc-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: daemonRoot) }
 
         setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
