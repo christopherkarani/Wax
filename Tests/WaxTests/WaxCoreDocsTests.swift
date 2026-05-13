@@ -163,6 +163,31 @@ func waxCoreStructuredMemoryDocsDoNotAdvertisePackageOnlyTypesAsPublicAPI() thro
     }
 }
 
+@Test
+func docsDoNotAdvertiseNonexistentFramePayloadMethods() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let waxSource = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCore/Wax.swift"),
+        encoding: .utf8
+    )
+    #expect(!waxSource.contains("func putFrame("))
+    #expect(!waxSource.contains("func frame("))
+    #expect(!waxSource.contains("func readPayload("))
+
+    for relativePath in framePayloadMethodDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(!doc.contains("Wax.putFrame()"))
+        #expect(!doc.contains(".putFrame("))
+        #expect(!doc.contains(".frame("))
+        #expect(!doc.contains(".readPayload("))
+        #expect(!doc.contains("readPayload("))
+    }
+}
+
 private let waxCoreDocPaths = [
     "Sources/WaxCore/WaxCore.docc/Documentation.md",
     "Sources/WaxCore/WaxCore.docc/Articles/GettingStarted.md",
@@ -174,4 +199,11 @@ private let waxCoreDocPaths = [
 private let waxCoreStructuredMemoryDocPaths = [
     "Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md",
     "Resources/website/docs/core/structured-memory.md",
+]
+
+private let framePayloadMethodDocPaths = [
+    "Sources/Wax/Wax.docc/Articles/Architecture.md",
+    "Resources/website/docs/architecture.md",
+    "Sources/WaxCore/WaxCore.docc/Articles/GettingStarted.md",
+    "Resources/website/docs/core/getting-started.md",
 ]

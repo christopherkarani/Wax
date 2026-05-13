@@ -52,7 +52,7 @@ MemoryOrchestrator.remember()
   │
   ├─ Embed chunks (EmbeddingProvider.embed(batch:))
   │
-  ├─ WaxSession.put() ──► Wax.putFrame() ──► WAL
+  ├─ Frame payload write ──► WAL
   │
   ├─ FTS5SearchEngine.index() ──► SQLite FTS5
   │
