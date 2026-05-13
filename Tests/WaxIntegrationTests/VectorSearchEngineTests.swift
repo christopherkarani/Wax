@@ -136,6 +136,19 @@ import WaxVectorSearch
         _ = try await engine.search(vector: [0.0, -.infinity], topK: 1)
     }
 }
+
+@Test func metalVectorEngineRejectsTrailingBytesDuringDeserialize() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 2)
+    try await engine.add(frameId: 42, vector: [1.0, 0.0])
+    var blob = try await engine.serialize()
+    blob.append(0xFF)
+
+    let reloaded = try MetalVectorEngine(metric: .cosine, dimensions: 2)
+    await #expect(throws: WaxError.self) {
+        try await reloaded.deserialize(blob)
+    }
+}
 #endif
 
 @Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {

@@ -771,10 +771,18 @@ package actor MetalVectorEngine {
                 throw WaxError.invalidToc(reason: "Metal segment reserved bytes must be zero")
             }
 
-            guard vectorLength == savedVectorCount * UInt64(dimensions) * UInt64(MemoryLayout<Float>.stride) else {
+            let vectorElementCount = savedVectorCount.multipliedReportingOverflow(by: UInt64(dimensions))
+            let expectedVectorLength = vectorElementCount.partialValue.multipliedReportingOverflow(
+                by: UInt64(MemoryLayout<Float>.stride)
+            )
+            guard !vectorElementCount.overflow,
+                  !expectedVectorLength.overflow,
+                  vectorLength == expectedVectorLength.partialValue,
+                  vectorLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "Vector data length mismatch")
             }
-            guard data.count >= offset + Int(vectorLength) + MemoryLayout<UInt64>.stride else {
+            let vectorLengthInt = Int(vectorLength)
+            guard data.count - offset >= vectorLengthInt + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId length")
             }
             
@@ -788,10 +796,10 @@ package actor MetalVectorEngine {
             let destPtr = vectorsBuffer.contents()
             data.withUnsafeBytes { srcBuffer in
                  if let srcBase = srcBuffer.baseAddress {
-                     destPtr.copyMemory(from: srcBase.advanced(by: offset), byteCount: Int(vectorLength))
+                     destPtr.copyMemory(from: srcBase.advanced(by: offset), byteCount: vectorLengthInt)
                  }
             }
-            offset += Int(vectorLength)
+            offset += vectorLengthInt
 
             // Set vectorCount AFTER data is copied into the resized buffer.
             vectorCount = savedVectorCount
@@ -800,12 +808,25 @@ package actor MetalVectorEngine {
                 $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
             })
             offset += 8
-            guard frameIdLength == savedVectorCount * UInt64(MemoryLayout<UInt64>.stride) else {
+            let expectedFrameIdLength = savedVectorCount.multipliedReportingOverflow(
+                by: UInt64(MemoryLayout<UInt64>.stride)
+            )
+            guard !expectedFrameIdLength.overflow,
+                  frameIdLength == expectedFrameIdLength.partialValue,
+                  frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "FrameId data length mismatch")
             }
-            frameIds = Array(data[offset..<offset+Int(frameIdLength)].withUnsafeBytes {
+            let frameIdLengthInt = Int(frameIdLength)
+            guard data.count - offset >= frameIdLengthInt else {
+                throw WaxError.invalidToc(reason: "Metal segment missing frameId data")
+            }
+            frameIds = Array(data[offset..<offset+frameIdLengthInt].withUnsafeBytes {
                 Array($0.bindMemory(to: UInt64.self))
             })
+            offset += frameIdLengthInt
+            guard offset == data.count else {
+                throw WaxError.invalidToc(reason: "Metal segment has trailing bytes")
+            }
 
             dirty = false
         }
