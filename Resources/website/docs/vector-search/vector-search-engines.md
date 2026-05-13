@@ -104,13 +104,6 @@ Both package-only engines use the same operation flow:
 try await engine.add(frameId: 1, vector: embedding)
 try await engine.addBatch(frameIds: ids, vectors: vectors)
 
-// Streaming for large ingestions (prevents lock starvation)
-try await engine.addBatchStreaming(
-    frameIds: ids,
-    vectors: vectors,
-    chunkSize: 256
-)
-
 // Search
 let results = try await engine.search(vector: queryVector, topK: 10)
 // Returns: [(frameId: UInt64, score: Float)]

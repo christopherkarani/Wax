@@ -28,6 +28,25 @@ func vectorSearchDocsDoNotAdvertisePackageOnlyProtocolAsPublicAPI() throws {
     }
 }
 
+@Test
+func vectorSearchDocsDoNotClaimProtocolHasStreamingBatchAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let protocolSource = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/VectorSearchEngine.swift"),
+        encoding: .utf8
+    )
+    #expect(!protocolSource.contains("addBatchStreaming"))
+
+    for relativePath in vectorSearchDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(!doc.contains("addBatchStreaming"))
+    }
+}
+
 private let vectorSearchDocPaths = [
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Documentation.md",
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/VectorSearchEngines.md",
