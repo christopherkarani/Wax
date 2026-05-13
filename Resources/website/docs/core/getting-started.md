@@ -25,8 +25,8 @@ You can customize the WAL ring buffer size and fsync policy:
 
 ```swift
 let options = WaxOptions(
-    fsyncPolicy: .everyBytes(1_048_576),  // fsync every 1 MiB
-    enableReplayStateSnapshot: true
+    walFsyncPolicy: .everyBytes(1_048_576),  // fsync every 1 MiB
+    walReplayStateSnapshotEnabled: true
 )
 let store = try await Wax.create(
     at: url,

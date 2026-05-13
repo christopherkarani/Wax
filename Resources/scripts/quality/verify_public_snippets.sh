@@ -28,6 +28,18 @@ PUBLIC_PATHS = [
 
 SHELL_LANGS = {"bash", "sh", "shell", "zsh", "console", "terminal"}
 FENCE_RE = re.compile(r"^[ \t]*```([A-Za-z0-9_-]+)?[^\n]*$")
+WAXCORE_GETTING_STARTED_DOCS = {
+    "Sources/WaxCore/WaxCore.docc/Articles/GettingStarted.md",
+    "Resources/website/docs/core/getting-started.md",
+}
+WAXCORE_GETTING_STARTED_REQUIRED_OPTIONS = {
+    "walFsyncPolicy:",
+    "walReplayStateSnapshotEnabled:",
+}
+WAXCORE_GETTING_STARTED_STALE_OPTIONS = {
+    "fsyncPolicy:",
+    "enableReplayStateSnapshot:",
+}
 
 
 class Failure:
@@ -120,6 +132,33 @@ def check_shell_command(path, line_no, command, failures):
         )
 
 
+def check_waxcore_getting_started_options(path, lines, failures):
+    if path not in WAXCORE_GETTING_STARTED_DOCS:
+        return
+
+    content = "\n".join(lines)
+    for stale_label in WAXCORE_GETTING_STARTED_STALE_OPTIONS:
+        for index, line in enumerate(lines, start=1):
+            if stale_label in line:
+                failures.append(
+                    Failure(
+                        path,
+                        index,
+                        f"WaxOptions Getting Started snippet must use WAL-prefixed label instead of {stale_label}",
+                    )
+                )
+
+    for required_label in WAXCORE_GETTING_STARTED_REQUIRED_OPTIONS:
+        if required_label not in content:
+            failures.append(
+                Failure(
+                    path,
+                    1,
+                    f"WaxOptions Getting Started snippet must include {required_label}",
+                )
+            )
+
+
 def check_file(path):
     failures = []
     rel = display_path(path)
@@ -128,6 +167,8 @@ def check_file(path):
     except UnicodeDecodeError:
         failures.append(Failure(rel, 1, "file is not valid UTF-8"))
         return failures, 0
+
+    check_waxcore_getting_started_options(rel, lines, failures)
 
     in_fence = False
     fence_lang = ""
