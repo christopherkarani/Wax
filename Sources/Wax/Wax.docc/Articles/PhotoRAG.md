@@ -46,7 +46,7 @@ Sync and ingest from the user's photo library:
 
 ```swift
 // Sync library metadata
-try await orchestrator.syncLibrary(scope: .all)
+try await orchestrator.syncLibrary(scope: .fullLibrary)
 
 // Ingest specific assets
 try await orchestrator.ingest(assetIDs: ["asset-id-1", "asset-id-2"])
