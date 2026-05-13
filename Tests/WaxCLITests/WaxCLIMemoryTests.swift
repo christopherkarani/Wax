@@ -474,6 +474,35 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func daemonSocketPathDoesNotReplaceRegularFile() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-daemon-socket-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let victimURL = tempRoot.appendingPathComponent("victim.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try "do not unlink\n".write(to: victimURL, atomically: true, encoding: .utf8)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "daemon",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--socket-path", victimURL.path,
+                "--idle-timeout-secs", "0.1",
+            ],
+            timeout: 10
+        )
+
+        #expect(output.status != EXIT_SUCCESS, "daemon should reject a regular file socket path")
+        #expect(FileManager.default.fileExists(atPath: victimURL.path))
+        let preserved = try String(contentsOf: victimURL, encoding: .utf8)
+        #expect(preserved == "do not unlink\n")
+    }
+
     @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-install-stage-\(UUID().uuidString)", isDirectory: true)

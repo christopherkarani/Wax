@@ -117,7 +117,7 @@ private extension DaemonCommand {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        unlink(socketURL.path)
+        try removeExistingSocket(at: socketURL.path)
 
         let listener = socket(AF_UNIX, unixStreamSocketType, 0)
         guard listener >= 0 else {
@@ -238,6 +238,22 @@ private extension DaemonCommand {
         try writeJSONLine(response, to: output)
         if response.shouldExit {
             throw ExitRequested()
+        }
+    }
+
+    func removeExistingSocket(at path: String) throws {
+        var existing = stat()
+        if lstat(path, &existing) != 0 {
+            if errno == ENOENT { return }
+            throw CLIError("Unable to inspect broker socket path \(path): \(String(cString: strerror(errno)))")
+        }
+
+        guard existing.st_mode & S_IFMT == S_IFSOCK else {
+            throw CLIError("Refusing to replace non-socket file at broker socket path: \(path)")
+        }
+
+        guard unlink(path) == 0 else {
+            throw CLIError("Unable to remove stale broker socket at \(path): \(String(cString: strerror(errno)))")
         }
     }
 
