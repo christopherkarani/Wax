@@ -31,12 +31,7 @@ WaxVectorSearch ships package-only CPU and GPU vector engines for Wax internals.
 - When you need dot product or L2 metrics
 - When approximate results are acceptable
 
-```swift
-let engine = try USearchVectorEngine(metric: .cosine, dimensions: 384)
-try await engine.add(frameId: 1, vector: embedding)
-
-let results = try await engine.search(vector: query, topK: 10)
-```
+Wax package internals select this engine for CPU-backed indexes through the vector engine loader and session configuration.
 
 ## MetalVectorEngine (GPU)
 

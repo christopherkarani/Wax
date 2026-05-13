@@ -11,17 +11,7 @@ For package contributors, the module contains two interchangeable backends:
 - **``USearchVectorEngine``** — CPU-based HNSW (Hierarchical Navigable Small Worlds) index via [USearch](https://github.com/unum-cloud/USearch). Supports cosine, dot product, and L2 distance metrics.
 - **``MetalVectorEngine``** — GPU-accelerated brute-force search with SIMD-optimized Metal compute shaders. Supports cosine similarity with automatic kernel selection (SIMD4 or SIMD8).
 
-Both engines are actors with async APIs, automatic serialization, and Wax integration.
-
-```swift
-// CPU engine (works everywhere)
-let cpu = try USearchVectorEngine(metric: .cosine, dimensions: 384)
-
-// GPU engine (Apple Silicon)
-if MetalVectorEngine.isAvailable {
-    let gpu = try MetalVectorEngine(metric: .cosine, dimensions: 384)
-}
-```
+Both engines are actors with async APIs, automatic serialization, and Wax integration. They are constructed by Wax package internals, not by downstream application code.
 
 The module also defines the ``EmbeddingProvider`` protocol for text-to-vector conversion, enabling pluggable embedding backends.
 

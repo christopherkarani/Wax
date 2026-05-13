@@ -47,6 +47,25 @@ func vectorSearchDocsDoNotClaimProtocolHasStreamingBatchAPI() throws {
     }
 }
 
+@Test
+func vectorSearchDocsDoNotInstantiatePackageOnlyUSearchEngineAsPublicAPI() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/USearchVectorEngine.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("package actor USearchVectorEngine"))
+
+    for relativePath in vectorSearchDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(!doc.contains("USearchVectorEngine("))
+    }
+}
+
 private let vectorSearchDocPaths = [
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Documentation.md",
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/VectorSearchEngines.md",
