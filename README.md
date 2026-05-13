@@ -132,7 +132,7 @@ let memory = try await Memory(at: url)
 // 2. Save a memory
 try await memory.save("The user is building a habit tracker in SwiftUI.")
 
-// 3. Search with hybrid recall (text + vector)
+// 3. Search with text-only recall (no embedding provider required)
 let results = try await memory.search("What is the user building?")
 
 if let best = results.items.first {
