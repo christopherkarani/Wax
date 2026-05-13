@@ -13,21 +13,21 @@ let package = Package(
         .executableTarget(
             name: "WaxDemo",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
             name: "WaxDemoCorruptTOC",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
             name: "WaxDemoMultiFooter",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
