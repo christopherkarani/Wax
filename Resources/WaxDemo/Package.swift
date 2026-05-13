@@ -7,7 +7,7 @@ let package = Package(
         .macOS(.v26),
     ],
     dependencies: [
-        .package(path: "../Wax"),
+        .package(path: "../.."),
     ],
     targets: [
         .executableTarget(
