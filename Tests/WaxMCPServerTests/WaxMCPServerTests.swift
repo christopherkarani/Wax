@@ -39,6 +39,32 @@ private func withAgentBrokerService<T>(
 }
 
 @Test
+func brokerRejectsInvalidEmbedderChoice() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-broker-invalid-embedder-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    do {
+        let service = try await AgentBrokerService(
+            storePath: storeURL.path,
+            sessionRootPath: sessionRootURL.path,
+            noEmbedder: false,
+            embedderChoice: "definitelyInvalid",
+            requireVector: false
+        )
+        try await service.close()
+        Issue.record("invalid embedder choice should fail instead of falling back to MiniLM")
+    } catch {
+        #expect(error.localizedDescription.contains("Invalid embedder choice"))
+        #expect(error.localizedDescription.contains("minilm"))
+        #expect(error.localizedDescription.contains("arctic"))
+    }
+}
+
+@Test
 func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
     #expect(names.contains("memory_append"))
