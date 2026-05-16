@@ -328,7 +328,7 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional maximum number of durable candidates to surface.",
                 "minimum": 1,
-                "maximum": 32,
+                "maximum": .int(BrokerPromotionSettings.maxCandidateLimit),
             ],
         ],
         required: []
@@ -396,7 +396,7 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional maximum number of durable candidates to surface in related synthesis flows.",
                 "minimum": 1,
-                "maximum": 32,
+                "maximum": .int(BrokerPromotionSettings.maxCandidateLimit),
             ],
         ],
         required: []

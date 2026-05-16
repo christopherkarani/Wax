@@ -215,7 +215,7 @@ extension AgentBrokerService {
     static let maxGraphLimit = 500
     static let maxGraphIdentifierBytes = 256
     static let maxGraphKindBytes = 64
-    static let maxPromotionCandidates = 12
+    static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
     static let defaultSessionLeaseSeconds = 300
     static let maxCompactContextTokenBudget = 32_000
 
@@ -2205,7 +2205,7 @@ extension AgentBrokerService {
             ?? promotionSettings.minimumConfidence
         let minimumRecallCount = try args.optionalInt("minimum_recall_count").map { max(0, $0) }
             ?? promotionSettings.minimumRecallCount
-        let maxCandidates = try args.optionalInt("max_candidates").map { max(1, $0) }
+        let maxCandidates = try args.optionalInt("max_candidates").map { min(max(1, $0), Self.maxPromotionCandidates) }
             ?? promotionSettings.maxCandidates
         return BrokerPromotionSettings(
             minimumConfidence: minimumConfidence,

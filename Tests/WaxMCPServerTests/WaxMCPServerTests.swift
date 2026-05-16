@@ -235,6 +235,47 @@ func brokerRejectsUnknownTopLevelArguments() async throws {
 }
 
 @Test
+func promotionMaxCandidatesAreBounded() async throws {
+    setenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES", "1000000", 1)
+    defer { unsetenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES") }
+
+    #expect(BrokerPromotionSettings.fromEnvironment().maxCandidates == 12)
+    #expect(schemaMaximum(ToolSchemas.waxSessionSynthesize, property: "max_candidates") == 12)
+    #expect(schemaMaximum(ToolSchemas.waxMemoryPromote, property: "max_candidates") == 12)
+
+    try await withAgentBrokerService { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+
+        for index in 0..<20 {
+            let append = await service.handle(.init(
+                command: "memory_append",
+                arguments: [
+                    "content": .string("Decision: bounded promotion candidate \(index) should stay within the server maximum."),
+                    "session_id": .string(sessionIDString),
+                ]
+            ))
+            #expect(append.ok == true)
+        }
+
+        let synthesize = await service.handle(
+            AgentBrokerRequest(
+                command: "session_synthesize",
+                arguments: [
+                    "session_id": .string(sessionIDString),
+                    "max_candidates": .int(1_000_000),
+                ]
+            )
+        )
+        #expect(synthesize.ok == true)
+        let payload = try #require(synthesize.payload?.objectValue)
+        let candidates = try #require(payload["durable_candidates"]?.arrayValue)
+        #expect(candidates.count <= 12)
+    }
+}
+
+@Test
 func corpusSearchRejectsUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
@@ -2523,6 +2564,23 @@ private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) th
         }
     }
     throw NSError(domain: "WaxMCPServerTests", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing JSON resource with suffix '\(uriSuffix)'"])
+}
+
+private func schemaMaximum(_ schema: Value, property: String) -> Double? {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"],
+          case .object(let propertySchema)? = properties[property]
+    else {
+        return nil
+    }
+    switch propertySchema["maximum"] {
+    case .double(let value):
+        return value
+    case .int(let value):
+        return Double(value)
+    default:
+        return nil
+    }
 }
 
 private func parseToolTextJSON(fromResponseLine line: String) throws -> [String: Any] {

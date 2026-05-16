@@ -34,6 +34,8 @@ package struct BrokerSessionSynthesis: Sendable, Equatable {
 }
 
 package struct BrokerPromotionSettings: Sendable, Equatable {
+    package static let maxCandidateLimit = 12
+
     package var minimumConfidence: Float
     package var minimumRecallCount: Int
     package var maxCandidates: Int
@@ -56,7 +58,7 @@ package struct BrokerPromotionSettings: Sendable, Equatable {
             ?? Self.default.minimumRecallCount
         let maxCandidates = env["WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES"]
             .flatMap(Int.init)
-            .map { max(1, $0) }
+            .map { min(max(1, $0), Self.maxCandidateLimit) }
             ?? Self.default.maxCandidates
         return BrokerPromotionSettings(
             minimumConfidence: minimumConfidence,
