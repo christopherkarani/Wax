@@ -55,4 +55,10 @@ grep -Fq './Resources/scripts/sync-waxmcp-version.sh' "$WORKFLOW" \
 grep -Fq 'Resources/scripts/sync-waxmcp-version.sh' "$CANONICAL_RELEASE_SCRIPT" \
   || fail "canonical release script must use the shared waxmcp version sync helper"
 
+grep -Fq 'darwin-x64' "$CANONICAL_RELEASE_SCRIPT" \
+  || fail "canonical release script must stage darwin-x64 artifacts"
+
+grep -Fq 'build-waxmcp-binaries.sh" "$platform" "$triple"' "$CANONICAL_RELEASE_SCRIPT" \
+  || fail "canonical release script must use the shared multi-platform binary builder"
+
 echo "release_workflow_tests: ok"
