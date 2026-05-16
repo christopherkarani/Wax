@@ -81,6 +81,7 @@ package enum VectorSerializer {
         guard vectors.count == frameIds.count * dimensions else {
             throw WaxError.invalidToc(reason: "flat vector payload mismatch")
         }
+        try validateUniqueFrameIds(frameIds)
 
         let vectorBytes = vectors.count * MemoryLayout<Float>.stride
         let frameIdBytes = frameIds.count * MemoryLayout<UInt64>.stride
@@ -185,6 +186,7 @@ package enum VectorSerializer {
             let frameIds = Array(data[offset..<offset + Int(frameIdLength)].withUnsafeBytes {
                 Array($0.bindMemory(to: UInt64.self))
             })
+            try validateUniqueFrameIds(frameIds)
 
             return .metal(info: info, vectors: vectors, frameIds: frameIds)
         default:
@@ -216,6 +218,16 @@ package enum VectorSerializer {
             throw WaxError.invalidToc(reason: "vec frameId data length exceeds Int.max: \(byteProduct.partialValue)")
         }
         return byteProduct.partialValue
+    }
+
+    package static func validateUniqueFrameIds(_ frameIds: [UInt64]) throws {
+        var seen = Set<UInt64>()
+        seen.reserveCapacity(frameIds.count)
+        for frameId in frameIds {
+            guard seen.insert(frameId).inserted else {
+                throw WaxError.invalidToc(reason: "vec frameIds contain duplicate id \(frameId)")
+            }
+        }
     }
 
     package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {

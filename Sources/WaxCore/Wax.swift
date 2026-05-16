@@ -1624,8 +1624,26 @@ package actor Wax {
             guard data.count == expectedTotal else {
                 throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
             }
+            try validateUniqueVecFrameIds(
+                in: data,
+                offset: frameIdLengthOffset + MemoryLayout<UInt64>.stride,
+                byteCount: Int(frameIdLength)
+            )
         default:
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encoding)")
+        }
+    }
+
+    private static func validateUniqueVecFrameIds(in data: Data, offset: Int, byteCount: Int) throws {
+        var seen = Set<UInt64>()
+        seen.reserveCapacity(byteCount / MemoryLayout<UInt64>.stride)
+        try data.withUnsafeBytes { rawBuffer in
+            for byteOffset in stride(from: offset, to: offset + byteCount, by: MemoryLayout<UInt64>.stride) {
+                let frameId = UInt64(littleEndian: rawBuffer.loadUnaligned(fromByteOffset: byteOffset, as: UInt64.self))
+                guard seen.insert(frameId).inserted else {
+                    throw WaxError.invalidToc(reason: "vec frameIds contain duplicate id \(frameId)")
+                }
+            }
         }
     }
 

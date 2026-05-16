@@ -4,6 +4,7 @@ import Metal
 #endif
 import Testing
 import Wax
+import WaxCore
 import WaxVectorSearch
 
 @Test func vectorEngineAddSearchRemoveRoundtrip() async throws {
@@ -160,6 +161,21 @@ import WaxVectorSearch
     let hit = try #require(hits.first)
     #expect(hit.frameId == 42)
     #expect(abs(hit.score - 1.0) < 0.0001)
+}
+
+@Test func metalVectorEngineDeserializeRejectsDuplicateFrameIds() async throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { return }
+    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 2)
+    let data = buildRawVectorSegment(
+        encoding: 2,
+        vectors: [1.0, 0.0, 0.0, 1.0],
+        frameIds: [7, 7],
+        dimension: 2
+    )
+
+    await #expect(throws: WaxError.self) {
+        try await engine.deserialize(data)
+    }
 }
 #endif
 
@@ -436,6 +452,31 @@ import WaxVectorSearch
     try FileManager.default.removeItem(at: tempDir)
 }
 
+@Test func stageVecIndexRejectsDuplicateFrameIds() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let duplicateVecBytes = buildRawVectorSegment(
+        encoding: 3,
+        vectors: [1.0, 0.0, 0.0, 1.0],
+        frameIds: [7, 7],
+        dimension: 2
+    )
+
+    await #expect(throws: WaxError.self) {
+        try await wax.stageVecIndexForNextCommit(
+            bytes: duplicateVecBytes,
+            vectorCount: 2,
+            dimension: 2,
+            similarity: .cosine
+        )
+    }
+    try await wax.close()
+}
+
 @Test func commitRejectsStaleStagedVectorIndexWhenPendingEmbeddingsChange() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
@@ -527,4 +568,29 @@ import WaxVectorSearch
     try await reopened2.close()
 
     try FileManager.default.removeItem(at: tempDir)
+}
+
+private func buildRawVectorSegment(
+    encoding: UInt8,
+    vectors: [Float],
+    frameIds: [UInt64],
+    dimension: UInt32
+) -> Data {
+    var encoder = BinaryEncoder()
+    encoder.encodeFixedBytes(Data([0x4D, 0x56, 0x32, 0x56]))
+    encoder.encode(UInt16(1))
+    encoder.encode(encoding)
+    encoder.encode(UInt8(0))
+    encoder.encode(dimension)
+    encoder.encode(UInt64(frameIds.count))
+    encoder.encode(UInt64(vectors.count * MemoryLayout<Float>.stride))
+    encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+    vectors.withUnsafeBufferPointer { buffer in
+        encoder.encodeFixedBytes(Data(buffer: buffer))
+    }
+    encoder.encode(UInt64(frameIds.count * MemoryLayout<UInt64>.stride))
+    frameIds.withUnsafeBufferPointer { buffer in
+        encoder.encodeFixedBytes(Data(buffer: buffer))
+    }
+    return encoder.data
 }

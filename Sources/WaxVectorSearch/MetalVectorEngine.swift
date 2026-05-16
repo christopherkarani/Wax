@@ -803,9 +803,6 @@ package actor MetalVectorEngine {
             }
             offset += vectorLengthInt
 
-            // Set vectorCount AFTER data is copied into the resized buffer.
-            vectorCount = savedVectorCount
-
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
             })
@@ -822,7 +819,7 @@ package actor MetalVectorEngine {
             guard data.count - offset >= frameIdLengthInt else {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId data")
             }
-            frameIds = data.withUnsafeBytes { rawBuffer in
+            let decodedFrameIds = data.withUnsafeBytes { rawBuffer in
                 var decoded: [UInt64] = []
                 decoded.reserveCapacity(Int(savedVectorCount))
                 for byteOffset in stride(from: offset, to: offset + frameIdLengthInt, by: MemoryLayout<UInt64>.stride) {
@@ -830,11 +827,15 @@ package actor MetalVectorEngine {
                 }
                 return decoded
             }
+            try VectorSerializer.validateUniqueFrameIds(decodedFrameIds)
             offset += frameIdLengthInt
             guard offset == data.count else {
                 throw WaxError.invalidToc(reason: "Metal segment has trailing bytes")
             }
 
+            // Set vectorCount AFTER all structural validation succeeds.
+            vectorCount = savedVectorCount
+            frameIds = decodedFrameIds
             dirty = false
         }
     }

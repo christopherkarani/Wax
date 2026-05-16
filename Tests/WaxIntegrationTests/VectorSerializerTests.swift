@@ -98,6 +98,31 @@ import WaxCore
     }
 }
 
+@Test func flatVectorSerializationRejectsDuplicateFrameIds() throws {
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.serializeFlatVectors(
+            [1.0, 0.0, 0.0, 1.0],
+            frameIds: [7, 7],
+            metric: .cosine,
+            dimensions: 2
+        )
+    }
+}
+
+@Test func metalSegmentDecodeRejectsDuplicateFrameIds() throws {
+    let data = buildMetalSegment(
+        vectors: [1.0, 0.0, 0.0, 1.0],
+        frameIds: [7, 7],
+        dimension: 2,
+        vectorCount: 2,
+        similarity: 0
+    )
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
 // MARK: - decodeUSearchPayload returns error on Metal
 
 @Test func decodeUSearchPayloadRejectsMetalEncoding() throws {
