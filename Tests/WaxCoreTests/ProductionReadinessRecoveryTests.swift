@@ -289,23 +289,12 @@ func corruptedTocVersionFailsFastWithExplicitInvalidTocError() async throws {
 
 @Test
 func migrationFixturesNMinus1AndNMinus2Load() async throws {
-    let fixtureNMinus1 = TempFiles.uniqueURL()
-    let fixtureNMinus2 = TempFiles.uniqueURL()
+    let fixtureNMinus1 = try copyMigrationFixture(named: "migration-n-1")
+    let fixtureNMinus2 = try copyMigrationFixture(named: "migration-n-2")
     defer {
         try? FileManager.default.removeItem(at: fixtureNMinus1)
         try? FileManager.default.removeItem(at: fixtureNMinus2)
     }
-
-    try await buildMigrationFixture(
-        at: fixtureNMinus1,
-        label: "n-1",
-        options: WaxOptions(walReplayStateSnapshotEnabled: true)
-    )
-    try await buildMigrationFixture(
-        at: fixtureNMinus2,
-        label: "n-2",
-        options: WaxOptions(walReplayStateSnapshotEnabled: false)
-    )
 
     do {
         let wax = try await Wax.open(at: fixtureNMinus1)
@@ -326,10 +315,34 @@ func migrationFixturesNMinus1AndNMinus2Load() async throws {
     }
 }
 
-private func buildMigrationFixture(at url: URL, label: String, options: WaxOptions) async throws {
-    let wax = try await Wax.create(at: url, options: options)
-    _ = try await wax.put(Data("\(label)-frame-0".utf8), options: FrameMetaSubset(searchText: "\(label)-frame-0"))
-    _ = try await wax.put(Data("\(label)-frame-1".utf8), options: FrameMetaSubset(searchText: "\(label)-frame-1"))
-    try await wax.commit()
-    try await wax.close()
+private func copyMigrationFixture(named name: String) throws -> URL {
+    guard let bundled = Bundle.module.url(forResource: "\(name).wax", withExtension: "gz") else {
+        throw WaxError.io("missing migration fixture \(name).wax.gz")
+    }
+
+    let destination = TempFiles.uniqueURL()
+    FileManager.default.createFile(atPath: destination.path, contents: nil)
+    let output = try FileHandle(forWritingTo: destination)
+    defer { try? output.close() }
+
+    let process = Process()
+    process.executableURL = try gzipExecutableURL()
+    process.arguments = ["-dc", bundled.path]
+    process.standardOutput = output
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw WaxError.io("failed to expand migration fixture \(name).wax.gz")
+    }
+
+    return destination
+}
+
+private func gzipExecutableURL() throws -> URL {
+    for path in ["/usr/bin/gzip", "/bin/gzip"] {
+        if FileManager.default.isExecutableFile(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+    }
+    throw WaxError.io("gzip executable not found")
 }

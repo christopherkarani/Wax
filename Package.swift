@@ -293,6 +293,7 @@ let package = Package(
                 "WaxCore",
                 .product(name: "Testing", package: "swift-testing"),
             ],
+            resources: [.process("Fixtures")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .testTarget(
