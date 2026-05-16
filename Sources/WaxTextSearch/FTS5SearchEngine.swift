@@ -190,21 +190,51 @@ package actor FTS5SearchEngine {
         let normalized = StructuredMemoryCanonicalizer.normalizedAlias(alias)
         guard !normalized.isEmpty else { return [] }
         let capped = max(0, min(limit, 10_000))
+        let escaped = Self.escapedLikePattern(normalized)
+        let prefixPattern = "\(escaped)%"
+        let wordPattern = "% \(escaped)%"
 
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.read { db in
                 let sql = """
+                    WITH alias_matches AS (
+                      SELECT e.entity_id AS entity_id,
+                             e.key AS entity_key,
+                             e.kind AS entity_kind,
+                             MIN(
+                               CASE
+                                 WHEN a.alias_norm = ? THEN 0
+                                 WHEN a.alias_norm LIKE ? ESCAPE '/' THEN 1
+                                 ELSE 2
+                               END
+                             ) AS match_rank
+                      FROM sm_entity_alias a
+                      JOIN sm_entity e ON e.entity_id = a.entity_id
+                      WHERE a.alias_norm = ?
+                         OR a.alias_norm LIKE ? ESCAPE '/'
+                         OR a.alias_norm LIKE ? ESCAPE '/'
+                      GROUP BY e.entity_id, e.key, e.kind
+                    )
                     SELECT e.entity_id AS entity_id,
-                           e.key AS entity_key,
-                           e.kind AS entity_kind
-                    FROM sm_entity_alias a
-                    JOIN sm_entity e ON e.entity_id = a.entity_id
-                    WHERE a.alias_norm = ?
-                    ORDER BY e.key ASC
+                           e.entity_key AS entity_key,
+                           e.entity_kind AS entity_kind
+                    FROM alias_matches e
+                    ORDER BY e.match_rank ASC, e.entity_key ASC
                     LIMIT ?
                     """
-                let rows = try Row.fetchAll(db, sql: sql, arguments: [normalized, capped])
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: sql,
+                    arguments: [
+                        normalized,
+                        prefixPattern,
+                        normalized,
+                        prefixPattern,
+                        wordPattern,
+                        capped,
+                    ]
+                )
                 return rows.compactMap { row in
                     guard let id: Int64 = row["entity_id"] else { return nil }
                     let key: String = row["entity_key"] ?? ""
@@ -213,6 +243,21 @@ package actor FTS5SearchEngine {
                 }
             }
         }
+    }
+
+    private static func escapedLikePattern(_ value: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(value.count)
+        for character in value {
+            switch character {
+            case "/", "%", "_":
+                escaped.append("/")
+                escaped.append(character)
+            default:
+                escaped.append(character)
+            }
+        }
+        return escaped
     }
 
     package func assertFact(

@@ -16,6 +16,41 @@ import Wax
     #expect(matches.map(\.key) == [EntityKey("person:alice")])
 }
 
+@Test func resolveEntitiesUsesDeterministicFuzzyAliasMatching() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:ada"),
+        kind: "person",
+        aliases: ["Ada"],
+        nowMs: 0
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:ada-lovelace"),
+        kind: "person",
+        aliases: ["Ada Lovelace"],
+        nowMs: 0
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:grace-hopper"),
+        kind: "person",
+        aliases: ["Grace Hopper"],
+        nowMs: 0
+    )
+
+    let prefixMatches = try await engine.resolveEntities(matchingAlias: "ada", limit: 10)
+    #expect(prefixMatches.map(\.key) == [
+        EntityKey("person:ada"),
+        EntityKey("person:ada-lovelace"),
+    ])
+
+    let wordMatches = try await engine.resolveEntities(matchingAlias: "hopper", limit: 10)
+    #expect(wordMatches.map(\.key) == [EntityKey("person:grace-hopper")])
+
+    let wildcardMatches = try await engine.resolveEntities(matchingAlias: "%", limit: 10)
+    #expect(wildcardMatches.isEmpty)
+}
+
 @Test func structuredMemoryRejectsInvalidEntityAndPredicateKeys() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     let overlong = String(repeating: "x", count: 4_097)
