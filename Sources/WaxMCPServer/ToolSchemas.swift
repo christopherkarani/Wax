@@ -671,6 +671,11 @@ enum ToolSchemas {
                 ],
                 "description": "Fact object value: primitive or typed object (entity, time_ms, data_base64).",
             ],
+            "relation": [
+                "type": "string",
+                "description": "Version relation for this assertion.",
+                "enum": ["sets", "updates", "extends", "retracts"],
+            ],
             "valid_from": [
                 "type": "integer",
                 "description": "Optional valid-from timestamp (ms since epoch).",

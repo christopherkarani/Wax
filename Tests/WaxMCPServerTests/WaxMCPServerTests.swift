@@ -211,6 +211,11 @@ func schemasExposeVectorSearchMode() {
 }
 
 @Test
+func factAssertSchemaExposesVersionRelation() {
+    #expect(schemaEnum(ToolSchemas.waxFactAssert, property: "relation") == ["sets", "updates", "extends", "retracts"])
+}
+
+@Test
 func toolsRejectUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
