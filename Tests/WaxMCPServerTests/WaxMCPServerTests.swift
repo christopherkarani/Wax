@@ -1141,6 +1141,20 @@ func mcpRejectsBrokerControlCommands() async throws {
 }
 
 @Test
+func hiddenFlushToolIsRejectedConsistently() async throws {
+    try await withMemory { memory in
+        for command in ["flush", "wax_flush"] {
+            let result = await WaxMCPTools.handleCall(
+                params: .init(name: command, arguments: [:]),
+                memory: memory
+            )
+            #expect(result.isError == true)
+            #expect(firstText(in: result).contains("Unknown tool"))
+        }
+    }
+}
+
+@Test
 func markdownProjectionMarkerEscapesCommentTerminators() throws {
     let marker = MarkdownProjectionMarker(
         sourceKind: "daily_note",
@@ -3389,7 +3403,7 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func legacyWaxFlushReportsRenameInsteadOfUnknownTool() async throws {
+    func legacyWaxFlushIsRejectedBecauseFlushIsNotPublished() async throws {
         let harness = try MCPServerProcessHarness()
         try harness.start()
         defer { harness.terminateIfNeeded() }
@@ -3402,8 +3416,7 @@ struct WaxMCPProcessTests {
             arguments: [:],
             timeout: 20
         )
-        #expect(flush.contains("tool_renamed"))
-        #expect(flush.contains("renamed to 'flush'"))
+        #expect(flush.contains("Unknown tool"))
     }
 
     @Test(.timeLimit(.minutes(1)))

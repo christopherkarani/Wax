@@ -107,7 +107,6 @@ private extension WaxMCPTools {
         case "wax_memory_health": return "memory_health"
         case "wax_knowledge_capture": return "knowledge_capture"
         case "wax_corpus_search": return "corpus_search"
-        case "wax_flush": return "flush"
         case "wax_stats": return "stats"
         case "wax_session_start": return "session_start"
         case "wax_session_resume": return "session_resume"
@@ -366,10 +365,8 @@ extension WaxMCPTools {
     ) async -> CallTool.Result {
         let sessionRegistry = await compatSessionRegistries.registry(for: memory)
         do {
-            let normalizedName = migratedName(for: params.name) ?? params.name.replacingOccurrences(of: "wax_", with: "")
-            if normalizedName != "flush" {
-                try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
-            }
+            let normalizedName = migratedName(for: params.name) ?? params.name
+            try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: normalizedName, arguments: params.arguments)
 
             switch normalizedName {

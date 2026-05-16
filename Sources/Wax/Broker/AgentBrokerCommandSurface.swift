@@ -14,7 +14,6 @@ package enum AgentBrokerCommandSurface {
         "memory_health": [],
         "knowledge_capture": ["content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object"],
         "corpus_search": ["query", "rebuild", "recursive", "mode", "alpha", "topK"],
-        "flush": [],
         "stats": [],
         "session_start": ["session_id", "agent_id", "run_id"],
         "session_resume": ["session_id", "agent_id", "run_id"],
@@ -32,6 +31,7 @@ package enum AgentBrokerCommandSurface {
     ]
 
     private static let controlCommandArguments: [String: Set<String>] = [
+        "flush": [],
         "shutdown": [],
         "exit": [],
         "quit": [],
