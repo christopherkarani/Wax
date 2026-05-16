@@ -196,6 +196,21 @@ func recallSchemaExposesLegacyTopKAlias() {
 }
 
 @Test
+func schemasExposeVectorSearchMode() {
+    let schemas = [
+        ToolSchemas.waxRecall,
+        ToolSchemas.waxSearch,
+        ToolSchemas.waxMemorySearch,
+        ToolSchemas.waxCorpusSearch,
+        ToolSchemas.waxCompactContext,
+    ]
+
+    for schema in schemas {
+        #expect(schemaEnum(schema, property: "mode") == ["text", "vector", "hybrid"])
+    }
+}
+
+@Test
 func toolsRejectUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
@@ -2097,6 +2112,29 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
 }
 
 @Test
+func compatibilitySearchAcceptsVectorMode() async throws {
+    try await withVectorMemory { memory in
+        try await memory.remember("Vector mode compatibility anchor")
+        try await memory.flush()
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": .string("Vector mode compatibility anchor"),
+                    "mode": .string("vector"),
+                    "topK": .int(5),
+                ]
+            ),
+            memory: memory
+        )
+
+        #expect(search.isError != true)
+        #expect(firstText(in: search).contains("Vector mode compatibility anchor"))
+    }
+}
+
+@Test
 func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-mcp-hang-remember-\(UUID().uuidString)")
@@ -2642,6 +2680,20 @@ private func schemaMaximum(_ schema: Value, property: String) -> Double? {
         return Double(value)
     default:
         return nil
+    }
+}
+
+private func schemaEnum(_ schema: Value, property: String) -> [String]? {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"],
+          case .object(let propertySchema)? = properties[property],
+          case .array(let values)? = propertySchema["enum"]
+    else {
+        return nil
+    }
+    return values.compactMap { value in
+        guard case .string(let raw) = value else { return nil }
+        return raw
     }
 }
 

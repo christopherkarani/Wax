@@ -133,6 +133,30 @@ private extension WaxMCPTools {
         return "execution_failed"
     }
 
+    static func compatSearchMode(modeRaw: String, alpha: Double?) throws -> MemoryOrchestrator.DirectSearchMode {
+        switch modeRaw {
+        case "text":
+            return .text
+        case "vector":
+            return .vector
+        case "hybrid":
+            return .hybrid(alpha: Float(alpha ?? 0.5))
+        default:
+            throw ToolValidationError.invalid("mode must be one of: text, vector, hybrid")
+        }
+    }
+
+    static func compatEmbeddingPolicy(for mode: MemoryOrchestrator.DirectSearchMode) -> MemoryOrchestrator.QueryEmbeddingPolicy {
+        switch mode {
+        case .text:
+            return .never
+        case .vector:
+            return .always
+        case .hybrid:
+            return .ifAvailable
+        }
+    }
+
     static func renderResult(name: String, payload: AgentBrokerValue) -> CallTool.Result {
         let mcpPayload = mcpValue(from: removingDisplayText(from: payload))
         let text = payload.objectValue?["display_text"]?.stringValue
@@ -791,12 +815,11 @@ private extension WaxMCPTools {
         guard (1...200).contains(effectiveTopK) else {
             throw ToolValidationError.invalid("search_top_k must be between 1 and 200")
         }
-        let mode = try args.optionalString("mode") ?? "hybrid"
-        guard mode == "text" || mode == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
-        let directMode: MemoryOrchestrator.DirectSearchMode = mode == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = mode == "text" ? .never : .ifAvailable
+        let directMode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "hybrid",
+            alpha: try args.optionalDouble("alpha")
+        )
+        let embeddingPolicy = compatEmbeddingPolicy(for: directMode)
         let execution = try await memory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
@@ -867,11 +890,10 @@ private extension WaxMCPTools {
         }
         let filters = try compatParseSearchFilters(args)
         try await compatValidateActiveSession(filters.sessionID, in: sessionRegistry)
-        let modeRaw = try args.optionalString("mode") ?? "text"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
-        let mode: MemoryOrchestrator.DirectSearchMode = modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
@@ -928,14 +950,14 @@ private extension WaxMCPTools {
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
-        let modeRaw = try args.optionalString("mode") ?? "text"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
 
         let execution = try await memory.searchExecution(
             query: query,
-            mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5)),
+            mode: mode,
             topK: topK,
             frameFilter: nil,
             timeRange: nil
@@ -1332,20 +1354,20 @@ private extension WaxMCPTools {
         try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let query = try args.requiredString("query")
         let limit = min(try args.optionalInt("max_items") ?? 6, 12)
-        let modeRaw = try args.optionalString("mode") ?? "hybrid"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "hybrid",
+            alpha: try args.optionalDouble("alpha")
+        )
         let frameFilter = sessionID.map {
             FrameFilter(metadataFilter: MetadataFilter(requiredEntries: ["session_id": $0.uuidString]))
         }
         let execution = try await memory.recallExecution(
             query: query,
-            embeddingPolicy: modeRaw == "text" ? .never : .ifAvailable,
+            embeddingPolicy: compatEmbeddingPolicy(for: mode),
             frameFilter: frameFilter,
             timeRange: nil,
             topK: limit,
-            mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
+            mode: mode
         )
         let documents = try await memory.corpusSourceDocuments()
         let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
@@ -1629,12 +1651,15 @@ private extension WaxMCPTools {
         let corpusStoreRaw = try args.optionalString("corpus_store_path") ?? "~/.wax/corpus.wax"
         let rebuild = try args.optionalBool("rebuild") ?? true
         let recursive = try args.optionalBool("recursive") ?? true
-        let modeRaw = try args.optionalString("mode") ?? "text"
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
         let topK = try args.optionalInt("topK") ?? 10
         guard (1...200).contains(topK) else {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
-        let corpusNoEmbedder = modeRaw == "text" ? true : noEmbedder
+        let corpusNoEmbedder = mode == .text ? true : noEmbedder
         let sessionsDirectoryURL = try MCPPathing.resolveDirectoryURL(sessionsDirRaw)
         let corpusStoreURL = try MCPPathing.resolveStoreURL(corpusStoreRaw)
         let buildSummary: CorpusBuildSummary?
@@ -1659,7 +1684,7 @@ private extension WaxMCPTools {
         ) { corpusMemory in
             try await corpusMemory.searchExecution(
                 query: query,
-                mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5)),
+                mode: mode,
                 topK: topK,
                 frameFilter: nil,
                 timeRange: nil

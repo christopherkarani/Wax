@@ -226,7 +226,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Optional search mode override for recall retrieval.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "alpha": [
                 "type": "number",
@@ -260,7 +260,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Search mode.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "topK": [
                 "type": "integer",
@@ -287,7 +287,7 @@ enum ToolSchemas {
             "query": ["type": "string", "description": "Search query text."],
             "topK": ["type": "integer", "description": "Max hit count. Default: 10.", "minimum": 1, "maximum": 200],
             "session_id": ["type": "string", "description": "Optional active session UUID for current working-memory retrieval."],
-            "mode": ["type": "string", "enum": ["text", "hybrid"]],
+            "mode": ["type": "string", "enum": ["text", "vector", "hybrid"]],
             "alpha": ["type": "number", "minimum": 0.0, "maximum": 1.0],
             "include_working": ["type": "boolean"],
             "include_episodic": ["type": "boolean"],
@@ -420,7 +420,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Search mode for the shared corpus.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "alpha": [
                 "type": "number",
@@ -580,7 +580,7 @@ enum ToolSchemas {
             "session_id": ["type": "string", "description": "Optional active session UUID."],
             "token_budget": ["type": "integer", "minimum": 128, "maximum": 32000],
             "max_items": ["type": "integer", "minimum": 1, "maximum": 64],
-            "mode": ["type": "string", "enum": ["text", "hybrid"]],
+            "mode": ["type": "string", "enum": ["text", "vector", "hybrid"]],
             "alpha": ["type": "number", "minimum": 0.0, "maximum": 1.0],
         ],
         required: ["query"]
