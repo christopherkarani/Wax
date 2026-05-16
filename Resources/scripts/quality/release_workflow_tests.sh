@@ -25,4 +25,12 @@ if grep -Fq 'sha256sum -c "$chk"' "$WORKFLOW"; then
   fail "publish job verifies basename-only checksum files from the repo root"
 fi
 
+if grep -Fq 'let serverVersion = "[0-9]' "$WORKFLOW"; then
+  fail "release workflow extracts the stale serverVersion literal instead of WaxMCPServerMetadata.version"
+fi
+
+if grep -Fq 's/let serverVersion\s*=' "$ROOT_DIR/scripts/release-waxmcp.sh" "$ROOT_DIR/Resources/scripts/release-waxmcp.sh"; then
+  fail "release scripts rewrite the stale serverVersion literal instead of WaxMCPServerMetadata.version"
+fi
+
 echo "release_workflow_tests: ok"

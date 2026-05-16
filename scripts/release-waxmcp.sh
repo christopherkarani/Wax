@@ -32,7 +32,7 @@ fi
 
 echo "-> Bump versions to $VERSION"
 perl -0pi -e 's/"version"\s*:\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
-perl -0pi -e 's/let serverVersion\s*=\s*"[^"]+"/let serverVersion = "'"$VERSION"'"/' "$SERVER_SWIFT"
+perl -0pi -e 's/static let version\s*=\s*"[^"]+"/static let version = "'"$VERSION"'"/' "$SERVER_SWIFT"
 
 echo "-> Build release binaries (darwin-arm64)"
 cd "$ROOT"

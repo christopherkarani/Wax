@@ -167,12 +167,12 @@ jobs:
           set -euo pipefail
           NPM_VERSION=$(node -p "require('./Resources/npm/waxmcp/package.json').version")
           echo "npm package version: $NPM_VERSION"
-          # Extract the hardcoded version from main.swift and compare
-          SWIFT_VERSION=$(grep -E 'let serverVersion = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/WaxMCPServer/main.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          # Extract the server metadata version from main.swift and compare
+          SWIFT_VERSION=$(grep -E 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/WaxMCPServer/main.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           echo "Swift server version: $SWIFT_VERSION"
           if [ "$NPM_VERSION" != "$SWIFT_VERSION" ]; then
             echo "ERROR: version mismatch — npm=$NPM_VERSION swift=$SWIFT_VERSION"
-            echo "Update 'serverVersion' in Sources/WaxMCPServer/main.swift to match Resources/npm/waxmcp/package.json"
+            echo "Update 'WaxMCPServerMetadata.version' in Sources/WaxMCPServer/main.swift to match Resources/npm/waxmcp/package.json"
             exit 1
           fi
           echo "Version consistency check passed: $NPM_VERSION"
