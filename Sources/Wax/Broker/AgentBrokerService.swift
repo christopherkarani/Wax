@@ -93,6 +93,10 @@ package actor AgentBrokerService {
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
         do {
             let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            try AgentBrokerCommandSurface.validateArgumentSurface(
+                command: command,
+                providedKeys: Set(request.arguments.keys)
+            )
             let payload: AgentBrokerValue
             let shouldExit: Bool
 

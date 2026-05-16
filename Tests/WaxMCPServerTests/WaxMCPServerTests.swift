@@ -215,6 +215,26 @@ func toolsRejectUnknownTopLevelArguments() async throws {
 }
 
 @Test
+func brokerRejectsUnknownTopLevelArguments() async throws {
+    try await withAgentBrokerService { service, _ in
+        let response = await service.handle(
+            AgentBrokerRequest(
+                command: "recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "limit": .int(3),
+                    "unexpected": .string("boom"),
+                ]
+            )
+        )
+
+        #expect(response.ok == false)
+        #expect(response.error?.contains("unsupported argument") == true)
+        #expect(response.error?.contains("unexpected") == true)
+    }
+}
+
+@Test
 func corpusSearchRejectsUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
@@ -1047,6 +1067,20 @@ func unknownToolReturnsErrorResult() async throws {
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("Unknown tool"))
+    }
+}
+
+@Test
+func mcpRejectsBrokerControlCommands() async throws {
+    try await withMemory { memory in
+        for command in ["shutdown", "exit", "quit"] {
+            let result = await WaxMCPTools.handleCall(
+                params: .init(name: command, arguments: [:]),
+                memory: memory
+            )
+            #expect(result.isError == true)
+            #expect(firstText(in: result).contains("Unknown tool"))
+        }
     }
 }
 
