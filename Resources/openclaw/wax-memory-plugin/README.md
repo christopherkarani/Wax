@@ -26,13 +26,13 @@ What still needs to happen in a consuming OpenClaw deployment is installing the 
 Run Wax as a long-lived HTTP MCP service:
 
 ```bash
-wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+waxmcp mcp serve --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
 ```
 
 Or use stdio when OpenClaw is colocated with the Wax process:
 
 ```bash
-wax-mcp --no-embedder
+waxmcp mcp serve --no-embedder
 ```
 
 ## Publish

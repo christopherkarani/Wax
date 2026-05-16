@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 WAXMCP_PACKAGE="$ROOT_DIR/Resources/npm/waxmcp/package.json"
 WAXMCP_VERIFY="$ROOT_DIR/Resources/npm/waxmcp/scripts/verify-dist.mjs"
 OPENCLAW_PACKAGE="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/package.json"
+OPENCLAW_PLUGIN="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/openclaw.plugin.json"
 OPENCLAW_DIST="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/dist/index.js"
 OPENCLAW_SRC="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/src/index.ts"
 fail() {
@@ -28,9 +29,14 @@ const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 if (!pkg.files?.includes("dist")) process.exit(1);
 if (pkg.files?.includes("src")) process.exit(2);
 if (!pkg.openclaw?.extensions?.includes("./dist/index.js")) process.exit(3);
+if (pkg.dependencies?.waxmcp !== pkg.version) process.exit(4);
 ' "$OPENCLAW_PACKAGE" || fail "OpenClaw package must publish built JS instead of TypeScript source"
 
 [[ -f "$OPENCLAW_DIST" ]] || fail "OpenClaw dist/index.js is missing"
 [[ -f "$OPENCLAW_SRC" ]] || fail "OpenClaw source file should remain for maintainers"
+grep -Fq 'command: api.pluginConfig?.command ?? "waxmcp"' "$OPENCLAW_DIST" \
+  || fail "OpenClaw runtime must default to the waxmcp launcher"
+grep -Fq '"placeholder": "waxmcp"' "$OPENCLAW_PLUGIN" \
+  || fail "OpenClaw plugin metadata must not suggest unavailable wax-mcp command"
 
 echo "package_artifact_tests: ok"
