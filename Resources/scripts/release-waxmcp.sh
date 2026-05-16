@@ -15,24 +15,12 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PKG_JSON="$ROOT/Resources/npm/waxmcp/package.json"
-SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
 DIST_DIR="$ROOT/Resources/npm/waxmcp/dist/darwin-arm64"
 BUILD_DIR="$ROOT/.build/arm64-apple-macosx/release"
 
-if [[ ! -f "$PKG_JSON" ]]; then
-  echo "error: missing $PKG_JSON" >&2
-  exit 2
-fi
-
-if [[ ! -f "$SERVER_SWIFT" ]]; then
-  echo "error: missing $SERVER_SWIFT" >&2
-  exit 2
-fi
-
 echo "-> Bump versions to $VERSION"
-perl -0pi -e 's/"version"\s*:\s*"[^"]+"/"version": "'"$VERSION"'"/' "$PKG_JSON"
-perl -0pi -e 's/static let version\s*=\s*"[^"]+"/static let version = "'"$VERSION"'"/' "$SERVER_SWIFT"
+RELEASE_VERSION="$("$ROOT/Resources/scripts/sync-waxmcp-version.sh" "$VERSION")"
+echo "-> Release version $RELEASE_VERSION"
 
 echo "-> Build release binaries (darwin-arm64)"
 cd "$ROOT"

@@ -32,6 +32,20 @@ jobs:
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set release version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            ./Resources/scripts/sync-waxmcp-version.sh "${VERSION}"
+          else
+            ./Resources/scripts/sync-waxmcp-version.sh "${GITHUB_REF_NAME#waxmcp-v}"
+          fi
+        env:
+          VERSION: ${{ inputs.version }}
 
       - name: Build binaries
         if: ${{ matrix.source_build }}
@@ -116,14 +130,12 @@ jobs:
           path: Resources/npm/waxmcp/dist/darwin-arm64
 
       - name: Set package version
-        working-directory: Resources/npm/waxmcp
         run: |
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            ./Resources/scripts/sync-waxmcp-version.sh "${VERSION}"
           else
-            VERSION="${GITHUB_REF_NAME#waxmcp-v}"
-            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            ./Resources/scripts/sync-waxmcp-version.sh "${GITHUB_REF_NAME#waxmcp-v}"
           fi
         env:
           VERSION: ${{ inputs.version }}
