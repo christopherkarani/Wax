@@ -17,6 +17,11 @@ do
   fi
 done
 
+if grep -Fq 'catch {' "$ROOT_DIR/Tests/WaxIntegrationTests/MiniLMResourceFailureTests.swift" \
+  && grep -Fq '#expect(Bool(true))' "$ROOT_DIR/Tests/WaxIntegrationTests/MiniLMResourceFailureTests.swift"; then
+  fail "MiniLM resource failure tests must assert the specific thrown error"
+fi
+
 grep -Fq '@Test(.disabled(' "$ROOT_DIR/Tests/WaxIntegrationTests/MiniLMEmbedderTests.swift" \
   && grep -Fq 'ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1"' "$ROOT_DIR/Tests/WaxIntegrationTests/MiniLMEmbedderTests.swift" \
   || fail "MiniLM embedder inference tests must use explicit disabled metadata"
