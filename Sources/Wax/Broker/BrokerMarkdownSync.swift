@@ -79,13 +79,13 @@ package struct MarkdownSyncReport: Sendable, Equatable {
 
 package enum BrokerMarkdownSync {
     private static let markerPrefix = "<!-- wax:"
+    private static let base64MarkerPrefix = "b64:"
 
     package static func markerComment(_ marker: MarkdownProjectionMarker) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = (try? encoder.encode(marker)) ?? Data("{}".utf8)
-        let json = String(decoding: data, as: UTF8.self)
-        return "\(markerPrefix)\(json) -->"
+        return "\(markerPrefix)\(base64MarkerPrefix)\(data.base64EncodedString()) -->"
     }
 
     package static func parseFile(at url: URL) throws -> [MarkdownProjectionEntry] {
@@ -152,7 +152,13 @@ package enum BrokerMarkdownSync {
 
         let markerText = line[range.upperBound..<endRange.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
         line = String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = markerText.data(using: .utf8) else { return nil }
+        let data: Data?
+        if markerText.hasPrefix(base64MarkerPrefix) {
+            data = Data(base64Encoded: String(markerText.dropFirst(base64MarkerPrefix.count)))
+        } else {
+            data = markerText.data(using: .utf8)
+        }
+        guard let data else { return nil }
         return try? JSONDecoder().decode(MarkdownProjectionMarker.self, from: data)
     }
 }

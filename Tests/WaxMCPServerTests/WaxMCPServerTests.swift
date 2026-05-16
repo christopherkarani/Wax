@@ -1126,6 +1126,26 @@ func mcpRejectsBrokerControlCommands() async throws {
 }
 
 @Test
+func markdownProjectionMarkerEscapesCommentTerminators() throws {
+    let marker = MarkdownProjectionMarker(
+        sourceKind: "daily_note",
+        frameID: 7,
+        memoryID: "durable:7",
+        hash: "hash-->break",
+        dateKey: "2026-05-17-->escape"
+    )
+
+    let comment = BrokerMarkdownSync.markerComment(marker)
+    let payloadEnd = comment.index(comment.endIndex, offsetBy: -4)
+    #expect(!comment[..<payloadEnd].contains("-->"))
+
+    let parsed = BrokerMarkdownSync.parse(text: "- safe line \(comment)")
+    #expect(parsed.count == 1)
+    #expect(parsed[0].text == "safe line")
+    #expect(parsed[0].marker == marker)
+}
+
+@Test
 func sessionStartEndAndScopedRecallSearchWork() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
