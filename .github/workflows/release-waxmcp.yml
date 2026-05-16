@@ -51,15 +51,26 @@ jobs:
           PLATFORM_DIR="Resources/npm/waxmcp/dist/${{ matrix.platform }}"
           test -f "$PLATFORM_DIR/wax-cli"
           test -f "$PLATFORM_DIR/wax-cli.sha256"
-          if command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 -c "$PLATFORM_DIR/wax-cli.sha256"
-          else
-            sha256sum -c "$PLATFORM_DIR/wax-cli.sha256"
-          fi
+          (
+            cd "$PLATFORM_DIR"
+            if command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 -c wax-cli.sha256
+            else
+              sha256sum -c wax-cli.sha256
+            fi
+          )
           # Verify wax-mcp binary exists (for source builds)
           if [[ "${{ matrix.source_build }}" == "true" ]]; then
             test -f "$PLATFORM_DIR/wax-mcp"
             test -f "$PLATFORM_DIR/wax-mcp.sha256"
+            (
+              cd "$PLATFORM_DIR"
+              if command -v shasum >/dev/null 2>&1; then
+                shasum -a 256 -c wax-mcp.sha256
+              else
+                sha256sum -c wax-mcp.sha256
+              fi
+            )
           fi
           test -d "$PLATFORM_DIR/Wax_WaxVectorSearchMiniLM.bundle"
           echo "MiniLM bundle present"
@@ -139,11 +150,14 @@ jobs:
             for bin in wax-cli wax-mcp; do
               chk="Resources/npm/waxmcp/dist/$arch/$bin.sha256"
               if [[ -f "$chk" ]]; then
-                if command -v shasum >/dev/null 2>&1; then
-                  shasum -a 256 -c "$chk"
-                else
-                  sha256sum -c "$chk"
-                fi
+                (
+                  cd "Resources/npm/waxmcp/dist/$arch"
+                  if command -v shasum >/dev/null 2>&1; then
+                    shasum -a 256 -c "$bin.sha256"
+                  else
+                    sha256sum -c "$bin.sha256"
+                  fi
+                )
               fi
             done
           done
