@@ -96,7 +96,9 @@ Restart the OpenClaw gateway after changing plugin config.
 - `package.json`
   Publishable native OpenClaw package metadata.
 - `src/index.ts`
-  Entry showing the `registerMemoryCapability` hook.
+  Source for the `registerMemoryCapability` hook.
+- `dist/index.js`
+  Publishable JavaScript entry used by OpenClaw.
 
 ## OpenClaw Notes
 
