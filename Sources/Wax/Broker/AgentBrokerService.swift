@@ -1893,9 +1893,12 @@ extension AgentBrokerService {
             .sorted { lhs, rhs in
                 if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                 return lhs.frameId > rhs.frameId
-            }
+        }
         for document in managedDailyNotes {
-            let dateKey = document.metadata[MemoryMetadataKeys.sourceDate] ?? Self.dayString(fromMs: document.timestampMs)
+            let dateKey = Self.safeMarkdownDailyDateKey(
+                document.metadata[MemoryMetadataKeys.sourceDate],
+                fallbackMs: document.timestampMs
+            )
             let marker = marker(for: document, kind: .dailyNote, dateKey: dateKey)
             dailyNotesByDate[dateKey, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
         }
@@ -2431,6 +2434,17 @@ extension AgentBrokerService {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000))
+    }
+
+    static func safeMarkdownDailyDateKey(_ rawValue: String?, fallbackMs: Int64) -> String {
+        guard let rawValue else {
+            return dayString(fromMs: fallbackMs)
+        }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
+            return dayString(fromMs: fallbackMs)
+        }
+        return trimmed
     }
 
     static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID?, frameID: UInt64) -> String {

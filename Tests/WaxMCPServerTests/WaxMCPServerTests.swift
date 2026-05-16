@@ -1146,6 +1146,48 @@ func markdownProjectionMarkerEscapesCommentTerminators() throws {
 }
 
 @Test
+func markdownExportSanitizesDailySourceDateFilenames() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-source-date-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Daily note source date must not escape the projection directory."),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+                "metadata": .object([
+                    MemoryMetadataKeys.sourceKind: .string(MarkdownProjectionKind.dailyNote.rawValue),
+                    MemoryMetadataKeys.sourceDate: .string("../escape"),
+                ]),
+            ]
+        ))
+        #expect(remember.ok == true)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(export.ok == true)
+        let payload = try #require(export.payload?.objectValue)
+        let dailyPaths = try #require(payload["daily_note_paths"]?.arrayValue)
+        let escapedURL = rootURL.appendingPathComponent("escape.md")
+        #expect(!FileManager.default.fileExists(atPath: escapedURL.path))
+
+        let memoryDir = rootURL.appendingPathComponent("memory", isDirectory: true).standardizedFileURL
+        for pathValue in dailyPaths {
+            let path = try #require(pathValue.stringValue)
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            #expect(url.deletingLastPathComponent() == memoryDir)
+            #expect(!url.lastPathComponent.contains("/"))
+            #expect(!url.lastPathComponent.contains(".."))
+        }
+    }
+}
+
+@Test
 func sessionStartEndAndScopedRecallSearchWork() async throws {
     try await withMemory { memory in
         let start = await WaxMCPTools.handleCall(
