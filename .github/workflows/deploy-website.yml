@@ -1,6 +1,10 @@
 name: Deploy Website to GitHub Pages
 
 on:
+  pull_request:
+    paths:
+      - 'Resources/website/**'
+      - '.github/workflows/deploy-website.yml'
   push:
     branches: [main]
     paths:
@@ -46,6 +50,7 @@ jobs:
           path: Resources/website/build
 
   deploy:
+    if: ${{ github.event_name != 'pull_request' }}
     needs: build
     runs-on: ubuntu-latest
     environment:
