@@ -4,21 +4,23 @@ import Testing
 #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
 
-private func isMiniLMInferenceEnabled() -> Bool {
-    ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1"
-}
-
 @available(macOS 15.0, iOS 18.0, *)
-@Test func miniLMEmbedderProducesExpectedDimensions() async throws {
-    guard isMiniLMInferenceEnabled() else { return }
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+))
+func miniLMEmbedderProducesExpectedDimensions() async throws {
     let embedder = try MiniLMEmbedder()
     let vector = try await embedder.embed("hello world")
     #expect(vector.count == embedder.dimensions)
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-@Test func miniLMEmbedderBatchMatchesSingle() async throws {
-    guard isMiniLMInferenceEnabled() else { return }
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+))
+func miniLMEmbedderBatchMatchesSingle() async throws {
     let embedder = try MiniLMEmbedder()
     let texts = ["hello world", "wax is fast"]
     let singleA = try await embedder.embed(texts[0])
@@ -33,8 +35,11 @@ private func isMiniLMInferenceEnabled() -> Bool {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-@Test func miniLMEmbedderConfigurableBatchSizeWorks() async throws {
-    guard isMiniLMInferenceEnabled() else { return }
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+))
+func miniLMEmbedderConfigurableBatchSizeWorks() async throws {
     let config = MiniLMEmbedder.Config(batchSize: 4)
     let embedder = try MiniLMEmbedder(config: config)
     let texts = ["a", "b", "c", "d", "e"]
@@ -46,8 +51,11 @@ private func isMiniLMInferenceEnabled() -> Bool {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-@Test func miniLMEmbedderPrewarmDoesNotThrow() async throws {
-    guard isMiniLMInferenceEnabled() else { return }
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+))
+func miniLMEmbedderPrewarmDoesNotThrow() async throws {
     let embedder = try MiniLMEmbedder()
     try await embedder.prewarm()
 }

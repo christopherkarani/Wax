@@ -68,10 +68,6 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     return denom == 0 ? 0 : (dot / denom)
 }
 
-private func isMiniLMInferenceEnabled() -> Bool {
-    ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1"
-}
-
 @Test func minilmBundledModelDoesNotUseKnownBadW8A8Quantization() throws {
     let mil = try MiniLMAssetLoader.modelMIL()
 
@@ -86,8 +82,11 @@ private func isMiniLMInferenceEnabled() -> Bool {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-@Test func minilmEmbeddingsStayCloseToBaseline() async throws {
-    guard isMiniLMInferenceEnabled() else { return }
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM inference quality tests"
+))
+func minilmEmbeddingsStayCloseToBaseline() async throws {
     let fixture = try BaselineFixtureLoader.load()
     #expect(fixture.dimensions == 384)
     #expect(!fixture.sentences.isEmpty)
@@ -115,11 +114,11 @@ private func isMiniLMInferenceEnabled() -> Bool {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-@Test func generateMiniLMBaselineFixture() async throws {
-    guard ProcessInfo.processInfo.environment["WAX_GENERATE_MINILM_FIXTURES"] == "1" else {
-        return
-    }
-
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_GENERATE_MINILM_FIXTURES"] != "1",
+    "Set WAX_GENERATE_MINILM_FIXTURES=1 to regenerate MiniLM baseline fixtures"
+))
+func generateMiniLMBaselineFixture() async throws {
     let sentences = [
         "Swift concurrency makes structured parallelism practical.",
         "Vector search underpins modern retrieval-augmented generation.",
