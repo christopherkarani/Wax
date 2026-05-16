@@ -227,6 +227,7 @@ package actor FTS5SearchEngine {
         try StructuredMemoryValidation.validateEntityKey(subject, field: "fact subject")
         try StructuredMemoryValidation.validatePredicateKey(predicate, field: "fact predicate")
         try StructuredMemoryValidation.validateFactValue(object)
+        try StructuredMemoryValidation.validateEvidence(evidence)
         guard valid.toMs == nil || valid.toMs! > valid.fromMs else {
             throw WaxError.encodingError(reason: "valid_to_ms must be greater than valid_from_ms")
         }

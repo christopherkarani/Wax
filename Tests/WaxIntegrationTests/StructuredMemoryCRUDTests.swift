@@ -65,6 +65,80 @@ import Wax
     }
 }
 
+@Test func assertFactRejectsInvalidEvidence() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let invalidEvidence = [
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: -1..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 0.5,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 4..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 0.5,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: -0.1,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 1.1,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: .nan,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: .infinity,
+            assertedAtMs: 10
+        ),
+    ]
+
+    for evidence in invalidEvidence {
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey("status"),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 10, toMs: nil),
+                evidence: [evidence]
+            )
+        }
+    }
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(
