@@ -1737,6 +1737,29 @@ private extension WaxMCPTools {
         case .double(let double):
             return .double(double)
         case .object(let object):
+            if object.count == 2,
+               case .string(let type)? = object["type"],
+               let genericValue = object["value"] {
+                switch type {
+                case "entity":
+                    guard case .string(let raw) = genericValue else {
+                        throw ToolValidationError.invalid("entity typed object value must be a string")
+                    }
+                    return .entity(EntityKey(raw))
+                case "time_ms":
+                    guard case .int(let raw) = genericValue else {
+                        throw ToolValidationError.invalid("time_ms typed object value must be an integer")
+                    }
+                    return .timeMs(Int64(raw))
+                case "data_base64":
+                    guard case .string(let raw) = genericValue, let decoded = Data(base64Encoded: raw) else {
+                        throw ToolValidationError.invalid("data_base64 typed object value must be a base64 string")
+                    }
+                    return .data(decoded)
+                default:
+                    throw ToolValidationError.invalid("typed object type must be one of: entity, time_ms, data_base64")
+                }
+            }
             if let entity = object["entity"], case .string(let raw) = entity, object.count == 1 {
                 return .entity(EntityKey(raw))
             }

@@ -662,8 +662,41 @@ enum ToolSchemas {
                     [
                         "type": "object",
                         "properties": [
-                            "type": ["type": "string"],
-                            "value": .object([:]),
+                            "type": [
+                                "type": "string",
+                                "enum": ["entity"],
+                            ],
+                            "value": [
+                                "type": "string",
+                            ],
+                        ],
+                        "required": ["type", "value"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": [
+                                "type": "string",
+                                "enum": ["time_ms"],
+                            ],
+                            "value": [
+                                "type": "integer",
+                            ],
+                        ],
+                        "required": ["type", "value"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": [
+                                "type": "string",
+                                "enum": ["data_base64"],
+                            ],
+                            "value": [
+                                "type": "string",
+                            ],
                         ],
                         "required": ["type", "value"],
                         "additionalProperties": false,

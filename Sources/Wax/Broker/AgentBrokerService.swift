@@ -2260,6 +2260,29 @@ extension AgentBrokerService {
         case .double(let raw):
             return .double(raw)
         case .object(let raw):
+            if raw.count == 2,
+               let type = raw["type"]?.stringValue,
+               let genericValue = raw["value"] {
+                switch type {
+                case "entity":
+                    guard let entity = genericValue.stringValue else {
+                        throw BrokerValidationError.invalid("entity typed object value must be a string")
+                    }
+                    return .entity(EntityKey(entity))
+                case "time_ms":
+                    guard let time = genericValue.intValue else {
+                        throw BrokerValidationError.invalid("time_ms typed object value must be an integer")
+                    }
+                    return .timeMs(time)
+                case "data_base64":
+                    guard let data = genericValue.stringValue, let decoded = Data(base64Encoded: data) else {
+                        throw BrokerValidationError.invalid("data_base64 typed object value must be a base64 string")
+                    }
+                    return .data(decoded)
+                default:
+                    throw BrokerValidationError.invalid("typed object type must be one of: entity, time_ms, data_base64")
+                }
+            }
             if let entity = raw["entity"]?.stringValue, raw.count == 1 {
                 return .entity(EntityKey(entity))
             }

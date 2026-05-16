@@ -336,6 +336,110 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
 }
 
 @Test
+func factAssertAcceptsPublishedGenericTypedObjects() async throws {
+    try await withMemory { memory in
+        let encoded = Data("opaque bytes".utf8).base64EncodedString()
+        let cases: [(predicate: String, object: Value, expected: String)] = [
+            (
+                "owner",
+                .object(["type": .string("entity"), "value": .string("agent:codex")]),
+                #""entity":"agent:codex""#
+            ),
+            (
+                "seen_at",
+                .object(["type": .string("time_ms"), "value": .int(123)]),
+                #""time_ms":123"#
+            ),
+            (
+                "payload",
+                .object(["type": .string("data_base64"), "value": .string(encoded)]),
+                #""data_base64":"\#(encoded)""#
+            ),
+        ]
+
+        for testCase in cases {
+            let result = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "fact_assert",
+                    arguments: [
+                        "subject": .string("project:wax"),
+                        "predicate": .string(testCase.predicate),
+                        "object": testCase.object,
+                    ]
+                ),
+                memory: memory
+            )
+            #expect(result.isError != true)
+
+            let query = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "facts_query",
+                    arguments: [
+                        "subject": .string("project:wax"),
+                        "predicate": .string(testCase.predicate),
+                    ]
+                ),
+                memory: memory
+            )
+            #expect(query.isError != true)
+            #expect(firstText(in: query).contains(testCase.expected))
+        }
+    }
+}
+
+@Test
+func brokerFactAssertAcceptsPublishedGenericTypedObjects() async throws {
+    try await withAgentBrokerService { service, _ in
+        let encoded = Data("opaque bytes".utf8).base64EncodedString()
+        let cases: [(predicate: String, object: AgentBrokerValue, expectedKey: String, expectedValue: AgentBrokerValue)] = [
+            (
+                "owner",
+                .object(["type": .string("entity"), "value": .string("agent:codex")]),
+                "entity",
+                .string("agent:codex")
+            ),
+            (
+                "seen_at",
+                .object(["type": .string("time_ms"), "value": .int(123)]),
+                "time_ms",
+                .int(123)
+            ),
+            (
+                "payload",
+                .object(["type": .string("data_base64"), "value": .string(encoded)]),
+                "data_base64",
+                .string(encoded)
+            ),
+        ]
+
+        for testCase in cases {
+            let asserted = await service.handle(.init(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string(testCase.predicate),
+                    "object": testCase.object,
+                ]
+            ))
+            #expect(asserted.ok == true)
+
+            let queried = await service.handle(.init(
+                command: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string(testCase.predicate),
+                ]
+            ))
+            #expect(queried.ok == true)
+            let payload = try #require(queried.payload?.objectValue)
+            let facts = try #require(payload["hits"]?.arrayValue)
+            let firstFact = try #require(facts.first?.objectValue)
+            #expect(firstFact["object"]?.objectValue?[testCase.expectedKey] == testCase.expectedValue)
+        }
+    }
+}
+
+@Test
 func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
     try await withMemory { memory in
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
