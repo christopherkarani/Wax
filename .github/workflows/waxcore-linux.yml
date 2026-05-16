@@ -12,6 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
       - name: Install Linux codec dependencies
         run: |
           sudo apt-get update
@@ -19,6 +24,15 @@ jobs:
 
       - name: Build WaxCore target
         run: swift build --target WaxCore -Xswiftc -DGRDBCUSTOMSQLITE
+
+      - name: Build Wax product
+        run: swift build --product Wax -Xswiftc -DGRDBCUSTOMSQLITE
+
+      - name: Build wax-cli product
+        run: swift build --product wax-cli --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE
+
+      - name: Build wax-mcp product
+        run: swift build --product wax-mcp --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE
 
       - name: Run WaxCore tests
         run: swift test --filter WaxCoreTests -Xswiftc -DGRDBCUSTOMSQLITE
