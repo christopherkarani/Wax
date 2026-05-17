@@ -92,10 +92,8 @@ func minilmEmbeddingsStayCloseToBaseline() async throws {
     #expect(!fixture.sentences.isEmpty)
     #expect(fixture.sentences.count == fixture.embeddings.count)
 
-    let model = try MiniLMEmbeddings()
-    guard let freshEmbeddings = try await model.encode(batch: fixture.sentences) else {
-        throw TestingError("MiniLM produced no embeddings")
-    }
+    let embedder = try MiniLMEmbedder()
+    let freshEmbeddings = try await embedder.embed(batch: fixture.sentences)
     #expect(freshEmbeddings.count == fixture.embeddings.count)
 
     var similarities: [Float] = []
@@ -130,10 +128,8 @@ func generateMiniLMBaselineFixture() async throws {
         "On-device inference keeps user data private."
     ]
 
-    let model = try MiniLMEmbeddings()
-    guard let embeddings = try await model.encode(batch: sentences) else {
-        throw TestingError("MiniLM produced no embeddings")
-    }
+    let embedder = try MiniLMEmbedder()
+    let embeddings = try await embedder.embed(batch: sentences)
 
     let fixture = BaselineEmbeddingFixture(
         sentences: sentences,
