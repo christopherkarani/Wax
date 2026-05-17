@@ -56,7 +56,7 @@ package struct MarkdownProjectionEntry: Sendable, Equatable {
 
     package var isManagedImportCandidate: Bool {
         guard !text.isEmpty else { return false }
-        return marker?.managed ?? true
+        return marker?.managed == true
     }
 }
 

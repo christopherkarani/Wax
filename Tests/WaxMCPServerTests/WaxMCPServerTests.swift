@@ -3128,11 +3128,18 @@ func brokerMarkdownSyncRejectsSecretLikeDurableMemoryImports() async throws {
             .appendingPathComponent("wax-markdown-secret-sync-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        let secret = "api_key=12345678901234567890"
+        let marker = MarkdownProjectionMarker(
+            sourceKind: MarkdownProjectionKind.memory.rawValue,
+            hash: AgentBrokerService.stableHash(secret),
+            memoryType: MemoryType.fact.rawValue,
+            durability: MemoryDurability.durable.rawValue
+        )
         try """
         # MEMORY
 
         ## fact
-        - api_key=12345678901234567890
+        - \(secret) \(BrokerMarkdownSync.markerComment(marker))
         """.write(to: memoryURL, atomically: true, encoding: .utf8)
 
         let response = await service.handle(.init(
@@ -3152,11 +3159,18 @@ func brokerMarkdownSyncDryRunRejectsSecretLikeDurableMemoryImports() async throw
             .appendingPathComponent("wax-markdown-secret-dry-run-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        let secret = "api_key=12345678901234567890"
+        let marker = MarkdownProjectionMarker(
+            sourceKind: MarkdownProjectionKind.memory.rawValue,
+            hash: AgentBrokerService.stableHash(secret),
+            memoryType: MemoryType.fact.rawValue,
+            durability: MemoryDurability.durable.rawValue
+        )
         try """
         # MEMORY
 
         ## fact
-        - api_key=12345678901234567890
+        - \(secret) \(BrokerMarkdownSync.markerComment(marker))
         """.write(to: memoryURL, atomically: true, encoding: .utf8)
 
         let response = await service.handle(.init(
@@ -3169,6 +3183,88 @@ func brokerMarkdownSyncDryRunRejectsSecretLikeDurableMemoryImports() async throw
 
         #expect(response.ok == false)
         #expect((response.error ?? "").contains("Refusing to store durable memory containing secret-like content"))
+    }
+}
+
+@Test
+func brokerMarkdownSyncIgnoresMarkerlessMemoryBullets() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-markerless-memory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        let markerless = "Markerless F185 memory bullet \(UUID().uuidString)"
+        try """
+        # MEMORY
+
+        ## fact
+        - \(markerless)
+        """.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true)
+        let payload = try #require(sync.payload?.objectValue)
+        let counts = try #require(payload["counts"]?.objectValue)
+        #expect(counts["created"]?.intValue == 0)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(markerless),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true)
+        let searchPayload = try #require(search.payload?.objectValue)
+        let results = try #require(searchPayload["results"]?.arrayValue)
+        #expect(!results.contains { result in
+            result.objectValue?["preview"]?.stringValue?.contains(markerless) == true
+        })
+    }
+}
+
+@Test
+func brokerMarkdownSyncIgnoresMarkerlessDailyNoteBullets() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-markerless-daily-\(UUID().uuidString)", isDirectory: true)
+        let memoryDir = rootURL.appendingPathComponent("memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memoryDir, withIntermediateDirectories: true)
+        let dailyURL = memoryDir.appendingPathComponent("2026-05-17.md")
+        let markerless = "Markerless F185 daily bullet \(UUID().uuidString)"
+        try """
+        # 2026-05-17
+
+        - \(markerless)
+        """.write(to: dailyURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true)
+        let payload = try #require(sync.payload?.objectValue)
+        let counts = try #require(payload["counts"]?.objectValue)
+        #expect(counts["created"]?.intValue == 0)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(markerless),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true)
+        let searchPayload = try #require(search.payload?.objectValue)
+        let results = try #require(searchPayload["results"]?.arrayValue)
+        #expect(!results.contains { result in
+            result.objectValue?["preview"]?.stringValue?.contains(markerless) == true
+        })
     }
 }
 
@@ -5791,8 +5887,17 @@ struct WaxMCPProcessTests {
         )
         try memoryText.write(toFile: memoryPath, atomically: true, encoding: .utf8)
 
+        let importedDailyText = "Imported daily note anchor."
+        let dailyDateKey = URL(fileURLWithPath: dailyPath).deletingPathExtension().lastPathComponent
+        let dailyMarker = MarkdownProjectionMarker(
+            sourceKind: MarkdownProjectionKind.dailyNote.rawValue,
+            hash: AgentBrokerService.stableHash(importedDailyText),
+            memoryType: MemoryType.note.rawValue,
+            durability: MemoryDurability.working.rawValue,
+            dateKey: dailyDateKey
+        )
         var dailyText = try String(contentsOfFile: dailyPath, encoding: .utf8)
-        dailyText.append("\n- Imported daily note anchor.\n")
+        dailyText.append("\n- \(importedDailyText) \(BrokerMarkdownSync.markerComment(dailyMarker))\n")
         try dailyText.write(toFile: dailyPath, atomically: true, encoding: .utf8)
 
         var dreamsText = try String(contentsOfFile: dreamsPath, encoding: .utf8)
