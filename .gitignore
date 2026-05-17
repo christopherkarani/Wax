@@ -52,3 +52,6 @@ Resources/docs/plans/
 Resources/skills/internal/
 Package.resolved
 **/Package.resolved
+.build-codex/
+.playwright-mcp/
+.qwen/

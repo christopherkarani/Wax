@@ -3,7 +3,7 @@
 //  Wax
 //
 //  Metal-accelerated vector search engine using GPU compute shaders.
-//  Provides drop-in replacement for USearchVectorEngine with cosine similarity.
+//  Provides Metal-backed cosine similarity search.
 //
 //  Zero-Copy Optimization:
 //  - Stores vectors directly in MTLBuffer (Unified Memory) to avoid CPU-RAM duplication.

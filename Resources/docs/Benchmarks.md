@@ -101,7 +101,7 @@
 | Search Type | Avg (s) | Std Dev |
 |---|---|---|
 | Text (FTS5) | **0.101** | 1.9% |
-| Vector (USearch/Metal) | **0.103** | 1.2% |
+| Vector (Accelerate/MetalANNS) | **0.103** | 1.2% |
 | Token Counting | **0.101** | 1.9% |
 | Orchestrator Recall | **0.103** | 2.5% |
 

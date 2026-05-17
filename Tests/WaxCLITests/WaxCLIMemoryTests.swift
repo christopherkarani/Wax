@@ -9,6 +9,12 @@ import Darwin
 import Glibc
 #endif
 
+#if MCPServer
+private let mcpServerTraitEnabled = true
+#else
+private let mcpServerTraitEnabled = false
+#endif
+
 @Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
 
@@ -1100,7 +1106,9 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains(#""committed" : false"#))
     }
 
-    @Test func mcpDoctorRecognizesRenamedToolSurface() throws {
+    @Test(.disabled(if: !mcpServerTraitEnabled,
+                    "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
+    func mcpDoctorRecognizesRenamedToolSurface() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-doctor-\(UUID().uuidString)", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("doctor.wax")
@@ -1125,7 +1133,9 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains("Doctor passed."))
     }
 
-    @Test func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() throws {
+    @Test(.disabled(if: !mcpServerTraitEnabled,
+                    "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
+    func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-path-launch-\(UUID().uuidString)", isDirectory: true)
         let runtimeDir = tempRoot.appendingPathComponent("runtime/bin", isDirectory: true)

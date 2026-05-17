@@ -21,7 +21,8 @@ import Testing
     #expect(resetRange.lowerBound < noCommitsRange.lowerBound)
 }
 
-@Test(.enabled(if: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14))
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoFullReindexReplacesExistingStore() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
     let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-full")

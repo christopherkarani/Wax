@@ -360,7 +360,10 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxTests",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .define("WaxRepo", .when(traits: ["WaxRepo"])),
+            ]
         ),
         .testTarget(
             name: "WaxCLITests",
@@ -370,7 +373,10 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxCLITests",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .define("MCPServer", .when(traits: ["MCPServer"])),
+            ]
         ),
     ]
 )

@@ -6,26 +6,24 @@ Compare the CPU and GPU backends and understand their performance characteristic
 
 WaxVectorSearch ships package-only CPU and GPU vector engines for Wax internals. They conform to the package-only ``VectorSearchEngine`` protocol, which is not public API for downstream applications. This article documents the contributor-facing implementation surface.
 
-## USearchVectorEngine (CPU)
+## AccelerateVectorEngine (CPU)
 
-``USearchVectorEngine`` uses the USearch library's HNSW (Hierarchical Navigable Small Worlds) graph index. HNSW provides approximate nearest neighbor search with sub-linear query time.
+``AccelerateVectorEngine`` stores flat vectors and performs exact CPU search. It uses Accelerate for matrix multiplication when available and a Swift fallback elsewhere.
 
 ### Configuration
 
 | Parameter | Value |
 |-----------|-------|
-| Connectivity | 16 (HNSW graph edges per node) |
-| Quantization | Float32 |
-| Initial capacity | 64 vectors |
-| Capacity growth | Doubling strategy |
+| Storage | Flat Float32 vectors |
+| Search | Exact top-K scan |
 | Metrics | Cosine, Dot Product, L2 |
 
 ### When to Use
 
 - Cross-platform deployments (no Metal required)
-- Small to medium index sizes (up to ~1M vectors)
+- Small to medium index sizes
 - When you need dot product or L2 metrics
-- When approximate results are acceptable
+- When deterministic exact results are preferred
 
 Wax package internals select this engine for CPU-backed indexes through the vector engine loader and session configuration.
 
@@ -68,7 +66,7 @@ Wax package internals check Metal availability before selecting this backend. Me
 
 ## Engine Selection
 
-Wax package internals choose the backend when a vector index is loaded or created. The selection logic prefers a compatible Metal backend when it is available and falls back to the CPU backend when required by platform capability or stored index format.
+Wax package internals choose the backend when a vector index is loaded or created. The selection logic prefers MetalANNS for compatible larger Apple-platform indexes and falls back to Accelerate when required by platform capability or index size.
 
 ## Common Operations
 
@@ -111,4 +109,4 @@ Both engines serialize to the MV2V binary format:
 [Payload: variable]
 ```
 
-The `Encoding` byte distinguishes USearch (1) from Metal (2) format. Cross-format deserialization is supported — a Metal engine can load a USearch-serialized index by re-inserting vectors.
+Encoding `1` is reserved for legacy USearch indexes and is no longer supported. Rebuild the vector index to persist the current flat-vector format used by Accelerate and MetalANNS.

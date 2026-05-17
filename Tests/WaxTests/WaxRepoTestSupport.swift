@@ -1,5 +1,11 @@
 import Foundation
 
+#if WaxRepo
+let waxRepoExecutableSmokeTestsEnabled = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
+#else
+let waxRepoExecutableSmokeTestsEnabled = false
+#endif
+
 enum WaxRepoSource {
     static func load(_ relativePath: String, filePath: String = #filePath) throws -> String {
         let testFile = URL(fileURLWithPath: filePath)

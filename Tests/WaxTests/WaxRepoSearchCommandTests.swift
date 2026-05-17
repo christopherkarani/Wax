@@ -9,7 +9,8 @@ import Testing
     #expect(source.contains("Application(rootView: SearchView(viewModel: viewModel)).start()"))
 }
 
-@Test(.enabled(if: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14))
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoSearchQueryRunsOneShotAndExits() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
     let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-search")
@@ -36,7 +37,8 @@ func waxRepoSearchQueryRunsOneShotAndExits() async throws {
     #expect(search.stdout.contains("needle"))
 }
 
-@Test(.enabled(if: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14))
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoSearchUsesStoredMetadataWhenPreviewOmitsHeader() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
     let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-metadata")

@@ -169,6 +169,13 @@ package actor FTS5SearchEngine {
         guard !trimmed.isEmpty else { return [] }
         let matchQuery = Self.literalMatchQuery(for: trimmed)
         guard !matchQuery.isEmpty else { return [] }
+        return try await search(matchQuery: matchQuery, topK: topK)
+    }
+
+    package func search(matchQuery: String, topK: Int) async throws -> [TextSearchResult] {
+        try await flushPendingOpsIfNeeded()
+        let trimmed = matchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
         let limit = try Self.validatedTopK(topK)
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -183,7 +190,7 @@ package actor FTS5SearchEngine {
                     ORDER BY rank ASC, m.frame_id ASC
                     LIMIT ?
                     """
-                let rows = try Row.fetchAll(db, sql: sql, arguments: [matchQuery, limit])
+                let rows = try Row.fetchAll(db, sql: sql, arguments: [trimmed, limit])
                 return rows.compactMap { row in
                     guard let frameIdValue: Int64 = row["frame_id"], frameIdValue >= 0 else { return nil }
                     let rank: Double = row["rank"] ?? 0
