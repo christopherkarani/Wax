@@ -3183,6 +3183,26 @@ func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
 }
 
 @Test
+func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func sessionStart(arguments: [String: AgentBrokerValue])"))
+    let resume = try #require(source[start.upperBound...].range(of: "func sessionResume(arguments: [String: AgentBrokerValue])"))
+    let body = source[start.lowerBound..<resume.lowerBound]
+
+    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
+    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)"))
+    #expect(appendEvent.lowerBound < saveManifest.lowerBound)
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"

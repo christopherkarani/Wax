@@ -869,7 +869,6 @@ extension AgentBrokerService {
             createdAtMs: nowMs,
             updatedAtMs: nowMs
         )
-        try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
         try BrokerSessionPersistence.appendEvent(
             BrokerSessionEvent(
                 sessionID: sessionID,
@@ -884,6 +883,7 @@ extension AgentBrokerService {
             ),
             to: eventLogURL
         )
+        try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
         let state = SessionState(
             id: sessionID,
             manifest: manifest,
