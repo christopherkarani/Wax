@@ -496,3 +496,74 @@ func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
         try await orchestrator.flush()
     }
 }
+
+@Test
+func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var localMeta = Metadata()
+        localMeta.entries[PhotoMetadataKey.assetID.rawValue] = "local-no-derived"
+        localMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        var nonLocalMeta = Metadata()
+        nonLocalMeta.entries[PhotoMetadataKey.assetID.rawValue] = "icloud-only"
+        nonLocalMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "false"
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: nonLocalMeta),
+            compression: .plain,
+            timestampMs: timestamp - 1
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                filters: PhotoFilters(assetIDs: ["local-no-derived", "icloud-only"]),
+                resultLimit: 2,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(Set(ctx.items.map(\.assetID)) == ["local-no-derived", "icloud-only"])
+        #expect(ctx.diagnostics.degradedResultCount == 1)
+        try await orchestrator.flush()
+    }
+}

@@ -466,7 +466,7 @@ package actor PhotoRAGOrchestrator {
             maxRegions: query.contextBudget.maxRegions
         )
 
-        let degradedCount = itemsWithPixels.filter { isDegraded(assetID: $0.assetID) }.count
+        let degradedCount = await degradedResultCount(assetIDs: itemsWithPixels.map(\.assetID))
         let diagnostics = PhotoRAGContext.Diagnostics(usedTextTokens: usedTokens, degradedResultCount: degradedCount)
         return PhotoRAGContext(query: query, items: itemsWithPixels, diagnostics: diagnostics)
     }
@@ -1367,11 +1367,33 @@ package actor PhotoRAGOrchestrator {
         index.rootByAssetID[assetID]
     }
 
-    private func isDegraded(assetID: String) -> Bool {
-        guard let rootId = index.rootByAssetID[assetID] else { return true }
-        // If the root has no derived refs and no embedding, treat as degraded. (MVP heuristic)
-        let refs = index.derivedByRoot[rootId]
-        return refs?.ocrSummary == nil && refs?.caption == nil
+    private func degradedResultCount(assetIDs: [String]) async -> Int {
+        var rootIds: [UInt64] = []
+        rootIds.reserveCapacity(assetIDs.count)
+        var missingRootCount = 0
+        for assetID in assetIDs {
+            if let rootId = index.rootByAssetID[assetID] {
+                rootIds.append(rootId)
+            } else {
+                missingRootCount += 1
+            }
+        }
+        guard !rootIds.isEmpty else { return missingRootCount }
+
+        let metas = await wax.frameMetasIncludingPending(frameIds: rootIds)
+        var degraded = missingRootCount
+        for rootId in rootIds {
+            guard let rawValue = metas[rootId]?.metadata?.entries[MetaKey.isLocal],
+                  let isLocal = Bool(rawValue)
+            else {
+                degraded += 1
+                continue
+            }
+            if !isLocal {
+                degraded += 1
+            }
+        }
+        return degraded
     }
 
     private func constraintRootCandidates(
