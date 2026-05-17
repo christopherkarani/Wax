@@ -172,3 +172,112 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
         try await orchestrator.flush()
     }
 }
+
+@Test
+func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var localMeta = Metadata()
+        localMeta.entries[PhotoMetadataKey.assetID.rawValue] = "local-photo"
+        localMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
+        localMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.file.rawValue
+        let localRoot = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+        let localText = "shared receipt token"
+        let localSummary = try await session.put(
+            Data(localText.utf8),
+            options: FrameMetaSubset(kind: PhotoFrameKind.ocrSummary.rawValue, parentId: localRoot, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        var remoteMeta = Metadata()
+        remoteMeta.entries[PhotoMetadataKey.assetID.rawValue] = "icloud-only-photo"
+        remoteMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "false"
+        remoteMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.photos.rawValue
+        let remoteRoot = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: remoteMeta),
+            compression: .plain,
+            timestampMs: timestamp + 1
+        )
+        let remoteText = "shared receipt token"
+        let remoteSummary = try await session.put(
+            Data(remoteText.utf8),
+            options: FrameMetaSubset(kind: PhotoFrameKind.ocrSummary.rawValue, parentId: remoteRoot, metadata: remoteMeta),
+            compression: .plain,
+            timestampMs: timestamp + 1
+        )
+
+        try await session.indexTextBatch(frameIds: [localSummary, remoteSummary], texts: [localText, remoteText])
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(isLocal: true),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(ctx.items.map(\.assetID) == ["local-photo"])
+
+        let remoteByAssetID = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(assetIDs: ["icloud-only-photo"]),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(remoteByAssetID.items.map(\.assetID) == ["icloud-only-photo"])
+
+        let remoteBySource = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(source: .photos),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(remoteBySource.items.map(\.assetID) == ["icloud-only-photo"])
+
+        try await orchestrator.flush()
+    }
+}

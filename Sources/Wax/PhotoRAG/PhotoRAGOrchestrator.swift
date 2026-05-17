@@ -271,10 +271,18 @@ package actor PhotoRAGOrchestrator {
         let timeRange = Self.toWaxTimeRange(query.timeRange)
 
         let locationAllowlist = query.location.flatMap { buildLocationAllowlist(location: $0) }
+        let assetAllowlist = buildAssetAllowlist(assetIDs: query.filters.assetIDs)
+        let filterFrameIds = Self.intersectAllowlists(locationAllowlist, assetAllowlist)
+        let metadataFilter = Self.metadataFilter(from: query.filters)
 
         let isConstraintOnlyQuery = (queryText == nil && queryEmbedding == nil)
-            && (query.timeRange != nil || query.location != nil)
+            && (query.timeRange != nil || query.location != nil || !query.filters.isEmpty)
         let fallbackLimit = max(query.resultLimit, config.searchTopK)
+        let frameFilter: FrameFilter? = if filterFrameIds != nil || metadataFilter != nil {
+            FrameFilter(frameIds: filterFrameIds, metadataFilter: metadataFilter)
+        } else {
+            nil
+        }
 
         let request = SearchRequest(
             query: queryText,
@@ -283,7 +291,7 @@ package actor PhotoRAGOrchestrator {
             mode: mode,
             topK: max(query.resultLimit, config.searchTopK),
             timeRange: timeRange,
-            frameFilter: locationAllowlist.map { FrameFilter(frameIds: $0) },
+            frameFilter: frameFilter,
             previewMaxBytes: 1024,
             allowTimelineFallback: isConstraintOnlyQuery,
             timelineFallbackLimit: fallbackLimit
@@ -1312,6 +1320,48 @@ package actor PhotoRAGOrchestrator {
         // If the root has no derived refs and no embedding, treat as degraded. (MVP heuristic)
         let refs = index.derivedByRoot[rootId]
         return refs?.ocrSummary == nil && refs?.caption == nil
+    }
+
+    private func buildAssetAllowlist(assetIDs: Set<String>?) -> Set<UInt64>? {
+        guard let assetIDs else { return nil }
+        var frameIds: Set<UInt64> = []
+        frameIds.reserveCapacity(assetIDs.count * 4)
+
+        for assetID in assetIDs {
+            guard let rootId = index.rootByAssetID[assetID] else { continue }
+            frameIds.insert(rootId)
+            if let refs = index.derivedByRoot[rootId] {
+                if let id = refs.ocrSummary { frameIds.insert(id) }
+                if let id = refs.caption { frameIds.insert(id) }
+                if let id = refs.tags { frameIds.insert(id) }
+                frameIds.formUnion(refs.regions)
+            }
+        }
+
+        return frameIds
+    }
+
+    private static func intersectAllowlists(_ lhs: Set<UInt64>?, _ rhs: Set<UInt64>?) -> Set<UInt64>? {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return nil
+        case (let ids?, nil), (nil, let ids?):
+            return ids
+        case (let lhs?, let rhs?):
+            return lhs.intersection(rhs)
+        }
+    }
+
+    private static func metadataFilter(from filters: PhotoFilters) -> MetadataFilter? {
+        var requiredEntries: [String: String] = [:]
+        if let source = filters.source {
+            requiredEntries[MetaKey.source] = source.rawValue
+        }
+        if let isLocal = filters.isLocal {
+            requiredEntries[MetaKey.isLocal] = isLocal ? "true" : "false"
+        }
+        guard !requiredEntries.isEmpty else { return nil }
+        return MetadataFilter(requiredEntries: requiredEntries)
     }
 
     private func loadThumbnail(assetID: String) async throws -> PhotoPixel? {

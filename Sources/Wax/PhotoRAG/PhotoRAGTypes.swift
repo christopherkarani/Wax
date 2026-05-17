@@ -24,9 +24,37 @@ package struct ContextBudget: Sendable, Equatable {
 
 /// Optional filters applied during photo recall.
 package struct PhotoFilters: Sendable, Equatable {
-    package init() {}
+    package var assetIDs: Set<String>?
+    package var source: PhotoSource?
+    package var isLocal: Bool?
+
+    package init(
+        assetIDs: Set<String>? = nil,
+        source: PhotoSource? = nil,
+        isLocal: Bool? = nil
+    ) {
+        self.assetIDs = Self.normalizedNonEmptySet(assetIDs)
+        self.source = source
+        self.isLocal = isLocal
+    }
 
     package static let none = PhotoFilters()
+
+    package var isEmpty: Bool {
+        assetIDs == nil && source == nil && isLocal == nil
+    }
+
+    private static func normalizedNonEmptySet(_ values: Set<String>?) -> Set<String>? {
+        guard let values else { return nil }
+        let normalized = Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        return normalized.isEmpty ? nil : normalized
+    }
+}
+
+/// Source backing a photo record in the package-only Photo RAG pipeline.
+package enum PhotoSource: String, Sendable, Equatable {
+    case photos
+    case file
 }
 
 /// A GPS coordinate used for location-based photo queries.
