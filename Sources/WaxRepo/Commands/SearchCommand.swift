@@ -28,6 +28,7 @@ struct SearchCommand: ParsableCommand {
         Task(priority: .userInitiated) {
             do {
                 try await command.runSearch()
+                Darwin.exit(EXIT_SUCCESS)
             } catch {
                 writeStderr("Error: \(error)")
                 Darwin.exit(EXIT_FAILURE)
@@ -49,15 +50,49 @@ struct SearchCommand: ParsableCommand {
         }
 
         let store = try await RepoStore(storeURL: storePath, textOnly: textOnly)
-        let viewModel = await MainActor.run { SearchViewModel(store: store, topK: topK) }
-
         if let query {
-            await viewModel.updateQuery(query)
+            try await runOneShotSearch(query: query, store: store)
+            return
         }
+
+        try await runInteractiveSearch(store: store)
+    }
+
+    private func runOneShotSearch(query: String, store: RepoStore) async throws {
+        do {
+            let results = try await store.search(query: query, topK: topK)
+            print(Self.renderResults(query: query, results: results))
+            try await store.close()
+        } catch {
+            try? await store.close()
+            throw error
+        }
+    }
+
+    private func runInteractiveSearch(store: RepoStore) async throws {
+        let viewModel = await MainActor.run { SearchViewModel(store: store, topK: topK) }
 
         await MainActor.run {
             Application(rootView: SearchView(viewModel: viewModel)).start()
         }
+    }
+
+    private static func renderResults(query: String, results: [CommitSearchResult]) -> String {
+        guard !results.isEmpty else {
+            return "No results for \"\(query)\"."
+        }
+
+        var lines = ["Results for \"\(query)\":", ""]
+        for (index, result) in results.enumerated() {
+            let rank = index + 1
+            let score = String(format: "%.3f", result.score)
+            lines.append("\(rank). \(result.shortHash)  \(result.subject)")
+            lines.append("   \(result.author)  \(result.date)  score \(score)")
+            if !result.previewText.isEmpty {
+                lines.append("   \(result.previewText)")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
