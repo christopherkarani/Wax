@@ -5,19 +5,28 @@ import PDFKit
 
 /// Extracts text from a PDF.
 enum PDFTextExtractor {
+    struct Extraction: Sendable, Equatable {
+        let text: String
+        let pageCount: Int
+        let extractedPageCount: Int
+        let maxPages: Int
+        let isTruncated: Bool
+    }
+
     /// Extracts text from a PDF at the supplied URL.
     ///
     /// - Parameters:
     ///   - url: The file URL of the PDF.
     ///   - maxPages: Maximum number of pages to extract text from. If the PDF has more pages,
     ///     partial text is returned alongside the actual total page count.
-    static func extractText(url: URL, maxPages: Int = 500) throws -> (text: String, pageCount: Int) {
+    static func extractText(url: URL, maxPages: Int = 500) throws -> Extraction {
         guard let document = PDFDocument(url: url) else {
             throw PDFIngestError.loadFailed(url: url)
         }
 
         let pageCount = document.pageCount
-        let limit = min(pageCount, max(0, maxPages))
+        let normalizedMaxPages = max(0, maxPages)
+        let limit = min(pageCount, normalizedMaxPages)
         var pageTexts: [String] = []
         pageTexts.reserveCapacity(limit)
 
@@ -37,7 +46,13 @@ enum PDFTextExtractor {
             throw PDFIngestError.noExtractableText(url: url, pageCount: pageCount)
         }
 
-        return (combined, pageCount)
+        return Extraction(
+            text: combined,
+            pageCount: pageCount,
+            extractedPageCount: limit,
+            maxPages: normalizedMaxPages,
+            isTruncated: limit < pageCount
+        )
     }
 }
 #endif

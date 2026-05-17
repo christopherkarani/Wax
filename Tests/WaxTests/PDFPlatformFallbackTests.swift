@@ -19,7 +19,9 @@ func pdfIngestAPIHasNonPDFKitFallback() throws {
     )
 
     #expect(orchestratorSource.contains("#else"))
-    #expect(orchestratorSource.contains("func remember(pdfAt url: URL, metadata: [String: String] = [:]) async throws"))
+    #expect(orchestratorSource.contains("func remember("))
+    #expect(orchestratorSource.contains("pdfAt url: URL"))
+    #expect(orchestratorSource.contains("metadata: [String: String] = [:]"))
     #expect(orchestratorSource.contains("PDFIngestError.unsupportedPlatform"))
     #expect(errorSource.contains("case unsupportedPlatform"))
 }

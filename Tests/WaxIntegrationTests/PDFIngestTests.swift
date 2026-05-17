@@ -104,6 +104,34 @@ func pdfIngestMetadataPropagatesToDocumentAndChunks() async throws {
 }
 
 @Test
+func pdfIngestTruncationMetadataRecordsExtractedPageCoverage() async throws {
+    #expect(FileManager.default.fileExists(atPath: PDFFixtures.textPDF.path))
+
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await MemoryOrchestrator(at: url, config: makeTextOnlyConfig())
+        try await orchestrator.remember(
+            pdfAt: PDFFixtures.textPDF,
+            maxPages: 1,
+            metadata: ["source": "fixture"]
+        )
+        try await orchestrator.close()
+
+        let wax = try await Wax.open(at: url)
+        let doc = try await wax.frameMeta(frameId: 0)
+        #expect(doc.metadata?.entries["pdf_page_count"] == "2")
+        #expect(doc.metadata?.entries["pdf_extracted_page_count"] == "1")
+        #expect(doc.metadata?.entries["pdf_max_pages"] == "1")
+        #expect(doc.metadata?.entries["pdf_truncated"] == "true")
+
+        let docPayload = try await wax.frameContent(frameId: 0)
+        let docText = String(decoding: docPayload, as: UTF8.self)
+        #expect(docText.localizedCaseInsensitiveContains(PDFFixtures.pageOnePhrase))
+        #expect(!docText.localizedCaseInsensitiveContains(PDFFixtures.pageTwoPhrase))
+        try await wax.close()
+    }
+}
+
+@Test
 func pdfIngestBlankPDFThrowsNoExtractableText() async throws {
     #expect(FileManager.default.fileExists(atPath: PDFFixtures.blankPDF.path))
 
