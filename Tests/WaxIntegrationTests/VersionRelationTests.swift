@@ -9,7 +9,7 @@ import Wax
     #expect(VersionRelation.retracts.rawValue == 3)
 }
 
-@Test func updateFactRetractsPrior() async throws {
+@Test func updateFactRetractsPriorSpanForSameFact() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = false
@@ -26,7 +26,7 @@ import Wax
         _ = try await orchestrator.assertFact(
             subject: EntityKey("user:chris"),
             predicate: PredicateKey("employer"),
-            object: .string("Anthropic"),
+            object: .string("Google"),
             relation: .updates
         )
 
@@ -37,9 +37,97 @@ import Wax
             limit: 10
         )
         #expect(result.hits.count == 1)
-        #expect(result.hits.first?.fact.object == .string("Anthropic"))
+        #expect(result.hits.first?.fact.object == .string("Google"))
         try await orchestrator.close()
     }
+}
+
+@Test func updateFactPreservesDistinctObjectsForSameSubjectPredicate() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("skill"),
+        object: .string("Swift"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("skill"),
+        object: .string("Rust"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("skill"),
+        object: .string("Swift"),
+        relation: .updates,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    let result = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("skill"),
+        asOf: .init(systemTimeMs: 30, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(result.hits.map(\.fact.object) == [.string("Rust"), .string("Swift")])
+}
+
+@Test func updateFactOnlyClosesOverlappingValidIntervalsForSameFact() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: 100),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 100, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        relation: .updates,
+        valid: StructuredTimeRange(fromMs: 200, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    let historical = try await engine.facts(
+        about: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 40, validTimeMs: 50),
+        limit: 10
+    )
+    #expect(historical.hits.map(\.fact.object) == [.string("Google")])
+
+    let current = try await engine.facts(
+        about: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 40, validTimeMs: 250),
+        limit: 10
+    )
+    #expect(current.hits.map(\.fact.object) == [.string("Google")])
 }
 
 #if canImport(SQLite3)
@@ -232,7 +320,7 @@ private enum VersionRelationSQLiteFixture {
     _ = try await engine.assertFact(
         subject: EntityKey("user:chris"),
         predicate: PredicateKey("employer"),
-        object: .string("Anthropic"),
+        object: .string("Google"),
         relation: .updates,
         valid: StructuredTimeRange(fromMs: 10, toMs: nil),
         system: StructuredTimeRange(fromMs: 10, toMs: nil),
@@ -246,7 +334,7 @@ private enum VersionRelationSQLiteFixture {
         limit: 10
     )
     #expect(result.hits.count == 1)
-    #expect(result.hits.first?.fact.object == .string("Anthropic"))
+    #expect(result.hits.first?.fact.object == .string("Google"))
 }
 
 #endif

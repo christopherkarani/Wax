@@ -855,14 +855,14 @@ package actor FTS5SearchEngine {
                     SELECT span_id, system_from_ms FROM sm_fact_span
                     WHERE fact_id = ? AND system_to_ms IS NULL
                     """)
-                let selectOpenSpanForSubjectPredicateStmt = try db.makeStatement(sql: """
+                let selectOpenSpanForFactStmt = try db.makeStatement(sql: """
                     SELECT s.span_id AS span_id,
                            s.system_from_ms AS system_from_ms
                     FROM sm_fact_span s
-                    JOIN sm_fact f ON f.fact_id = s.fact_id
-                    WHERE f.subject_entity_id = ?
-                      AND f.predicate_id = ?
+                    WHERE s.fact_id = ?
                       AND s.system_to_ms IS NULL
+                      AND s.valid_from_ms < ?
+                      AND (s.valid_to_ms IS NULL OR s.valid_to_ms > ?)
                     """)
                 let closeSpanByIDStmt = try db.makeStatement(sql: """
                     UPDATE sm_fact_span SET system_to_ms = ?
@@ -919,19 +919,6 @@ package actor FTS5SearchEngine {
                         let subjectId = try ensureEntityId(key: subject, kind: "", nowMs: system.fromMs)
                         let predicateId = try ensurePredicateId(key: predicate, nowMs: system.fromMs)
 
-                        if relation.supersedes {
-                            let openSpans = try Row.fetchAll(
-                                selectOpenSpanForSubjectPredicateStmt,
-                                arguments: [subjectId, predicateId]
-                            )
-                            for row in openSpans {
-                                let spanId: Int64 = row["span_id"] ?? 0
-                                let systemFrom: Int64 = row["system_from_ms"] ?? 0
-                                let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
-                                try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
-                            }
-                        }
-
                         let objectColumns = try FactObjectColumns.from(
                             object: object,
                             ensureEntityId: { key in
@@ -961,6 +948,19 @@ package actor FTS5SearchEngine {
                             throw WaxError.io("missing fact_id after insert")
                         }
                         try updateFactRelationStmt.execute(arguments: [Int(relation.rawValue), factId])
+
+                        if relation.supersedes {
+                            let openSpans = try Row.fetchAll(
+                                selectOpenSpanForFactStmt,
+                                arguments: [factId, valid.toMs ?? Int64.max, valid.fromMs]
+                            )
+                            for row in openSpans {
+                                let spanId: Int64 = row["span_id"] ?? 0
+                                let systemFrom: Int64 = row["system_from_ms"] ?? 0
+                                let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
+                                try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
+                            }
+                        }
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
                             factId: FactRowID(rawValue: factId),
