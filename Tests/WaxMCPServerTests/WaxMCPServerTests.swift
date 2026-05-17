@@ -3207,6 +3207,75 @@ func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throw
 }
 
 @Test
+func brokerMarkdownSyncDoesNotDeleteLockedMemoryWhenLineRemoved() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-locked-delete-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let lockedContent = "Locked F183 markdown memory \(UUID().uuidString)"
+
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(lockedContent),
+                "memory_type": .string("fact"),
+                "durability": .string("locked"),
+            ]
+        ))
+        #expect(remember.ok == true)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(export.ok == true)
+        let exportPayload = try #require(export.payload?.objectValue)
+        let memoryPath = try #require(exportPayload["memory_md_path"]?.stringValue)
+        let memoryURL = URL(fileURLWithPath: memoryPath)
+
+        let firstSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(firstSync.ok == true)
+
+        let refreshedExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(refreshedExport.ok == true)
+        let lockedEntry = try #require(
+            BrokerMarkdownSync.parseFile(at: memoryURL).first { $0.text == lockedContent }
+        )
+        let lockedMemoryID = try #require(lockedEntry.marker?.memoryID)
+
+        try """
+        # MEMORY
+
+        ## fact
+        """.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let secondSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(secondSync.ok == true)
+        let secondPayload = try #require(secondSync.payload?.objectValue)
+        let counts = try #require(secondPayload["counts"]?.objectValue)
+        #expect(counts["deleted"]?.intValue == 0)
+
+        let get = await service.handle(.init(
+            command: "memory_get",
+            arguments: ["memory_id": .string(lockedMemoryID)]
+        ))
+        #expect(get.ok == true)
+        let getPayload = try #require(get.payload?.objectValue)
+        #expect(getPayload["text"]?.stringValue == lockedContent)
+        #expect(getPayload["metadata"]?.objectValue?[MemoryMetadataKeys.durability]?.stringValue == MemoryDurability.locked.rawValue)
+    }
+}
+
+@Test
 func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
     try await withAgentBrokerService { service, sessionRootURL in
         let started = await service.handle(.init(command: "session_start"))

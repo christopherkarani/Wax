@@ -331,6 +331,10 @@ extension AgentBrokerService {
         }
 
         for existing in existingDocuments where !matchedFrameIDs.contains(existing.frameId) {
+            if isLockedMemory(existing) {
+                counts.unchanged += 1
+                continue
+            }
             if !dryRun {
                 try await deleteDocumentTree(frameID: existing.frameId, memory: longTermMemory)
             }
@@ -338,6 +342,10 @@ extension AgentBrokerService {
         }
 
         return counts
+    }
+
+    private func isLockedMemory(_ document: MemoryOrchestrator.CorpusSourceDocument) -> Bool {
+        MemorySemantics.parse(metadata: document.metadata).durability == .locked
     }
 
     private func trustedExistingDocument(
