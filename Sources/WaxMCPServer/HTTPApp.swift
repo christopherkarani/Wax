@@ -267,7 +267,7 @@ enum HTTPRequestBodyLimit {
     }
 }
 
-private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
+final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
@@ -290,15 +290,19 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         switch part {
         case .head(let head):
             let contentLength = head.headers.first(name: "content-length").flatMap(Int.init)
+            if HTTPRequestBodyLimit.exceedsLimit(
+                currentBytes: 0,
+                incomingBytes: 0,
+                contentLength: contentLength,
+                maxBytes: app.maxRequestBodyBytes
+            ) {
+                requestState = nil
+                writePayloadTooLarge(version: head.version, context: context)
+                return
+            }
             requestState = RequestState(
                 head: head,
-                bodyBuffer: context.channel.allocator.buffer(capacity: 0),
-                exceededBodyLimit: HTTPRequestBodyLimit.exceedsLimit(
-                    currentBytes: 0,
-                    incomingBytes: 0,
-                    contentLength: contentLength,
-                    maxBytes: app.maxRequestBodyBytes
-                )
+                bodyBuffer: context.channel.allocator.buffer(capacity: 0)
             )
         case .body(var buffer):
             guard var state = requestState else { return }
@@ -308,8 +312,8 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 contentLength: nil,
                 maxBytes: app.maxRequestBodyBytes
             ) {
-                state.exceededBodyLimit = true
-                requestState = state
+                requestState = nil
+                writePayloadTooLarge(version: state.head.version, context: context)
                 return
             }
             state.bodyBuffer.writeBuffer(&buffer)
@@ -322,6 +326,21 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 await self.handleRequest(state: state, context: ctx)
             }
         }
+    }
+
+    private func writePayloadTooLarge(version: HTTPVersion, context: ChannelHandlerContext) {
+        let response = HTTPResponse.error(statusCode: 413, .invalidRequest("Payload Too Large"))
+        var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: response.statusCode))
+        for (name, value) in response.headers {
+            head.headers.add(name: name, value: value)
+        }
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        if let bodyData = response.bodyData {
+            var body = context.channel.allocator.buffer(capacity: bodyData.count)
+            body.writeBytes(bodyData)
+            context.write(wrapOutboundOut(.body(.byteBuffer(body))), promise: nil)
+        }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
     }
 
     private func handleRequest(state: RequestState, context: ChannelHandlerContext) async {

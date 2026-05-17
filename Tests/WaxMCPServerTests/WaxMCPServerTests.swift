@@ -8,6 +8,8 @@ import Glibc
 
 #if MCPServer
 import MCP
+import NIOEmbedded
+import NIOHTTP1
 @testable import wax_mcp
 @testable import Wax
 import XCTest
@@ -821,6 +823,73 @@ func httpRequestBodyLimitRejectsContentLengthAndStreamingOverflow() {
         contentLength: nil,
         maxBytes: 1_048
     ))
+}
+
+@Test
+func httpHandlerRejectsOversizedContentLengthBeforeReadingBody() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 10),
+        serverFactory: { _, _ in
+            Issue.record("oversized request should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let channel = EmbeddedChannel(handler: HTTPHandler(app: app))
+    var headers = HTTPHeaders()
+    headers.add(name: "content-length", value: "11")
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/mcp", headers: headers)
+
+    try channel.writeInbound(HTTPServerRequestPart.head(head))
+    try expectImmediatePayloadTooLargeResponse(on: channel)
+    let trailingResponsePart = try channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(trailingResponsePart == nil)
+    _ = try channel.finish()
+}
+
+@Test
+func httpHandlerRejectsStreamingOverflowBeforeRequestEnd() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 10),
+        serverFactory: { _, _ in
+            Issue.record("oversized request should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let channel = EmbeddedChannel(handler: HTTPHandler(app: app))
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/mcp")
+    var body = channel.allocator.buffer(capacity: 11)
+    body.writeString("01234567890")
+
+    try channel.writeInbound(HTTPServerRequestPart.head(head))
+    try channel.writeInbound(HTTPServerRequestPart.body(body))
+    try expectImmediatePayloadTooLargeResponse(on: channel)
+    let trailingResponsePart = try channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(trailingResponsePart == nil)
+    _ = try channel.finish()
+}
+
+private func expectImmediatePayloadTooLargeResponse(on channel: EmbeddedChannel) throws {
+    let responseHeadPart = try channel.readOutbound(as: HTTPServerResponsePart.self)
+    let responseHead = try #require(responseHeadPart)
+    guard case .head(let head) = responseHead else {
+        Issue.record("expected response head, got \(responseHead)")
+        return
+    }
+    #expect(head.status == HTTPResponseStatus(statusCode: 413))
+
+    let nextResponsePartValue = try channel.readOutbound(as: HTTPServerResponsePart.self)
+    let nextResponsePart = try #require(nextResponsePartValue)
+    let responseEnd: HTTPServerResponsePart
+    if case .body = nextResponsePart {
+        let endPartValue = try channel.readOutbound(as: HTTPServerResponsePart.self)
+        responseEnd = try #require(endPartValue)
+    } else {
+        responseEnd = nextResponsePart
+    }
+    guard case .end = responseEnd else {
+        Issue.record("expected response end, got \(responseEnd)")
+        return
+    }
 }
 
 @Test

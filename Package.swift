@@ -339,6 +339,16 @@ let package = Package(
                     package: "swift-sdk",
                     condition: .when(traits: ["MCPServer"])
                 ),
+                .product(
+                    name: "NIOEmbedded",
+                    package: "swift-nio",
+                    condition: .when(traits: ["MCPServer"])
+                ),
+                .product(
+                    name: "NIOHTTP1",
+                    package: "swift-nio",
+                    condition: .when(traits: ["MCPServer"])
+                ),
             ],
             path: "Tests/WaxMCPServerTests",
             swiftSettings: [
