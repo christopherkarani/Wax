@@ -174,6 +174,54 @@ import Wax
     }
 }
 
+@Test func assertFactPreservesSubjectAndPredicateCaseInIdentity() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let upperSubjectFact = try await engine.assertFact(
+        subject: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let lowerSubjectFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    let upperPredicateFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("Status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    #expect(upperSubjectFact != lowerSubjectFact)
+    #expect(lowerSubjectFact != upperPredicateFact)
+
+    let upperSubjectFacts = try await engine.facts(
+        about: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 10
+    )
+    let lowerSubjectFacts = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(upperSubjectFacts.hits.map(\.factId) == [upperSubjectFact])
+    #expect(lowerSubjectFacts.hits.map(\.factId).contains(lowerSubjectFact))
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(

@@ -4,7 +4,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 4
+    static let userVersion: Int32 = 5
     private static let framesFTSSQL = "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content, tokenize = 'unicode61')"
 
     static func create(in db: Database) throws {
@@ -27,9 +27,10 @@ enum FTS5Schema {
 
         // Accept legacy blobs (pre-identity PRAGMAs) and upgrade in-memory.
         if appId == 0 && version == 0 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db)
-            try applyIdentity(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try applyApplicationId(in: db)
             try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV5(in: db)
             return
         }
 
@@ -37,25 +38,34 @@ enum FTS5Schema {
             throw WaxError.io("unexpected sqlite application_id \(appId) (expected \(applicationId))")
         }
         if version == 0 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db)
-            try applyIdentity(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
             try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV5(in: db)
             return
         }
         if version == 1 {
             try StructuredMemorySchema.create(in: db)
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try migrateV4ToV5(in: db)
             return
         }
         if version == 2 {
             try migrateV2ToV3(in: db)
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
             try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV5(in: db)
             return
         }
         if version == 3 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
             try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV5(in: db)
+            return
+        }
+        if version == 4 {
+            try requirePinnedFTSSchema(in: db)
+            try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV5(in: db)
             return
         }
         guard version == userVersion else {
@@ -66,8 +76,12 @@ enum FTS5Schema {
     }
 
     private static func applyIdentity(in db: Database) throws {
+        try applyApplicationId(in: db)
+        try applyUserVersion(in: db, version: userVersion)
+    }
+
+    private static func applyApplicationId(in db: Database) throws {
         try db.execute(sql: "PRAGMA application_id = \(applicationId)")
-        try db.execute(sql: "PRAGMA user_version = \(userVersion)")
     }
 
     private static func applyUserVersion(in db: Database, version: Int32) throws {
@@ -88,13 +102,92 @@ enum FTS5Schema {
                 try db.execute(sql: "ALTER TABLE sm_fact ADD COLUMN version_relation INTEGER NOT NULL DEFAULT 0")
             }
         }
+        try applyUserVersion(in: db, version: 3)
+    }
+
+    private static func migrateV4ToV5(in db: Database) throws {
+        let factTableExists: String? = try String.fetchOne(
+            db,
+            sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='sm_fact'"
+        )
+        guard factTableExists == "sm_fact" else {
+            try applyUserVersion(in: db, version: userVersion)
+            return
+        }
+
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT
+              f.fact_id,
+              subject.key AS subject_key,
+              predicate.key AS predicate_key,
+              f.object_kind,
+              f.object_text,
+              f.object_int,
+              f.object_real,
+              f.object_bool,
+              f.object_blob,
+              f.object_time_ms,
+              object_entity.key AS object_entity_key,
+              f.qualifiers_hash
+            FROM sm_fact f
+            JOIN sm_entity subject ON subject.entity_id = f.subject_entity_id
+            JOIN sm_predicate predicate ON predicate.predicate_id = f.predicate_id
+            LEFT JOIN sm_entity object_entity ON object_entity.entity_id = f.object_entity_id
+            ORDER BY f.fact_id
+            """)
+        for row in rows {
+            let factId: Int64 = row["fact_id"]
+            let subjectKey: String = row["subject_key"]
+            let predicateKey: String = row["predicate_key"]
+            let objectKind: Int = row["object_kind"]
+            let object = try factValue(kind: objectKind, row: row)
+            let qualifiersHash: Data? = row["qualifiers_hash"]
+            let hash = try StructuredMemoryHasher.hashFact(
+                subject: EntityKey(subjectKey),
+                predicate: PredicateKey(predicateKey),
+                object: object,
+                qualifiersHash: qualifiersHash
+            )
+            try db.execute(
+                sql: "UPDATE sm_fact SET fact_hash = ? WHERE fact_id = ?",
+                arguments: [hash, factId]
+            )
+        }
         try applyUserVersion(in: db, version: userVersion)
     }
 
-    private static func migrateFramesFTSToPinnedTokenizerIfNeeded(in db: Database) throws {
+    private static func factValue(kind: Int, row: Row) throws -> FactValue {
+        switch kind {
+        case 1:
+            let value: String = row["object_text"]
+            return .string(value)
+        case 2:
+            let value: Int64 = row["object_int"]
+            return .int(value)
+        case 3:
+            let value: Double = row["object_real"]
+            return .double(value)
+        case 4:
+            let value: Int64 = row["object_bool"]
+            return .bool(value != 0)
+        case 5:
+            let value: Data = row["object_blob"]
+            return .data(value)
+        case 6:
+            let value: Int64 = row["object_time_ms"]
+            return .timeMs(value)
+        case 7:
+            let value: String = row["object_entity_key"]
+            return .entity(EntityKey(value))
+        default:
+            throw WaxError.io("unsupported structured fact object_kind \(kind) during schema migration")
+        }
+    }
+
+    private static func migrateFramesFTSToPinnedTokenizerIfNeeded(in db: Database, targetVersion: Int32 = userVersion) throws {
         let sql = try framesFTSSchemaSQL(in: db)
         guard !hasPinnedTokenizer(sql) else {
-            try applyUserVersion(in: db, version: userVersion)
+            try applyUserVersion(in: db, version: targetVersion)
             return
         }
 
@@ -111,7 +204,7 @@ enum FTS5Schema {
         try db.execute(sql: "DROP TABLE frames_fts")
         try db.execute(sql: framesFTSSQL)
         try db.execute(sql: "INSERT INTO frames_fts(rowid, content) SELECT rowid, content FROM wax_frames_fts_rows")
-        try applyUserVersion(in: db, version: userVersion)
+        try applyUserVersion(in: db, version: targetVersion)
     }
 
     private static func requirePinnedFTSSchema(in db: Database) throws {

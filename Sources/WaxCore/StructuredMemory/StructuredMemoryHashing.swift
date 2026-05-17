@@ -14,9 +14,9 @@ package enum StructuredMemoryHasher {
 
         var buffer = HashBuffer()
         buffer.appendTag(0xA1)
-        buffer.appendString(subject.rawValue)
+        buffer.appendKey(subject.rawValue)
         buffer.appendTag(0xA2)
-        buffer.appendString(predicate.rawValue)
+        buffer.appendKey(predicate.rawValue)
         buffer.appendTag(0xA3)
         try buffer.appendFactValue(object)
         if let qualifiersHash {
@@ -110,7 +110,11 @@ private struct HashBuffer {
             appendInt64(timeValue)
         case .entity(let entityKey):
             appendTag(0x07)
-            appendString(entityKey.rawValue)
+            appendKey(entityKey.rawValue)
         }
+    }
+
+    mutating func appendKey(_ value: String) {
+        appendBytes(Data(value.utf8))
     }
 }

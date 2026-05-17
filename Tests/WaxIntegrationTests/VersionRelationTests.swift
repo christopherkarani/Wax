@@ -217,7 +217,17 @@ private enum VersionRelationSQLiteFixture {
     let engine = try FTS5SearchEngine.deserialize(from: preMigration)
     let upgraded = try await engine.serialize()
     let userVersion = try VersionRelationSQLiteFixture.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 4)
+    #expect(userVersion == 5)
+
+    let originalFact = try await engine.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 0, toMs: nil),
+        evidence: []
+    )
+    #expect(originalFact.rawValue == 1)
 
     _ = try await engine.assertFact(
         subject: EntityKey("user:chris"),

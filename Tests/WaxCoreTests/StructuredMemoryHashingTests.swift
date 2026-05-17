@@ -97,3 +97,34 @@ import Testing
     )
     #expect(hashInt != hashString)
 }
+
+@Test func hashFactPreservesEntityAndPredicateKeyCase() throws {
+    let upper = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerSubject = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerPredicate = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerEntityObject = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("place:paris")),
+        qualifiersHash: nil
+    )
+
+    #expect(upper != lowerSubject)
+    #expect(upper != lowerPredicate)
+    #expect(upper != lowerEntityObject)
+}
