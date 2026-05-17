@@ -39,6 +39,16 @@ import Testing
         maxBatchSize: maxBatchSize
     )
 
-    #expect(plannedSizes == [totalCount])
+    #expect(plannedSizes == [1, 1, 1, 1, 1])
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test func miniLMEmbedderBatchPlanningUsesOnlySupportedCoreMLBatchShapes() {
+    let plannedSizes = MiniLMEmbedder._planBatchSizesForTesting(
+        totalCount: 5,
+        maxBatchSize: 4
+    )
+
+    #expect(plannedSizes == [1, 1, 1, 1, 1])
 }
 #endif

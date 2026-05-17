@@ -14,8 +14,8 @@ extension MiniLMEmbeddings: @unchecked Sendable {}
 package protocol MiniLMEmbeddingModel: Sendable {
     var computeUnits: MLComputeUnits { get }
 
-    func encode(sentence: String) async -> [Float]?
-    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async -> [[Float]]?
+    func encode(sentence: String) async throws -> [Float]?
+    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async throws -> [[Float]]?
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -39,6 +39,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
     private static let maximumBatchSize = 256
+    private static let maximumCoreMLPredictionBatchSize = 1
     private var batchInputBuffers: BatchInputBuffers?
 
     package struct Config {
@@ -126,7 +127,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
+        guard let vector = try await model.encode(sentence: text) else {
             throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
@@ -169,7 +170,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         // Copy buffer out, call async encode, copy back — required because
         // actor-isolated inout properties can't be passed to async functions.
         var buffers = batchInputBuffers
-        let vectors = await model.encode(batch: texts, reuseBuffers: &buffers)
+        let vectors = try await model.encode(batch: texts, reuseBuffers: &buffers)
         batchInputBuffers = buffers
         guard let vectors else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
@@ -288,7 +289,7 @@ private extension MiniLMEmbedder {
 
     static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
         guard totalCount > 0 else { return [] }
-        let clampedMax = Swift.max(1, maxBatchSize)
+        let clampedMax = Swift.max(1, Swift.min(maxBatchSize, maximumCoreMLPredictionBatchSize))
 
         if totalCount <= clampedMax {
             return [totalCount]

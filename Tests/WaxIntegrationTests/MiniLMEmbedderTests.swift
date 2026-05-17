@@ -10,16 +10,21 @@ import WaxVectorSearchMiniLM
 private struct StubMiniLMModel: MiniLMEmbeddingModel {
     let single: [Float]?
     let batch: [[Float]]?
+    var error: Error?
     let computeUnits: MLComputeUnits = .cpuOnly
 
-    func encode(sentence: String) async -> [Float]? {
-        single
+    func encode(sentence: String) async throws -> [Float]? {
+        if let error { throw error }
+        return single
     }
 
-    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async -> [[Float]]? {
-        batch
+    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async throws -> [[Float]]? {
+        if let error { throw error }
+        return batch
     }
 }
+
+private struct StubMiniLMError: Error {}
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test
@@ -27,7 +32,7 @@ func miniLMEmbedderNormalizesDirectOutputs() async throws {
     var vector = Array(repeating: Float(0), count: 384)
     vector[0] = 3
     vector[1] = 4
-    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil, error: nil), batchSize: 1)
 
     let embedded = try await embedder.embed("hello world")
 
@@ -40,7 +45,7 @@ func miniLMEmbedderNormalizesDirectOutputs() async throws {
 @Test
 func miniLMEmbedderRejectsZeroMagnitudeOutputs() async throws {
     let vector = Array(repeating: Float(0), count: 384)
-    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil, error: nil), batchSize: 1)
 
     await #expect(throws: (any Error).self) {
         _ = try await embedder.embed("hello world")
@@ -52,7 +57,7 @@ func miniLMEmbedderRejectsZeroMagnitudeOutputs() async throws {
 func miniLMEmbedderRejectsNonFiniteDirectOutputs() async throws {
     var vector = Array(repeating: Float(0), count: 384)
     vector[0] = .nan
-    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil, error: nil), batchSize: 1)
 
     await #expect(throws: (any Error).self) {
         _ = try await embedder.embed("hello world")
@@ -67,12 +72,25 @@ func miniLMEmbedderRejectsNonFiniteBatchOutputs() async throws {
     var nonFinite = Array(repeating: Float(0), count: 384)
     nonFinite[0] = .infinity
     let embedder = MiniLMEmbedder(
-        model: StubMiniLMModel(single: nil, batch: [finite, nonFinite]),
+        model: StubMiniLMModel(single: nil, batch: [finite, nonFinite], error: nil),
         batchSize: 2
     )
 
     await #expect(throws: (any Error).self) {
         _ = try await embedder.embed(batch: ["finite", "bad"])
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderPropagatesModelPredictionErrors() async throws {
+    let embedder = MiniLMEmbedder(
+        model: StubMiniLMModel(single: nil, batch: nil, error: StubMiniLMError()),
+        batchSize: 1
+    )
+
+    await #expect(throws: StubMiniLMError.self) {
+        _ = try await embedder.embed("hello world")
     }
 }
 

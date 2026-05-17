@@ -93,7 +93,7 @@ func minilmEmbeddingsStayCloseToBaseline() async throws {
     #expect(fixture.sentences.count == fixture.embeddings.count)
 
     let model = try MiniLMEmbeddings()
-    guard let freshEmbeddings = await model.encode(batch: fixture.sentences) else {
+    guard let freshEmbeddings = try await model.encode(batch: fixture.sentences) else {
         throw TestingError("MiniLM produced no embeddings")
     }
     #expect(freshEmbeddings.count == fixture.embeddings.count)
@@ -131,7 +131,7 @@ func generateMiniLMBaselineFixture() async throws {
     ]
 
     let model = try MiniLMEmbeddings()
-    guard let embeddings = await model.encode(batch: sentences) else {
+    guard let embeddings = try await model.encode(batch: sentences) else {
         throw TestingError("MiniLM produced no embeddings")
     }
 
