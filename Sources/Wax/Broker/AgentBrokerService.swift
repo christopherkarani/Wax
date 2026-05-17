@@ -1810,32 +1810,55 @@ extension AgentBrokerService {
         long = Self.deduplicateLayeredHits(long)
 
         let ordered = Array((short.prefix(maxItems) + medium.prefix(maxItems) + long.prefix(maxItems)).prefix(maxItems * 3))
-        let tokenCounts = await counter.countBatch(ordered.map(\.text))
-        var usedTokens = 0
         var selectedShort: [LayeredMemoryHit] = []
         var selectedMedium: [LayeredMemoryHit] = []
         var selectedLong: [LayeredMemoryHit] = []
+        var usedTokens = await counter.count(renderCompactedContext(
+            query: query,
+            short: selectedShort,
+            medium: selectedMedium,
+            long: selectedLong
+        ))
 
-        for (index, hit) in ordered.enumerated() {
-            let tokens = tokenCounts[index]
-            if usedTokens + tokens > tokenBudget { continue }
-            usedTokens += tokens
+        for hit in ordered {
+            var candidateShort = selectedShort
+            var candidateMedium = selectedMedium
+            var candidateLong = selectedLong
             switch hit.horizon {
             case .working:
-                selectedShort.append(hit)
+                candidateShort.append(hit)
             case .episodic:
-                selectedMedium.append(hit)
+                candidateMedium.append(hit)
             case .durable:
-                selectedLong.append(hit)
+                candidateLong.append(hit)
             }
+            let candidateText = renderCompactedContext(
+                query: query,
+                short: candidateShort,
+                medium: candidateMedium,
+                long: candidateLong
+            )
+            let candidateTokens = await counter.count(candidateText)
+            guard candidateTokens <= tokenBudget else { continue }
+            selectedShort = candidateShort
+            selectedMedium = candidateMedium
+            selectedLong = candidateLong
+            usedTokens = candidateTokens
         }
 
-        let compactedText = renderCompactedContext(
+        var compactedText = renderCompactedContext(
             query: query,
             short: selectedShort,
             medium: selectedMedium,
             long: selectedLong
         )
+        let renderedTokens = await counter.count(compactedText)
+        if renderedTokens > tokenBudget {
+            compactedText = await counter.truncate(compactedText, maxTokens: tokenBudget)
+            usedTokens = await counter.count(compactedText)
+        } else {
+            usedTokens = renderedTokens
+        }
         let summary = [
             selectedShort.first?.preview,
             selectedMedium.first?.preview,

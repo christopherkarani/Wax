@@ -4289,6 +4289,79 @@ func brokerCompactContextEmitsCanonicalDocumentMemoryIDsForChunkHits() async thr
 }
 
 @Test
+func brokerCompactContextBudgetsRenderedOutputTokens() async throws {
+    try await withAgentBrokerService { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionIDString = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        let anchor = "F195_RENDERED_BUDGET_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+
+        for index in 0..<8 {
+            let working = await service.handle(.init(
+                command: "memory_append",
+                arguments: [
+                    "content": .string("\(anchor) short working \(index)"),
+                    "session_id": .string(sessionIDString),
+                ]
+            ))
+            #expect(working.ok == true)
+
+            let durable = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("\(anchor) short durable \(index)"),
+                    "durability": .string("durable"),
+                ]
+            ))
+            #expect(durable.ok == true)
+        }
+
+        let compact = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(anchor),
+                "session_id": .string(sessionIDString),
+                "mode": .string("text"),
+                "max_items": .int(64),
+                "token_budget": .int(128),
+            ]
+        ))
+        #expect(compact.ok == true)
+        let payload = try #require(compact.payload?.objectValue)
+        let compactedText = try #require(payload["compacted_text"]?.stringValue)
+        let reportedUsedTokens = try #require(payload["used_tokens"]?.intValue)
+        let counter = try await TokenCounter.shared()
+        let renderedTokens = await counter.count(compactedText)
+        #expect(renderedTokens <= 128)
+        #expect(reportedUsedTokens == Int64(renderedTokens))
+    }
+}
+
+@Test
+func brokerCompactContextBudgetsLongQueryOnlyRender() async throws {
+    try await withAgentBrokerService { service, _ in
+        let longQuery = Array(repeating: "F195_LONG_QUERY_BUDGET", count: 220).joined(separator: " ")
+        let compact = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(longQuery),
+                "mode": .string("text"),
+                "max_items": .int(4),
+                "token_budget": .int(128),
+            ]
+        ))
+        #expect(compact.ok == true)
+        let payload = try #require(compact.payload?.objectValue)
+        let compactedText = try #require(payload["compacted_text"]?.stringValue)
+        let reportedUsedTokens = try #require(payload["used_tokens"]?.intValue)
+        let counter = try await TokenCounter.shared()
+        let renderedTokens = await counter.count(compactedText)
+        #expect(renderedTokens <= 128)
+        #expect(reportedUsedTokens == Int64(renderedTokens))
+    }
+}
+
+@Test
 func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
     try await withAgentBrokerService { service, _ in
         let first = await service.handle(.init(
