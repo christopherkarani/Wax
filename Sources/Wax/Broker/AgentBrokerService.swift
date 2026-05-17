@@ -1236,9 +1236,14 @@ extension AgentBrokerService {
         let hits: [AgentBrokerValue] = result.hits.map { hit in
             AgentBrokerValue.object([
                 "fact_id": .from(hit.factId.rawValue),
+                "span_id": .from(hit.spanId),
                 "subject": .string(hit.fact.subject.rawValue),
                 "predicate": .string(hit.fact.predicate.rawValue),
                 "object": factValueAsBrokerValue(hit.fact.object),
+                "valid_from_ms": .from(hit.valid.fromMs),
+                "valid_to_ms": hit.valid.toMs.map(AgentBrokerValue.from) ?? .null,
+                "system_from_ms": .from(hit.system.fromMs),
+                "system_to_ms": hit.system.toMs.map(AgentBrokerValue.from) ?? .null,
                 "is_open_ended": .from(hit.isOpenEnded),
                 "evidence_count": .from(hit.evidence.count),
                 "evidence": .array(hit.evidence.map(renderStructuredEvidence)),

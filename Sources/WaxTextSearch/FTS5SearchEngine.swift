@@ -413,6 +413,7 @@ package actor FTS5SearchEngine {
                            obj.key AS object_entity_key,
                            s.valid_from_ms AS valid_from_ms,
                            s.valid_to_ms AS valid_to_ms,
+                           s.system_from_ms AS system_from_ms,
                            s.system_to_ms AS system_to_ms
                     FROM sm_fact_span s
                     JOIN sm_fact f ON f.fact_id = s.fact_id
@@ -468,8 +469,8 @@ package actor FTS5SearchEngine {
                 }
 
                 let hits: [StructuredFactHit] = visibleRows.compactMap { row in
-                    guard let factId: Int64 = row["fact_id"] else { return nil }
-                    let spanId: Int64? = row["span_id"]
+                    guard let factId: Int64 = row["fact_id"],
+                          let spanId: Int64 = row["span_id"] else { return nil }
                     let subjectKey: String = row["subject_key"] ?? ""
                     let predicateKey: String = row["predicate_key"] ?? ""
                     let objectKind: Int = row["object_kind"] ?? 0
@@ -501,18 +502,23 @@ package actor FTS5SearchEngine {
                         return nil
                     }
 
+                    let validFrom: Int64 = row["valid_from_ms"] ?? 0
                     let validTo: Int64? = row["valid_to_ms"]
+                    let systemFrom: Int64 = row["system_from_ms"] ?? 0
                     let systemTo: Int64? = row["system_to_ms"]
                     let isOpenEnded = validTo == nil && systemTo == nil
 
                     return StructuredFactHit(
                         factId: FactRowID(rawValue: factId),
+                        spanId: spanId,
                         fact: StructuredFact(
                             subject: EntityKey(subjectKey),
                             predicate: PredicateKey(predicateKey),
                             object: object
                         ),
-                        evidence: spanId.flatMap { evidenceBySpanId[$0] } ?? [],
+                        valid: StructuredTimeRange(fromMs: validFrom, toMs: validTo),
+                        system: StructuredTimeRange(fromMs: systemFrom, toMs: systemTo),
+                        evidence: evidenceBySpanId[spanId] ?? [],
                         isOpenEnded: isOpenEnded
                     )
                 }

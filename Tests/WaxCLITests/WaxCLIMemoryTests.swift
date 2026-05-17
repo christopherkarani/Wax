@@ -260,6 +260,51 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func directFactsQueryTextRendersSpanTemporalBounds() throws {
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-facts-text-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let storeURL = tempDir.appendingPathComponent("facts.wax")
+
+        let assertOutput = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "fact-assert",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", storeURL.path,
+                "--format", "text",
+                "--subject", "project:f019-cli",
+                "--predicate", "status",
+                "--object", "active",
+            ],
+            timeout: 20
+        )
+        #expect(assertOutput.status == EXIT_SUCCESS, "fact-assert should succeed: \(assertOutput.stderr)")
+
+        let queryOutput = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "facts-query",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", storeURL.path,
+                "--format", "text",
+                "--subject", "project:f019-cli",
+                "--predicate", "status",
+            ],
+            timeout: 20
+        )
+
+        #expect(queryOutput.status == EXIT_SUCCESS, "facts-query should succeed: \(queryOutput.stderr)")
+        #expect(queryOutput.stdout.contains("[1:1]"))
+        #expect(queryOutput.stdout.contains("valid=["))
+        #expect(queryOutput.stdout.contains("system=["))
+        #expect(queryOutput.stdout.contains("..open]"))
+    }
+
     @Test func directStatsAndFlushHonorRequireVectorWithNoEmbedder() throws {
         let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
         let tempDir = FileManager.default.temporaryDirectory

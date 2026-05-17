@@ -2145,6 +2145,71 @@ func toolsRejectRecallLimitOutOfRange() async throws {
 }
 
 @Test
+func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
+    try await withMemory { memory in
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:f019"),
+                    "predicate": .string("status"),
+                    "object": .string("active"),
+                    "relation": .string("extends"),
+                    "valid_from": .int(Int(nowMs)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(first.isError != true)
+
+        let second = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:f019"),
+                    "predicate": .string("status"),
+                    "object": .string("active"),
+                    "relation": .string("extends"),
+                    "valid_from": .int(Int(nowMs)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(second.isError != true)
+
+        let queried = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:f019"),
+                    "predicate": .string("status"),
+                    "valid_as_of": .int(Int(nowMs)),
+                    "system_as_of": .int(Int.max),
+                    "limit": .int(10),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(queried.isError != true)
+
+        let payload = try parseJSONText(in: queried)
+        let hits = try #require(payload["hits"] as? [[String: Any]])
+        #expect(hits.count == 2)
+
+        let spanIDs = hits.compactMap { $0["span_id"] as? Int }
+        #expect(Set(spanIDs).count == 2)
+        for hit in hits {
+            #expect(hit["valid_from_ms"] as? Int == Int(nowMs))
+            #expect(hit["valid_to_ms"] is NSNull)
+            #expect(hit["system_from_ms"] as? Int != nil)
+            #expect(hit["system_to_ms"] is NSNull)
+            #expect(hit["is_open_ended"] as? Bool == true)
+        }
+    }
+}
+
+@Test
 func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(

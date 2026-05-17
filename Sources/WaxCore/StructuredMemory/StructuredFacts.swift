@@ -16,19 +16,28 @@ package struct StructuredFact: Sendable, Equatable {
 /// Result hit for a structured fact query.
 package struct StructuredFactHit: Sendable, Equatable {
     package var factId: FactRowID
+    package var spanId: Int64
     package var fact: StructuredFact
+    package var valid: StructuredTimeRange
+    package var system: StructuredTimeRange
     package var evidence: [StructuredEvidence]
     /// True iff the underlying span is package-ended on both axes.
     package var isOpenEnded: Bool
 
     package init(
         factId: FactRowID,
+        spanId: Int64,
         fact: StructuredFact,
+        valid: StructuredTimeRange,
+        system: StructuredTimeRange,
         evidence: [StructuredEvidence],
         isOpenEnded: Bool
     ) {
         self.factId = factId
+        self.spanId = spanId
         self.fact = fact
+        self.valid = valid
+        self.system = system
         self.evidence = evidence
         self.isOpenEnded = isOpenEnded
     }

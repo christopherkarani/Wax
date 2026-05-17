@@ -317,6 +317,41 @@ import Wax
     #expect(overLimit.wasTruncated)
 }
 
+@Test func factsDuplicateOpenSpansForSameFactAreDistinguishable() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let firstFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let secondFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    #expect(secondFact == firstFact)
+
+    let result = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(result.hits.count == 2)
+    #expect(result.hits.allSatisfy { $0.factId == firstFact })
+    #expect(result.hits[0] != result.hits[1])
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(

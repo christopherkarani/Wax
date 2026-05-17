@@ -1709,9 +1709,15 @@ private extension WaxMCPTools {
             "hits": .array(result.hits.map { hit in
                 [
                     "fact_id": .int(Int(hit.factId.rawValue)),
+                    "span_id": .int(Int(hit.spanId)),
                     "subject": .string(hit.fact.subject.rawValue),
                     "predicate": .string(hit.fact.predicate.rawValue),
                     "object": compatFactValuePayload(hit.fact.object),
+                    "valid_from_ms": .int(Int(hit.valid.fromMs)),
+                    "valid_to_ms": hit.valid.toMs.map { .int(Int($0)) } ?? .null,
+                    "system_from_ms": .int(Int(hit.system.fromMs)),
+                    "system_to_ms": hit.system.toMs.map { .int(Int($0)) } ?? .null,
+                    "is_open_ended": .bool(hit.isOpenEnded),
                     "evidence_count": .int(hit.evidence.count),
                     "evidence": .array(hit.evidence.map(compatStructuredEvidencePayload)),
                 ]
