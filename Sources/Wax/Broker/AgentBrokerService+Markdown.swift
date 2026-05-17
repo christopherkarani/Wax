@@ -557,16 +557,23 @@ extension AgentBrokerService {
                 sessionMemory = try await openSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
                 shouldClose = true
             }
-            defer {
-                if shouldClose {
-                    Task { try? await sessionMemory.close() }
-                }
-            }
 
-            let sessionDocuments = try await sessionMemory.corpusSourceDocuments()
-            let recallSignals = try BrokerSessionPersistence.recallSignals(
-                from: BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
-            )
+            let sessionDocuments: [MemoryOrchestrator.CorpusSourceDocument]
+            let recallSignals: [UInt64: BrokerSessionRecallSignals]
+            do {
+                sessionDocuments = try await sessionMemory.corpusSourceDocuments()
+                recallSignals = try BrokerSessionPersistence.recallSignals(
+                    from: BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+                )
+                if shouldClose {
+                    try await sessionMemory.close()
+                }
+            } catch {
+                if shouldClose {
+                    try? await sessionMemory.close()
+                }
+                throw error
+            }
 
             for document in sessionDocuments {
                 let proposal = BrokerMemoryInsights.proposePromotion(

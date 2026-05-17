@@ -3348,7 +3348,7 @@ func brokerMarkdownSyncDeduplicatesCheckedDreamApprovals() async throws {
 
 @Test
 func brokerMarkdownExportIncludesEndedSessionDreams() async throws {
-    try await withAgentBrokerService { service, _ in
+    try await withAgentBrokerService { service, sessionRootURL in
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-markdown-ended-dreams-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: outputURL) }
@@ -3357,6 +3357,7 @@ func brokerMarkdownExportIncludesEndedSessionDreams() async throws {
         #expect(started.ok == true)
         let startedPayload = try #require(started.payload?.objectValue)
         let sessionID = try #require(startedPayload["session_id"]?.stringValue)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
         let dream = "Decision: export ended session DREAMS \(UUID().uuidString)"
 
         let remembered = await service.handle(.init(
@@ -3388,6 +3389,10 @@ func brokerMarkdownExportIncludesEndedSessionDreams() async throws {
         var dreamsText = try String(contentsOf: dreamsURL, encoding: .utf8)
         #expect(dreamsText.contains(dream))
         #expect(dreamsText.contains("- [ ]"))
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionUUID)
+        let reopened = try await service.openSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
+        try await reopened.close()
 
         dreamsText = dreamsText.replacingOccurrences(of: "- [ ] \(dream)", with: "- [x] \(dream)")
         try dreamsText.write(to: dreamsURL, atomically: true, encoding: .utf8)
@@ -3631,6 +3636,25 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
     let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)"))
     #expect(appendEvent.lowerBound < saveManifest.lowerBound)
+}
+
+@Test
+func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?) async throws -> [String]"))
+    let end = try #require(source[start.upperBound...].range(of: "private func merge("))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    #expect(!body.contains("Task { try? await sessionMemory.close() }"))
+    #expect(body.contains("try await sessionMemory.close()"))
 }
 
 @Test
