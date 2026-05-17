@@ -388,6 +388,102 @@ func brokerSearchRejectsInvalidFrameIDFilters() async throws {
 }
 
 @Test
+func brokerBackedF152RecallAndSearchSupportFilters() async throws {
+    try await withAgentBrokerService { service, _ in
+        let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let queryToken = "brokerf152filter\(seed.prefix(8))"
+        let blockedMarker = "brokerf152blocked\(seed.suffix(8))"
+        let allowedMarker = "brokerf152allowed\(seed.dropFirst(8).prefix(8))"
+
+        let blocked = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(queryToken) \(blockedMarker)"),
+                "metadata": .object(["group": .string("blocked")]),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(blocked.ok == true)
+
+        let allowed = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(queryToken) \(allowedMarker)"),
+                "metadata": .object(["group": .string("allowed")]),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(allowed.ok == true)
+
+        let baselineSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(queryToken),
+                "mode": .string("text"),
+                "topK": .int(10),
+            ]
+        ))
+        #expect(baselineSearch.ok == true)
+        let baselinePayload = try #require(baselineSearch.payload?.objectValue)
+        let baselineResults = try #require(baselinePayload["results"]?.arrayValue)
+        #expect(baselineResults.contains { result in
+            guard let object = result.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains(blockedMarker) == true
+        })
+
+        let filters: AgentBrokerValue = .object([
+            "metadata": .object([
+                "exact": .object(["group": .string("allowed")]),
+            ]),
+        ])
+        let filteredSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(queryToken),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "filters": filters,
+            ]
+        ))
+        #expect(filteredSearch.ok == true)
+        let filteredSearchPayload = try #require(filteredSearch.payload?.objectValue)
+        let filteredSearchResults = try #require(filteredSearchPayload["results"]?.arrayValue)
+        #expect(filteredSearchResults.contains { result in
+            guard let object = result.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains(allowedMarker) == true
+        })
+        #expect(!filteredSearchResults.contains { result in
+            guard let object = result.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains(blockedMarker) == true
+        })
+        let appliedFilters = try #require(filteredSearchPayload["applied_filters"]?.objectValue)
+        let appliedMetadata = try #require(appliedFilters["metadata"]?.objectValue)
+        #expect(appliedMetadata["group"]?.stringValue == "allowed")
+
+        let filteredRecall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(queryToken),
+                "mode": .string("text"),
+                "limit": .int(10),
+                "filters": filters,
+            ]
+        ))
+        #expect(filteredRecall.ok == true)
+        let filteredRecallPayload = try #require(filteredRecall.payload?.objectValue)
+        let filteredRecallResults = try #require(filteredRecallPayload["results"]?.arrayValue)
+        #expect(filteredRecallResults.contains { result in
+            guard let object = result.objectValue else { return false }
+            return object["text"]?.stringValue?.contains(allowedMarker) == true
+        })
+        #expect(!filteredRecallResults.contains { result in
+            guard let object = result.objectValue else { return false }
+            return object["text"]?.stringValue?.contains(blockedMarker) == true
+        })
+    }
+}
+
+@Test
 func promotionMaxCandidatesAreBounded() async throws {
     setenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES", "1000000", 1)
     defer { unsetenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES") }
@@ -3135,6 +3231,103 @@ func brokerRememberPreservesContentWhitespace() async throws {
         #expect(latest.ok == true)
         let latestPayload = try #require(latest.payload?.objectValue)
         #expect(latestPayload["content"]?.stringValue == handoffContent)
+    }
+}
+
+@Test
+func brokerBackedF152CompactContextScopesToRequestedSession() async throws {
+    try await withAgentBrokerService { service, _ in
+        let startA = await service.handle(.init(command: "session_start"))
+        #expect(startA.ok == true)
+        let sessionA = try #require(startA.payload?.objectValue?["session_id"]?.stringValue)
+
+        let startB = await service.handle(.init(command: "session_start"))
+        #expect(startB.ok == true)
+        let sessionB = try #require(startB.payload?.objectValue?["session_id"]?.stringValue)
+
+        let durable = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("BROKER_F152_COMPACT_SCOPE durable memory can appear only as long context."),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(durable.ok == true)
+
+        let sessionAWrite = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("BROKER_F152_COMPACT_SCOPE session A working memory should compact for session A."),
+                "session_id": .string(sessionA),
+            ]
+        ))
+        #expect(sessionAWrite.ok == true)
+
+        let sessionBWrite = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("BROKER_F152_COMPACT_SCOPE session B working memory must not leak into session A short context."),
+                "session_id": .string(sessionB),
+            ]
+        ))
+        #expect(sessionBWrite.ok == true)
+
+        let compact = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string("BROKER_F152_COMPACT_SCOPE"),
+                "session_id": .string(sessionA),
+                "mode": .string("text"),
+                "max_items": .int(6),
+                "token_budget": .int(512),
+            ]
+        ))
+        #expect(compact.ok == true)
+        let compactPayload = try #require(compact.payload?.objectValue)
+        let shortContext = try #require(compactPayload["short_context"]?.arrayValue)
+        #expect(shortContext.contains { entry in
+            guard let object = entry.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains("session A working memory should compact") == true
+        })
+        #expect(!shortContext.contains { entry in
+            guard let object = entry.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains("session B working memory must not leak") == true
+        })
+        #expect(shortContext.allSatisfy { entry in
+            guard let object = entry.objectValue,
+                  let memoryID = object["memory_id"]?.stringValue else { return false }
+            return memoryID.hasPrefix("working:\(sessionA):")
+        })
+        let shortMemoryIDs = shortContext.compactMap { $0.objectValue?["memory_id"]?.stringValue }
+        #expect(shortMemoryIDs.count == Set(shortMemoryIDs).count)
+
+        let longContext = try #require(compactPayload["long_context"]?.arrayValue)
+        #expect(longContext.contains { entry in
+            guard let object = entry.objectValue else { return false }
+            return object["preview"]?.stringValue?.contains("durable memory can appear only as long context") == true
+        })
+        let longMemoryIDs = longContext.compactMap { $0.objectValue?["memory_id"]?.stringValue }
+        #expect(longMemoryIDs.count == Set(longMemoryIDs).count)
+
+        let firstItem = try #require(shortContext.compactMap(\.objectValue).first)
+        let memoryID = try #require(firstItem["memory_id"]?.stringValue)
+        let get = await service.handle(.init(
+            command: "memory_get",
+            arguments: ["memory_id": .string(memoryID)]
+        ))
+        #expect(get.ok == true)
+        let getPayload = try #require(get.payload?.objectValue)
+        #expect(getPayload["text"]?.stringValue?.contains("session A working memory should compact") == true)
+
+        let firstLongItem = try #require(longContext.compactMap(\.objectValue).first)
+        let longMemoryID = try #require(firstLongItem["memory_id"]?.stringValue)
+        let getLong = await service.handle(.init(
+            command: "memory_get",
+            arguments: ["memory_id": .string(longMemoryID)]
+        ))
+        #expect(getLong.ok == true)
+        let getLongPayload = try #require(getLong.payload?.objectValue)
+        #expect(getLongPayload["text"]?.stringValue?.contains("durable memory can appear only as long context") == true)
     }
 }
 
