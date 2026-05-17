@@ -16,16 +16,20 @@ package extension MemoryOrchestrator {
             try PDFTextExtractor.extractText(url: url, maxPages: maxPages)
         }.value
 
-        var mergedMetadata = metadata
-        mergedMetadata[PDFMetadataKeys.sourceKind] = "pdf"
-        mergedMetadata[PDFMetadataKeys.sourceURI] = url.absoluteString
-        mergedMetadata[PDFMetadataKeys.sourceFilename] = url.lastPathComponent
-        mergedMetadata[PDFMetadataKeys.pdfPageCount] = String(extracted.pageCount)
-        mergedMetadata[PDFMetadataKeys.pdfExtractedPageCount] = String(extracted.extractedPageCount)
-        mergedMetadata[PDFMetadataKeys.pdfMaxPages] = String(extracted.maxPages)
-        mergedMetadata[PDFMetadataKeys.pdfTruncated] = String(extracted.isTruncated)
+        var baseMetadata = metadata
+        baseMetadata[PDFMetadataKeys.sourceKind] = "pdf"
+        baseMetadata[PDFMetadataKeys.sourceURI] = url.absoluteString
+        baseMetadata[PDFMetadataKeys.sourceFilename] = url.lastPathComponent
+        baseMetadata[PDFMetadataKeys.pdfPageCount] = String(extracted.pageCount)
+        baseMetadata[PDFMetadataKeys.pdfExtractedPageCount] = String(extracted.extractedPageCount)
+        baseMetadata[PDFMetadataKeys.pdfMaxPages] = String(extracted.maxPages)
+        baseMetadata[PDFMetadataKeys.pdfTruncated] = String(extracted.isTruncated)
 
-        try await remember(extracted.text, metadata: mergedMetadata)
+        for page in extracted.pages {
+            var pageMetadata = baseMetadata
+            pageMetadata[PDFMetadataKeys.pdfPageNumber] = String(page.number)
+            try await remember(page.text, metadata: pageMetadata)
+        }
         #else
         _ = maxPages
         _ = metadata
@@ -42,4 +46,5 @@ private enum PDFMetadataKeys {
     static let pdfExtractedPageCount = "pdf_extracted_page_count"
     static let pdfMaxPages = "pdf_max_pages"
     static let pdfTruncated = "pdf_truncated"
+    static let pdfPageNumber = "pdf_page_number"
 }
