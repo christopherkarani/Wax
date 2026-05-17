@@ -3279,6 +3279,71 @@ func brokerSessionLoadEventsSkipsMalformedJSONLLines() throws {
 }
 
 @Test
+func brokerSessionListManifestsSkipsMalformedStrayJSON() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-manifest-malformed-stray-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let olderID = UUID()
+    let newerID = UUID()
+    let older = BrokerSessionManifest(
+        sessionID: olderID,
+        agentID: "agent",
+        runID: "older",
+        project: nil,
+        repo: nil,
+        storePath: rootURL.appendingPathComponent("older.wax").path,
+        eventLogPath: rootURL.appendingPathComponent("older.events.jsonl").path,
+        status: .active,
+        brokerLeaseOwnerID: "broker",
+        leaseExpiresAtMs: 2,
+        createdAtMs: 1,
+        updatedAtMs: 1
+    )
+    let newer = BrokerSessionManifest(
+        sessionID: newerID,
+        agentID: "agent",
+        runID: "newer",
+        project: nil,
+        repo: nil,
+        storePath: rootURL.appendingPathComponent("newer.wax").path,
+        eventLogPath: rootURL.appendingPathComponent("newer.events.jsonl").path,
+        status: .active,
+        brokerLeaseOwnerID: "broker",
+        leaseExpiresAtMs: 3,
+        createdAtMs: 2,
+        updatedAtMs: 2
+    )
+    try BrokerSessionPersistence.saveManifest(older, to: BrokerSessionPersistence.manifestURL(rootURL: rootURL, sessionID: olderID))
+    try BrokerSessionPersistence.saveManifest(newer, to: BrokerSessionPersistence.manifestURL(rootURL: rootURL, sessionID: newerID))
+    let corruptManifestURL = rootURL.appendingPathComponent("stray.json")
+    try Data("{not valid json".utf8).write(to: corruptManifestURL)
+
+    let manifests = try BrokerSessionPersistence.listManifests(rootURL: rootURL)
+    #expect(manifests.map(\.sessionID) == [newerID, olderID])
+    #expect(throws: (any Error).self) {
+        try BrokerSessionPersistence.loadManifest(at: corruptManifestURL)
+    }
+}
+
+@Test
+func brokerSessionListManifestsPropagatesMalformedSessionManifest() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-manifest-malformed-session-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let sessionID = UUID()
+    let corruptManifestURL = BrokerSessionPersistence.manifestURL(rootURL: rootURL, sessionID: sessionID)
+    try Data("{not valid json".utf8).write(to: corruptManifestURL)
+
+    #expect(throws: (any Error).self) {
+        _ = try BrokerSessionPersistence.listManifests(rootURL: rootURL)
+    }
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"
@@ -3471,6 +3536,38 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
         #expect(resumed.ok == true)
         let resumedPayload = try #require(resumed.payload?.objectValue)
         #expect(resumedPayload["session_id"]?.stringValue == firstSessionID)
+        #expect(resumedPayload["resumed"]?.boolValue == true)
+    }
+}
+
+@Test
+func brokerSessionResumeSelectorSkipsCorruptStrayManifests() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("corrupt-selector-agent"),
+                "run_id": .string("corrupt-selector-run"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+
+        let corruptManifestURL = sessionRootURL.appendingPathComponent("not-a-session.json")
+        try Data("{not valid json".utf8).write(to: corruptManifestURL)
+
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: [
+                "agent_id": .string("corrupt-selector-agent"),
+                "run_id": .string("corrupt-selector-run"),
+            ]
+        ))
+
+        #expect(resumed.ok == true)
+        let resumedPayload = try #require(resumed.payload?.objectValue)
+        #expect(resumedPayload["session_id"]?.stringValue == sessionIDString)
         #expect(resumedPayload["resumed"]?.boolValue == true)
     }
 }

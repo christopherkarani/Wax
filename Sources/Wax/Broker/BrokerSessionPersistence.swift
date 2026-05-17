@@ -161,7 +161,10 @@ package enum BrokerSessionPersistence {
             options: [.skipsHiddenFiles]
         ).filter { $0.pathExtension == "json" }
 
-        return try urls.map(loadManifest(at:)).sorted { lhs, rhs in
+        let sessionManifestURLs = urls.filter { url in
+            UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil
+        }
+        return try sessionManifestURLs.map(loadManifest(at:)).sorted { lhs, rhs in
             if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
             return lhs.sessionID.uuidString < rhs.sessionID.uuidString
         }
