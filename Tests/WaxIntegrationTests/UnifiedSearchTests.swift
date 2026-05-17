@@ -61,6 +61,28 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func textOnlyMinScoreUsesNormalizedTextScores() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let exact = try await wax.put(Data("Swift Swift Swift concurrency actors".utf8))
+        try await text.index(frameId: exact, text: "Swift Swift Swift concurrency actors")
+        let weaker = try await wax.put(Data("Swift concurrency".utf8))
+        try await text.index(frameId: weaker, text: "Swift concurrency")
+
+        try await text.commit()
+
+        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9)
+        let response = try await wax.search(request)
+
+        #expect(response.results.map(\.frameId) == [exact])
+        #expect(response.results.first?.score ?? 0 > 0.9)
+
+        try await wax.close()
+    }
+}
+
 @Test func vectorOnlySearch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

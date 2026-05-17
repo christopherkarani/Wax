@@ -4,6 +4,7 @@ import WaxCore
 
 package actor FTS5SearchEngine {
     private static let maxResults = 10_000
+    private static let bm25ScoreSaturation = 0.000_000_14
     /// Upper bound on queued writes before forcing a flush to SQLite.
     ///
     /// Too small => many transactions (slow). Too large => unbounded memory.
@@ -1081,9 +1082,10 @@ package actor FTS5SearchEngine {
 
     private static func scoreFromBM25Rank(_ rank: Double) -> Double {
         // SQLite FTS5 bm25() rank is "lower is better" (often negative).
-        // Expose a score where "higher is better".
         guard rank.isFinite else { return 0 }
-        return -rank
+        let relevance = max(0, -rank)
+        guard relevance > 0 else { return 0 }
+        return min(1, relevance / (relevance + bm25ScoreSaturation))
     }
 
     private static func validatedTopK(_ topK: Int) throws -> Int {

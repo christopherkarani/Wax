@@ -335,6 +335,44 @@ private enum SQLiteBlobInspector {
     #expect(results[0].score != results[1].score)
 }
 
+@Test func textSearchScoresAreNormalizedForThresholds() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 0, text: "Swift Swift Swift concurrency actors")
+    try await engine.index(frameId: 1, text: "Swift concurrency")
+
+    let results = try await engine.search(query: "Swift", topK: 10)
+
+    #expect(results.count == 2)
+    #expect(results.allSatisfy { (0...1).contains($0.score) })
+    #expect(results[0].score > 0.9)
+    #expect(results[0].score > results[1].score)
+    #expect(results[1].score < 0.9)
+}
+
+@Test func textSearchSingleWeakMatchDoesNotBecomePerfectScore() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 1, text: "Swift concurrency")
+
+    let results = try await engine.search(query: "Swift", topK: 10)
+
+    #expect(results.map(\.frameId) == [1])
+    #expect(results[0].score < 0.9)
+}
+
+@Test func textSearchScoresDoNotDependOnReturnedWindow() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 0, text: "Swift Swift Swift concurrency actors")
+    try await engine.index(frameId: 1, text: "Swift concurrency")
+    try await engine.index(frameId: 2, text: "Swift concurrency concurrency concurrency concurrency concurrency")
+
+    let narrow = try await engine.search(query: "Swift", topK: 2)
+    let wide = try await engine.search(query: "Swift", topK: 10)
+
+    let narrowMiddle = try #require(narrow.first { $0.frameId == 1 })
+    let wideMiddle = try #require(wide.first { $0.frameId == 1 })
+    #expect(abs(narrowMiddle.score - wideMiddle.score) < 0.000_000_000_001)
+}
+
 @Test func searchTieBreaksOnFrameIdForDeterminism() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 
