@@ -242,6 +242,19 @@ package actor WaxSession {
         return try await textEngine.facts(about: subject, predicate: predicate, asOf: asOf, limit: limit)
     }
 
+    package func edges(
+        for entity: EntityKey,
+        direction: StructuredEdgeDirection,
+        predicate: PredicateKey?,
+        asOf: StructuredMemoryAsOf,
+        limit: Int
+    ) async throws -> StructuredEdgesResult {
+        guard config.enableStructuredMemory, let textEngine else {
+            throw WaxError.io("structured memory is disabled")
+        }
+        return try await textEngine.edges(for: entity, direction: direction, predicate: predicate, asOf: asOf, limit: limit)
+    }
+
     // MARK: - Frames
 
     package func put(

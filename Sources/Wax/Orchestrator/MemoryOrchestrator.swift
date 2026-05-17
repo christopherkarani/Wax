@@ -1454,6 +1454,28 @@ package actor MemoryOrchestrator {
         )
     }
 
+    package func edges(
+        for entity: EntityKey,
+        direction: StructuredEdgeDirection,
+        predicate: PredicateKey? = nil,
+        asOfMs: Int64 = Int64.max,
+        systemAsOfMs: Int64? = nil,
+        validAsOfMs: Int64? = nil,
+        limit: Int = 50
+    ) async throws -> StructuredEdgesResult {
+        try ensureStructuredMemoryEnabled()
+        return try await session.edges(
+            for: entity,
+            direction: direction,
+            predicate: predicate,
+            asOf: StructuredMemoryAsOf(
+                systemTimeMs: systemAsOfMs ?? asOfMs,
+                validTimeMs: validAsOfMs ?? asOfMs
+            ),
+            limit: limit
+        )
+    }
+
     package func resolveEntities(matchingAlias alias: String, limit: Int = 10) async throws -> [StructuredEntityMatch] {
         try ensureStructuredMemoryEnabled()
         return try await session.resolveEntities(matchingAlias: alias, limit: limit)

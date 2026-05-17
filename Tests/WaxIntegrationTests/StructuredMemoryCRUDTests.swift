@@ -72,6 +72,92 @@ import Wax
     #expect(wildcardMatches.isEmpty)
 }
 
+@Test func structuredEdgesTraverseEntityValuedFactsByDirectionAndPredicate() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("works_with"),
+        object: .entity(EntityKey("person:bob")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:carol"),
+        predicate: PredicateKey("reports_to"),
+        object: .entity(EntityKey("person:alice")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("located_in"),
+        object: .string("London"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    let outbound = try await engine.edges(
+        for: EntityKey("person:alice"),
+        direction: .outbound,
+        predicate: PredicateKey("works_with"),
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+    let inbound = try await engine.edges(
+        for: EntityKey("person:alice"),
+        direction: .inbound,
+        predicate: nil,
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(outbound.hits == [
+        EdgeHit(
+            factId: FactRowID(rawValue: 1),
+            predicate: PredicateKey("works_with"),
+            direction: .outbound,
+            neighbor: EntityKey("person:bob")
+        ),
+    ])
+    #expect(outbound.wasTruncated == false)
+    #expect(inbound.hits.map(\.predicate) == [PredicateKey("reports_to")])
+    #expect(inbound.hits.map(\.direction) == [.inbound])
+    #expect(inbound.hits.map(\.neighbor) == [EntityKey("person:carol")])
+}
+
+@Test func memoryOrchestratorExposesStructuredEdgeTraversal() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableStructuredMemory = true
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+
+        _ = try await memory.assertFact(
+            subject: EntityKey("service:indexer"),
+            predicate: PredicateKey("depends_on"),
+            object: .entity(EntityKey("service:store")),
+            validFromMs: 0
+        )
+
+        let edges = try await memory.edges(
+            for: EntityKey("service:indexer"),
+            direction: .outbound,
+            predicate: PredicateKey("depends_on"),
+            validAsOfMs: 0,
+            limit: 10
+        )
+
+        #expect(edges.hits.map(\.neighbor) == [EntityKey("service:store")])
+        #expect(edges.hits.map(\.direction) == [.outbound])
+        #expect(edges.wasTruncated == false)
+        try await memory.close()
+    }
+}
+
 @Test func structuredMemoryRejectsInvalidEntityAndPredicateKeys() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     let overlong = String(repeating: "x", count: 4_097)

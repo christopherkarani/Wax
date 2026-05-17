@@ -538,6 +538,92 @@ package actor FTS5SearchEngine {
         }
     }
 
+    package func edges(
+        for entity: EntityKey,
+        direction: StructuredEdgeDirection,
+        predicate: PredicateKey?,
+        asOf: StructuredMemoryAsOf,
+        limit: Int
+    ) async throws -> StructuredEdgesResult {
+        try StructuredMemoryValidation.validateEntityKey(entity, field: "edges entity")
+        if let predicate {
+            try StructuredMemoryValidation.validatePredicateKey(predicate, field: "edges predicate")
+        }
+        try await flushPendingOpsIfNeeded()
+        let capped = max(0, min(limit, Self.maxResults))
+        let fetchLimit = capped > 0 ? capped + 1 : 0
+        let dbQueue = self.dbQueue
+        return try await io.run {
+            try dbQueue.read { db in
+                var whereClauses = [
+                    "f.object_kind = 7",
+                    "focus.key = ?",
+                    "s.system_from_ms <= ?",
+                    "(s.system_to_ms IS NULL OR s.system_to_ms > ?)",
+                    "s.valid_from_ms <= ?",
+                    "(s.valid_to_ms IS NULL OR s.valid_to_ms > ?)",
+                ]
+                var args: [any DatabaseValueConvertible] = [
+                    entity.rawValue,
+                    asOf.systemTimeMs,
+                    asOf.systemTimeMs,
+                    asOf.validTimeMs,
+                    asOf.validTimeMs,
+                ]
+                if let predicate {
+                    whereClauses.append("p.key = ?")
+                    args.append(predicate.rawValue)
+                }
+                let whereSQL = whereClauses.joined(separator: " AND ")
+                let directionSQL: String
+                let directionValue: Int
+                switch direction {
+                case .outbound:
+                    directionSQL = """
+                    JOIN sm_entity focus ON focus.entity_id = f.subject_entity_id
+                    JOIN sm_entity neighbor ON neighbor.entity_id = f.object_entity_id
+                    """
+                    directionValue = 0
+                case .inbound:
+                    directionSQL = """
+                    JOIN sm_entity focus ON focus.entity_id = f.object_entity_id
+                    JOIN sm_entity neighbor ON neighbor.entity_id = f.subject_entity_id
+                    """
+                    directionValue = 1
+                }
+                let sql = """
+                    SELECT f.fact_id AS fact_id,
+                           p.key AS predicate_key,
+                           neighbor.key AS neighbor_key
+                    FROM sm_fact_span s
+                    JOIN sm_fact f ON f.fact_id = s.fact_id
+                    JOIN sm_predicate p ON p.predicate_id = f.predicate_id
+                    \(directionSQL)
+                    WHERE \(whereSQL)
+                    ORDER BY p.key ASC,
+                             neighbor.key ASC,
+                             s.valid_from_ms DESC,
+                             f.fact_id ASC
+                    LIMIT ?
+                    """
+                args.append(fetchLimit)
+                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+                let hits = rows.prefix(capped).compactMap { row -> EdgeHit? in
+                    guard let factId: Int64 = row["fact_id"] else { return nil }
+                    let predicateKey: String = row["predicate_key"] ?? ""
+                    let neighborKey: String = row["neighbor_key"] ?? ""
+                    return EdgeHit(
+                        factId: FactRowID(rawValue: factId),
+                        predicate: PredicateKey(predicateKey),
+                        direction: directionValue == 0 ? .outbound : .inbound,
+                        neighbor: EntityKey(neighborKey)
+                    )
+                }
+                return StructuredEdgesResult(hits: hits, wasTruncated: capped > 0 && rows.count > capped)
+            }
+        }
+    }
+
     package func evidenceFrameIds(
         subjectKeys: [EntityKey],
         asOf: StructuredMemoryAsOf,
