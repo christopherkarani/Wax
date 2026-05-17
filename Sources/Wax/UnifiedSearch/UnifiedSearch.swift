@@ -186,8 +186,7 @@ extension Wax {
             )
             guard !candidates.isEmpty else { return [] }
 
-            let asOfMs = request.timeRange?.before ?? request.asOfMs
-            let asOf = StructuredMemoryAsOf(asOfMs: asOfMs)
+            let asOf = StructuredMemoryAsOf(asOfMs: request.asOfMs)
             return try await structuredEngine.evidenceFrameIds(
                 subjectKeys: candidates,
                 asOf: asOf,

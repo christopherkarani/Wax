@@ -152,6 +152,88 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func structuredSearchTimeRangeBeforeDoesNotOverrideExplicitAsOf() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let frameTimestampMs: Int64 = 100
+        let factSystemFromMs: Int64 = 5_000
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the entity alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload"),
+            timestampMs: frameTimestampMs
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f027-alice"),
+            kind: "person",
+            aliases: ["F027 Alice"],
+            nowMs: factSystemFromMs
+        )
+
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f027-alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: factSystemFromMs),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: factSystemFromMs
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let latestResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                timeRange: SearchTimeRange(before: 200),
+                asOfMs: .max
+            )
+        )
+
+        #expect(latestResponse.results.map(\.frameId) == [evidenceFrame])
+        #expect(latestResponse.results.first?.sources == [.structuredMemory])
+
+        let outOfFrameRangeResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                timeRange: SearchTimeRange(before: 50),
+                asOfMs: .max
+            )
+        )
+
+        #expect(outOfFrameRangeResponse.results.isEmpty)
+
+        let historicalResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                asOfMs: 200
+            )
+        )
+
+        #expect(historicalResponse.results.isEmpty)
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
 @Test func filtersAllowResultsBeyondTopK() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
