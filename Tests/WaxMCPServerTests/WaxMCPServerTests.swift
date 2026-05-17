@@ -4212,6 +4212,83 @@ func brokerBackedF152CompactContextScopesToRequestedSession() async throws {
 }
 
 @Test
+func brokerCompactContextEmitsCanonicalDocumentMemoryIDsForChunkHits() async throws {
+    try await withAgentBrokerService { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionIDString = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+        let state = try #require(await service.activeSessions[sessionID])
+
+        let anchor = "F194_CHUNK_CANONICAL_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let content = Array(
+            repeating: "\(anchor) compact context must return document memory ids instead of chunk frame ids.",
+            count: 90
+        ).joined(separator: " ")
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string(content),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let rawSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(anchor),
+                "session_id": .string(sessionIDString),
+                "mode": .string("text"),
+                "topK": .int(12),
+            ]
+        ))
+        #expect(rawSearch.ok == true)
+        let rawResults = try #require(rawSearch.payload?.objectValue?["results"]?.arrayValue)
+        var rawChunkFrameIDs = Set<UInt64>()
+        for result in rawResults {
+            guard let rawID = result.objectValue?["frameId"]?.intValue.map(UInt64.init) else { continue }
+            let meta = try await state.memory.wax.frameMetaIncludingPending(frameId: rawID)
+            if meta.role == .chunk {
+                rawChunkFrameIDs.insert(rawID)
+            }
+        }
+        #expect(!rawChunkFrameIDs.isEmpty)
+
+        let compact = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(anchor),
+                "session_id": .string(sessionIDString),
+                "mode": .string("text"),
+                "max_items": .int(6),
+                "token_budget": .int(512),
+            ]
+        ))
+        #expect(compact.ok == true)
+        let compactPayload = try #require(compact.payload?.objectValue)
+        let shortContext = try #require(compactPayload["short_context"]?.arrayValue)
+        #expect(!shortContext.isEmpty)
+
+        for item in shortContext {
+            let object = try #require(item.objectValue)
+            let memoryID = try #require(object["memory_id"]?.stringValue)
+            let frameID = try #require(object["frame_id"]?.intValue.map(UInt64.init))
+            #expect(!rawChunkFrameIDs.contains(frameID))
+            let meta = try await state.memory.wax.frameMetaIncludingPending(frameId: frameID)
+            #expect(meta.role != .chunk)
+
+            let get = await service.handle(.init(
+                command: "memory_get",
+                arguments: ["memory_id": .string(memoryID)]
+            ))
+            #expect(get.ok == true)
+            #expect(get.payload?.objectValue?["text"]?.stringValue?.contains(anchor) == true)
+        }
+    }
+}
+
+@Test
 func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
     try await withAgentBrokerService { service, _ in
         let first = await service.handle(.init(
