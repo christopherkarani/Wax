@@ -73,6 +73,32 @@ private struct DecodeTestError: Error, CustomStringConvertible {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
+@Test func miniLMPreTokenizedBatchSizeUsesInputRows() throws {
+    let inputIds = try MLMultiArray(shape: [2, 3], dataType: .int32)
+    let attentionMask = try MLMultiArray(shape: [2, 3], dataType: .int32)
+
+    let batchSize = MiniLMEmbeddings._preTokenizedBatchSizeForTesting(
+        inputIds: inputIds,
+        attentionMask: attentionMask
+    )
+
+    #expect(batchSize == 2)
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test func miniLMPreTokenizedBatchSizeRejectsMismatchedInputRows() throws {
+    let inputIds = try MLMultiArray(shape: [2, 3], dataType: .int32)
+    let attentionMask = try MLMultiArray(shape: [1, 3], dataType: .int32)
+
+    let batchSize = MiniLMEmbeddings._preTokenizedBatchSizeForTesting(
+        inputIds: inputIds,
+        attentionMask: attentionMask
+    )
+
+    #expect(batchSize == nil)
+}
+
+@available(macOS 15.0, iOS 18.0, *)
 private func decode(
     _ array: MLMultiArray,
     batchSize: Int,
