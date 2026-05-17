@@ -218,6 +218,9 @@ import Wax
     #expect(result.hits.count == 1)
     #expect(result.hits[0].fact.subject == EntityKey("person:alice"))
     #expect(result.hits[0].fact.object == .entity(EntityKey("place:paris")))
+    #expect(result.hits[0].evidence.count == 1)
+    #expect(result.hits[0].evidence[0].sourceFrameId == 0)
+    #expect(result.hits[0].evidence[0].extractorId == "test")
     #expect(result.hits[0].isOpenEnded == true)
 }
 

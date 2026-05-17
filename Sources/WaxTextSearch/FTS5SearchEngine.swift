@@ -363,6 +363,7 @@ package actor FTS5SearchEngine {
 
                 let sql = """
                     SELECT f.fact_id AS fact_id,
+                           s.span_id AS span_id,
                            subj.key AS subject_key,
                            pred.key AS predicate_key,
                            f.object_kind AS object_kind,
@@ -400,9 +401,37 @@ package actor FTS5SearchEngine {
 
                 args.append(capped)
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+                let spanIds: [Int64] = rows.compactMap { $0["span_id"] }
+                var evidenceBySpanId: [Int64: [StructuredEvidence]] = [:]
+                if !spanIds.isEmpty {
+                    let placeholders = Array(repeating: "?", count: spanIds.count).joined(separator: ",")
+                    let evidenceSql = """
+                        SELECT span_id,
+                               source_frame_id,
+                               chunk_index,
+                               span_start_utf8,
+                               span_end_utf8,
+                               extractor_id,
+                               extractor_version,
+                               confidence,
+                               asserted_at_ms
+                        FROM sm_evidence
+                        WHERE span_id IN (\(placeholders))
+                        ORDER BY evidence_id ASC
+                        """
+                    let evidenceRows = try Row.fetchAll(db, sql: evidenceSql, arguments: StatementArguments(spanIds))
+                    for row in evidenceRows {
+                        guard let spanId: Int64 = row["span_id"],
+                              let evidence = Self.structuredEvidence(from: row) else {
+                            continue
+                        }
+                        evidenceBySpanId[spanId, default: []].append(evidence)
+                    }
+                }
 
                 let hits: [StructuredFactHit] = rows.compactMap { row in
                     guard let factId: Int64 = row["fact_id"] else { return nil }
+                    let spanId: Int64? = row["span_id"]
                     let subjectKey: String = row["subject_key"] ?? ""
                     let predicateKey: String = row["predicate_key"] ?? ""
                     let objectKind: Int = row["object_kind"] ?? 0
@@ -445,7 +474,7 @@ package actor FTS5SearchEngine {
                             predicate: PredicateKey(predicateKey),
                             object: object
                         ),
-                        evidence: [],
+                        evidence: spanId.flatMap { evidenceBySpanId[$0] } ?? [],
                         isOpenEnded: isOpenEnded
                     )
                 }
@@ -1035,6 +1064,44 @@ package actor FTS5SearchEngine {
                 )
             }
         }
+    }
+
+    private static func structuredEvidence(from row: Row) -> StructuredEvidence? {
+        guard let frameIdValue: Int64 = row["source_frame_id"], frameIdValue >= 0 else {
+            return nil
+        }
+        let chunkIndex: UInt32? = {
+            guard let value: Int64 = row["chunk_index"],
+                  value >= 0,
+                  value <= Int64(UInt32.max) else {
+                return nil
+            }
+            return UInt32(value)
+        }()
+        let spanUTF8: Range<Int>? = {
+            guard let start: Int64 = row["span_start_utf8"],
+                  let end: Int64 = row["span_end_utf8"],
+                  start >= 0,
+                  end > start,
+                  start <= Int64(Int.max),
+                  end <= Int64(Int.max) else {
+                return nil
+            }
+            return Int(start)..<Int(end)
+        }()
+        let extractorId: String = row["extractor_id"] ?? ""
+        let extractorVersion: String = row["extractor_version"] ?? ""
+        let confidence: Double? = row["confidence"]
+        let assertedAtMs: Int64 = row["asserted_at_ms"] ?? 0
+        return StructuredEvidence(
+            sourceFrameId: UInt64(frameIdValue),
+            chunkIndex: chunkIndex,
+            spanUTF8: spanUTF8,
+            extractorId: extractorId,
+            extractorVersion: extractorVersion,
+            confidence: confidence,
+            assertedAtMs: assertedAtMs
+        )
     }
 
     private static func makeConfiguration() -> Configuration {
