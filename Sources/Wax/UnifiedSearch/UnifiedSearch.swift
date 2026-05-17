@@ -55,7 +55,7 @@ extension Wax {
             includeVector = true
         }
 
-        let candidateLimit = Self.candidateLimit(for: requestedTopK)
+        let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {
@@ -1345,6 +1345,24 @@ extension Wax {
         let expanded = topK > Int.max / 3 ? Int.max : topK * 3
         let capped = min(expanded, 1000)
         return max(topK, capped)
+    }
+
+    private static func candidateLimit(for topK: Int, filter: FrameFilter) -> Int {
+        let baseLimit = candidateLimit(for: topK)
+        guard needsCallerFilterOverfetch(filter) else { return baseLimit }
+
+        let multiplied = topK > Int.max / 5 ? Int.max : topK * 5
+        let withSlack = topK > Int.max - 200 ? Int.max : topK + 200
+        let overfetchLimit = min(1000, max(multiplied, withSlack))
+        return max(baseLimit, overfetchLimit)
+    }
+
+    private static func needsCallerFilterOverfetch(_ filter: FrameFilter) -> Bool {
+        if filter.frameIds != nil { return true }
+        guard let metadataFilter = filter.metadataFilter else { return false }
+        return !metadataFilter.requiredEntries.isEmpty
+            || !metadataFilter.requiredTags.isEmpty
+            || !metadataFilter.requiredLabels.isEmpty
     }
 
     private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)

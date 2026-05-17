@@ -297,6 +297,125 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func metadataFilterOverfetchesPastInitialTextCandidateWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let query = "f030starvation"
+
+        for index in 0..<12 {
+            let repeated = Array(repeating: query, count: 12).joined(separator: " ")
+            let payload = "blocked \(index) \(repeated)"
+            let frameID = try await wax.put(
+                Data(payload.utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "blocked"]))
+            )
+            try await text.index(frameId: frameID, text: payload)
+        }
+
+        let allowedFrame = try await wax.put(
+            Data("allowed \(query)".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+        )
+        try await text.index(frameId: allowedFrame, text: "allowed \(query)")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: query,
+                mode: .textOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [allowedFrame])
+
+        try await wax.close()
+    }
+}
+
+@Test func metadataFilterOverfetchesPastInitialVectorCandidateWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        var vectorResults: [(frameId: UInt64, score: Float)] = []
+        for index in 0..<12 {
+            let frameID = try await wax.put(
+                Data("blocked vector candidate \(index)".utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "blocked"]))
+            )
+            vectorResults.append((frameId: frameID, score: Float(100 - index)))
+        }
+
+        let allowedFrame = try await wax.put(
+            Data("allowed vector candidate".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+        )
+        vectorResults.append((frameId: allowedFrame, score: 1))
+
+        let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [allowedFrame])
+
+        try await wax.close()
+    }
+}
+
+@Test func metadataFilterCandidateLimitNeverDropsBelowRequestedTopK() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let vectorResults = (0..<1_100).map { index in
+            (frameId: UInt64(index), score: Float(2_000 - index))
+        }
+        let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
+
+        for index in 0..<1_100 {
+            _ = try await wax.put(
+                Data("allowed large topK candidate \(index)".utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+            )
+        }
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1_100,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.count == 1_100)
+
+        try await wax.close()
+    }
+}
+
 @Test func frameFilterMatchesTagsAndLabels() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
