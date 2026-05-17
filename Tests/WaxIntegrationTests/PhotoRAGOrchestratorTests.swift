@@ -116,6 +116,50 @@ func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
     }
 }
 
+#if canImport(Photos)
+@Test
+func photoRAGSyncLibraryWritesSyncStateCheckpoint() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        try await orchestrator.syncLibrary(scope: .assetIDs([]))
+        await orchestrator.session.close()
+        try await orchestrator.wax.close()
+
+        let reopened = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let syncState = await reopened.wax.frameMetas().filter {
+            $0.kind == PhotoFrameKind.syncState.rawValue
+        }
+        #expect(syncState.count == 1)
+        #expect(syncState.first?.metadata?.entries["photos.sync.scope"] == "asset_ids")
+        #expect(syncState.first?.metadata?.entries["photos.sync.asset_count"] == "0")
+        #expect(syncState.first?.metadata?.entries["photo.pipeline.version"] == config.pipelineVersion)
+        let completedAt = syncState.first?.metadata?.entries["photos.sync.completed_at_ms"]
+        #expect(completedAt.flatMap(Int64.init) != nil)
+
+        try await reopened.flush()
+        await reopened.session.close()
+        try await reopened.wax.close()
+    }
+}
+#endif
+
 @Test
 func photoRAGRejectsNetworkOCRProviderByDefault() async throws {
     try await TempFiles.withTempFile { url in

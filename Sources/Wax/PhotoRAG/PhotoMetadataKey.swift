@@ -25,4 +25,8 @@ package enum PhotoMetadataKey: String, Sendable, CaseIterable {
     case bboxW = "photo.bbox.w"
     case bboxH = "photo.bbox.h"
     case regionType = "photo.region.type"
+
+    case syncScope = "photos.sync.scope"
+    case syncAssetCount = "photos.sync.asset_count"
+    case syncCompletedAtMs = "photos.sync.completed_at_ms"
 }

@@ -55,6 +55,10 @@ package actor PhotoRAGOrchestrator {
         static let bboxW = PhotoMetadataKey.bboxW.rawValue
         static let bboxH = PhotoMetadataKey.bboxH.rawValue
         static let regionType = PhotoMetadataKey.regionType.rawValue
+
+        static let syncScope = PhotoMetadataKey.syncScope.rawValue
+        static let syncAssetCount = PhotoMetadataKey.syncAssetCount.rawValue
+        static let syncCompletedAtMs = PhotoMetadataKey.syncCompletedAtMs.rawValue
     }
 
     private struct LocationBin: Hashable, Sendable {
@@ -175,6 +179,7 @@ package actor PhotoRAGOrchestrator {
             }
         }
         try await ingest(assetIDs: ids)
+        try await writeSyncState(scope: scope, assetCount: ids.count)
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
         #endif
@@ -496,6 +501,32 @@ package actor PhotoRAGOrchestrator {
     }
 
     // MARK: - Ingest internals
+
+    private func writeSyncState(scope: PhotoScope, assetCount: Int) async throws {
+        let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        var metadata = Metadata()
+        metadata.entries[MetaKey.syncScope] = Self.syncScopeValue(scope)
+        metadata.entries[MetaKey.syncAssetCount] = String(assetCount)
+        metadata.entries[MetaKey.syncCompletedAtMs] = String(completedAtMs)
+        metadata.entries[MetaKey.pipelineVersion] = config.pipelineVersion
+
+        _ = try await session.put(
+            Data(),
+            options: FrameMetaSubset(kind: FrameKind.syncState, metadata: metadata),
+            compression: .plain,
+            timestampMs: completedAtMs
+        )
+        try await session.commit()
+    }
+
+    private static func syncScopeValue(_ scope: PhotoScope) -> String {
+        switch scope {
+        case .fullLibrary:
+            return "full_library"
+        case .assetIDs:
+            return "asset_ids"
+        }
+    }
 
     private func ingestOne(assetID: String) async throws {
         guard inFlightAssetIDs.insert(assetID).inserted else { return }
