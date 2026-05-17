@@ -69,6 +69,51 @@ func photoRAGFullLibrarySyncFetchesImagesOnly() throws {
     #expect(!fullLibraryBody.contains("PHAsset.fetchAssets(with: opts)"))
 }
 
+@Test
+func photoRAGPhotosRegionCropFailureDoesNotReturnBeforeSupersede() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        encoding: .utf8
+    )
+    let photosIngestStart = try #require(source.range(of: "private func ingestOne(assetID: String)"))
+    let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
+    let photosIngestBody = source[photosIngestStart.lowerBound..<localIngestStart.lowerBound]
+
+    #expect(photosIngestBody.contains("if let previousRoot"))
+    #expect(!photosIngestBody.contains("guard !crops.isEmpty else { return }"))
+}
+
+@Test
+func photoRAGRegionCropResultsUseCompactCropIndices() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        encoding: .utf8
+    )
+    let photosIngestStart = try #require(source.range(of: "private func ingestOne(assetID: String)"))
+    let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
+    let localHelperStart = try #require(source[localIngestStart.upperBound...].range(of: "private func writeRegionEmbeddingsIfNeeded"))
+    let rebuildIndexStart = try #require(source[localHelperStart.upperBound...].range(of: "private func rebuildIndex"))
+
+    let photosIngestBody = source[photosIngestStart.lowerBound..<localIngestStart.lowerBound]
+    let localRegionHelperBody = source[localHelperStart.lowerBound..<rebuildIndexStart.lowerBound]
+
+    for regionEmbeddingBody in [photosIngestBody, localRegionHelperBody] {
+        #expect(regionEmbeddingBody.contains("crops.append((crops.count, crop, region))"))
+        #expect(!regionEmbeddingBody.contains("crops.append((i, crop, region))"))
+        #expect(!regionEmbeddingBody.contains("crops.append((index, crop, region))"))
+    }
+}
+
 private let photoRAGDocPaths = [
     "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
     "Resources/website/docs/media/photo-rag.md",

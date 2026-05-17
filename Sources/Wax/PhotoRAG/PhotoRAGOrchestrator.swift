@@ -684,48 +684,27 @@ package actor PhotoRAGOrchestrator {
                 // Collect all crops first
                 var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
                 crops.reserveCapacity(regions.count)
-                for (i, region) in regions.enumerated() {
+                for region in regions {
                     guard let crop = Self.crop(embedImage, rect: region.bbox) else { continue }
-                    crops.append((i, crop, region))
+                    crops.append((crops.count, crop, region))
                 }
 
-                guard !crops.isEmpty else { return }
+                if !crops.isEmpty {
+                    // Embed in parallel with bounded concurrency (4 concurrent tasks)
+                    var regionEmbeddings: [[Float]] = []
+                    var regionContents: [Data] = []
+                    var regionOptions: [FrameMetaSubset] = []
+                    regionEmbeddings.reserveCapacity(crops.count)
+                    regionContents.reserveCapacity(crops.count)
+                    regionOptions.reserveCapacity(crops.count)
 
-                // Embed in parallel with bounded concurrency (4 concurrent tasks)
-                var regionEmbeddings: [[Float]] = []
-                var regionContents: [Data] = []
-                var regionOptions: [FrameMetaSubset] = []
-                regionEmbeddings.reserveCapacity(crops.count)
-                regionContents.reserveCapacity(crops.count)
-                regionOptions.reserveCapacity(crops.count)
+                    try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
+                        var activeCount = 0
+                        let maxConcurrency = self.config.regionEmbeddingConcurrency
+                        var cropIterator = crops.makeIterator()
 
-                try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-                    var activeCount = 0
-                    let maxConcurrency = self.config.regionEmbeddingConcurrency
-                    var cropIterator = crops.makeIterator()
-
-                    // Start initial batch
-                    while activeCount < maxConcurrency, let item = cropIterator.next() {
-                        let (index, crop, _) = item
-                        group.addTask {
-                            var vec = try await self.embedder.embed(image: crop)
-                            if self.embedder.normalize, !vec.isEmpty {
-                                vec = VectorMath.normalizeL2(vec)
-                            }
-                            guard vec.count == self.embedder.dimensions else {
-                                throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
-                            }
-                            return (index, vec)
-                        }
-                        activeCount += 1
-                    }
-
-                    // Collect results and spawn new tasks
-                    var results: [(Int, [Float])] = []
-                    results.reserveCapacity(crops.count)
-                    for try await result in group {
-                        results.append(result)
-                        if let item = cropIterator.next() {
+                        // Start initial batch
+                        while activeCount < maxConcurrency, let item = cropIterator.next() {
                             let (index, crop, _) = item
                             group.addTask {
                                 var vec = try await self.embedder.embed(image: crop)
@@ -737,34 +716,55 @@ package actor PhotoRAGOrchestrator {
                                 }
                                 return (index, vec)
                             }
+                            activeCount += 1
+                        }
+
+                        // Collect results and spawn new tasks
+                        var results: [(Int, [Float])] = []
+                        results.reserveCapacity(crops.count)
+                        for try await result in group {
+                            results.append(result)
+                            if let item = cropIterator.next() {
+                                let (index, crop, _) = item
+                                group.addTask {
+                                    var vec = try await self.embedder.embed(image: crop)
+                                    if self.embedder.normalize, !vec.isEmpty {
+                                        vec = VectorMath.normalizeL2(vec)
+                                    }
+                                    guard vec.count == self.embedder.dimensions else {
+                                        throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                                    }
+                                    return (index, vec)
+                                }
+                            }
+                        }
+
+                        // Sort results by index to maintain deterministic ordering
+                        results.sort { $0.0 < $1.0 }
+
+                        // Build final arrays in correct order
+                        for (index, vec) in results {
+                            let (_, _, region) = crops[index]
+                            regionEmbeddings.append(vec)
+                            regionContents.append(Data())
+
+                            var meta = baseMeta
+                            Self.writeBBox(into: &meta, rect: region.bbox)
+                            meta.entries[MetaKey.regionType] = region.type
+                            let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
+                            regionOptions.append(subset)
                         }
                     }
 
-                    // Sort results by index to maintain deterministic ordering
-                    results.sort { $0.0 < $1.0 }
-
-                    // Build final arrays in correct order
-                    for (index, vec) in results {
-                        let (_, _, region) = crops[index]
-                        regionEmbeddings.append(vec)
-                        regionContents.append(Data())
-
-                        var meta = baseMeta
-                        Self.writeBBox(into: &meta, rect: region.bbox)
-                        meta.entries[MetaKey.regionType] = region.type
-                        let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
-                        regionOptions.append(subset)
-                    }
+                    _ = try await session.putBatch(
+                        contents: regionContents,
+                        embeddings: regionEmbeddings,
+                        identity: embedder.identity,
+                        options: regionOptions,
+                        timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
+                        compression: .plain
+                    )
                 }
-
-                _ = try await session.putBatch(
-                    contents: regionContents,
-                    embeddings: regionEmbeddings,
-                    identity: embedder.identity,
-                    options: regionOptions,
-                    timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
-                    compression: .plain
-                )
             }
         }
 
@@ -955,9 +955,9 @@ package actor PhotoRAGOrchestrator {
 
         var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
         crops.reserveCapacity(regions.count)
-        for (index, region) in regions.enumerated() {
+        for region in regions {
             guard let crop = Self.crop(sourceImage, rect: region.bbox) else { continue }
-            crops.append((index, crop, region))
+            crops.append((crops.count, crop, region))
         }
         guard !crops.isEmpty else { return }
 
