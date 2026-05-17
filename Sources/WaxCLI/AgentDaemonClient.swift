@@ -38,7 +38,8 @@ enum AgentBrokerCLI {
         embedderChoice: String,
         noEmbedder: Bool,
         requireVector: Bool,
-        embedderTuning: CommandLineEmbedderRuntimeTuning
+        embedderTuning: CommandLineEmbedderRuntimeTuning,
+        shutdownIfStarted: Bool = true
     ) async throws -> AgentBrokerResponse {
         let configuration = try configuration(
             storePath: storePath,
@@ -50,7 +51,7 @@ enum AgentBrokerCLI {
         let response = try await AgentBrokerClient.perform(
             request: AgentBrokerRequest(command: command, arguments: arguments),
             configuration: configuration,
-            shutdownIfStarted: true
+            shutdownIfStarted: shutdownIfStarted
         )
         guard response.ok else {
             throw CLIError(response.error ?? "Broker command failed")
