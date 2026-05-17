@@ -22,6 +22,12 @@ import Testing
     #expect(!source.contains("#if MCPServer\nimport CoreGraphics"))
 }
 
+@Test func waxMCPEntrypointUsesPlatformNeutralExit() throws {
+    let source = try PackageSource.load("Sources/WaxMCPServer/main.swift")
+
+    #expect(!source.contains("Darwin.exit"))
+}
+
 private let miniLMCompileDefine =
     #".define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"]))"#
 

@@ -68,13 +68,13 @@ struct WaxMCPServerCommand: ParsableCommand {
         Task(priority: .userInitiated) {
             do {
                 try await command.runServer()
-                Darwin.exit(EXIT_SUCCESS)
+                exitProcess(EXIT_SUCCESS)
             } catch let error as LicenseValidator.ValidationError {
                 writeStderr(error.localizedDescription)
-                Darwin.exit(EXIT_FAILURE)
+                exitProcess(EXIT_FAILURE)
             } catch {
                 writeStderr("wax-mcp failed: \(error)")
-                Darwin.exit(EXIT_FAILURE)
+                exitProcess(EXIT_FAILURE)
             }
         }
 
@@ -303,6 +303,10 @@ private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -
 func writeStderr(_ message: String) {
     guard let data = (message + "\n").data(using: .utf8) else { return }
     FileHandle.standardError.write(data)
+}
+
+private func exitProcess(_ status: Int32) -> Never {
+    exit(status)
 }
 
 WaxMCPServerCommand.main()
