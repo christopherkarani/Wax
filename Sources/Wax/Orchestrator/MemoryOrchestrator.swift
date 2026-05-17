@@ -297,7 +297,7 @@ package actor MemoryOrchestrator {
                 EnrichmentResult(
                     frameId: task.frameId,
                     keywords: KeywordExtractor.extract(from: task.text),
-                    entities: []
+                    entities: EntityExtractor.extract(from: task.text)
                 )
             } resultHandler: { result in
                 try await Self.persistEnrichmentResult(result, in: session)
