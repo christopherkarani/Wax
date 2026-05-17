@@ -2682,7 +2682,7 @@ extension AgentBrokerService {
         for document in documents {
             let info = MemorySemantics.parse(metadata: document.metadata)
             guard info.durability == .durable || info.durability == .locked else { continue }
-            let type = MemorySemantics.classifyCandidate(text: document.text, metadata: document.metadata)
+            let type = info.type
             let marker = marker(for: document, kind: .memory)
             sections[type, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
         }

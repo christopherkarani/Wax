@@ -3502,6 +3502,41 @@ func brokerMarkdownExportSkipsActiveSessionsOwnedByOtherBrokers() async throws {
 }
 
 @Test
+func brokerMarkdownExportUsesStoredMemoryTypeForSections() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-stored-type-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let content = "Decision: keep this exported as task state \(UUID().uuidString)"
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(content),
+                "memory_type": .string("task_state"),
+                "durability": .string("durable"),
+                "reviewed": .bool(true),
+            ]
+        ))
+        #expect(remember.ok == true)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+            ]
+        ))
+        #expect(export.ok == true)
+        let payload = try #require(export.payload?.objectValue)
+        let memoryPath = try #require(payload["memory_md_path"]?.stringValue)
+        let markdown = try String(contentsOfFile: memoryPath, encoding: .utf8)
+        #expect(markdown.contains("## task_state"))
+        #expect(!markdown.contains("## decision"))
+        #expect(markdown.contains(content))
+    }
+}
+
+@Test
 func brokerMarkdownExportRemovesStaleGeneratedFiles() async throws {
     try await withAgentBrokerService { service, _ in
         let outputURL = FileManager.default.temporaryDirectory
