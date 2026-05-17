@@ -235,6 +235,22 @@ func factAssertSchemaExposesVersionRelation() {
 }
 
 @Test
+func factAssertSchemaExposesEvidence() {
+    guard case .object(let root) = ToolSchemas.waxFactAssert,
+          case .object(let properties)? = root["properties"],
+          case .object(let evidenceSchema)? = properties["evidence"],
+          case .object(let itemSchema)? = evidenceSchema["items"],
+          case .object(let itemProperties)? = itemSchema["properties"] else {
+        Issue.record("fact_assert evidence schema is missing item properties")
+        return
+    }
+    #expect(itemProperties["source_frame_id"] != nil)
+    #expect(itemProperties["extractor_id"] != nil)
+    #expect(itemProperties["extractor_version"] != nil)
+    #expect(itemProperties["asserted_at_ms"] != nil)
+}
+
+@Test
 func toolsRejectUnknownTopLevelArguments() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
@@ -485,6 +501,82 @@ func factAssertAcceptsPublishedGenericTypedObjects() async throws {
 }
 
 @Test
+func factAssertAcceptsEvidence() async throws {
+    try await withMemory { memory in
+        let asserted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "object": .string("evidence-backed"),
+                    "evidence": .array([
+                        .object([
+                            "source_frame_id": .int(42),
+                            "chunk_index": .int(3),
+                            "span_start_utf8": .int(1),
+                            "span_end_utf8": .int(7),
+                            "extractor_id": .string("mcp-test"),
+                            "extractor_version": .string("1"),
+                            "confidence": .double(0.75),
+                            "asserted_at_ms": .int(123_456),
+                        ]),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(asserted.isError != true)
+
+        let queried = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(queried.isError != true)
+        let payload = try parseJSONText(in: queried)
+        let hits = try #require(payload["hits"] as? [[String: Any]])
+        let first = try #require(hits.first)
+        #expect(first["evidence_count"] as? Int == 1)
+        let evidence = try #require(first["evidence"] as? [[String: Any]])
+        #expect(evidence.first?["source_frame_id"] as? Int == 42)
+        #expect(evidence.first?["extractor_id"] as? String == "mcp-test")
+    }
+}
+
+@Test
+func factAssertRejectsUnknownEvidenceFields() async throws {
+    try await withMemory { memory in
+        let asserted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "object": .string("evidence-backed"),
+                    "evidence": .array([
+                        .object([
+                            "source_frame_id": .int(42),
+                            "extractor_id": .string("mcp-test"),
+                            "extractor_version": .string("1"),
+                            "asserted_at_ms": .int(123_456),
+                            "unsupported": .string("dropped"),
+                        ]),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(asserted.isError == true)
+    }
+}
+
+@Test
 func brokerFactAssertAcceptsPublishedGenericTypedObjects() async throws {
     try await withAgentBrokerService { service, _ in
         let encoded = Data("opaque bytes".utf8).base64EncodedString()
@@ -533,6 +625,74 @@ func brokerFactAssertAcceptsPublishedGenericTypedObjects() async throws {
             let firstFact = try #require(facts.first?.objectValue)
             #expect(firstFact["object"]?.objectValue?[testCase.expectedKey] == testCase.expectedValue)
         }
+    }
+}
+
+@Test
+func brokerFactAssertAcceptsEvidence() async throws {
+    try await withAgentBrokerService { service, _ in
+        let asserted = await service.handle(.init(
+            command: "fact_assert",
+            arguments: [
+                "subject": .string("project:wax"),
+                "predicate": .string("status"),
+                "object": .string("evidence-backed"),
+                "evidence": .array([
+                    .object([
+                        "source_frame_id": .int(42),
+                        "chunk_index": .int(3),
+                        "span_start_utf8": .int(1),
+                        "span_end_utf8": .int(7),
+                        "extractor_id": .string("broker-test"),
+                        "extractor_version": .string("1"),
+                        "confidence": .double(0.75),
+                        "asserted_at_ms": .int(123_456),
+                    ]),
+                ]),
+            ]
+        ))
+        #expect(asserted.ok == true)
+
+        let queried = await service.handle(.init(
+            command: "facts_query",
+            arguments: [
+                "subject": .string("project:wax"),
+                "predicate": .string("status"),
+            ]
+        ))
+        #expect(queried.ok == true)
+        let payload = try #require(queried.payload?.objectValue)
+        let hits = try #require(payload["hits"]?.arrayValue)
+        let first = try #require(hits.first?.objectValue)
+        #expect(first["evidence_count"]?.intValue == 1)
+        let evidence = try #require(first["evidence"]?.arrayValue)
+        let firstEvidence = try #require(evidence.first?.objectValue)
+        #expect(firstEvidence["source_frame_id"]?.intValue == 42)
+        #expect(firstEvidence["extractor_id"]?.stringValue == "broker-test")
+    }
+}
+
+@Test
+func brokerFactAssertRejectsUnknownEvidenceFields() async throws {
+    try await withAgentBrokerService { service, _ in
+        let asserted = await service.handle(.init(
+            command: "fact_assert",
+            arguments: [
+                "subject": .string("project:wax"),
+                "predicate": .string("status"),
+                "object": .string("evidence-backed"),
+                "evidence": .array([
+                    .object([
+                        "source_frame_id": .int(42),
+                        "extractor_id": .string("broker-test"),
+                        "extractor_version": .string("1"),
+                        "asserted_at_ms": .int(123_456),
+                        "unsupported": .string("dropped"),
+                    ]),
+                ]),
+            ]
+        ))
+        #expect(asserted.ok == false)
     }
 }
 

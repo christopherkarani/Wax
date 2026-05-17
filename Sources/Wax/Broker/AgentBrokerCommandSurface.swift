@@ -24,7 +24,7 @@ package enum AgentBrokerCommandSurface {
         "markdown_export": ["output_dir", "session_id"],
         "markdown_sync": ["root_dir", "dry_run"],
         "entity_upsert": ["key", "kind", "aliases"],
-        "fact_assert": ["subject", "predicate", "object", "relation", "valid_from", "valid_to"],
+        "fact_assert": ["subject", "predicate", "object", "relation", "valid_from", "valid_to", "evidence"],
         "fact_retract": ["fact_id", "at_ms"],
         "facts_query": ["subject", "predicate", "as_of", "limit"],
         "entity_resolve": ["alias", "limit"],

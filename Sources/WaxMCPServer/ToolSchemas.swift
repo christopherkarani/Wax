@@ -733,6 +733,25 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional valid-to timestamp (ms since epoch).",
             ],
+            "evidence": [
+                "type": "array",
+                "description": "Optional provenance evidence for this fact.",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "source_frame_id": ["type": "integer", "minimum": 0],
+                        "chunk_index": ["type": "integer", "minimum": 0],
+                        "span_start_utf8": ["type": "integer", "minimum": 0],
+                        "span_end_utf8": ["type": "integer", "minimum": 1],
+                        "extractor_id": ["type": "string"],
+                        "extractor_version": ["type": "string"],
+                        "confidence": ["type": "number", "minimum": 0.0, "maximum": 1.0],
+                        "asserted_at_ms": ["type": "integer"],
+                    ],
+                    "required": ["source_frame_id", "extractor_id", "extractor_version", "asserted_at_ms"],
+                    "additionalProperties": false,
+                ],
+            ],
         ],
         required: ["subject", "predicate", "object"]
     )

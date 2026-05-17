@@ -1611,6 +1611,7 @@ private extension WaxMCPTools {
         let predicate = try args.requiredString("predicate")
         let object = try compatFactValue(args.requiredValue("object"))
         let relation = try compatVersionRelation(try args.optionalString("relation") ?? "sets")
+        let evidence = try compatStructuredEvidence(args.optionalValue("evidence"))
         let factID = try await memory.assertFact(
             subject: EntityKey(subject),
             predicate: PredicateKey(predicate),
@@ -1618,11 +1619,13 @@ private extension WaxMCPTools {
             relation: relation,
             validFromMs: try args.optionalInt64("valid_from"),
             validToMs: try args.optionalInt64("valid_to"),
+            evidence: evidence,
             commit: true
         )
         return jsonResult([
             "status": .string("ok"),
             "fact_id": .int(Int(factID.rawValue)),
+            "evidence_count": .int(evidence.count),
             "committed": .bool(true),
         ])
     }
@@ -1660,6 +1663,8 @@ private extension WaxMCPTools {
                     "subject": .string(hit.fact.subject.rawValue),
                     "predicate": .string(hit.fact.predicate.rawValue),
                     "object": compatFactValuePayload(hit.fact.object),
+                    "evidence_count": .int(hit.evidence.count),
+                    "evidence": .array(hit.evidence.map(compatStructuredEvidencePayload)),
                 ]
             }),
         ])
@@ -1826,6 +1831,112 @@ private extension WaxMCPTools {
         case .timeMs(let ms): return .object(["time_ms": .int(Int(ms))])
         case .data(let data): return .object(["data_base64": .string(data.base64EncodedString())])
         }
+    }
+
+    static func compatStructuredEvidence(_ value: Value?) throws -> [StructuredEvidence] {
+        guard let value else { return [] }
+        guard case .array(let array) = value else {
+            throw ToolValidationError.invalid("evidence must be an array")
+        }
+        return try array.map { item in
+            guard case .object(let object) = item else {
+                throw ToolValidationError.invalid("evidence must contain only objects")
+            }
+            let allowedKeys: Set<String> = [
+                "source_frame_id",
+                "chunk_index",
+                "span_start_utf8",
+                "span_end_utf8",
+                "extractor_id",
+                "extractor_version",
+                "confidence",
+                "asserted_at_ms",
+            ]
+            let unknownKeys = Set(object.keys).subtracting(allowedKeys)
+            guard unknownKeys.isEmpty else {
+                throw ToolValidationError.invalid("unknown evidence fields: \(unknownKeys.sorted().joined(separator: ", "))")
+            }
+            guard case .int(let sourceRaw)? = object["source_frame_id"], sourceRaw >= 0 else {
+                throw ToolValidationError.invalid("evidence.source_frame_id must be a non-negative integer")
+            }
+            let chunkIndex: UInt32? = try {
+                guard let value = object["chunk_index"] else { return nil }
+                guard case .int(let raw) = value, raw >= 0, raw <= Int(UInt32.max) else {
+                    throw ToolValidationError.invalid("evidence.chunk_index must be a non-negative integer")
+                }
+                return UInt32(raw)
+            }()
+            let span = try compatEvidenceSpan(object)
+            let extractorId = try compatRequiredEvidenceString(object, key: "extractor_id")
+            let extractorVersion = try compatRequiredEvidenceString(object, key: "extractor_version")
+            let confidence = try compatEvidenceConfidence(object["confidence"])
+            guard case .int(let assertedAtMs)? = object["asserted_at_ms"] else {
+                throw ToolValidationError.invalid("evidence.asserted_at_ms must be an integer")
+            }
+            return StructuredEvidence(
+                sourceFrameId: UInt64(sourceRaw),
+                chunkIndex: chunkIndex,
+                spanUTF8: span,
+                extractorId: extractorId,
+                extractorVersion: extractorVersion,
+                confidence: confidence,
+                assertedAtMs: Int64(assertedAtMs)
+            )
+        }
+    }
+
+    static func compatEvidenceSpan(_ object: [String: Value]) throws -> Range<Int>? {
+        guard object["span_start_utf8"] != nil || object["span_end_utf8"] != nil else {
+            return nil
+        }
+        guard case .int(let start)? = object["span_start_utf8"],
+              case .int(let end)? = object["span_end_utf8"],
+              start >= 0, end > start else {
+            throw ToolValidationError.invalid("evidence span must include non-negative span_start_utf8 and greater span_end_utf8")
+        }
+        return start..<end
+    }
+
+    static func compatRequiredEvidenceString(_ object: [String: Value], key: String) throws -> String {
+        guard case .string(let raw)? = object[key] else {
+            throw ToolValidationError.invalid("evidence.\(key) must be a string")
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ToolValidationError.invalid("evidence.\(key) must not be empty")
+        }
+        return trimmed
+    }
+
+    static func compatEvidenceConfidence(_ value: Value?) throws -> Double? {
+        guard let value else { return nil }
+        let confidence: Double
+        switch value {
+        case .double(let raw):
+            confidence = raw
+        case .int(let raw):
+            confidence = Double(raw)
+        default:
+            throw ToolValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
+        }
+        guard confidence.isFinite, (0...1).contains(confidence) else {
+            throw ToolValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
+        }
+        return confidence
+    }
+
+    static func compatStructuredEvidencePayload(_ evidence: StructuredEvidence) -> Value {
+        var object: [String: Value] = [
+            "source_frame_id": .int(Int(evidence.sourceFrameId)),
+            "extractor_id": .string(evidence.extractorId),
+            "extractor_version": .string(evidence.extractorVersion),
+            "asserted_at_ms": .int(Int(evidence.assertedAtMs)),
+        ]
+        object["chunk_index"] = evidence.chunkIndex.map { .int(Int($0)) } ?? .null
+        object["span_start_utf8"] = evidence.spanUTF8.map { .int($0.lowerBound) } ?? .null
+        object["span_end_utf8"] = evidence.spanUTF8.map { .int($0.upperBound) } ?? .null
+        object["confidence"] = evidence.confidence.map { .double($0) } ?? .null
+        return .object(object)
     }
 
     static func compatVersionRelation(_ raw: String) throws -> VersionRelation {
