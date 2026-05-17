@@ -50,6 +50,48 @@ private enum SQLiteBlobInspector {
         return Int32(sqlite3_column_int(stmt, 0))
     }
 
+    static func schemaSQL(table: String, fromSerialized data: Data) throws -> String {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let size = data.count
+        guard let buffer = sqlite3_malloc64(UInt64(size)) else {
+            throw WaxError.io("sqlite3_malloc64 failed")
+        }
+        data.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+                memcpy(buffer, base, size)
+            }
+        }
+        let flags = UInt32(SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE)
+        let rc = sqlite3_deserialize(
+            db,
+            "main",
+            buffer.assumingMemoryBound(to: UInt8.self),
+            Int64(size),
+            Int64(size),
+            flags
+        )
+        guard rc == SQLITE_OK else {
+            throw WaxError.io("sqlite3_deserialize failed")
+        }
+
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        let escapedTable = table.replacingOccurrences(of: "'", with: "''")
+        let sql = "SELECT sql FROM sqlite_master WHERE name = '\(escapedTable)'"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_prepare_v2 failed for \(sql)")
+        }
+        guard sqlite3_step(stmt) == SQLITE_ROW, let raw = sqlite3_column_text(stmt, 0) else {
+            throw WaxError.io("schema SQL not found for \(table)")
+        }
+        return String(cString: raw)
+    }
+
     static func makeLegacyFTS5Blob() throws -> Data {
         var db: OpaquePointer?
         guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
@@ -68,6 +110,138 @@ private enum SQLiteBlobInspector {
             "CREATE INDEX IF NOT EXISTS frame_mapping_rowid_idx ON frame_mapping(rowid_ref);",
             "INSERT INTO frames_fts(content) VALUES ('hello legacy');",
             "INSERT INTO frame_mapping(frame_id, rowid_ref) VALUES (0, 1);",
+        ]
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &size, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(size))
+    }
+
+    static func makeFakeFTS5NamedTableBlob() throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let statements = [
+            "CREATE TABLE frames_fts(content TEXT CHECK('fts5' = 'fts5'));",
+            """
+            CREATE TABLE frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+            "PRAGMA application_id = 0x57415854;",
+            "PRAGMA user_version = 3;",
+        ]
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &size, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(size))
+    }
+
+    static func makeCurrentVersionPorterUnicode61Blob() throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let statements = [
+            "CREATE VIRTUAL TABLE frames_fts USING fts5(content, tokenize = 'porter unicode61');",
+            """
+            CREATE TABLE frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+            "PRAGMA application_id = 0x57415854;",
+            "PRAGMA user_version = 4;",
+        ]
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &size, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(size))
+    }
+
+    static func makeCurrentVersionCommentSpoofedTokenizerBlob() throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let statements = [
+            "CREATE VIRTUAL TABLE frames_fts USING fts5(content, tokenize = 'porter' /* tokenize='unicode61' */);",
+            """
+            CREATE TABLE frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+            "PRAGMA application_id = 0x57415854;",
+            "PRAGMA user_version = 4;",
+        ]
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &size, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(size))
+    }
+
+    static func makeCurrentVersionWrongContentColumnBlob() throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let statements = [
+            "CREATE VIRTUAL TABLE frames_fts USING fts5(notcontent, tokenize = 'unicode61');",
+            """
+            CREATE TABLE frame_mapping (
+                frame_id INTEGER PRIMARY KEY,
+                rowid_ref INTEGER UNIQUE NOT NULL
+            );
+            """,
+            "PRAGMA application_id = 0x57415854;",
+            "PRAGMA user_version = 4;",
         ]
 
         for sql in statements {
@@ -192,7 +366,50 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 3)
+    #expect(userVersion == 4)
+}
+
+@Test func serializedBlobPinsFTS5Tokenizer() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let blob = try await engine.serialize()
+
+    let sql = try SQLiteBlobInspector.schemaSQL(table: "frames_fts", fromSerialized: blob).lowercased()
+    #expect(sql.contains("create virtual table"))
+    #expect(sql.contains("using fts5"))
+    #expect(sql.contains("tokenize"))
+    #expect(sql.contains("unicode61"))
+}
+
+@Test func deserializeRejectsFakeFTS5TableName() throws {
+    let fake = try SQLiteBlobInspector.makeFakeFTS5NamedTableBlob()
+
+    #expect(throws: WaxError.self) {
+        _ = try FTS5SearchEngine.deserialize(from: fake)
+    }
+}
+
+@Test func deserializeRejectsCurrentVersionTokenizerDrift() throws {
+    let drifted = try SQLiteBlobInspector.makeCurrentVersionPorterUnicode61Blob()
+
+    #expect(throws: WaxError.self) {
+        _ = try FTS5SearchEngine.deserialize(from: drifted)
+    }
+}
+
+@Test func deserializeRejectsCommentSpoofedTokenizerDrift() throws {
+    let drifted = try SQLiteBlobInspector.makeCurrentVersionCommentSpoofedTokenizerBlob()
+
+    #expect(throws: WaxError.self) {
+        _ = try FTS5SearchEngine.deserialize(from: drifted)
+    }
+}
+
+@Test func deserializeRejectsCurrentVersionWrongFTSColumn() throws {
+    let drifted = try SQLiteBlobInspector.makeCurrentVersionWrongContentColumnBlob()
+
+    #expect(throws: WaxError.self) {
+        _ = try FTS5SearchEngine.deserialize(from: drifted)
+    }
 }
 
 @Test func deserializeUpgradesLegacyBlobSchemaIdentity() async throws {
@@ -202,9 +419,12 @@ private enum SQLiteBlobInspector {
 
     let appId = try SQLiteBlobInspector.int32Pragma("application_id", fromSerialized: upgraded)
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
+    let sql = try SQLiteBlobInspector.schemaSQL(table: "frames_fts", fromSerialized: upgraded).lowercased()
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 3)
+    #expect(userVersion == 4)
+    #expect(sql.contains("tokenize"))
+    #expect(sql.contains("unicode61"))
 }
 #endif // canImport(SQLite3)
 
