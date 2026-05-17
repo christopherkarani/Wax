@@ -4,7 +4,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 5
+    static let userVersion: Int32 = 6
     private static let framesFTSSQL = "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content, tokenize = 'unicode61')"
 
     static func create(in db: Database) throws {
@@ -27,10 +27,10 @@ enum FTS5Schema {
 
         // Accept legacy blobs (pre-identity PRAGMAs) and upgrade in-memory.
         if appId == 0 && version == 0 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try applyApplicationId(in: db)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV5(in: db)
+            try migrateV4ToV6(in: db)
             return
         }
 
@@ -38,34 +38,40 @@ enum FTS5Schema {
             throw WaxError.io("unexpected sqlite application_id \(appId) (expected \(applicationId))")
         }
         if version == 0 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV5(in: db)
+            try migrateV4ToV6(in: db)
             return
         }
         if version == 1 {
             try StructuredMemorySchema.create(in: db)
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
-            try migrateV4ToV5(in: db)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
+            try migrateV4ToV6(in: db)
             return
         }
         if version == 2 {
             try migrateV2ToV3(in: db)
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV5(in: db)
+            try migrateV4ToV6(in: db)
             return
         }
         if version == 3 {
-            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 4)
+            try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV5(in: db)
+            try migrateV4ToV6(in: db)
             return
         }
         if version == 4 {
             try requirePinnedFTSSchema(in: db)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV5(in: db)
+            try migrateV4ToV6(in: db)
+            return
+        }
+        if version == 5 {
+            try requirePinnedFTSSchema(in: db)
+            try StructuredMemorySchema.create(in: db)
+            try migrateV4ToV6(in: db)
             return
         }
         guard version == userVersion else {
@@ -105,7 +111,7 @@ enum FTS5Schema {
         try applyUserVersion(in: db, version: 3)
     }
 
-    private static func migrateV4ToV5(in db: Database) throws {
+    private static func migrateV4ToV6(in db: Database) throws {
         let factTableExists: String? = try String.fetchOne(
             db,
             sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='sm_fact'"

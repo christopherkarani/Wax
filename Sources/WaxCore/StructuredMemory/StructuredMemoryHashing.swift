@@ -92,7 +92,7 @@ private struct HashBuffer {
         switch value {
         case .string(let text):
             appendTag(0x01)
-            appendString(text)
+            appendRawString(text)
         case .int(let intValue):
             appendTag(0x02)
             appendInt64(intValue)
@@ -115,6 +115,10 @@ private struct HashBuffer {
     }
 
     mutating func appendKey(_ value: String) {
+        appendBytes(Data(value.utf8))
+    }
+
+    mutating func appendRawString(_ value: String) {
         appendBytes(Data(value.utf8))
     }
 }

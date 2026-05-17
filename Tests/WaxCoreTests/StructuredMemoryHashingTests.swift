@@ -128,3 +128,37 @@ import Testing
     #expect(upper != lowerPredicate)
     #expect(upper != lowerEntityObject)
 }
+
+@Test func hashFactPreservesStringObjectCase() throws {
+    let upper = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        qualifiersHash: nil
+    )
+    let lower = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("openai"),
+        qualifiersHash: nil
+    )
+
+    #expect(upper != lower)
+}
+
+@Test func hashFactPreservesStringObjectDiacritics() throws {
+    let accented = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:zoe"),
+        predicate: PredicateKey("display_name"),
+        object: .string("Zoë"),
+        qualifiersHash: nil
+    )
+    let unaccented = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:zoe"),
+        predicate: PredicateKey("display_name"),
+        object: .string("Zoe"),
+        qualifiersHash: nil
+    )
+
+    #expect(accented != unaccented)
+}

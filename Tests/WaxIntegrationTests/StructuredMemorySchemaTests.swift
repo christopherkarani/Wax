@@ -172,7 +172,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 5)
+    #expect(userVersion == 6)
 }
 
 @Test func deserializeUpgradesLegacyBlobSchemaIdentityToV2() async throws {
@@ -184,7 +184,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 5)
+    #expect(userVersion == 6)
 }
 
 @Test func deserializeUpgradesV1BlobToV2() async throws {
@@ -193,7 +193,7 @@ private enum SQLiteBlobInspector {
     let upgraded = try await engine.serialize()
 
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 5)
+    #expect(userVersion == 6)
 }
 
 @Test func migrationPreservesFTSSearchResults() async throws {
@@ -237,7 +237,42 @@ private enum SQLiteBlobInspector {
     #expect(repeatedFactID == originalFactID)
     let upgradedBlob = try await upgraded.serialize()
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
-    #expect(userVersion == 5)
+    #expect(userVersion == 6)
+}
+
+@Test func deserializeV5RecomputesStringFactHashes() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let originalFactID = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    #expect(originalFactID.rawValue == 1)
+
+    let original = try await engine.serialize()
+    let fakeLegacyHash = String(repeating: "cd", count: 32)
+    let legacyV5 = try SQLiteBlobInspector.mutatedSerializedBlob(original, statements: [
+        "UPDATE sm_fact SET fact_hash = X'\(fakeLegacyHash)' WHERE fact_id = 1;",
+        "PRAGMA user_version = 5;",
+    ])
+
+    let upgraded = try FTS5SearchEngine.deserialize(from: legacyV5)
+    let repeatedFactID = try await upgraded.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    #expect(repeatedFactID == originalFactID)
+    let upgradedBlob = try await upgraded.serialize()
+    let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
+    #expect(userVersion == 6)
 }
 
 #endif // canImport(SQLite3)

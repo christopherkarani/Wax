@@ -222,6 +222,39 @@ import Wax
     #expect(lowerSubjectFacts.hits.map(\.factId).contains(lowerSubjectFact))
 }
 
+@Test func assertFactPreservesStringObjectCaseInIdentity() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let upperFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let lowerFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("openai"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    #expect(upperFact != lowerFact)
+
+    let facts = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+    let objects = facts.hits.map(\.fact.object)
+    #expect(objects.contains(.string("OpenAI")))
+    #expect(objects.contains(.string("openai")))
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(
