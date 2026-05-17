@@ -56,6 +56,23 @@ private struct DecodeTestError: Error, CustomStringConvertible {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
+@Test func miniLMDecodingRejectsUnsupportedOutputDataTypes() throws {
+    let array = try MLMultiArray(shape: [1, 3], dataType: .int32)
+    let ptr = array.dataPointer.bindMemory(to: Int32.self, capacity: array.count)
+    ptr[0] = 1
+    ptr[1] = 2
+    ptr[2] = 3
+
+    let decoded = MiniLMEmbeddings._decodeEmbeddingsForTesting(
+        array,
+        batchSize: 1,
+        outputDimension: 3
+    )
+
+    #expect(decoded == nil)
+}
+
+@available(macOS 15.0, iOS 18.0, *)
 private func decode(
     _ array: MLMultiArray,
     batchSize: Int,

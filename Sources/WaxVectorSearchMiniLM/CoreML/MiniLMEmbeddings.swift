@@ -360,6 +360,9 @@ private extension MiniLMEmbeddings {
         let shape = embeddings.shape.map { $0.intValue }
         let strides = embeddings.strides.map { $0.intValue }
         let dataType = embeddings.dataType
+        guard dataType == .float16 || dataType == .float32 else {
+            return nil
+        }
 
         if shape.count == 2 {
             let batch = shape[0]
