@@ -26,7 +26,7 @@ package enum AgentBrokerCommandSurface {
         "entity_upsert": ["key", "kind", "aliases"],
         "fact_assert": ["subject", "predicate", "object", "relation", "valid_from", "valid_to", "evidence"],
         "fact_retract": ["fact_id", "at_ms"],
-        "facts_query": ["subject", "predicate", "as_of", "limit"],
+        "facts_query": ["subject", "predicate", "as_of", "system_as_of", "valid_as_of", "limit"],
         "entity_resolve": ["alias", "limit"],
     ]
 

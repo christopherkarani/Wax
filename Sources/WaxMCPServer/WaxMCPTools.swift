@@ -479,10 +479,10 @@ private extension WaxMCPTools {
                 guard double.rounded() == double else {
                     throw ToolValidationError.invalid("\(key) must be an integer")
                 }
-                guard double >= Double(Int.min), double <= Double(Int.max) else {
+                guard let int = Int(exactly: double) else {
                     throw ToolValidationError.invalid("\(key) is out of range")
                 }
-                return Int(double)
+                return int
             default:
                 throw ToolValidationError.invalid("\(key) must be an integer")
             }
@@ -500,10 +500,10 @@ private extension WaxMCPTools {
                 guard double.rounded() == double else {
                     throw ToolValidationError.invalid("\(key) must be an integer")
                 }
-                guard double >= Double(Int64.min), double <= Double(Int64.max) else {
+                guard let int = Int64(exactly: double) else {
                     throw ToolValidationError.invalid("\(key) is out of range")
                 }
-                return Int64(double)
+                return int
             default:
                 throw ToolValidationError.invalid("\(key) must be an integer")
             }
@@ -1662,16 +1662,24 @@ private extension WaxMCPTools {
         let args = CompatArguments(arguments)
         let limit = try args.optionalInt("limit") ?? 20
         let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
+        let systemAsOfMs = try args.optionalInt64("system_as_of")
+        let validAsOfMs = try args.optionalInt64("valid_as_of")
         let result = try await memory.facts(
             about: try args.optionalString("subject").map { EntityKey($0) },
             predicate: try args.optionalString("predicate").map { PredicateKey($0) },
             asOfMs: asOfMs,
+            systemAsOfMs: systemAsOfMs,
+            validAsOfMs: validAsOfMs,
             limit: limit
         )
+        let effectiveSystemAsOfMs = systemAsOfMs ?? asOfMs
+        let effectiveValidAsOfMs = validAsOfMs ?? asOfMs
         return jsonResult([
             "count": .int(result.hits.count),
             "truncated": .bool(result.wasTruncated),
             "as_of": .int(Int(asOfMs)),
+            "system_as_of": .int(Int(effectiveSystemAsOfMs)),
+            "valid_as_of": .int(Int(effectiveValidAsOfMs)),
             "hits": .array(result.hits.map { hit in
                 [
                     "fact_id": .int(Int(hit.factId.rawValue)),

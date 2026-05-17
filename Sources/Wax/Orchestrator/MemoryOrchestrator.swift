@@ -1419,13 +1419,18 @@ package actor MemoryOrchestrator {
         about subject: EntityKey? = nil,
         predicate: PredicateKey? = nil,
         asOfMs: Int64 = Int64.max,
+        systemAsOfMs: Int64? = nil,
+        validAsOfMs: Int64? = nil,
         limit: Int = 50
     ) async throws -> StructuredFactsResult {
         try ensureStructuredMemoryEnabled()
         return try await session.facts(
             about: subject,
             predicate: predicate,
-            asOf: StructuredMemoryAsOf(asOfMs: asOfMs),
+            asOf: StructuredMemoryAsOf(
+                systemTimeMs: systemAsOfMs ?? asOfMs,
+                validTimeMs: validAsOfMs ?? asOfMs
+            ),
             limit: limit
         )
     }

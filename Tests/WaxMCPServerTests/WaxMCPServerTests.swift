@@ -789,6 +789,65 @@ func brokerFactAssertAcceptsEvidence() async throws {
 }
 
 @Test
+func brokerFactsQuerySupportsSeparateSystemAndValidTime() async throws {
+    try await withAgentBrokerService { service, _ in
+        let asserted = await service.handle(.init(
+            command: "fact_assert",
+            arguments: [
+                "subject": .string("project:f026"),
+                "predicate": .string("status"),
+                "object": .string("historical"),
+                "valid_from": .int(100),
+                "valid_to": .int(200),
+            ]
+        ))
+        #expect(asserted.ok == true)
+
+        let collapsed = await service.handle(.init(
+            command: "facts_query",
+            arguments: [
+                "subject": .string("project:f026"),
+                "predicate": .string("status"),
+                "as_of": .int(150),
+            ]
+        ))
+        #expect(collapsed.ok == true)
+        let collapsedPayload = try #require(collapsed.payload?.objectValue)
+        #expect(collapsedPayload["count"]?.intValue == 0)
+
+        let dualAxis = await service.handle(.init(
+            command: "facts_query",
+            arguments: [
+                "subject": .string("project:f026"),
+                "predicate": .string("status"),
+                "valid_as_of": .int(150),
+                "system_as_of": .int(Int64.max),
+            ]
+        ))
+        #expect(dualAxis.ok == true)
+        let dualAxisPayload = try #require(dualAxis.payload?.objectValue)
+        #expect(dualAxisPayload["count"]?.intValue == 1)
+        #expect(dualAxisPayload["valid_as_of"]?.intValue == 150)
+        #expect(dualAxisPayload["system_as_of"]?.intValue == Int64.max)
+    }
+}
+
+@Test
+func brokerFactsQueryRejectsRoundedOutOfRangeTimestampDoubles() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await service.handle(.init(
+            command: "facts_query",
+            arguments: [
+                "subject": .string("project:f026"),
+                "valid_as_of": .double(Double(Int64.max)),
+            ]
+        ))
+        #expect(result.ok == false)
+        #expect(result.error?.contains("valid_as_of is out of range") == true)
+    }
+}
+
+@Test
 func brokerFactAssertRejectsUnknownEvidenceFields() async throws {
     try await withAgentBrokerService { service, _ in
         let asserted = await service.handle(.init(
@@ -809,6 +868,78 @@ func brokerFactAssertRejectsUnknownEvidenceFields() async throws {
             ]
         ))
         #expect(asserted.ok == false)
+    }
+}
+
+@Test
+func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
+    try await withMemory { memory in
+        let asserted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_assert",
+                arguments: [
+                    "subject": .string("project:f026-mcp"),
+                    "predicate": .string("status"),
+                    "object": .string("historical"),
+                    "valid_from": .int(100),
+                    "valid_to": .int(200),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(asserted.isError != true)
+
+        let collapsed = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:f026-mcp"),
+                    "predicate": .string("status"),
+                    "as_of": .int(150),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(collapsed.isError != true)
+        let collapsedJSON = try parseJSONText(in: collapsed)
+        #expect(collapsedJSON["count"] as? Int == 0)
+
+        let dualAxis = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:f026-mcp"),
+                    "predicate": .string("status"),
+                    "valid_as_of": .int(150),
+                    "system_as_of": .int(Int(Int64.max)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(dualAxis.isError != true)
+        let dualAxisJSON = try parseJSONText(in: dualAxis)
+        #expect(dualAxisJSON["count"] as? Int == 1)
+        #expect(dualAxisJSON["valid_as_of"] as? Int == 150)
+        #expect((dualAxisJSON["system_as_of"] as? NSNumber)?.int64Value == Int64.max)
+        #expect(firstText(in: dualAxis).contains("historical"))
+    }
+}
+
+@Test
+func mcpFactsQueryRejectsRoundedOutOfRangeTimestampDoubles() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:f026"),
+                    "valid_as_of": .double(Double(Int64.max)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("valid_as_of is out of range"))
     }
 }
 
@@ -858,6 +989,21 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
         )
         #expect(outsideValidWindow.isError != true)
         #expect(!firstText(in: outsideValidWindow).contains("temporal"))
+
+        let historicalValidCurrentSystem = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "facts_query",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("status"),
+                    "valid_as_of": .int(Int(nowMs + 50)),
+                    "system_as_of": .int(Int(Int64.max)),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(historicalValidCurrentSystem.isError != true)
+        #expect(firstText(in: historicalValidCurrentSystem).contains("temporal"))
 
         let retractable = await WaxMCPTools.handleCall(
             params: .init(

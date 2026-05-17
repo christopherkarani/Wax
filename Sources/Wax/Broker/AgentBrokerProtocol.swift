@@ -79,8 +79,8 @@ package enum AgentBrokerValue: Sendable, Equatable, Codable {
         switch self {
         case .int(let value):
             return value
-        case .double(let value) where value.rounded() == value:
-            return Int64(value)
+        case .double(let value):
+            return Int64(exactly: value)
         default:
             return nil
         }

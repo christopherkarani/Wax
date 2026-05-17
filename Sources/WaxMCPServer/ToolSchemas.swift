@@ -782,7 +782,15 @@ enum ToolSchemas {
             ],
             "as_of": [
                 "type": "integer",
-                "description": "Optional query timestamp in ms since epoch.",
+                "description": "Optional query timestamp in ms since epoch for both system and valid time.",
+            ],
+            "system_as_of": [
+                "type": "integer",
+                "description": "Optional system-time query timestamp in ms since epoch. Overrides as_of for transaction time.",
+            ],
+            "valid_as_of": [
+                "type": "integer",
+                "description": "Optional valid-time query timestamp in ms since epoch. Overrides as_of for fact validity time.",
             ],
             "limit": [
                 "type": "integer",

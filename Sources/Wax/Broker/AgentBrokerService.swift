@@ -1215,12 +1215,18 @@ extension AgentBrokerService {
         let subject = try args.optionalString("subject").map { EntityKey($0) }
         let predicate = try args.optionalString("predicate").map { PredicateKey($0) }
         let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
+        let systemAsOfMs = try args.optionalInt64("system_as_of")
+        let validAsOfMs = try args.optionalInt64("valid_as_of")
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
             asOfMs: asOfMs,
+            systemAsOfMs: systemAsOfMs,
+            validAsOfMs: validAsOfMs,
             limit: limit
         )
+        let effectiveSystemAsOfMs = systemAsOfMs ?? asOfMs
+        let effectiveValidAsOfMs = validAsOfMs ?? asOfMs
         let hits: [AgentBrokerValue] = result.hits.map { hit in
             AgentBrokerValue.object([
                 "fact_id": .from(hit.factId.rawValue),
@@ -1236,6 +1242,8 @@ extension AgentBrokerService {
             "count": .from(result.hits.count),
             "truncated": .from(result.wasTruncated),
             "as_of": .from(asOfMs),
+            "system_as_of": .from(effectiveSystemAsOfMs),
+            "valid_as_of": .from(effectiveValidAsOfMs),
             "hits": .array(hits),
         ])
     }
@@ -2869,10 +2877,23 @@ struct BrokerArguments {
 
     func optionalInt64(_ key: String) throws -> Int64? {
         guard let value = values[key] else { return nil }
-        guard let intValue = value.intValue else {
+        switch value {
+        case .int(let intValue):
+            return intValue
+        case .double(let double):
+            guard double.isFinite else {
+                throw BrokerValidationError.invalid("\(key) is out of range")
+            }
+            guard double.rounded() == double else {
+                throw BrokerValidationError.invalid("\(key) must be an integer")
+            }
+            guard let intValue = Int64(exactly: double) else {
+                throw BrokerValidationError.invalid("\(key) is out of range")
+            }
+            return intValue
+        default:
             throw BrokerValidationError.invalid("\(key) must be an integer")
         }
-        return intValue
     }
 
     func optionalDouble(_ key: String) throws -> Double? {
