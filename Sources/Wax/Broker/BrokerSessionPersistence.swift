@@ -186,7 +186,10 @@ package enum BrokerSessionPersistence {
 
         var events: [BrokerSessionEvent] = []
         for line in data.split(separator: 0x0A) where !line.isEmpty {
-            events.append(try decoder.decode(BrokerSessionEvent.self, from: Data(line)))
+            guard let event = try? decoder.decode(BrokerSessionEvent.self, from: Data(line)) else {
+                continue
+            }
+            events.append(event)
         }
         return events
     }

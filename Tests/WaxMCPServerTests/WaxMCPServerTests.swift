@@ -3245,6 +3245,40 @@ func brokerSessionAppendEventThrowsWhenFirstEventFileCannotBeCreated() throws {
 }
 
 @Test
+func brokerSessionLoadEventsSkipsMalformedJSONLLines() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-event-malformed-line-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let eventLogURL = rootURL.appendingPathComponent("session.events.jsonl")
+    let first = BrokerSessionEvent(
+        sessionID: UUID(),
+        agentID: "agent",
+        runID: "run",
+        timestampMs: 1,
+        kind: .started
+    )
+    let second = BrokerSessionEvent(
+        sessionID: first.sessionID,
+        agentID: "agent",
+        runID: "run",
+        timestampMs: 2,
+        kind: .resumed
+    )
+
+    try BrokerSessionPersistence.appendEvent(first, to: eventLogURL)
+    let handle = try FileHandle(forWritingTo: eventLogURL)
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data("not-json\n".utf8))
+    try BrokerSessionPersistence.appendEvent(second, to: eventLogURL)
+
+    let events = try BrokerSessionPersistence.loadEvents(from: eventLogURL)
+    #expect(events.map(\.kind) == [.started, .resumed])
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"
