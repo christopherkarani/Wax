@@ -681,7 +681,10 @@ private extension WaxMCPTools {
         let filters = try args.optionalObject("filters")
         var metadataEntries: [String: String] = [:]
         var labels: [String] = []
+        var includeDeleted = false
+        var includeSuperseded = false
         var includeSurrogates = false
+        var frameIds: Set<UInt64>?
         var timeAfterMs: Int64?
         var timeBeforeMs: Int64?
 
@@ -689,7 +692,10 @@ private extension WaxMCPTools {
             let allowedFilterKeys: Set<String> = [
                 "metadata",
                 "labels",
+                "include_deleted",
+                "include_superseded",
                 "include_surrogates",
+                "frame_ids",
                 "time_after_ms",
                 "time_before_ms",
             ]
@@ -723,11 +729,37 @@ private extension WaxMCPTools {
                     return raw
                 }
             }
+            if let includeRaw = filters["include_deleted"] {
+                guard case .bool(let value) = includeRaw else {
+                    throw ToolValidationError.invalid("filters.include_deleted must be a boolean")
+                }
+                includeDeleted = value
+            }
+            if let includeRaw = filters["include_superseded"] {
+                guard case .bool(let value) = includeRaw else {
+                    throw ToolValidationError.invalid("filters.include_superseded must be a boolean")
+                }
+                includeSuperseded = value
+            }
             if let includeRaw = filters["include_surrogates"] {
                 guard case .bool(let value) = includeRaw else {
                     throw ToolValidationError.invalid("filters.include_surrogates must be a boolean")
                 }
                 includeSurrogates = value
+            }
+            if let frameIdsRaw = filters["frame_ids"] {
+                guard case .array(let rawFrameIds) = frameIdsRaw else {
+                    throw ToolValidationError.invalid("filters.frame_ids must be an array of non-negative integers")
+                }
+                var parsedFrameIds = Set<UInt64>()
+                parsedFrameIds.reserveCapacity(rawFrameIds.count)
+                for value in rawFrameIds {
+                    guard case .int(let raw) = value, raw >= 0 else {
+                        throw ToolValidationError.invalid("filters.frame_ids must contain only non-negative integers")
+                    }
+                    parsedFrameIds.insert(UInt64(raw))
+                }
+                frameIds = parsedFrameIds
             }
             if let timeAfterRaw = filters["time_after_ms"] {
                 guard case .int(let value) = timeAfterRaw else {
@@ -748,8 +780,14 @@ private extension WaxMCPTools {
         let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
             ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
             : nil
-        let frameFilter: FrameFilter? = (metadataFilter != nil || includeSurrogates)
-            ? FrameFilter(includeSurrogates: includeSurrogates, metadataFilter: metadataFilter)
+        let frameFilter: FrameFilter? = (metadataFilter != nil || includeDeleted || includeSuperseded || includeSurrogates || frameIds != nil)
+            ? FrameFilter(
+                includeDeleted: includeDeleted,
+                includeSuperseded: includeSuperseded,
+                includeSurrogates: includeSurrogates,
+                frameIds: frameIds,
+                metadataFilter: metadataFilter
+            )
             : nil
         let timeRange: SearchTimeRange? = (timeAfterMs != nil || timeBeforeMs != nil)
             ? SearchTimeRange(after: timeAfterMs, before: timeBeforeMs)
@@ -764,7 +802,10 @@ private extension WaxMCPTools {
                 "labels": .array(labels.map(Value.string)),
                 "time_after_ms": timeAfterMs.map { .int(Int($0)) } ?? .null,
                 "time_before_ms": timeBeforeMs.map { .int(Int($0)) } ?? .null,
+                "include_deleted": .bool(includeDeleted),
+                "include_superseded": .bool(includeSuperseded),
                 "include_surrogates": .bool(includeSurrogates),
+                "frame_ids": .array((frameIds ?? []).sorted().map { .int(Int($0)) }),
                 "has_frame_filter": .bool(frameFilter != nil),
                 "has_time_range": .bool(timeRange != nil),
             ]

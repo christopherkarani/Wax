@@ -557,9 +557,25 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional exclusive upper bound timestamp (ms since epoch).",
             ],
+            "include_deleted": [
+                "type": "boolean",
+                "description": "Whether deleted frames can be included. Default: false.",
+            ],
+            "include_superseded": [
+                "type": "boolean",
+                "description": "Whether frames superseded by newer frames can be included. Default: false.",
+            ],
             "include_surrogates": [
                 "type": "boolean",
                 "description": "Whether surrogate frames can be included. Default: false.",
+            ],
+            "frame_ids": [
+                "type": "array",
+                "description": "Optional allow-list of frame IDs to search.",
+                "items": [
+                    "type": "integer",
+                    "minimum": 0,
+                ],
             ],
         ],
         required: []

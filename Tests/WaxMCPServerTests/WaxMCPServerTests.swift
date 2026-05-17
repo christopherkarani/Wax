@@ -9,7 +9,7 @@ import Glibc
 #if MCPServer
 import MCP
 @testable import wax_mcp
-import Wax
+@testable import Wax
 import XCTest
 
 private func withAgentBrokerService<T>(
@@ -211,6 +211,25 @@ func schemasExposeVectorSearchMode() {
 }
 
 @Test
+func searchAndRecallSchemasExposeLifecycleAndFrameIDFilters() {
+    let requiredFilterProperties = [
+        "include_deleted",
+        "include_superseded",
+        "frame_ids",
+    ]
+
+    for schema in [ToolSchemas.waxRecall, ToolSchemas.waxSearch] {
+        guard let filterProperties = schemaNestedProperties(schema, property: "filters") else {
+            Issue.record("search schema is missing filters properties")
+            continue
+        }
+        for property in requiredFilterProperties {
+            #expect(filterProperties[property] != nil, "Missing filters.\(property)")
+        }
+    }
+}
+
+@Test
 func factAssertSchemaExposesVersionRelation() {
     #expect(schemaEnum(ToolSchemas.waxFactAssert, property: "relation") == ["sets", "updates", "extends", "retracts"])
 }
@@ -251,6 +270,84 @@ func brokerRejectsUnknownTopLevelArguments() async throws {
         #expect(response.ok == false)
         #expect(response.error?.contains("unsupported argument") == true)
         #expect(response.error?.contains("unexpected") == true)
+    }
+}
+
+@Test
+func brokerSearchAppliesLifecycleAndFrameIDFilters() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-broker-lifecycle-filters-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let fixture = try await seedLifecycleFilterFixture(at: storeURL)
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let baseline = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(fixture.query),
+                "mode": .string("text"),
+                "topK": .int(10),
+            ]
+        ))
+        #expect(baseline.ok == true)
+        #expect(resultFrameIDs(from: baseline).contains(fixture.replacementFrameID))
+        #expect(!resultFrameIDs(from: baseline).contains(fixture.deletedFrameID))
+        #expect(!resultFrameIDs(from: baseline).contains(fixture.supersededFrameID))
+
+        let filtered = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(fixture.query),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "filters": .object([
+                    "include_deleted": .bool(true),
+                    "include_superseded": .bool(true),
+                    "frame_ids": .array([
+                        .from(fixture.deletedFrameID),
+                        .from(fixture.supersededFrameID),
+                    ]),
+                ]),
+            ]
+        ))
+        #expect(filtered.ok == true)
+        #expect(resultFrameIDs(from: filtered) == Set([fixture.deletedFrameID, fixture.supersededFrameID]))
+        let applied = try #require(filtered.payload?.objectValue?["applied_filters"]?.objectValue)
+        #expect(applied["include_deleted"]?.boolValue == true)
+        #expect(applied["include_superseded"]?.boolValue == true)
+        #expect(applied["frame_ids"]?.arrayValue?.count == 2)
+        try await service.close()
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
+@Test
+func brokerSearchRejectsInvalidFrameIDFilters() async throws {
+    try await withAgentBrokerService { service, _ in
+        let response = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("bad frame id filter"),
+                "filters": .object([
+                    "frame_ids": .array([.double(9_223_372_036_854_775_808)]),
+                ]),
+            ]
+        ))
+
+        #expect(response.ok == false)
+        #expect(response.error?.contains("filters.frame_ids must contain only non-negative integers") == true)
     }
 }
 
@@ -1045,6 +1142,57 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 }
 
 @Test
+func searchAcceptsLifecycleAndFrameIDFilters() async throws {
+    try await withMemory { memory in
+        let fixture = try await seedLifecycleFilterFixture(memory: memory)
+
+        let baselineSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": .string(fixture.query),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(baselineSearch.isError != true)
+        let baselineJSON = try parseJSONResource(in: baselineSearch, uriSuffix: "search-summary")
+        #expect(resultFrameIDs(fromToolJSON: baselineJSON).contains(fixture.replacementFrameID))
+        #expect(!resultFrameIDs(fromToolJSON: baselineJSON).contains(fixture.deletedFrameID))
+        #expect(!resultFrameIDs(fromToolJSON: baselineJSON).contains(fixture.supersededFrameID))
+
+        let filteredSearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": .string(fixture.query),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                    "filters": .object([
+                        "include_deleted": .bool(true),
+                        "include_superseded": .bool(true),
+                        "frame_ids": .array([
+                            .int(Int(fixture.deletedFrameID)),
+                            .int(Int(fixture.supersededFrameID)),
+                        ]),
+                    ]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(filteredSearch.isError != true)
+        let filteredJSON = try parseJSONResource(in: filteredSearch, uriSuffix: "search-summary")
+        #expect(resultFrameIDs(fromToolJSON: filteredJSON) == Set([fixture.deletedFrameID, fixture.supersededFrameID]))
+        let appliedFilters = try #require(filteredJSON["applied_filters"] as? [String: Any])
+        #expect(appliedFilters["include_deleted"] as? Bool == true)
+        #expect(appliedFilters["include_superseded"] as? Bool == true)
+        #expect((appliedFilters["frame_ids"] as? [Int])?.count == 2)
+    }
+}
+
+@Test
 func recallValidatesModeAndSearchControls() async throws {
     try await withMemory { memory in
         let invalidMode = await WaxMCPTools.handleCall(
@@ -1123,6 +1271,37 @@ func searchRejectsNonIntegerTimeFilters() async throws {
 
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("filters.time_after_ms must be an integer"))
+    }
+}
+
+@Test
+func searchRejectsInvalidLifecycleAndFrameIDFilters() async throws {
+    try await withMemory { memory in
+        let invalidDeleted = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": "bad lifecycle filter",
+                    "filters": .object(["include_deleted": .string("yes")]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(invalidDeleted.isError == true)
+        #expect(firstText(in: invalidDeleted).contains("filters.include_deleted must be a boolean"))
+
+        let invalidFrameIDs = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": "bad frame id filter",
+                    "filters": .object(["frame_ids": .array([.int(-1)])]),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(invalidFrameIDs.isError == true)
+        #expect(firstText(in: invalidFrameIDs).contains("filters.frame_ids must contain only non-negative integers"))
     }
 }
 
@@ -2818,6 +2997,117 @@ private func schemaEnum(_ schema: Value, property: String) -> [String]? {
         guard case .string(let raw) = value else { return nil }
         return raw
     }
+}
+
+private func schemaNestedProperties(_ schema: Value, property: String) -> [String: Value]? {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"],
+          case .object(let propertySchema)? = properties[property],
+          case .object(let nestedProperties)? = propertySchema["properties"]
+    else {
+        return nil
+    }
+    return nestedProperties
+}
+
+private struct LifecycleFilterFixture {
+    let query: String
+    let deletedFrameID: UInt64
+    let supersededFrameID: UInt64
+    let replacementFrameID: UInt64
+}
+
+private func seedLifecycleFilterFixture(at storeURL: URL) async throws -> LifecycleFilterFixture {
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    config.enableStructuredMemory = false
+    config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 2)
+    config.rag = FastRAGConfig(
+        maxContextTokens: 120,
+        expansionMaxTokens: 60,
+        snippetMaxTokens: 30,
+        maxSnippets: 8,
+        searchTopK: 20,
+        searchMode: .textOnly
+    )
+    let memory = try await MemoryOrchestrator(at: storeURL, config: config)
+    do {
+        let fixture = try await seedLifecycleFilterFixture(memory: memory)
+        try await memory.close()
+        return fixture
+    } catch {
+        try? await memory.close()
+        throw error
+    }
+}
+
+private func seedLifecycleFilterFixture(memory: MemoryOrchestrator) async throws -> LifecycleFilterFixture {
+    let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    let query = "lifecyclefilterquery\(seed.prefix(8))"
+    let deletedMarker = "lifecycledeleted\(seed.dropFirst(8).prefix(8))"
+    let supersededMarker = "lifecyclesuperseded\(seed.dropFirst(16).prefix(8))"
+    let replacementMarker = "lifecyclereplacement\(seed.dropFirst(24).prefix(8))"
+
+    try await memory.ingestCorpusDocumentsTextOnly([
+        .init(timestampMs: 1_800_000_001_000, text: "\(query) \(deletedMarker)", metadata: ["fixture": "deleted"]),
+        .init(timestampMs: 1_800_000_002_000, text: "\(query) \(supersededMarker)", metadata: ["fixture": "superseded"]),
+        .init(timestampMs: 1_800_000_003_000, text: "\(query) \(replacementMarker)", metadata: ["fixture": "replacement"]),
+    ])
+    let wax = await memory.wax
+    try await wax.commit()
+
+    let documents = try await memory.corpusSourceDocuments()
+    func frameID(containing marker: String) throws -> UInt64 {
+        guard let document = documents.first(where: { $0.text.contains(marker) }) else {
+            throw NSError(
+                domain: "WaxMCPServerTests",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "Missing seeded document for marker \(marker)"]
+            )
+        }
+        return document.frameId
+    }
+
+    let deletedFrameID = try frameID(containing: deletedMarker)
+    let supersededFrameID = try frameID(containing: supersededMarker)
+    let replacementFrameID = try frameID(containing: replacementMarker)
+    try await wax.delete(frameId: deletedFrameID)
+    try await wax.supersede(supersededId: supersededFrameID, supersedingId: replacementFrameID)
+    try await wax.commit()
+
+    return LifecycleFilterFixture(
+        query: query,
+        deletedFrameID: deletedFrameID,
+        supersededFrameID: supersededFrameID,
+        replacementFrameID: replacementFrameID
+    )
+}
+
+private func resultFrameIDs(from response: AgentBrokerResponse) -> Set<UInt64> {
+    guard let rows = response.payload?.objectValue?["results"]?.arrayValue else {
+        return []
+    }
+    return Set(rows.compactMap { row in
+        guard let raw = row.objectValue?["frameId"]?.intValue, raw >= 0 else {
+            return nil
+        }
+        return UInt64(raw)
+    })
+}
+
+private func resultFrameIDs(fromToolJSON object: [String: Any]) -> Set<UInt64> {
+    guard let rows = object["results"] as? [[String: Any]] else {
+        return []
+    }
+    return Set(rows.compactMap { row in
+        if let value = row["frameId"] as? Int, value >= 0 {
+            return UInt64(value)
+        }
+        if let value = row["frameId"] as? UInt64 {
+            return value
+        }
+        return nil
+    })
 }
 
 private func parseToolTextJSON(fromResponseLine line: String) throws -> [String: Any] {
