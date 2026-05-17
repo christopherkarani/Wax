@@ -169,9 +169,17 @@ extension AgentBrokerService {
         let entries = try BrokerMarkdownSync.parseFile(at: url)
         var counts = MarkdownSyncCounts()
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
+        var approvedFingerprints = Set(longTermDocuments.map {
+            MemorySemantics.normalizedTextFingerprint($0.text)
+        })
 
         for entry in entries where entry.checked == true && entry.marker?.sourceKind == MarkdownProjectionKind.dreams.rawValue {
             guard let marker = entry.marker else { continue }
+            let fingerprint = MemorySemantics.normalizedTextFingerprint(entry.text)
+            guard !approvedFingerprints.contains(fingerprint) else {
+                counts.rejectedDreams += 1
+                continue
+            }
             let sessionID = marker.sessionID.flatMap(UUID.init(uuidString:))
             let sourceFrameID = marker.sourceFrameID
 
@@ -211,6 +219,7 @@ extension AgentBrokerService {
                 let normalized = approvedDreamMetadata(metadata: metadata, proposal: proposal)
                 try validateDurableWriteContent(content: entry.text, metadata: normalized)
                 counts.approvedDreams += 1
+                approvedFingerprints.insert(fingerprint)
                 if !dryRun {
                     try await longTermMemory.remember(entry.text, metadata: normalized)
 

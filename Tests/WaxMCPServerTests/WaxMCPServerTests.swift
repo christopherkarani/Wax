@@ -3303,6 +3303,50 @@ func brokerMarkdownSyncDryRunRejectsSecretLikeDreamApprovals() async throws {
 }
 
 @Test
+func brokerMarkdownSyncDeduplicatesCheckedDreamApprovals() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-dream-dedupe-\(UUID().uuidString)", isDirectory: true)
+        let memoryDir = rootURL.appendingPathComponent("memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memoryDir, withIntermediateDirectories: true)
+        let dreamsURL = memoryDir.appendingPathComponent("DREAMS.md")
+        let dream = "Decision: deduplicate F186 DREAMS approval \(UUID().uuidString)"
+        let marker = MarkdownProjectionMarker(
+            sourceKind: MarkdownProjectionKind.dreams.rawValue,
+            hash: AgentBrokerService.stableHash(dream),
+            sourceFrameID: 41,
+            memoryType: MemoryType.decision.rawValue,
+            durability: MemoryDurability.durable.rawValue
+        )
+        var duplicateMarker = marker
+        duplicateMarker.sourceFrameID = 42
+        let firstLine = "- [x] \(dream) \(BrokerMarkdownSync.markerComment(marker))"
+        let duplicateLine = "- [x] \(dream) \(BrokerMarkdownSync.markerComment(duplicateMarker))"
+        try """
+        # DREAMS
+
+        \(firstLine)
+        \(duplicateLine)
+        """.write(to: dreamsURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true)
+        let payload = try #require(sync.payload?.objectValue)
+        let counts = try #require(payload["counts"]?.objectValue)
+        #expect(counts["approved_dreams"]?.intValue == 1)
+        #expect(counts["rejected_dreams"]?.intValue == 1)
+
+        let health = await service.handle(.init(command: "memory_health"))
+        #expect(health.ok == true)
+        let healthPayload = try #require(health.payload?.objectValue)
+        #expect(healthPayload["total_documents"]?.intValue == 1)
+    }
+}
+
+@Test
 func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory
