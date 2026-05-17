@@ -3146,6 +3146,67 @@ func brokerMarkdownSyncRejectsSecretLikeDurableMemoryImports() async throws {
 }
 
 @Test
+func brokerMarkdownSyncDryRunRejectsSecretLikeDurableMemoryImports() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-secret-dry-run-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        try """
+        # MEMORY
+
+        ## fact
+        - api_key=12345678901234567890
+        """.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let response = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: [
+                "root_dir": .string(rootURL.path),
+                "dry_run": .bool(true),
+            ]
+        ))
+
+        #expect(response.ok == false)
+        #expect((response.error ?? "").contains("Refusing to store durable memory containing secret-like content"))
+    }
+}
+
+@Test
+func brokerMarkdownSyncDryRunRejectsSecretLikeDreamApprovals() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-dream-secret-dry-run-\(UUID().uuidString)", isDirectory: true)
+        let memoryDir = rootURL.appendingPathComponent("memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memoryDir, withIntermediateDirectories: true)
+        let dreamsURL = memoryDir.appendingPathComponent("DREAMS.md")
+        let secret = "Decision: api_key=12345678901234567890"
+        let marker = MarkdownProjectionMarker(
+            sourceKind: MarkdownProjectionKind.dreams.rawValue,
+            hash: AgentBrokerService.stableHash(secret),
+            memoryType: MemoryType.fact.rawValue,
+            durability: MemoryDurability.durable.rawValue
+        )
+        try """
+        # DREAMS
+
+        - [x] \(secret) \(BrokerMarkdownSync.markerComment(marker))
+        """.write(to: dreamsURL, atomically: true, encoding: .utf8)
+
+        let response = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: [
+                "root_dir": .string(rootURL.path),
+                "dry_run": .bool(true),
+            ]
+        ))
+
+        #expect(response.ok == false)
+        #expect((response.error ?? "").contains("Refusing to store durable memory containing secret-like content"))
+    }
+}
+
+@Test
 func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory

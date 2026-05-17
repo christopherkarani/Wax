@@ -208,29 +208,10 @@ extension AgentBrokerService {
             )
 
             if proposal.shouldWrite {
+                let normalized = approvedDreamMetadata(metadata: metadata, proposal: proposal)
+                try validateDurableWriteContent(content: entry.text, metadata: normalized)
                 counts.approvedDreams += 1
                 if !dryRun {
-                    let semantics = MemoryWriteSemantics(
-                        type: proposal.suggestedType,
-                        durability: proposal.suggestedDurability,
-                        confidence: proposal.confidence,
-                        reviewed: true,
-                        lock: proposal.suggestedDurability == MemoryDurability.locked
-                    )
-                    var normalized = MemorySemantics.normalizeWriteMetadata(
-                        metadata: metadata,
-                        semantics: semantics,
-                        sessionID: nil,
-                        inferredScope: scopeContext
-                    )
-                    normalized = MemorySemantics.approvedPromotionMetadata(
-                        metadata: normalized,
-                        semantics: semantics,
-                        suggestedType: proposal.suggestedType,
-                        suggestedDurability: proposal.suggestedDurability,
-                        suggestedConfidence: proposal.confidence
-                    )
-                    try validateDurableWriteContent(content: entry.text, metadata: normalized)
                     try await longTermMemory.remember(entry.text, metadata: normalized)
 
                     if let sessionID {
@@ -255,6 +236,32 @@ extension AgentBrokerService {
         }
 
         return counts
+    }
+
+    private func approvedDreamMetadata(
+        metadata: [String: String],
+        proposal: BrokerPromotionProposal
+    ) -> [String: String] {
+        let semantics = MemoryWriteSemantics(
+            type: proposal.suggestedType,
+            durability: proposal.suggestedDurability,
+            confidence: proposal.confidence,
+            reviewed: true,
+            lock: proposal.suggestedDurability == MemoryDurability.locked
+        )
+        let normalized = MemorySemantics.normalizeWriteMetadata(
+            metadata: metadata,
+            semantics: semantics,
+            sessionID: nil,
+            inferredScope: scopeContext
+        )
+        return MemorySemantics.approvedPromotionMetadata(
+            metadata: normalized,
+            semantics: semantics,
+            suggestedType: proposal.suggestedType,
+            suggestedDurability: proposal.suggestedDurability,
+            suggestedConfidence: proposal.confidence
+        )
     }
 
     private func syncManagedEntries(
@@ -298,6 +305,15 @@ extension AgentBrokerService {
             }
 
             if dryRun {
+                try validateManagedDocumentWrite(
+                    content: entry.text,
+                    entry: entry,
+                    sourcePath: sourcePath,
+                    sourceKind: sourceKind,
+                    dateKey: dateKey,
+                    semantics: semantics,
+                    existing: existing
+                )
                 if let existing {
                     matchedFrameIDs.insert(existing.frameId)
                     counts.updated += 1
@@ -410,27 +426,17 @@ extension AgentBrokerService {
         let beforeDocuments = try await longTermMemory.corpusSourceDocuments()
         let beforeIDs = Set(beforeDocuments.map { $0.frameId })
 
-        var baseMetadata = existing?.metadata ?? [:]
-        baseMetadata[MemoryMetadataKeys.sourcePath] = sourcePath
-        baseMetadata[MemoryMetadataKeys.sourceLine] = String(entry.lineNumber)
-        baseMetadata[MemoryMetadataKeys.sourceHash] = Self.stableHash(content)
-        baseMetadata[MemoryMetadataKeys.sourceKind] = sourceKind.rawValue
-        baseMetadata[MemoryMetadataKeys.sourceManaged] = "true"
-        if let dateKey {
-            baseMetadata[MemoryMetadataKeys.sourceDate] = dateKey
-        }
-        if let markerMemoryID = entry.marker?.memoryID {
-            baseMetadata[MemoryMetadataKeys.sourceMemoryID] = markerMemoryID
-        }
-
-        let normalized = MemorySemantics.normalizeWriteMetadata(
-            metadata: baseMetadata,
+        let normalized = managedDocumentMetadata(
+            content: content,
+            entry: entry,
+            sourcePath: sourcePath,
+            sourceKind: sourceKind,
+            dateKey: dateKey,
             semantics: semantics,
-            sessionID: nil,
-            inferredScope: scopeContext
+            existing: existing
         )
-
         try validateDurableWriteContent(content: content, metadata: normalized)
+
         try await longTermMemory.remember(content, metadata: normalized)
         try await longTermMemory.flush()
 
@@ -460,6 +466,57 @@ extension AgentBrokerService {
         }
 
         throw BrokerValidationError.invalid("Unable to reconcile imported Markdown entry at \(sourcePath):\(entry.lineNumber)")
+    }
+
+    private func validateManagedDocumentWrite(
+        content: String,
+        entry: MarkdownProjectionEntry,
+        sourcePath: String,
+        sourceKind: MarkdownProjectionKind,
+        dateKey: String?,
+        semantics: MemoryWriteSemantics,
+        existing: MemoryOrchestrator.CorpusSourceDocument?
+    ) throws {
+        let normalized = managedDocumentMetadata(
+            content: content,
+            entry: entry,
+            sourcePath: sourcePath,
+            sourceKind: sourceKind,
+            dateKey: dateKey,
+            semantics: semantics,
+            existing: existing
+        )
+        try validateDurableWriteContent(content: content, metadata: normalized)
+    }
+
+    private func managedDocumentMetadata(
+        content: String,
+        entry: MarkdownProjectionEntry,
+        sourcePath: String,
+        sourceKind: MarkdownProjectionKind,
+        dateKey: String?,
+        semantics: MemoryWriteSemantics,
+        existing: MemoryOrchestrator.CorpusSourceDocument?
+    ) -> [String: String] {
+        var baseMetadata = existing?.metadata ?? [:]
+        baseMetadata[MemoryMetadataKeys.sourcePath] = sourcePath
+        baseMetadata[MemoryMetadataKeys.sourceLine] = String(entry.lineNumber)
+        baseMetadata[MemoryMetadataKeys.sourceHash] = Self.stableHash(content)
+        baseMetadata[MemoryMetadataKeys.sourceKind] = sourceKind.rawValue
+        baseMetadata[MemoryMetadataKeys.sourceManaged] = "true"
+        if let dateKey {
+            baseMetadata[MemoryMetadataKeys.sourceDate] = dateKey
+        }
+        if let markerMemoryID = entry.marker?.memoryID {
+            baseMetadata[MemoryMetadataKeys.sourceMemoryID] = markerMemoryID
+        }
+
+        return MemorySemantics.normalizeWriteMetadata(
+            metadata: baseMetadata,
+            semantics: semantics,
+            sessionID: nil,
+            inferredScope: scopeContext
+        )
     }
 
     private func deleteDocumentTree(frameID: UInt64, memory: MemoryOrchestrator) async throws {
