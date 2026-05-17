@@ -3347,6 +3347,83 @@ func brokerMarkdownSyncDeduplicatesCheckedDreamApprovals() async throws {
 }
 
 @Test
+func brokerMarkdownExportIncludesEndedSessionDreams() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-ended-dreams-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionID = try #require(startedPayload["session_id"]?.stringValue)
+        let dream = "Decision: export ended session DREAMS \(UUID().uuidString)"
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(dream),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(ended.ok == true)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(export.ok == true)
+        let exportPayload = try #require(export.payload?.objectValue)
+        let dreamsPath = try #require(exportPayload["dreams_path"]?.stringValue)
+        let dreamsURL = URL(fileURLWithPath: dreamsPath)
+        var dreamsText = try String(contentsOf: dreamsURL, encoding: .utf8)
+        #expect(dreamsText.contains(dream))
+        #expect(dreamsText.contains("- [ ]"))
+
+        dreamsText = dreamsText.replacingOccurrences(of: "- [ ] \(dream)", with: "- [x] \(dream)")
+        try dreamsText.write(to: dreamsURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(outputURL.path)]
+        ))
+        #expect(sync.ok == true)
+        let syncPayload = try #require(sync.payload?.objectValue)
+        let counts = try #require(syncPayload["counts"]?.objectValue)
+        #expect(counts["approved_dreams"]?.intValue == 1)
+    }
+}
+
+@Test
+func brokerMarkdownExportRejectsUnknownExplicitSessionID() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-unknown-session-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(UUID().uuidString),
+            ]
+        ))
+
+        #expect(export.ok == false)
+        #expect((export.error ?? "").contains("No session manifest found"))
+    }
+}
+
+@Test
 func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory

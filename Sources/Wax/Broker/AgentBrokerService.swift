@@ -1094,6 +1094,7 @@ extension AgentBrokerService {
         let args = BrokerArguments(arguments)
         let outputDir = try args.requiredString("output_dir", maxBytes: 4096)
         let sessionID = try parseOptionalSessionID(args)
+        try validateMarkdownExportSession(sessionID)
         let exportURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(outputDir), isDirectory: true).standardizedFileURL
         let report = try await exportMarkdownProjection(outputURL: exportURL, sessionID: sessionID)
         return .object([
@@ -1105,6 +1106,15 @@ extension AgentBrokerService {
             "handoff_summary_path": .from(report.handoffSummaryPath),
             "display_text": .string("Exported Markdown projection to \(exportURL.path)"),
         ])
+    }
+
+    private func validateMarkdownExportSession(_ sessionID: UUID?) throws {
+        guard let sessionID else { return }
+        let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw BrokerValidationError.invalid("No session manifest found for session_id \(sessionID.uuidString)")
+        }
+        _ = try BrokerSessionPersistence.loadManifest(at: manifestURL)
     }
 
     func markdownSync(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -1957,7 +1967,7 @@ extension AgentBrokerService {
             handoffSummaryPath = handoffURL.path
         }
 
-        if let sessionID {
+        if let sessionID, activeSessions[sessionID] != nil {
             try await appendSessionEvent(
                 sessionID: sessionID,
                 kind: .markdownExported,

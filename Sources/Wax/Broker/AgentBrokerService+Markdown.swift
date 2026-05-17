@@ -223,7 +223,7 @@ extension AgentBrokerService {
                 if !dryRun {
                     try await longTermMemory.remember(entry.text, metadata: normalized)
 
-                    if let sessionID {
+                    if let sessionID, activeSessions[sessionID] != nil {
                         try await refreshSessionManifest(sessionID)
                         try await appendSessionEvent(
                             sessionID: sessionID,
@@ -541,7 +541,7 @@ extension AgentBrokerService {
 
     func dreamProjectionLines(sessionID filterSessionID: UUID?) async throws -> [String] {
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-            .filter { $0.status == .active }
+            .filter { $0.status == .active || $0.status == .ended }
             .filter { filterSessionID == nil || $0.sessionID == filterSessionID }
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         var rendered: [(score: Float, line: String)] = []
