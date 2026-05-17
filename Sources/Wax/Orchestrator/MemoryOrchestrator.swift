@@ -292,12 +292,15 @@ package actor MemoryOrchestrator {
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
         if let enrichmentPipeline {
+            let session = self.session
             await enrichmentPipeline.start { task in
                 EnrichmentResult(
                     frameId: task.frameId,
                     keywords: KeywordExtractor.extract(from: task.text),
                     entities: []
                 )
+            } resultHandler: { result in
+                try await Self.persistEnrichmentResult(result, in: session)
             }
         }
         if resolvedConfig.enableAccessStatsScoring {
@@ -615,6 +618,49 @@ package actor MemoryOrchestrator {
             dimensions: identity.dimensions,
             normalized: identity.normalized
         )
+    }
+
+    private static func persistEnrichmentResult(
+        _ result: EnrichmentResult,
+        in session: WaxSession
+    ) async throws {
+        guard !result.keywords.isEmpty || !result.entities.isEmpty else {
+            return
+        }
+
+        var metadata = Metadata()
+        metadata.entries["wax.enrichment.source_frame_id"] = String(result.frameId)
+        if !result.keywords.isEmpty {
+            metadata.entries["wax.enrichment.keywords"] = result.keywords.joined(separator: ",")
+        }
+        if !result.entities.isEmpty {
+            metadata.entries["wax.enrichment.entities"] = result.entities
+                .map { "\($0.subject)|\($0.predicate)|\($0.object)" }
+                .joined(separator: "\n")
+        }
+
+        _ = try await session.put(
+            Data(renderEnrichmentResult(result).utf8),
+            options: FrameMetaSubset(
+                kind: "enrichment",
+                role: .system,
+                parentId: result.frameId,
+                searchText: result.keywords.joined(separator: " "),
+                metadata: metadata
+            )
+        )
+    }
+
+    private static func renderEnrichmentResult(_ result: EnrichmentResult) -> String {
+        var lines: [String] = []
+        if !result.keywords.isEmpty {
+            lines.append("keywords: \(result.keywords.joined(separator: ", "))")
+        }
+        if !result.entities.isEmpty {
+            lines.append("entities:")
+            lines.append(contentsOf: result.entities.map { "- \($0.subject) \($0.predicate) \($0.object)" })
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
