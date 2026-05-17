@@ -234,6 +234,62 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func structuredSearchFindsEvidenceWhenEntityCandidateIsFactObject() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the target alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload")
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f025-alice"),
+            kind: "person",
+            aliases: ["F025SubjectAlice"],
+            nowMs: 1_000
+        )
+        _ = try await session.upsertEntity(
+            key: EntityKey("place:f025-paris"),
+            kind: "place",
+            aliases: ["F025ObjectParis"],
+            nowMs: 1_000
+        )
+
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f025-alice"),
+            predicate: PredicateKey("located_in"),
+            object: .entity(EntityKey("place:f025-paris")),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: 1_000),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: 1_000
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let response = try await session.search(
+            SearchRequest(query: "F025ObjectParis", mode: .textOnly, topK: 5, asOfMs: .max)
+        )
+
+        #expect(response.results.map(\.frameId) == [evidenceFrame])
+        #expect(response.results.first?.sources == [.structuredMemory])
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
 @Test func filtersAllowResultsBeyondTopK() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

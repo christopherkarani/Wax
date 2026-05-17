@@ -554,16 +554,27 @@ package actor FTS5SearchEngine {
                 factArgs.append(factLimit)
 
                 let factSql = """
-                    SELECT DISTINCT f.fact_id AS fact_id
-                    FROM sm_fact_span s
-                    JOIN sm_fact f ON f.fact_id = s.fact_id
-                    JOIN sm_entity subj ON subj.entity_id = f.subject_entity_id
-                    WHERE subj.key IN (\(subjectPlaceholders))
-                      AND s.system_from_ms <= ?
+                    WITH candidate_entities AS (
+                        SELECT entity_id FROM sm_entity WHERE key IN (\(subjectPlaceholders))
+                    ),
+                    candidate_facts AS (
+                        SELECT f.fact_id AS fact_id
+                        FROM sm_fact f
+                        JOIN candidate_entities c ON c.entity_id = f.subject_entity_id
+                        UNION
+                        SELECT f.fact_id AS fact_id
+                        FROM sm_fact f
+                        JOIN candidate_entities c ON c.entity_id = f.object_entity_id
+                        WHERE f.object_kind = 7
+                    )
+                    SELECT DISTINCT cf.fact_id AS fact_id
+                    FROM candidate_facts cf
+                    JOIN sm_fact_span s ON s.fact_id = cf.fact_id
+                    WHERE s.system_from_ms <= ?
                       AND (s.system_to_ms IS NULL OR s.system_to_ms > ?)
                       AND s.valid_from_ms <= ?
                       AND (s.valid_to_ms IS NULL OR s.valid_to_ms > ?)
-                    ORDER BY f.fact_id ASC
+                    ORDER BY cf.fact_id ASC
                     LIMIT ?
                     """
 
