@@ -3429,6 +3429,79 @@ func brokerMarkdownExportRejectsUnknownExplicitSessionID() async throws {
 }
 
 @Test
+func brokerMarkdownExportSkipsActiveSessionsOwnedByOtherBrokers() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-other-broker-export-\(UUID().uuidString)", isDirectory: true)
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let owner = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("owner-memory.wax").path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    defer { Task { try? await owner.close() } }
+
+    let started = await owner.handle(.init(command: "session_start"))
+    #expect(started.ok == true)
+    let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+    let foreignDream = "Decision: other broker export should not open this active session \(UUID().uuidString)"
+    let remembered = await owner.handle(.init(
+        command: "remember",
+        arguments: [
+            "content": .string(foreignDream),
+            "session_id": .string(sessionID),
+        ]
+    ))
+    #expect(remembered.ok == true)
+
+    let exporter = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("exporter-memory.wax").path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    defer { Task { try? await exporter.close() } }
+
+    let outputURL = rootURL.appendingPathComponent("markdown-export", isDirectory: true)
+    let export = await exporter.handle(.init(
+        command: "markdown_export",
+        arguments: ["output_dir": .string(outputURL.path)]
+    ))
+
+    #expect(export.ok == true)
+    let exportPayload = try #require(export.payload?.objectValue)
+    if let dreamsPath = exportPayload["dreams_path"]?.stringValue {
+        let dreamsText = try String(contentsOf: URL(fileURLWithPath: dreamsPath), encoding: .utf8)
+        #expect(!dreamsText.contains(foreignDream))
+    }
+
+    let scopedExport = await exporter.handle(.init(
+        command: "markdown_export",
+        arguments: [
+            "output_dir": .string(rootURL.appendingPathComponent("scoped-export", isDirectory: true).path),
+            "session_id": .string(sessionID),
+        ]
+    ))
+    #expect(scopedExport.ok == false)
+    #expect((scopedExport.error ?? "").contains("active in another broker process"))
+
+    let get = await owner.handle(.init(
+        command: "memory_search",
+        arguments: [
+            "query": .string("other broker export should not open"),
+            "session_id": .string(sessionID),
+            "mode": .string("text"),
+        ]
+    ))
+    #expect(get.ok == true)
+}
+
+@Test
 func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory

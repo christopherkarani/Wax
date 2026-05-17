@@ -543,6 +543,7 @@ extension AgentBrokerService {
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
             .filter { $0.status == .active || $0.status == .ended }
             .filter { filterSessionID == nil || $0.sessionID == filterSessionID }
+            .filter { $0.status == .ended || activeSessions[$0.sessionID] != nil }
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         var rendered: [(score: Float, line: String)] = []
         var seenHashes = Set<String>()

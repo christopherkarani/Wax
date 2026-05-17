@@ -1114,7 +1114,10 @@ extension AgentBrokerService {
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             throw BrokerValidationError.invalid("No session manifest found for session_id \(sessionID.uuidString)")
         }
-        _ = try BrokerSessionPersistence.loadManifest(at: manifestURL)
+        let manifest = try BrokerSessionPersistence.loadManifest(at: manifestURL)
+        if manifest.status == .active && activeSessions[sessionID] == nil {
+            throw BrokerValidationError.invalid("session_id is active in another broker process; call session_resume before exporting it")
+        }
     }
 
     func markdownSync(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
