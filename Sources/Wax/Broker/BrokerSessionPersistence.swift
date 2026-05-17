@@ -170,7 +170,7 @@ package enum BrokerSessionPersistence {
     package static func appendEvent(_ event: BrokerSessionEvent, to url: URL) throws {
         let line = try encoder.encode(event) + Data([0x0A])
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: line)
+            try line.write(to: url, options: .withoutOverwriting)
             return
         }
         let handle = try FileHandle(forWritingTo: url)

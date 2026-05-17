@@ -3223,6 +3223,28 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
 }
 
 @Test
+func brokerSessionAppendEventThrowsWhenFirstEventFileCannotBeCreated() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-event-create-failure-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let event = BrokerSessionEvent(
+        sessionID: UUID(),
+        agentID: "agent",
+        runID: "run",
+        timestampMs: 1,
+        kind: .started
+    )
+    let missingParentEventURL = rootURL
+        .appendingPathComponent("missing", isDirectory: true)
+        .appendingPathComponent("session.events.jsonl")
+
+    #expect(throws: (any Error).self) {
+        try BrokerSessionPersistence.appendEvent(event, to: missingParentEventURL)
+    }
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"
