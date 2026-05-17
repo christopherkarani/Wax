@@ -2,7 +2,50 @@ import Foundation
 import Testing
 
 #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+import CoreML
+import WaxBertTokenizer
 import WaxVectorSearchMiniLM
+
+@available(macOS 15.0, iOS 18.0, *)
+private struct StubMiniLMModel: MiniLMEmbeddingModel {
+    let single: [Float]?
+    let batch: [[Float]]?
+    let computeUnits: MLComputeUnits = .cpuOnly
+
+    func encode(sentence: String) async -> [Float]? {
+        single
+    }
+
+    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async -> [[Float]]? {
+        batch
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderNormalizesDirectOutputs() async throws {
+    var vector = Array(repeating: Float(0), count: 384)
+    vector[0] = 3
+    vector[1] = 4
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+
+    let embedded = try await embedder.embed("hello world")
+
+    #expect(abs(embedded[0] - 0.6) < 0.000_001)
+    #expect(abs(embedded[1] - 0.8) < 0.000_001)
+    #expect(abs(l2Norm(embedded) - 1) < 0.000_001)
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderRejectsZeroMagnitudeOutputs() async throws {
+    let vector = Array(repeating: Float(0), count: 384)
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+
+    await #expect(throws: (any Error).self) {
+        _ = try await embedder.embed("hello world")
+    }
+}
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test(.disabled(
@@ -65,5 +108,9 @@ private func assertVectorsClose(_ lhs: [Float], _ rhs: [Float], tolerance: Float
     for (l, r) in zip(lhs, rhs) {
         #expect(abs(l - r) <= tolerance)
     }
+}
+
+private func l2Norm(_ vector: [Float]) -> Float {
+    sqrt(vector.reduce(Float(0)) { $0 + $1 * $1 })
 }
 #endif
