@@ -293,15 +293,22 @@ public final class BertTokenizer: @unchecked Sendable {
     public func buildModelInputsWithTypeIds(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
         let (inputIds, attentionMask) = try buildModelInputs(from: inputTokens)
 
-        var encounteredSep = false
         guard let sepToken = tokenToId(token: "[SEP]") else {
             throw BertTokenizerError.io("Missing required [SEP] token in vocabulary")
         }
+        guard let padToken = tokenToId(token: "[PAD]") else {
+            throw BertTokenizerError.io("Missing required [PAD] token in vocabulary")
+        }
+        var afterFirstSep = false
         let tokenTypeIdValues: [Int] = inputTokens.map { token in
-            if token == sepToken {
-                encounteredSep = true
+            if token == padToken {
+                return 0
             }
-            return encounteredSep ? 1 : 0
+            if token == sepToken {
+                defer { afterFirstSep = true }
+                return afterFirstSep ? 1 : 0
+            }
+            return afterFirstSep ? 1 : 0
         }
         let tokenTypeIds = try MLMultiArray.from(tokenTypeIdValues, dims: 2)
         return (inputIds, attentionMask, tokenTypeIds)
