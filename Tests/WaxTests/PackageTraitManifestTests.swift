@@ -15,8 +15,27 @@ import Testing
     #expect(target.contains(miniLMCompileDefine))
 }
 
+@Test func waxMCPMultimodalAdapterGuardsCoreGraphicsImport() throws {
+    let source = try PackageSource.load("Sources/WaxMCPServer/MultimodalAdapter.swift")
+
+    #expect(source.contains("#if MCPServer && canImport(CoreGraphics) && canImport(ImageIO)"))
+    #expect(!source.contains("#if MCPServer\nimport CoreGraphics"))
+}
+
 private let miniLMCompileDefine =
     #".define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"]))"#
+
+private struct PackageSource {
+    static func load(_ path: String, filePath: String = #filePath) throws -> String {
+        let testFile = URL(fileURLWithPath: filePath)
+        let packageRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot.appendingPathComponent(path)
+        return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
+}
 
 private struct PackageManifest {
     let source: String
