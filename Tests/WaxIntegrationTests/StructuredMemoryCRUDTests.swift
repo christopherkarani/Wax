@@ -16,6 +16,27 @@ import Wax
     #expect(matches.map(\.key) == [EntityKey("person:alice")])
 }
 
+@Test func upsertEntityCorrectsExistingNonEmptyKind() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.upsertEntity(
+        key: EntityKey("agent:alice"),
+        kind: "person",
+        aliases: ["Alice"],
+        nowMs: 100
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("agent:alice"),
+        kind: "agent",
+        aliases: ["Alice"],
+        nowMs: 200
+    )
+
+    let matches = try await engine.resolveEntities(matchingAlias: "alice", limit: 10)
+    #expect(matches.map(\.key) == [EntityKey("agent:alice")])
+    #expect(matches.first?.kind == "agent")
+}
+
 @Test func resolveEntitiesUsesDeterministicFuzzyAliasMatching() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 

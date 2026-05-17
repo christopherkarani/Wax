@@ -871,7 +871,7 @@ package actor FTS5SearchEngine {
                     if let row = try Row.fetchOne(selectEntityStmt, arguments: [key.rawValue]) {
                         let id: Int64 = row["entity_id"] ?? 0
                         let existingKind: String = row["kind"] ?? ""
-                        if existingKind.isEmpty, !kind.isEmpty {
+                        if !kind.isEmpty, existingKind != kind {
                             try updateEntityKindStmt.execute(arguments: [kind, id])
                         }
                         return id
