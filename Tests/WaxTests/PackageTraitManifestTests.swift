@@ -28,6 +28,22 @@ import Testing
     #expect(!source.contains("Darwin.exit"))
 }
 
+@Test func waxIntegrationLinuxExcludesDarwinOnlyBenchmarks() throws {
+    let manifest = try PackageManifest.load()
+    let requiredExcludes = [
+        "AccessStatsBootstrapBenchmarks.swift",
+        "HandoffLookupBenchmarks.swift",
+        "PayloadLivenessBenchmarks.swift",
+        "RememberDedupBenchmarks.swift",
+        "SessionRuntimeStatsBenchmarks.swift",
+        "SurrogateSourceBenchmarks.swift",
+    ]
+
+    for file in requiredExcludes {
+        #expect(manifest.source.contains(#""\#(file)""#))
+    }
+}
+
 private let miniLMCompileDefine =
     #".define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"]))"#
 

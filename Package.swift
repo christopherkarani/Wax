@@ -6,11 +6,13 @@ import PackageDescription
 let waxIntegrationLinuxExcludes: [String]
 #if os(Linux)
 waxIntegrationLinuxExcludes = [
+    "AccessStatsBootstrapBenchmarks.swift",
     "CoverageGapTests.swift",
     "BatchEmbeddingBenchmark.swift",
     "BertTokenizerReuseTests.swift",
     "BufferSerializationBenchmark.swift",
     "FoundationModelsToolAvailabilityTests.swift",
+    "HandoffLookupBenchmarks.swift",
     "LongMemoryBenchmarkHarness.swift",
     "MLMultiArrayBatchBuilderTests.swift",
     "MemoryOrchestratorTests.swift",
@@ -25,6 +27,7 @@ waxIntegrationLinuxExcludes = [
     "Mocks/MockProviders.swift",
     "OptimizationComparisonBenchmark.swift",
     "PDFIngestTests.swift",
+    "PayloadLivenessBenchmarks.swift",
     "PhotoRAGConstraintQueriesTests.swift",
     "PhotoRAGIngestDedupeTests.swift",
     "PhotoRAGOrchestratorTests.swift",
@@ -33,6 +36,9 @@ waxIntegrationLinuxExcludes = [
     "RAGBenchmarks.swift",
     "RAGBenchmarksMiniLM.swift",
     "RAGConfigClampingTests.swift",
+    "RememberDedupBenchmarks.swift",
+    "SessionRuntimeStatsBenchmarks.swift",
+    "SurrogateSourceBenchmarks.swift",
     "UnifiedSearchTests.swift",
     "VectorSearchEngineTests.swift",
     "VideoRAGFileIngestIntegrationTests.swift",
