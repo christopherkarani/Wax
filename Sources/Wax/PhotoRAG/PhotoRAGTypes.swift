@@ -63,6 +63,30 @@ package enum PhotoScope: Sendable, Equatable {
     case assetIDs([String])
 }
 
+/// A local image file to ingest into the package-only Photo RAG pipeline.
+package struct PhotoFile: Sendable, Equatable {
+    /// Stable caller-provided identifier used as the photo asset ID in Wax metadata.
+    package var id: String
+    /// Local file URL for the image bytes.
+    package var url: URL
+    /// Optional capture date when no image metadata timestamp is available.
+    package var captureDate: Date?
+
+    package init(id: String, url: URL, captureDate: Date? = nil) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.id = trimmed.isEmpty ? url.standardizedFileURL.absoluteString : trimmed
+        self.url = url
+        self.captureDate = captureDate
+    }
+}
+
+/// Errors thrown during photo ingestion.
+package enum PhotoIngestError: Error, Sendable, Equatable {
+    case fileMissing(id: String, url: URL)
+    case invalidImage(reason: String)
+    case embedderDimensionMismatch(expected: Int, got: Int)
+}
+
 /// A Sendable wrapper for query-time images.
 ///
 /// The framework decodes this into a `CGImage` internally for embedding.
@@ -206,4 +230,3 @@ package struct PhotoRAGItem: Sendable, Equatable {
         self.regions = regions
     }
 }
-
