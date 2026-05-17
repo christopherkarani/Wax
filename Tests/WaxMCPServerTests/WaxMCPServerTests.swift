@@ -1489,6 +1489,104 @@ func brokerCorpusSearchRebuildsWhenSourceFingerprintChanges() async throws {
 }
 
 @Test
+func brokerCorpusSearchRebuildsWhenCorpusManifestIsCorrupt() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+        let source = sessionsDir.appendingPathComponent("session-a.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
+
+        try await writeSessionStore(
+            at: source,
+            documents: [("Corrupt manifest rebuild note about orbital telemetry.", ["session_id": "session-a"])]
+        )
+
+        _ = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+
+        let manifestURL = CorpusBuildManifestStore.manifestURL(for: corpus)
+        try Data("not valid corpus manifest json".utf8).write(to: manifestURL)
+
+        let rebuild = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(rebuild.storesDiscovered == 1)
+        #expect(rebuild.storesIndexed == 1)
+        #expect(rebuild.documentsIndexed == 1)
+        #expect(try CorpusBuildManifestStore.load(for: corpus) != nil)
+
+        let documents = try await MCPMemoryFactory.withOpenMemory(
+            at: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            structuredMemoryEnabled: false
+        ) { memory in
+            try await memory.corpusSourceDocuments()
+        }
+        #expect(documents.contains { $0.text.contains("orbital telemetry") })
+    }
+}
+
+@Test
+func corpusSearchBuilderRebuildsWhenCorpusManifestIsCorrupt() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
+        let source = sessionsDir.appendingPathComponent("session-a.wax")
+        let corpus = root.appendingPathComponent("corpus.wax")
+
+        try await writeSessionStore(
+            at: source,
+            documents: [("MCP corpus corrupt manifest rebuild note about docking telemetry.", ["session_id": "session-a"])]
+        )
+
+        _ = try await CorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+
+        let manifestURL = CorpusBuildManifestStore.manifestURL(for: corpus)
+        try Data("not valid mcp corpus manifest json".utf8).write(to: manifestURL)
+
+        let rebuild = try await CorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(rebuild.storesDiscovered == 1)
+        #expect(rebuild.storesIndexed == 1)
+        #expect(rebuild.documentsIndexed == 1)
+        #expect(try CorpusBuildManifestStore.load(for: corpus) != nil)
+
+        let documents = try await MCPMemoryFactory.withOpenMemory(
+            at: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            structuredMemoryEnabled: false
+        ) { memory in
+            try await memory.corpusSourceDocuments()
+        }
+        #expect(documents.contains { $0.text.contains("docking telemetry") })
+    }
+}
+
+@Test
 func corpusSearchRejectsInvalidTopK() async throws {
     try await withMemory { memory in
         let result = await WaxMCPTools.handleCall(
