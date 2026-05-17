@@ -90,9 +90,11 @@ extension AgentBrokerService {
 
     private func syncMemoryMarkdown(at url: URL, dryRun: Bool) async throws -> MarkdownSyncCounts {
         let entries = try BrokerMarkdownSync.parseFile(at: url).filter(\.isManagedImportCandidate)
-        let referencedFrameIDs = Set(entries.compactMap { $0.marker?.frameID })
-        let existing = try await longTermMemory.corpusSourceDocuments().filter { document in
-            referencedFrameIDs.contains(document.frameId) ||
+        let allDocuments = try await longTermMemory.corpusSourceDocuments()
+        let existing = allDocuments.filter { document in
+            entries.contains {
+                marker($0.marker, trusts: document, sourcePath: url.path, sourceKind: .memory, dateKey: nil)
+            } ||
                 (
                     document.metadata[MemoryMetadataKeys.sourceKind] == MarkdownProjectionKind.memory.rawValue &&
                         document.metadata[MemoryMetadataKeys.sourcePath] == url.path
@@ -268,9 +270,13 @@ extension AgentBrokerService {
         var matchedFrameIDs = Set<UInt64>()
 
         for entry in entries {
-            let existingByMarker = entry.marker?.frameID.flatMap { frameID in
-                existingDocuments.first(where: { $0.frameId == frameID })
-            }
+            let existingByMarker = trustedExistingDocument(
+                for: entry.marker,
+                in: existingDocuments,
+                sourcePath: sourcePath,
+                sourceKind: sourceKind,
+                dateKey: dateKey
+            )
             let existingByHash = existingDocuments.first {
                 !matchedFrameIDs.contains($0.frameId) &&
                     $0.metadata[MemoryMetadataKeys.sourceHash] == Self.stableHash(entry.text) &&
@@ -332,6 +338,56 @@ extension AgentBrokerService {
         }
 
         return counts
+    }
+
+    private func trustedExistingDocument(
+        for marker: MarkdownProjectionMarker?,
+        in documents: [MemoryOrchestrator.CorpusSourceDocument],
+        sourcePath: String,
+        sourceKind: MarkdownProjectionKind,
+        dateKey: String?
+    ) -> MemoryOrchestrator.CorpusSourceDocument? {
+        documents.first {
+            self.marker(marker, trusts: $0, sourcePath: sourcePath, sourceKind: sourceKind, dateKey: dateKey)
+        }
+    }
+
+    private func marker(
+        _ marker: MarkdownProjectionMarker?,
+        trusts document: MemoryOrchestrator.CorpusSourceDocument,
+        sourcePath: String,
+        sourceKind: MarkdownProjectionKind,
+        dateKey: String?
+    ) -> Bool {
+        guard let marker, marker.managed, marker.sourceKind == sourceKind.rawValue else { return false }
+        guard let frameID = marker.frameID, frameID == document.frameId else { return false }
+
+        let previousHash = document.metadata[MemoryMetadataKeys.sourceHash] ?? Self.stableHash(document.text)
+        guard marker.hash == previousHash else { return false }
+
+        if let markerMemoryID = marker.memoryID {
+            let canonicalMemoryID = Self.makeMemoryReference(.durable, sessionID: nil, frameID: document.frameId)
+            let storedMemoryID = document.metadata[MemoryMetadataKeys.sourceMemoryID]
+            guard markerMemoryID == canonicalMemoryID || markerMemoryID == storedMemoryID else { return false }
+        }
+
+        if let storedSourceKind = document.metadata[MemoryMetadataKeys.sourceKind],
+           storedSourceKind != sourceKind.rawValue {
+            return false
+        }
+        if let storedSourcePath = document.metadata[MemoryMetadataKeys.sourcePath],
+           storedSourcePath != sourcePath {
+            return false
+        }
+        if let markerDateKey = marker.dateKey, markerDateKey != dateKey {
+            return false
+        }
+        if let storedDateKey = document.metadata[MemoryMetadataKeys.sourceDate],
+           storedDateKey != dateKey {
+            return false
+        }
+
+        return true
     }
 
     private func upsertManagedDocument(
