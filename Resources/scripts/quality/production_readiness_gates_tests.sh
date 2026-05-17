@@ -88,4 +88,61 @@ EOF
 
 assert_mcp_trait_tests_listed "$MCP_TEST_LIST"
 
+CAPTURED_COMMANDS="$TMP_DIR/captured-gate-commands.txt"
+
+run_and_capture() {
+  local log_file="$1"
+  shift
+  printf '%s\n' "$*" >>"$CAPTURED_COMMANDS"
+  : >"$log_file"
+}
+
+assert_no_skips() {
+  local _log_file="$1"
+}
+
+assert_stability_gate_sets_search_mode() {
+  local gate_name="$1"
+  local function_name="$2"
+  local test_filter="$3"
+  local expected_mode="$4"
+  local requested_mode="${5:-}"
+
+  : >"$CAPTURED_COMMANDS"
+  if [[ -n "$requested_mode" ]]; then
+    WAX_STABILITY_SEARCH_MODE="$requested_mode" "$function_name"
+  else
+    unset WAX_STABILITY_SEARCH_MODE
+    "$function_name"
+  fi
+
+  local stability_command
+  stability_command="$(grep "$test_filter" "$CAPTURED_COMMANDS" || true)"
+  if [[ "$stability_command" != *"WAX_STABILITY_SEARCH_MODE=$expected_mode"* ]]; then
+    echo "FAIL: $gate_name stability gate did not pass WAX_STABILITY_SEARCH_MODE=$expected_mode" >&2
+    echo "Captured: $stability_command" >&2
+    return 1
+  fi
+}
+
+unset WAX_STABILITY_SEARCH_MODE
+assert_stability_gate_sets_search_mode \
+  "soak-smoke" \
+  run_soak_smoke \
+  "ProductionReadinessStabilityTests.testSoakSmokeStability" \
+  "hybrid"
+
+assert_stability_gate_sets_search_mode \
+  "burn-smoke" \
+  run_burn_smoke \
+  "ProductionReadinessStabilityTests.testBurnSmokeStability" \
+  "hybrid"
+
+assert_stability_gate_sets_search_mode \
+  "soak-smoke override" \
+  run_soak_smoke \
+  "ProductionReadinessStabilityTests.testSoakSmokeStability" \
+  "vector" \
+  "vector"
+
 echo "production_readiness_gates_tests: ok"

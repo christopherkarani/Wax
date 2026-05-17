@@ -10,6 +10,46 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         case burnSmoke = "burn-smoke"
     }
 
+    private enum StabilitySearchMode: String, Codable, Sendable {
+        case text
+        case vector
+        case hybrid
+
+        var usesText: Bool {
+            switch self {
+            case .text, .hybrid: true
+            case .vector: false
+            }
+        }
+
+        var usesVector: Bool {
+            switch self {
+            case .vector, .hybrid: true
+            case .text: false
+            }
+        }
+
+        var searchMode: SearchMode {
+            switch self {
+            case .text: .textOnly
+            case .vector: .vectorOnly
+            case .hybrid: .hybrid(alpha: 0.5)
+            }
+        }
+
+        static func fromEnvironment(_ env: [String: String]) throws -> Self {
+            let raw = env["WAX_STABILITY_SEARCH_MODE"] ?? Self.hybrid.rawValue
+            guard let mode = Self(rawValue: raw) else {
+                throw NSError(
+                    domain: "ProductionReadinessStabilityTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unsupported WAX_STABILITY_SEARCH_MODE '\(raw)'; expected text, vector, or hybrid."]
+                )
+            }
+            return mode
+        }
+    }
+
     private struct LatencySummary: Codable, Sendable {
         let samples: Int
         let meanMs: Double
@@ -19,9 +59,11 @@ final class ProductionReadinessStabilityTests: XCTestCase {
 
     private struct StabilityReport: Codable, Sendable {
         let profile: String
+        let searchMode: StabilitySearchMode
         let replaySeed: UInt64
         let replaySteps: Int
         let recallSamples: Int
+        let vectorSourceHits: Int
         let startRSSBytes: UInt64
         let endRSSBytes: UInt64
         let rssGrowthBytes: UInt64
@@ -44,6 +86,7 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         let defaultIterations = (profile == .burnSmoke) ? 1_200 : 500
         let defaultSeed: UInt64 = (profile == .burnSmoke) ? 2_026_021_801 : 2_026_021_800
         let commitBatch = max(1, env["WAX_STABILITY_COMMIT_BATCH"].flatMap(Int.init) ?? 32)
+        let searchMode = try StabilitySearchMode.fromEnvironment(env)
 
         let plan = try DeterministicReplaySupport.loadOrGeneratePlan(
             name: profile.rawValue,
@@ -58,12 +101,16 @@ final class ProductionReadinessStabilityTests: XCTestCase {
 
         let wax = try await Wax.create(at: url)
         let text = try await wax.enableTextSearch()
+        let vector = searchMode.usesVector
+            ? try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+            : nil
 
         let startRSS = currentRSSBytes()
         let clock = ContinuousClock()
 
         var recallLatenciesMs: [Double] = []
         recallLatenciesMs.reserveCapacity(plan.steps.count / 4)
+        var vectorSourceHits = 0
 
         var ingestCount = 0
         var pendingSinceCommit = 0
@@ -71,28 +118,44 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         for step in plan.steps {
             switch step.action {
             case .ingest:
-                let frameID = try await wax.put(
-                    Data(step.payload.utf8),
-                    options: FrameMetaSubset(searchText: step.payload)
-                )
+                let options = FrameMetaSubset(searchText: step.payload)
+                let frameID: UInt64
+                if let vector {
+                    frameID = try await vector.putWithEmbedding(
+                        Data(step.payload.utf8),
+                        embedding: Self.deterministicEmbedding(for: step.payload),
+                        options: options
+                    )
+                } else {
+                    frameID = try await wax.put(
+                        Data(step.payload.utf8),
+                        options: options
+                    )
+                }
                 try await text.index(frameId: frameID, text: step.payload)
                 ingestCount += 1
                 pendingSinceCommit += 1
                 if pendingSinceCommit >= commitBatch {
                     try await text.stageForCommit()
+                    if let vector {
+                        try await vector.stageForCommit()
+                    }
                     try await wax.commit()
                     pendingSinceCommit = 0
                 }
             case .recall:
                 guard ingestCount > 0 else { continue }
                 let start = clock.now
-                _ = try await wax.search(
+                let response = try await wax.search(
                     SearchRequest(
-                        query: step.payload,
-                        mode: .textOnly,
+                        query: searchMode.usesText ? step.payload : nil,
+                        embedding: searchMode.usesVector ? Self.deterministicEmbedding(for: step.payload) : nil,
+                        vectorEnginePreference: .cpuOnly,
+                        mode: searchMode.searchMode,
                         topK: 8
                     )
                 )
+                vectorSourceHits += response.results.filter { $0.sources.contains(.vector) }.count
                 let elapsed = clock.now - start
                 recallLatenciesMs.append(Self.durationMs(elapsed))
             }
@@ -100,6 +163,9 @@ final class ProductionReadinessStabilityTests: XCTestCase {
 
         if pendingSinceCommit > 0 {
             try await text.stageForCommit()
+            if let vector {
+                try await vector.stageForCommit()
+            }
             try await wax.commit()
         }
 
@@ -107,6 +173,9 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         try await wax.close()
 
         XCTAssertGreaterThanOrEqual(recallLatenciesMs.count, 20, "Need enough recall samples to measure drift")
+        if searchMode.usesVector {
+            XCTAssertGreaterThan(vectorSourceHits, 0, "Stability profile must exercise vector-sourced search results in \(searchMode.rawValue) mode")
+        }
         let windowSize = max(10, recallLatenciesMs.count / 5)
         let firstWindowSamples = Array(recallLatenciesMs.prefix(windowSize))
         let lastWindowSamples = Array(recallLatenciesMs.suffix(windowSize))
@@ -142,9 +211,11 @@ final class ProductionReadinessStabilityTests: XCTestCase {
 
         let report = StabilityReport(
             profile: profile.rawValue,
+            searchMode: searchMode,
             replaySeed: plan.seed,
             replaySteps: plan.steps.count,
             recallSamples: recallLatenciesMs.count,
+            vectorSourceHits: vectorSourceHits,
             startRSSBytes: startRSS,
             endRSSBytes: endRSS,
             rssGrowthBytes: rssGrowthBytes,
@@ -156,6 +227,7 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         print(
             """
             🧪 Stability \(profile.rawValue): samples=\(report.recallSamples) \
+            mode=\(report.searchMode.rawValue) vector_hits=\(report.vectorSourceHits) \
             rss_growth_mb=\(String(format: "%.2f", Double(rssGrowthBytes) / 1_048_576.0)) \
             p50_drift=\(String(format: "%.2f", p50DriftPercent))% \
             p95_drift=\(String(format: "%.2f", p95DriftPercent))%
@@ -170,6 +242,24 @@ final class ProductionReadinessStabilityTests: XCTestCase {
             try encoder.encode(report).write(to: url, options: .atomic)
         }
     }
+
+    private static func deterministicEmbedding(for text: String) -> [Float] {
+        let topic = stabilityTopics.firstIndex { text.localizedCaseInsensitiveContains($0) } ?? 0
+        let radians = (Double(topic) / Double(stabilityTopics.count)) * 2.0 * Double.pi
+        return VectorMath.normalizeL2([Float(cos(radians)), Float(sin(radians))])
+    }
+
+    private static let stabilityTopics = [
+        "swift",
+        "vector",
+        "memory",
+        "wal",
+        "replay",
+        "compaction",
+        "deterministic",
+        "latency",
+        "checksum",
+    ]
 
     private static func summary(_ samples: [Double]) -> LatencySummary {
         guard !samples.isEmpty else {

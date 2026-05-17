@@ -143,6 +143,7 @@ run_soak_smoke() {
     WAX_STABILITY_MAX_RSS_GROWTH_MB="${WAX_STABILITY_MAX_RSS_GROWTH_MB:-256}" \
     WAX_STABILITY_MAX_P50_DRIFT_PCT="${WAX_STABILITY_MAX_P50_DRIFT_PCT:-140}" \
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-180}" \
+    WAX_STABILITY_SEARCH_MODE="${WAX_STABILITY_SEARCH_MODE:-hybrid}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-soak-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testSoakSmokeStability
   assert_no_skips "$stability_log"
@@ -164,6 +165,7 @@ run_burn_smoke() {
     WAX_STABILITY_MAX_RSS_GROWTH_MB="${WAX_STABILITY_MAX_RSS_GROWTH_MB:-512}" \
     WAX_STABILITY_MAX_P50_DRIFT_PCT="${WAX_STABILITY_MAX_P50_DRIFT_PCT:-200}" \
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-260}" \
+    WAX_STABILITY_SEARCH_MODE="${WAX_STABILITY_SEARCH_MODE:-hybrid}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-burn-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testBurnSmokeStability
   assert_no_skips "$stability_log"
