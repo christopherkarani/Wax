@@ -13,6 +13,22 @@ import WaxCore
     #expect(encoding == .uSearch)
 }
 
+@Test func legacyUSearchVectorSegmentRequiresRebuild() throws {
+    let data = buildLegacyUSearchSegment(payload: Data([0x01, 0x02, 0x03, 0x04]))
+
+    do {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+        Issue.record("Expected legacy USearch vector segment to require rebuild")
+    } catch let error as WaxError {
+        guard case .invalidToc(let reason) = error else {
+            Issue.record("Expected invalidToc, got \(error)")
+            return
+        }
+        #expect(reason.contains("Legacy USearch vector index is unsupported"))
+        #expect(reason.contains("rebuild the vector index"))
+    }
+}
+
 @Test func detectEncodingMetal() throws {
     let header = buildMinimalHeader(encoding: 2)
     let encoding = try VectorSerializer.detectEncoding(from: header)
@@ -123,21 +139,6 @@ import WaxCore
     }
 }
 
-// MARK: - decodeUSearchPayload returns error on Metal
-
-@Test func decodeUSearchPayloadRejectsMetalEncoding() throws {
-    let data = buildMetalSegment(
-        vectors: [1.0, 2.0],
-        frameIds: [1],
-        dimension: 2,
-        vectorCount: 1,
-        similarity: 0
-    )
-    #expect(throws: WaxError.self) {
-        _ = try VectorSerializer.decodeUSearchPayload(from: data)
-    }
-}
-
 // MARK: - Helpers
 
 private func buildMinimalHeader(encoding: UInt8) -> Data {
@@ -147,6 +148,21 @@ private func buildMinimalHeader(encoding: UInt8) -> Data {
     withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
     data.append(encoding)
     data.append(0) // similarity = cosine
+    return data
+}
+
+private func buildLegacyUSearchSegment(payload: Data) -> Data {
+    var encoder = BinaryEncoder()
+    encoder.encodeFixedBytes(Data([0x4D, 0x56, 0x32, 0x56]))
+    encoder.encode(UInt16(1))
+    encoder.encode(UInt8(1))
+    encoder.encode(UInt8(0))
+    encoder.encode(UInt32(2))
+    encoder.encode(UInt64(1))
+    encoder.encode(UInt64(payload.count))
+    encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+    var data = encoder.data
+    data.append(payload)
     return data
 }
 

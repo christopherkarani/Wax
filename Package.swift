@@ -87,7 +87,6 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/unum-cloud/USearch.git", from: "2.24.0"),
         .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.1.3"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/swiftlang/swift-testing", exact: "0.12.0"),
@@ -140,7 +139,6 @@ let package = Package(
             name: "WaxVectorSearch",
             dependencies: [
                 "WaxCore",
-                .product(name: "USearch", package: "USearch"),
                 .product(
                     name: "MetalANNS",
                     package: "MetalANNS",
@@ -302,7 +300,6 @@ let package = Package(
                 "Wax",
                 "WaxVectorSearchMiniLM",
                 .product(name: "Testing", package: "swift-testing"),
-                .product(name: "USearch", package: "USearch"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
             ],

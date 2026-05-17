@@ -17,7 +17,7 @@ final class HybridVectorEngineBenchmark: XCTestCase {
         return value
     }
 
-    func testCPUSmallNComparison() async throws {
+    func testCPUSmallNAccelerateSearch() async throws {
         guard isEnabled else { throw XCTSkip("Set WAX_RUN_XCTEST_BENCHMARKS=1 to run benchmarks.") }
 
         let dimensions = 128
@@ -28,28 +28,18 @@ final class HybridVectorEngineBenchmark: XCTestCase {
         let ids = (0..<vectorCount).map(UInt64.init)
         let query = makeQuery(dimensions: dimensions)
 
-        let usearch = try USearchVectorEngine(metric: .cosine, dimensions: dimensions)
-        try await usearch.addBatch(frameIds: ids, vectors: vectors)
-        _ = try await usearch.search(vector: query, topK: topK)
-
         let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
         try await accelerate.addBatch(frameIds: ids, vectors: vectors)
         _ = try await accelerate.search(vector: query, topK: topK)
 
-        let usearchAverage = try await measure(iterations: iterations) {
-            _ = try await usearch.search(vector: query, topK: topK)
-        }
         let accelerateAverage = try await measure(iterations: iterations) {
             _ = try await accelerate.search(vector: query, topK: topK)
         }
-        let speedup = usearchAverage / accelerateAverage
 
         print("\n🧪 Hybrid CPU Benchmark")
         print("   Vectors: \(vectorCount), Dimensions: \(dimensions), TopK: \(topK)")
         print("   Iterations: \(iterations)\n")
-        print("   USearch avg:     \(String(format: "%.5f", usearchAverage)) s")
         print("   Accelerate avg:  \(String(format: "%.5f", accelerateAverage)) s")
-        print("   Speedup:         \(String(format: "%.2fx", speedup)) faster\n")
     }
 
     #if canImport(Metal) && canImport(MetalANNS)

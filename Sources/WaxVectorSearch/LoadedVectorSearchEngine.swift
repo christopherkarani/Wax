@@ -3,14 +3,12 @@ import WaxCore
 
 package enum LoadedVectorSearchEngine: Sendable {
     package enum Kind: Hashable, Sendable {
-        case usearch
         case accelerate
         #if canImport(Metal) && canImport(MetalANNS)
         case metalANNS
         #endif
     }
 
-    case usearch(USearchVectorEngine)
     case accelerate(AccelerateVectorEngine)
     #if canImport(Metal) && canImport(MetalANNS)
     case metalANNS(MetalANNSVectorEngine)
@@ -18,8 +16,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package var erased: any VectorSearchEngine {
         switch self {
-        case .usearch(let engine):
-            return engine
         case .accelerate(let engine):
             return engine
         #if canImport(Metal) && canImport(MetalANNS)
@@ -31,8 +27,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package var kind: Kind {
         switch self {
-        case .usearch:
-            return .usearch
         case .accelerate:
             return .accelerate
         #if canImport(Metal) && canImport(MetalANNS)
@@ -44,8 +38,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package func add(frameId: UInt64, vector: [Float]) async throws {
         switch self {
-        case .usearch(let engine):
-            try await engine.add(frameId: frameId, vector: vector)
         case .accelerate(let engine):
             try await engine.add(frameId: frameId, vector: vector)
         #if canImport(Metal) && canImport(MetalANNS)
@@ -57,8 +49,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package func addBatch(frameIds: [UInt64], vectors: [[Float]]) async throws {
         switch self {
-        case .usearch(let engine):
-            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         case .accelerate(let engine):
             try await engine.addBatch(frameIds: frameIds, vectors: vectors)
         #if canImport(Metal) && canImport(MetalANNS)
@@ -70,8 +60,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package func remove(frameId: UInt64) async throws {
         switch self {
-        case .usearch(let engine):
-            try await engine.remove(frameId: frameId)
         case .accelerate(let engine):
             try await engine.remove(frameId: frameId)
         #if canImport(Metal) && canImport(MetalANNS)
@@ -83,8 +71,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         switch self {
-        case .usearch(let engine):
-            return try await engine.search(vector: vector, topK: topK)
         case .accelerate(let engine):
             return try await engine.search(vector: vector, topK: topK)
         #if canImport(Metal) && canImport(MetalANNS)
@@ -96,8 +82,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package func stageForCommit(into wax: Wax) async throws {
         switch self {
-        case .usearch(let engine):
-            try await engine.stageForCommit(into: wax)
         case .accelerate(let engine):
             try await engine.stageForCommit(into: wax)
         #if canImport(Metal) && canImport(MetalANNS)
@@ -123,8 +107,6 @@ package enum LoadedVectorSearchEngine: Sendable {
         )
 
         switch selectedKind {
-        case .usearch:
-            return .usearch(try await USearchVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
         case .accelerate:
             return .accelerate(try await AccelerateVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
         #if canImport(Metal) && canImport(MetalANNS)
@@ -168,12 +150,20 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     package static func currentEncoding(for wax: Wax) async throws -> VectorSerializer.VecEncoding? {
         if let staged = await wax.readStagedVecIndexBytes() {
-            return try VectorSerializer.detectEncoding(from: staged.bytes)
+            return try validatedCurrentEncoding(from: staged.bytes)
         }
         if let bytes = try await wax.readCommittedVecIndexBytes() {
-            return try VectorSerializer.detectEncoding(from: bytes)
+            return try validatedCurrentEncoding(from: bytes)
         }
         return nil
+    }
+
+    private static func validatedCurrentEncoding(from data: Data) throws -> VectorSerializer.VecEncoding {
+        let encoding = try VectorSerializer.detectEncoding(from: data)
+        guard encoding != .uSearch else {
+            throw WaxError.invalidToc(reason: VectorSerializer.legacyUSearchUnsupportedReason)
+        }
+        return encoding
     }
 
     package static func projectedVectorCount(
@@ -215,13 +205,6 @@ package enum LoadedVectorSearchEngine: Sendable {
         preference: VectorEnginePreference,
         allowEmptySelection: Bool
     ) throws -> Kind {
-        if encoding == .uSearch {
-            if preference == .gpuOnly {
-                throw WaxError.io("gpuOnly requires a MetalANNS-compatible vector index")
-            }
-            return .usearch
-        }
-
         switch preference {
         case .cpuOnly:
             return .accelerate
@@ -247,8 +230,6 @@ package enum LoadedVectorSearchEngine: Sendable {
 
     private static func segmentVectorCount(for payload: VectorSerializer.VecSegmentPayload) throws -> Int {
         switch payload {
-        case .uSearch(let info, _):
-            return try checkedVectorCount(info.vectorCount, context: "uSearch vec segment")
         case .metal(let info, _, _):
             return try checkedVectorCount(info.vectorCount, context: "Metal vec segment")
         }

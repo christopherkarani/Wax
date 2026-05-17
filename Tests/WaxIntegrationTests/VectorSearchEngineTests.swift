@@ -8,7 +8,7 @@ import WaxCore
 import WaxVectorSearch
 
 @Test func vectorEngineAddSearchRemoveRoundtrip() async throws {
-    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 4)
+    let engine = try AccelerateVectorEngine(metric: .cosine, dimensions: 4)
     try await engine.add(frameId: 0, vector: [1.0, 0.0, 0.0, 0.0])
     try await engine.add(frameId: 1, vector: [0.0, 1.0, 0.0, 0.0])
 
@@ -22,38 +22,61 @@ import WaxVectorSearch
 }
 
 @Test func vectorEngineSerializeDeserializeRoundtripPreservesSearch() async throws {
-    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 4)
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let engine = try AccelerateVectorEngine(metric: .cosine, dimensions: 4)
     try await engine.add(frameId: 0, vector: [1.0, 0.0, 0.0, 0.0])
     try await engine.add(frameId: 1, vector: [0.0, 1.0, 0.0, 0.0])
-    let blob = try await engine.serialize()
-    #expect(!blob.isEmpty)
+    try await engine.stageForCommit(into: wax)
+    let blob = try #require(await wax.readStagedVecIndexBytes()?.bytes)
 
-    let engine2 = try USearchVectorEngine(metric: .cosine, dimensions: 4)
-    try await engine2.deserialize(blob)
+    let wax2 = try await Wax.create(at: tempDir.appendingPathComponent("sample-2.wax"))
+    try await wax2.stageVecIndexForNextCommit(
+        bytes: blob,
+        vectorCount: 2,
+        dimension: 4,
+        similarity: .cosine
+    )
+    let engine2 = try await AccelerateVectorEngine.load(from: wax2, metric: .cosine, dimensions: 4)
 
     let hits = try await engine2.search(vector: [0.0, 1.0, 0.0, 0.0], topK: 10)
     #expect(!hits.isEmpty)
     #expect(hits.contains(where: { $0.frameId == 1 }))
+
+    try await wax.close()
+    try await wax2.close()
 }
 
-@Test func uSearchVectorEngineAddBatchDuplicateIdsDoNotOvercount() async throws {
-    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
+@Test func accelerateVectorEngineAddBatchDuplicateIdsDoNotOvercount() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let engine = try AccelerateVectorEngine(metric: .cosine, dimensions: 2)
 
     try await engine.addBatch(frameIds: [7, 7], vectors: [[1.0, 0.0], [0.0, 1.0]])
 
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [7])
 
-    let blob = try await engine.serialize()
+    try await engine.stageForCommit(into: wax)
+    let blob = try #require(await wax.readStagedVecIndexBytes()?.bytes)
     let decoded = try VectorSerializer.decodeVecSegment(from: blob)
-    guard case .uSearch(let info, _) = decoded else {
-        Issue.record("Expected USearch payload")
-        return
-    }
+    let info: VectorSerializer.SegmentInfo
+    guard case .metal(let decodedInfo, _, _) = decoded else { return }
+    info = decodedInfo
     #expect(info.vectorCount == 1)
+
+    try await wax.close()
 }
 
-@Test func uSearchVectorEngineLoadPrefersStagedVectorIndexBytes() async throws {
+@Test func accelerateVectorEngineLoadPrefersStagedVectorIndexBytes() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -74,25 +97,11 @@ import WaxVectorSearch
         similarity: .cosine
     )
 
-    let engine = try await USearchVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
+    let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
     let hits = try await engine.search(vector: [1.0, 0.0], topK: 1)
     #expect(hits.map(\.frameId) == [42])
 
     try await wax.close()
-}
-
-@Test func uSearchVectorEngineRejectsNonFiniteVectors() async throws {
-    let engine = try USearchVectorEngine(metric: .cosine, dimensions: 2)
-
-    await #expect(throws: WaxError.self) {
-        try await engine.add(frameId: 1, vector: [.nan, 0.0])
-    }
-    await #expect(throws: WaxError.self) {
-        try await engine.addBatch(frameIds: [1], vectors: [[.infinity, 0.0]])
-    }
-    await #expect(throws: WaxError.self) {
-        _ = try await engine.search(vector: [0.0, -.infinity], topK: 1)
-    }
 }
 
 @Test func accelerateVectorEngineRejectsNonFiniteVectors() async throws {
@@ -241,7 +250,71 @@ import WaxVectorSearch
     }
 }
 
-@Test func unifiedSearchFallsBackToUSearchWhenMetalCannotDeserialize() async throws {
+@Test func loadedVectorSearchEngineRejectsLegacyUSearchVectorIndexes() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let legacyBytes = buildLegacyUSearchSegment(payload: Data([0x01, 0x02, 0x03, 0x04]))
+    try await wax.stageVecIndexForNextCommit(
+        bytes: legacyBytes,
+        vectorCount: 1,
+        dimension: 2,
+        similarity: .cosine
+    )
+
+    do {
+        _ = try await LoadedVectorSearchEngine.preferredKind(
+            for: wax,
+            queryEmbeddingDimensions: 2,
+            preference: .auto
+        )
+        Issue.record("Expected legacy USearch vector index to be rejected")
+    } catch let error as WaxError {
+        guard case .invalidToc(let reason) = error else {
+            Issue.record("Expected invalidToc, got \(error)")
+            return
+        }
+        #expect(reason.contains("Legacy USearch vector index is unsupported"))
+        #expect(reason.contains("rebuild the vector index"))
+    }
+
+    try await wax.close()
+}
+
+@Test func loadedVectorSearchEngineCurrentEncodingRejectsLegacyUSearchVectorIndexes() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let legacyBytes = buildLegacyUSearchSegment(payload: Data([0x01, 0x02, 0x03, 0x04]))
+    try await wax.stageVecIndexForNextCommit(
+        bytes: legacyBytes,
+        vectorCount: 1,
+        dimension: 2,
+        similarity: .cosine
+    )
+
+    do {
+        _ = try await LoadedVectorSearchEngine.currentEncoding(for: wax)
+        Issue.record("Expected legacy USearch vector encoding to be rejected")
+    } catch let error as WaxError {
+        guard case .invalidToc(let reason) = error else {
+            Issue.record("Expected invalidToc, got \(error)")
+            return
+        }
+        #expect(reason.contains("Legacy USearch vector index is unsupported"))
+        #expect(reason.contains("rebuild the vector index"))
+    }
+
+    try await wax.close()
+}
+
+@Test func unifiedSearchUsesAccelerateWhenMetalCannotDeserialize() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -355,8 +428,9 @@ import WaxVectorSearch
     try await reopened.close()
 
     let files = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+    let removedIndexExtension = "." + "u" + "search"
     for name in files {
-        #expect(!name.hasSuffix(".usearch"))
+        #expect(!name.hasSuffix(removedIndexExtension))
     }
     try FileManager.default.removeItem(at: tempDir)
 }
@@ -593,4 +667,19 @@ private func buildRawVectorSegment(
         encoder.encodeFixedBytes(Data(buffer: buffer))
     }
     return encoder.data
+}
+
+private func buildLegacyUSearchSegment(payload: Data) -> Data {
+    var encoder = BinaryEncoder()
+    encoder.encodeFixedBytes(Data([0x4D, 0x56, 0x32, 0x56]))
+    encoder.encode(UInt16(1))
+    encoder.encode(UInt8(1))
+    encoder.encode(UInt8(0))
+    encoder.encode(UInt32(2))
+    encoder.encode(UInt64(1))
+    encoder.encode(UInt64(payload.count))
+    encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
+    var data = encoder.data
+    data.append(payload)
+    return data
 }

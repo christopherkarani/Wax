@@ -185,8 +185,6 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     private func deserialize(_ data: Data) async throws {
         let decoded = try VectorSerializer.decodeVecSegment(from: data)
         switch decoded {
-        case .uSearch:
-            throw WaxError.invalidToc(reason: "AccelerateVectorEngine cannot deserialize usearch payloads")
         case .metal(let info, let decodedVectors, let decodedFrameIds):
             guard info.dimension == UInt32(dimensions) else {
                 throw WaxError.invalidToc(reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)")

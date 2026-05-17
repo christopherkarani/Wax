@@ -1,5 +1,4 @@
 import Foundation
-import USearch
 import WaxCore
 
 package enum VectorSerializer {
@@ -18,7 +17,6 @@ package enum VectorSerializer {
     }
 
     package enum VecSegmentPayload: Sendable, Equatable {
-        case uSearch(info: SegmentInfo, payload: Data)
         case metal(info: SegmentInfo, vectors: [Float], frameIds: [UInt64])
     }
 
@@ -47,26 +45,6 @@ package enum VectorSerializer {
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encodingRaw)")
         }
         return encoding
-    }
-
-    package static func serializeUSearchIndex(
-        _ index: USearchIndex,
-        metric: VectorMetric,
-        dimensions: Int,
-        vectorCount: UInt64
-    ) throws -> Data {
-        let payload = try saveUSearchPayload(index)
-        let header = VecSegmentHeaderV1(
-            similarity: metric.toVecSimilarity(),
-            dimension: UInt32(dimensions),
-            vectorCount: vectorCount,
-            payloadLength: UInt64(payload.count)
-        )
-        var encoder = BinaryEncoder()
-        header.encode(to: &encoder)
-        var data = encoder.data
-        data.append(payload)
-        return data
     }
 
     package static func serializeFlatVectors(
@@ -104,16 +82,6 @@ package enum VectorSerializer {
         return data
     }
 
-    package static func decodeUSearchPayload(from data: Data) throws -> (info: SegmentInfo, payload: Data) {
-        let payload = try decodeVecSegment(from: data)
-        switch payload {
-        case .uSearch(let info, let bytes):
-            return (info, bytes)
-        case .metal:
-            throw WaxError.invalidToc(reason: "vec segment encoding is not usearch; USearch payload unavailable")
-        }
-    }
-
     package static func decodeVecSegment(from data: Data) throws -> VecSegmentPayload {
         guard data.count >= VecSegmentHeaderV1.encodedSize else {
             throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
@@ -133,15 +101,7 @@ package enum VectorSerializer {
 
         switch header.encoding {
         case VecEncoding.uSearch.rawValue:
-            guard header.payloadLength <= UInt64(Int.max) else {
-                throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
-            }
-            let expectedTotal = VecSegmentHeaderV1.encodedSize + Int(header.payloadLength)
-            guard data.count == expectedTotal else {
-                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
-            }
-            let payload = data.suffix(Int(header.payloadLength))
-            return .uSearch(info: info, payload: payload)
+            throw WaxError.invalidToc(reason: Self.legacyUSearchUnsupportedReason)
         case VecEncoding.metal.rawValue, VecEncoding.flat.rawValue:
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
@@ -230,13 +190,8 @@ package enum VectorSerializer {
         }
     }
 
-    package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
-        try index.deserializeFromData(payload)
-    }
-
-    private static func saveUSearchPayload(_ index: USearchIndex) throws -> Data {
-        try index.serializeToData()
-    }
+    package static let legacyUSearchUnsupportedReason =
+        "Legacy USearch vector index is unsupported; rebuild the vector index."
 
     private struct VecSegmentHeaderV1 {
         static let encodedSize: Int = 36
@@ -265,14 +220,6 @@ package enum VectorSerializer {
             encoder.encode(vectorCount)
             encoder.encode(payloadLength)
             encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
-        }
-
-        static func decode(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {
-            let header = try decodeAnyEncoding(from: &decoder)
-            guard header.encoding == VecEncoding.uSearch.rawValue else {
-                throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
-            }
-            return header
         }
 
         static func decodeAnyEncoding(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {

@@ -1,17 +1,24 @@
+import Foundation
 import Testing
-import USearch
 import GRDB
 import Logging
 @testable import WaxVectorSearch
 
-@Test func usearchInitializes() throws {
-    let index = try USearchIndex.make(
-        metric: .cos,
-        dimensions: 128,
-        connectivity: 16,
-        quantization: .f32
+@Test func packageManifestDoesNotDependOnRemovedVectorDependency() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let manifest = try String(
+        contentsOf: repoRoot.appendingPathComponent("Package.swift"),
+        encoding: .utf8
     )
-    #expect(String(describing: index).contains("USearchIndex"))
+
+    let removedPackageName = "U" + "Search"
+    let removedPackageIdentity = "u" + "search"
+
+    #expect(!manifest.contains(removedPackageName))
+    #expect(!manifest.contains(removedPackageIdentity))
 }
 
 #if canImport(Metal) && canImport(MetalANNS)
