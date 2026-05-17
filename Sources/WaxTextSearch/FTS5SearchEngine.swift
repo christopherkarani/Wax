@@ -971,6 +971,9 @@ package actor FTS5SearchEngine {
                                 reason: "superseding fact system range must end after its monotonic system_from_ms"
                             )
                         }
+                        if relation == .retracts {
+                            continue
+                        }
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
                             factId: FactRowID(rawValue: factId),

@@ -42,6 +42,52 @@ import Wax
     }
 }
 
+@Test func retractsRelationClosesPriorFactWithoutCreatingCurrentFact() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f015"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f015"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .retracts,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    let historical = try await engine.facts(
+        about: EntityKey("project:f015"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 15, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(historical.hits.map(\.relation) == [.sets])
+
+    let current = try await engine.facts(
+        about: EntityKey("project:f015"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(current.hits.isEmpty)
+
+    #if canImport(SQLite3)
+    let serialized = try await engine.serialize()
+    #expect(try VersionRelationSQLiteFixture.spanRelations(fromSerialized: serialized) == [
+        Int64(VersionRelation.sets.rawValue),
+    ])
+    #endif
+}
+
 @Test func updateFactPreservesDistinctObjectsForSameSubjectPredicate() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 
