@@ -50,6 +50,25 @@ func photoRAGDocsNameMultimodalEmbeddingProviderRequirement() throws {
     }
 }
 
+@Test
+func photoRAGFullLibrarySyncFetchesImagesOnly() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        encoding: .utf8
+    )
+    let fullLibraryStart = try #require(source.range(of: "case .fullLibrary:"))
+    let ingestStart = try #require(source[fullLibraryStart.upperBound...].range(of: "try await ingest(assetIDs: ids)"))
+    let fullLibraryBody = source[fullLibraryStart.lowerBound..<ingestStart.lowerBound]
+
+    #expect(fullLibraryBody.contains("PHAsset.fetchAssets(with: .image, options: opts)"))
+    #expect(!fullLibraryBody.contains("PHAsset.fetchAssets(with: opts)"))
+}
+
 private let photoRAGDocPaths = [
     "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
     "Resources/website/docs/media/photo-rag.md",

@@ -163,7 +163,7 @@ package actor PhotoRAGOrchestrator {
             await MainActor.run {
                 let opts = PHFetchOptions()
                 opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-                let result = PHAsset.fetchAssets(with: opts)
+                let result = PHAsset.fetchAssets(with: .image, options: opts)
                 if result.count == 0 { return [] }
                 var ids: [String] = []
                 ids.reserveCapacity(result.count)
