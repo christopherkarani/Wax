@@ -44,7 +44,7 @@ extension MemoryOrchestrator {
         var documentMetas: [FrameMeta] = []
         documentMetas.reserveCapacity(frameMetas.count)
 
-        for meta in frameMetas where meta.status == .active && meta.role == .document && meta.payloadLength > 0 {
+        for meta in frameMetas where meta.status == .active && meta.supersededBy == nil && meta.role == .document && meta.payloadLength > 0 {
             documentMetas.append(meta)
         }
 
