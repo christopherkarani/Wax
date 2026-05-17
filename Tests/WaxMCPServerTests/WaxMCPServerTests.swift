@@ -4362,6 +4362,66 @@ func brokerCompactContextBudgetsLongQueryOnlyRender() async throws {
 }
 
 @Test
+func brokerCompactContextSearchesOlderRelevantEndedSessionsBeforeRecencyCutoff() async throws {
+    try await withAgentBrokerService { service, _ in
+        let anchor = "F196_OLDER_RELEVANT_SESSION_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+
+        let relevantStart = await service.handle(.init(command: "session_start"))
+        #expect(relevantStart.ok == true)
+        let relevantSessionID = try #require(relevantStart.payload?.objectValue?["session_id"]?.stringValue)
+        let relevantWrite = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("\(anchor) older ended session should be searched before recency cutoff."),
+                "session_id": .string(relevantSessionID),
+            ]
+        ))
+        #expect(relevantWrite.ok == true)
+        let relevantEnd = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(relevantSessionID)]
+        ))
+        #expect(relevantEnd.ok == true)
+        try await Task.sleep(for: .milliseconds(2))
+
+        for index in 0..<4 {
+            let start = await service.handle(.init(command: "session_start"))
+            #expect(start.ok == true)
+            let sessionID = try #require(start.payload?.objectValue?["session_id"]?.stringValue)
+            let write = await service.handle(.init(
+                command: "memory_append",
+                arguments: [
+                    "content": .string("F196 irrelevant newer ended session \(index) should not hide the older relevant session."),
+                    "session_id": .string(sessionID),
+                ]
+            ))
+            #expect(write.ok == true)
+            let end = await service.handle(.init(
+                command: "session_end",
+                arguments: ["session_id": .string(sessionID)]
+            ))
+            #expect(end.ok == true)
+        }
+
+        let compact = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(anchor),
+                "mode": .string("text"),
+                "max_items": .int(4),
+                "token_budget": .int(512),
+            ]
+        ))
+        #expect(compact.ok == true)
+        let payload = try #require(compact.payload?.objectValue)
+        let mediumContext = try #require(payload["medium_context"]?.arrayValue)
+        #expect(mediumContext.contains { entry in
+            entry.objectValue?["preview"]?.stringValue?.contains(anchor) == true
+        })
+    }
+}
+
+@Test
 func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
     try await withAgentBrokerService { service, _ in
         let first = await service.handle(.init(

@@ -1766,7 +1766,6 @@ extension AgentBrokerService {
                 }
                 return manifest.status == .ended
             }
-            .prefix(4)
         for manifest in selectedManifests {
             let episodicHits = try await openAdhocMemory(
                 at: URL(fileURLWithPath: manifest.storePath),
@@ -1806,7 +1805,11 @@ extension AgentBrokerService {
         }
 
         short = Self.deduplicateLayeredHits(short)
-        medium = Self.deduplicateLayeredHits(medium)
+        medium = Self.deduplicateLayeredHits(medium).sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.timestampMs != $1.timestampMs { return $0.timestampMs > $1.timestampMs }
+            return $0.reference < $1.reference
+        }
         long = Self.deduplicateLayeredHits(long)
 
         let ordered = Array((short.prefix(maxItems) + medium.prefix(maxItems) + long.prefix(maxItems)).prefix(maxItems * 3))
