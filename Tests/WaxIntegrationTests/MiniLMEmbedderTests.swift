@@ -48,6 +48,35 @@ func miniLMEmbedderRejectsZeroMagnitudeOutputs() async throws {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderRejectsNonFiniteDirectOutputs() async throws {
+    var vector = Array(repeating: Float(0), count: 384)
+    vector[0] = .nan
+    let embedder = MiniLMEmbedder(model: StubMiniLMModel(single: vector, batch: nil), batchSize: 1)
+
+    await #expect(throws: (any Error).self) {
+        _ = try await embedder.embed("hello world")
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderRejectsNonFiniteBatchOutputs() async throws {
+    var finite = Array(repeating: Float(0), count: 384)
+    finite[0] = 5
+    var nonFinite = Array(repeating: Float(0), count: 384)
+    nonFinite[0] = .infinity
+    let embedder = MiniLMEmbedder(
+        model: StubMiniLMModel(single: nil, batch: [finite, nonFinite]),
+        batchSize: 2
+    )
+
+    await #expect(throws: (any Error).self) {
+        _ = try await embedder.embed(batch: ["finite", "bad"])
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
 @Test(.disabled(
     if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
     "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"

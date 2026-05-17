@@ -257,7 +257,13 @@ private extension MiniLMEmbedder {
         guard vector.count == dimensions else {
             throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
+        guard vector.allSatisfy(\.isFinite) else {
+            throw WaxError.io("MiniLMAll produced a non-finite embedding value.")
+        }
         let sumOfSquares = vector.reduce(Float(0)) { $0 + $1 * $1 }
+        guard sumOfSquares.isFinite else {
+            throw WaxError.io("MiniLMAll produced a non-finite embedding magnitude.")
+        }
         guard sumOfSquares > 0 else {
             throw WaxError.io("MiniLMAll produced a zero-magnitude embedding.")
         }
