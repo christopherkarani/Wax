@@ -1250,6 +1250,7 @@ private extension WaxMCPTools {
         metadata = try compatNormalizedMetadata(args: args, metadata: metadata, sessionID: nil)
         if let sessionID {
             metadata[MemoryMetadataKeys.promotedFromSession] = sessionID.uuidString
+            metadata.removeValue(forKey: "session_id")
         }
         if let frameID {
             metadata[MemoryMetadataKeys.promotedFromFrame] = String(frameID)

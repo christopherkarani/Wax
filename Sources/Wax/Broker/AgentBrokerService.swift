@@ -593,6 +593,7 @@ extension AgentBrokerService {
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
+            normalizedMetadata.removeValue(forKey: "session_id")
         }
         if let sourceFrameId {
             normalizedMetadata[MemoryMetadataKeys.promotedFromFrame] = String(sourceFrameId)

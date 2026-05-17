@@ -3100,6 +3100,9 @@ func sessionSynthesizeAndPromoteFlowWorks() async throws {
         #expect(promote.isError != true)
         let promoteJSON = try parseJSONText(in: promote)
         #expect((promoteJSON["written"] as? Bool) == true)
+        let promoteMetadata = try #require(promoteJSON["metadata"] as? [String: Any])
+        #expect(promoteMetadata["wax.promoted_from_session"] as? String == sessionID)
+        #expect(promoteMetadata["session_id"] == nil)
 
         let search = await WaxMCPTools.handleCall(
             params: .init(name: "search", arguments: [
@@ -3598,6 +3601,7 @@ func brokerImplicitMemoryPromotePreservesResolvedSessionProvenance() async throw
         #expect(promotePayload["written"]?.boolValue == true)
         let metadata = try #require(promotePayload["metadata"]?.objectValue)
         #expect(metadata[MemoryMetadataKeys.promotedFromSession]?.stringValue == sessionIDString)
+        #expect(metadata["session_id"] == nil)
 
         let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
         let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
