@@ -114,6 +114,30 @@ func photoRAGRegionCropResultsUseCompactCropIndices() throws {
     }
 }
 
+@Test
+func photoRAGDocsDoNotAdvertiseClassifierTags() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("metadata.exif.keywords"))
+    #expect(source.contains("if tags.isEmpty, let captionText"))
+
+    for relativePath in photoRAGDocPaths {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+
+        #expect(doc.contains("Metadata keywords, or caption-derived search terms when no keywords are present"))
+        #expect(doc.contains("Optional OCR, captions, metadata tags, and region evidence"))
+        #expect(!doc.contains("Detected tags/labels"))
+        #expect(!doc.contains("captions and tags"))
+    }
+}
+
 private let photoRAGDocPaths = [
     "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
     "Resources/website/docs/media/photo-rag.md",

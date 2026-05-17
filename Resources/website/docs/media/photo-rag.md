@@ -14,7 +14,7 @@ Use this page as internal implementation documentation for Wax contributors. Pub
 
 ## Overview
 
-The package-scoped pipeline builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
+The package-scoped pipeline builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and metadata tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Each photo is represented as a hierarchy of frames:
 | `ocrBlock` | Individual OCR text blocks |
 | `ocrSummary` | Concatenated OCR text for the full image |
 | `captionShort` | Short image caption |
-| `tags` | Detected tags/labels |
+| `tags` | Metadata keywords, or caption-derived search terms when no keywords are present |
 | `region` | Bounding box regions of interest |
 | `syncState` | Library sync checkpoint |
 
@@ -48,7 +48,7 @@ The package-only ingestion path currently supports:
 
 - Photos-library sync for full-library or selected-asset scopes
 - Local image ingestion when the package is compiled with ImageIO support
-- Optional OCR, captions, tags, and region evidence
+- Optional OCR, captions, metadata tags, and region evidence
 - On-device provider enforcement when configured
 
 ### Metadata
