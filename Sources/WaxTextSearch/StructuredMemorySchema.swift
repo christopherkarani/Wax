@@ -75,7 +75,7 @@ enum StructuredMemorySchema {
               valid_to_ms          INTEGER CHECK(valid_to_ms IS NULL OR valid_to_ms > valid_from_ms),
               version_relation     INTEGER NOT NULL DEFAULT 0,
 
-              system_from_ms       INTEGER NOT NULL,
+              system_from_ms       INTEGER NOT NULL CHECK(system_from_ms < 9223372036854775807),
               system_to_ms         INTEGER CHECK(system_to_ms IS NULL OR system_to_ms > system_from_ms),
 
               span_key_hash        BLOB NOT NULL,

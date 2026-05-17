@@ -4,7 +4,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 8
+    static let userVersion: Int32 = 9
     private static let framesFTSSQL = "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content, tokenize = 'unicode61')"
 
     static func create(in db: Database) throws {
@@ -84,6 +84,12 @@ enum FTS5Schema {
             try requirePinnedFTSSchema(in: db)
             try StructuredMemorySchema.create(in: db)
             try migrateV7ToV8(in: db)
+            return
+        }
+        if version == 8 {
+            try requirePinnedFTSSchema(in: db)
+            try StructuredMemorySchema.create(in: db)
+            try migrateV8ToV9(in: db)
             return
         }
         guard version == userVersion else {
@@ -203,7 +209,84 @@ enum FTS5Schema {
 
     private static func migrateV7ToV8(in db: Database) throws {
         try rehashStructuredFactSpans(in: db)
+        try migrateV8ToV9(in: db)
+    }
+
+    private static func migrateV8ToV9(in db: Database) throws {
+        let unclosableCount = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sm_fact_span WHERE system_from_ms >= ?",
+            arguments: [Int64.max]
+        ) ?? 0
+        guard unclosableCount == 0 else {
+            throw WaxError.io("structured memory contains unclosable system_from_ms values")
+        }
+        try rebuildStructuredFactSpanWithSystemFromCheck(in: db)
         try applyUserVersion(in: db, version: userVersion)
+    }
+
+    private static func rebuildStructuredFactSpanWithSystemFromCheck(in db: Database) throws {
+        let tableSQL = try String.fetchOne(
+            db,
+            sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sm_fact_span'"
+        ) ?? ""
+        guard !tableSQL.contains("9223372036854775807") else { return }
+
+        try db.execute(sql: "DROP INDEX IF EXISTS sm_span_current_fact_idx")
+        try db.execute(sql: """
+            CREATE TABLE sm_fact_span_v9 (
+              span_id              INTEGER PRIMARY KEY,
+              fact_id              INTEGER NOT NULL REFERENCES sm_fact(fact_id) ON DELETE CASCADE,
+
+              valid_from_ms        INTEGER NOT NULL,
+              valid_to_ms          INTEGER CHECK(valid_to_ms IS NULL OR valid_to_ms > valid_from_ms),
+              version_relation     INTEGER NOT NULL DEFAULT 0,
+
+              system_from_ms       INTEGER NOT NULL CHECK(system_from_ms < 9223372036854775807),
+              system_to_ms         INTEGER CHECK(system_to_ms IS NULL OR system_to_ms > system_from_ms),
+
+              span_key_hash        BLOB NOT NULL,
+              created_at_ms        INTEGER NOT NULL,
+              CHECK (length(span_key_hash) == 32),
+              CHECK (version_relation IN (0, 1, 2, 3)),
+              UNIQUE(span_key_hash)
+            )
+            """)
+        try db.execute(sql: """
+            INSERT INTO sm_fact_span_v9(
+                span_id,
+                fact_id,
+                valid_from_ms,
+                valid_to_ms,
+                version_relation,
+                system_from_ms,
+                system_to_ms,
+                span_key_hash,
+                created_at_ms
+            )
+            SELECT
+                span_id,
+                fact_id,
+                valid_from_ms,
+                valid_to_ms,
+                version_relation,
+                system_from_ms,
+                system_to_ms,
+                span_key_hash,
+                created_at_ms
+            FROM sm_fact_span
+            ORDER BY span_id
+            """)
+
+        try db.execute(sql: "PRAGMA foreign_keys = OFF")
+        try db.execute(sql: "DROP TABLE sm_fact_span")
+        try db.execute(sql: "ALTER TABLE sm_fact_span_v9 RENAME TO sm_fact_span")
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS sm_span_current_fact_idx
+              ON sm_fact_span(fact_id, system_from_ms, valid_from_ms, valid_to_ms)
+              WHERE system_to_ms IS NULL
+            """)
     }
 
     private static func rehashStructuredFactSpans(in db: Database) throws {

@@ -176,6 +176,79 @@ import Wax
     #expect(current.hits.map(\.fact.object) == [.string("Google")])
 }
 
+@Test func supersedingFactRejectsEarlierSystemTimeThanOpenSpan() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f017"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.assertFact(
+            subject: EntityKey("project:f017"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            relation: .updates,
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 10, toMs: nil),
+            evidence: []
+        )
+    }
+}
+
+@Test func supersedingFactRejectsMonotonicCloseOverflowAtInt64Max() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.assertFact(
+            subject: EntityKey("project:f017-overflow"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            relation: .sets,
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: Int64.max, toMs: nil),
+            evidence: []
+        )
+    }
+}
+
+@Test func supersedingFactRejectsCloseTimestampAtInt64MaxBeforeInsert() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f017-close-overflow"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: Int64.max - 1, toMs: nil),
+        evidence: []
+    )
+
+    do {
+        _ = try await engine.assertFact(
+            subject: EntityKey("project:f017-close-overflow"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            relation: .updates,
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: Int64.max - 1, toMs: nil),
+            evidence: []
+        )
+        Issue.record("Expected monotonic close overflow to throw before inserting a replacement span")
+    } catch WaxError.encodingError(let reason) {
+        #expect(reason.contains("overflows monotonic close timestamp"))
+    } catch {
+        Issue.record("Expected WaxError.encodingError, got \(error)")
+    }
+}
+
 #if canImport(SQLite3)
 import SQLite3
 
@@ -379,6 +452,30 @@ private enum VersionRelationSQLiteFixture {
         }
     }
 
+    static func addLegacySpanEvidence(_ data: Data) throws -> Data {
+        return try mutateSerialized(data) { db in
+            let sql = """
+                INSERT INTO sm_evidence(
+                    evidence_id,
+                    span_id,
+                    fact_id,
+                    source_frame_id,
+                    chunk_index,
+                    span_start_utf8,
+                    span_end_utf8,
+                    extractor_id,
+                    extractor_version,
+                    confidence,
+                    asserted_at_ms,
+                    created_at_ms
+                ) VALUES (1, 1, NULL, 42, NULL, NULL, NULL, 'fixture', '1', NULL, 0, 0);
+                """
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+    }
+
     static func mutateSerialized(
         _ data: Data,
         _ body: (OpaquePointer) throws -> Void
@@ -442,6 +539,72 @@ private enum VersionRelationSQLiteFixture {
             throw WaxError.io("sqlite3_step failed for \(sql)")
         }
         return sqlite3_column_int64(stmt, 0)
+    }
+
+    static func evidenceFrameIds(fromSerialized data: Data) throws -> [UInt64] {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        try deserialize(data, into: db)
+
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        let sql = "SELECT source_frame_id FROM sm_evidence ORDER BY evidence_id"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_prepare_v2 failed for \(sql)")
+        }
+
+        var frameIds: [UInt64] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            frameIds.append(UInt64(sqlite3_column_int64(stmt, 0)))
+        }
+        return frameIds
+    }
+
+    static func schemaSQL(table: String, fromSerialized data: Data) throws -> String {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        try deserialize(data, into: db)
+
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
+        guard table.rangeOfCharacter(from: allowed.inverted) == nil else {
+            throw WaxError.io("unsupported table name \(table)")
+        }
+        let sql = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '\(table)'"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_prepare_v2 failed for \(sql)")
+        }
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let cString = sqlite3_column_text(stmt, 0) else {
+            throw WaxError.io("missing schema SQL for \(table)")
+        }
+        return String(cString: cString)
+    }
+
+    static func statementsSucceed(_ statements: [String], inSerialized data: Data) throws -> Bool {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        try deserialize(data, into: db)
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func deserialize(_ data: Data, into db: OpaquePointer?) throws {
@@ -728,12 +891,49 @@ private enum VersionRelationSQLiteFixture {
     #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 1)
 }
 
+@Test func migrationInstallsSystemFromSentinelCheckOnLegacySpanTable() async throws {
+    let preMigration = try VersionRelationSQLiteFixture.makePreVersionRelationBlob()
+    let engine = try FTS5SearchEngine.deserialize(from: preMigration)
+    let upgraded = try await engine.serialize()
+
+    let tableSQL = try VersionRelationSQLiteFixture.schemaSQL(table: "sm_fact_span", fromSerialized: upgraded)
+    #expect(tableSQL.contains("system_from_ms") && tableSQL.contains("9223372036854775807"))
+
+    let acceptedUnclosableSpan = try VersionRelationSQLiteFixture.statementsSucceed([
+        """
+        INSERT INTO sm_fact_span(
+            span_id,
+            fact_id,
+            valid_from_ms,
+            valid_to_ms,
+            version_relation,
+            system_from_ms,
+            system_to_ms,
+            span_key_hash,
+            created_at_ms
+        ) VALUES (99, 1, 0, NULL, 0, 9223372036854775807, NULL, randomblob(32), 0);
+        """,
+    ], inSerialized: upgraded)
+
+    #expect(!acceptedUnclosableSpan)
+}
+
+@Test func migrationRebuildsLegacySpanTableWithoutDroppingEvidence() async throws {
+    let preMigration = try VersionRelationSQLiteFixture.addLegacySpanEvidence(
+        VersionRelationSQLiteFixture.makePreVersionRelationBlob()
+    )
+    let engine = try FTS5SearchEngine.deserialize(from: preMigration)
+    let upgraded = try await engine.serialize()
+
+    #expect(try VersionRelationSQLiteFixture.evidenceFrameIds(fromSerialized: upgraded) == [42])
+}
+
 @Test func migrationUpgradesPreVersionRelationBlobAndSupportsUpdates() async throws {
     let preMigration = try VersionRelationSQLiteFixture.makePreVersionRelationBlob()
     let engine = try FTS5SearchEngine.deserialize(from: preMigration)
     let upgraded = try await engine.serialize()
     let userVersion = try VersionRelationSQLiteFixture.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 8)
+    #expect(userVersion == 9)
     #expect(try VersionRelationSQLiteFixture.spanRelations(fromSerialized: upgraded) == [
         Int64(VersionRelation.sets.rawValue),
     ])

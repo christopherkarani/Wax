@@ -316,6 +316,9 @@ package actor FTS5SearchEngine {
         guard system.toMs == nil || system.toMs! > system.fromMs else {
             throw WaxError.encodingError(reason: "system_to_ms must be greater than system_from_ms")
         }
+        guard system.fromMs < Int64.max else {
+            throw WaxError.encodingError(reason: "system_from_ms must be less than Int64.max")
+        }
 
         let factHash = try StructuredMemoryHasher.hashFact(
             subject: subject,
@@ -985,7 +988,23 @@ package actor FTS5SearchEngine {
                             )
                             for row in openSpans {
                                 let systemFrom: Int64 = row["system_from_ms"] ?? 0
-                                let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
+                                guard system.fromMs >= systemFrom else {
+                                    throw WaxError.encodingError(
+                                        reason: "superseding fact system_from_ms must be greater than or equal to open span system_from_ms"
+                                    )
+                                }
+                                let closeAt: Int64
+                                if system.fromMs > systemFrom {
+                                    closeAt = system.fromMs
+                                } else {
+                                    let next = systemFrom.addingReportingOverflow(1)
+                                    guard !next.overflow, next.partialValue < Int64.max else {
+                                        throw WaxError.encodingError(
+                                            reason: "superseding fact system_from_ms overflows monotonic close timestamp"
+                                        )
+                                    }
+                                    closeAt = next.partialValue
+                                }
                                 effectiveSystemFromMs = max(effectiveSystemFromMs, closeAt)
                                 try closeSpan(row, at: closeAt)
                             }

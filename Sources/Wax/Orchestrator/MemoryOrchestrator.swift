@@ -201,6 +201,7 @@ package actor MemoryOrchestrator {
     private var hasEnsuredMemoryBinding = false
     private var queryEmbeddingCircuitOpen = false
     private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
+    private var lastStructuredSystemMs: Int64?
 
     private var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -1291,7 +1292,7 @@ package actor MemoryOrchestrator {
         commit: Bool = true
     ) async throws -> FactRowID {
         try ensureStructuredMemoryEnabled()
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let nowMs = try nextStructuredSystemMs()
         let valid = StructuredTimeRange(fromMs: validFromMs ?? nowMs, toMs: validToMs)
         let system = StructuredTimeRange(fromMs: nowMs, toMs: nil)
         let factID = try await session.assertFact(
@@ -1311,11 +1312,29 @@ package actor MemoryOrchestrator {
 
     package func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
         try ensureStructuredMemoryEnabled()
-        let timestamp = atMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+        let timestamp = try atMs ?? nextStructuredSystemMs()
         try await session.retractFact(factId: factId, atMs: timestamp)
         if commit {
             try await session.commit()
         }
+    }
+
+    private func nextStructuredSystemMs() throws -> Int64 {
+        let wallNow = Int64(Date().timeIntervalSince1970 * 1000)
+        guard wallNow < Int64.max else {
+            throw WaxError.encodingError(reason: "structured system timestamp must be less than Int64.max")
+        }
+        guard let last = lastStructuredSystemMs, wallNow <= last else {
+            lastStructuredSystemMs = wallNow
+            return wallNow
+        }
+
+        let next = last.addingReportingOverflow(1)
+        guard !next.overflow, next.partialValue < Int64.max else {
+            throw WaxError.encodingError(reason: "structured system timestamp overflow")
+        }
+        lastStructuredSystemMs = next.partialValue
+        return next.partialValue
     }
 
     private func executeRecall(
