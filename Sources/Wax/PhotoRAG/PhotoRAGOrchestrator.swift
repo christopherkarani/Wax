@@ -82,6 +82,7 @@ package actor PhotoRAGOrchestrator {
         var assetIDByRoot: [UInt64: String] = [:]
         var derivedByRoot: [UInt64: DerivedRefs] = [:]
         var locationBins: [LocationBin: Set<UInt64>] = [:]
+        var locationByFrame: [UInt64: PhotoCoordinate] = [:]
     }
 
     /// The underlying Wax store for frame storage and indexing.
@@ -1085,6 +1086,7 @@ package actor PhotoRAGOrchestrator {
             if Self.isSearchablePhotoKind(kind),
                let bin = Self.locationBin(from: entries) {
                 next.locationBins[bin, default: []].insert(meta.id)
+                next.locationByFrame[meta.id] = Self.locationCoordinate(from: entries)
             }
         }
 
@@ -1126,19 +1128,13 @@ package actor PhotoRAGOrchestrator {
         let minLatBin = max(-9000, Int(floor(minLat * 100.0)))
         let maxLatBin = min(9000, Int(floor(maxLat * 100.0)))
 
-        let minLonBin = Int(floor(minLon * 100.0))
-        let maxLonBin = Int(floor(maxLon * 100.0))
+        let lonRanges = Self.longitudeBinRanges(minLon: minLon, maxLon: maxLon, lonDelta: lonDelta)
 
         // Compute total bin count. If the search area is degenerate (too many bins),
         // return nil to gracefully degrade to "no location filter".
         let latBinCount = maxLatBin - minLatBin + 1
-        let lonBinCount: Int
-        if minLonBin <= maxLonBin {
-            lonBinCount = maxLonBin - minLonBin + 1
-        } else {
-            // Antimeridian wraparound: bins split across -180/180 boundary.
-            // e.g., minLonBin=17900, maxLonBin=-17900 -> wraps around.
-            lonBinCount = (18000 - minLonBin) + (maxLonBin - (-18000)) + 1
+        let lonBinCount = lonRanges.reduce(0) { partial, range in
+            partial + (range.upperBound - range.lowerBound + 1)
         }
 
         guard latBinCount > 0, lonBinCount > 0 else { return nil }
@@ -1148,26 +1144,44 @@ package actor PhotoRAGOrchestrator {
 
         var allowlist: Set<UInt64> = []
 
-        // Build longitude bin ranges. If minLonBin <= maxLonBin, it is a single
-        // contiguous range. Otherwise, split across the antimeridian into two ranges.
-        let lonRanges: [ClosedRange<Int>]
-        if minLonBin <= maxLonBin {
-            lonRanges = [minLonBin...maxLonBin]
-        } else {
-            lonRanges = [minLonBin...18000, -18000...maxLonBin]
-        }
-
         for latBin in minLatBin...maxLatBin {
             for lonRange in lonRanges {
                 for lonBin in lonRange {
                     let bin = LocationBin(latBin: latBin, lonBin: lonBin)
                     if let ids = index.locationBins[bin] {
-                        allowlist.formUnion(ids)
+                        for id in ids {
+                            guard let coordinate = index.locationByFrame[id] else { continue }
+                            if Self.distanceMeters(from: center, to: coordinate) <= radius {
+                                allowlist.insert(id)
+                            }
+                        }
                     }
                 }
             }
         }
         return allowlist
+    }
+
+    private static func longitudeBinRanges(minLon: Double, maxLon: Double, lonDelta: Double) -> [ClosedRange<Int>] {
+        guard lonDelta < 180 else {
+            return [-18000...18000]
+        }
+
+        if minLon < -180 {
+            let wrappedMin = Int(floor((minLon + 360.0) * 100.0))
+            let maxBin = Int(floor(maxLon * 100.0))
+            return [max(-18000, wrappedMin)...18000, -18000...min(18000, maxBin)]
+        }
+
+        if maxLon > 180 {
+            let minBin = Int(floor(minLon * 100.0))
+            let wrappedMax = Int(floor((maxLon - 360.0) * 100.0))
+            return [max(-18000, minBin)...18000, -18000...min(18000, wrappedMax)]
+        }
+
+        let minBin = max(-18000, Int(floor(minLon * 100.0)))
+        let maxBin = min(18000, Int(floor(maxLon * 100.0)))
+        return [minBin...maxBin]
     }
 
     static func dedupeAssetIDs(_ assetIDs: [String]) -> [String] {
@@ -1201,6 +1215,28 @@ package actor PhotoRAGOrchestrator {
               let lon = Double(lonStr)
         else { return nil }
         return LocationBin(latBin: Int(floor(lat * 100.0)), lonBin: Int(floor(lon * 100.0)))
+    }
+
+    private static func locationCoordinate(from meta: [String: String]) -> PhotoCoordinate? {
+        guard let latStr = meta[MetaKey.lat],
+              let lonStr = meta[MetaKey.lon],
+              let lat = Double(latStr),
+              let lon = Double(lonStr)
+        else { return nil }
+        return PhotoCoordinate(latitude: lat, longitude: lon)
+    }
+
+    private static func distanceMeters(from lhs: PhotoCoordinate, to rhs: PhotoCoordinate) -> Double {
+        let earthRadiusMeters = 6_371_000.0
+        let lat1 = lhs.latitude * .pi / 180
+        let lat2 = rhs.latitude * .pi / 180
+        let deltaLat = (rhs.latitude - lhs.latitude) * .pi / 180
+        let deltaLon = (rhs.longitude - lhs.longitude) * .pi / 180
+
+        let a = sin(deltaLat / 2) * sin(deltaLat / 2)
+            + cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
+        return earthRadiusMeters * c
     }
 
     // MARK: - Query embedding

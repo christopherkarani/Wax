@@ -174,6 +174,150 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
 }
 
 @Test
+func photoRAGLocationRadiusAppliesExactDistanceAfterCoarseBin() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let tsA: Int64 = 1_700_000_000_000
+        let tsB: Int64 = 1_700_000_100_000
+
+        var nearbyMeta = Metadata()
+        nearbyMeta.entries[PhotoMetadataKey.assetID.rawValue] = "nearby"
+        nearbyMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(tsA)
+        nearbyMeta.entries[PhotoMetadataKey.lat.rawValue] = "37.33180"
+        nearbyMeta.entries[PhotoMetadataKey.lon.rawValue] = "-122.03120"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: nearbyMeta),
+            compression: .plain,
+            timestampMs: tsA
+        )
+
+        var sameBinButOutsideMeta = Metadata()
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.assetID.rawValue] = "same-bin-outside-radius"
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(tsB)
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.lat.rawValue] = "37.33180"
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.lon.rawValue] = "-122.03040"
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: sameBinButOutsideMeta),
+            compression: .plain,
+            timestampMs: tsB
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let query = PhotoQuery(
+            text: nil,
+            image: nil,
+            timeRange: nil,
+            location: PhotoLocationQuery(
+                center: PhotoCoordinate(latitude: 37.33180, longitude: -122.03120),
+                radiusMeters: 30
+            ),
+            filters: .none,
+            resultLimit: 10,
+            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+        )
+
+        let ctx = try await orchestrator.recall(query)
+        #expect(ctx.items.map(\.assetID) == ["nearby"])
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGLocationRadiusHandlesAntimeridianBins() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var acrossDatelineMeta = Metadata()
+        acrossDatelineMeta.entries[PhotoMetadataKey.assetID.rawValue] = "across-dateline"
+        acrossDatelineMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(timestamp)
+        acrossDatelineMeta.entries[PhotoMetadataKey.lat.rawValue] = "0.00000"
+        acrossDatelineMeta.entries[PhotoMetadataKey.lon.rawValue] = "-179.99900"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: acrossDatelineMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                location: PhotoLocationQuery(
+                    center: PhotoCoordinate(latitude: 0, longitude: 179.999),
+                    radiusMeters: 300
+                ),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(ctx.items.map(\.assetID) == ["across-dateline"])
+        try await orchestrator.flush()
+    }
+}
+
+@Test
 func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
