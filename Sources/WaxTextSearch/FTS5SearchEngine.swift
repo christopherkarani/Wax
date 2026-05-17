@@ -1067,13 +1067,26 @@ package actor FTS5SearchEngine {
 
                         for row in spans {
                             let systemFrom: Int64 = row["system_from_ms"] ?? 0
-                            if atMs <= systemFrom {
-                                throw WaxError.encodingError(reason: "retraction time must be after system_from_ms")
+                            if atMs < systemFrom {
+                                throw WaxError.encodingError(reason: "retraction time must be greater than or equal to system_from_ms")
                             }
                         }
 
                         for row in spans {
-                            try closeSpan(row, at: atMs)
+                            let systemFrom: Int64 = row["system_from_ms"] ?? 0
+                            let closeAt: Int64
+                            if atMs > systemFrom {
+                                closeAt = atMs
+                            } else {
+                                let next = systemFrom.addingReportingOverflow(1)
+                                guard !next.overflow else {
+                                    throw WaxError.encodingError(
+                                        reason: "retraction time overflows monotonic close timestamp"
+                                    )
+                                }
+                                closeAt = next.partialValue
+                            }
+                            try closeSpan(row, at: closeAt)
                         }
                     }
                 }

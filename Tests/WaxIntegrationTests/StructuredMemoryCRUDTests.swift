@@ -474,6 +474,37 @@ import Wax
     #expect(after.hits.isEmpty == true)
 }
 
+@Test func retractFactAtSameSystemTimestampClosesAtNextMillisecond() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let factId = try await engine.assertFact(
+        subject: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+
+    try await engine.retractFact(factId: factId, atMs: 10)
+
+    let atStart = try await engine.facts(
+        about: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 10
+    )
+    let afterClose = try await engine.facts(
+        about: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 11, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(atStart.hits.map(\.fact.object) == [.string("active")])
+    #expect(afterClose.hits.isEmpty)
+}
+
 @Test func queryOrderIsDeterministicForTies() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 
