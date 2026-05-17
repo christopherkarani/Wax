@@ -2155,13 +2155,13 @@ package actor Wax {
             var plainPlans: [PlainPreviewPlan] = []
             var compressedFrames: [FrameMeta] = []
 
-            let maxId = UInt64(toc.frames.count)
             emptyIds.reserveCapacity(frameIds.count)
             plainPlans.reserveCapacity(frameIds.count)
             compressedFrames.reserveCapacity(frameIds.count)
 
-            for frameId in frameIds where frameId < maxId {
-                let frame = toc.frames[Int(frameId)]
+            let metaById = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
+            for frameId in frameIds {
+                guard let frame = metaById[frameId] else { continue }
                 if frame.payloadLength == 0 {
                     emptyIds.append(frameId)
                     continue

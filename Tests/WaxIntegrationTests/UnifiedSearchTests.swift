@@ -416,6 +416,43 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func pendingMetadataFilteredResultUsesPendingPayloadPreview() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        let pendingText = "pending preview f031 unique payload"
+        let frameID = try await wax.put(
+            Data(pendingText.utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "pending"]))
+        )
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 4,
+            results: [(frameId: frameID, score: 1)]
+        )
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "pending"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [frameID])
+        #expect(response.results.first?.previewText == pendingText)
+
+        try await wax.close()
+    }
+}
+
 @Test func frameFilterMatchesTagsAndLabels() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
