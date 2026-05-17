@@ -255,6 +255,47 @@ import Wax
     #expect(objects.contains(.string("openai")))
 }
 
+@Test func factsWasTruncatedRequiresExtraMatchingRowBeyondLimit() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+
+    let exactLimit = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 1
+    )
+    #expect(exactLimit.hits.count == 1)
+    #expect(exactLimit.wasTruncated == false)
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("Anthropic"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    let overLimit = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 1
+    )
+    #expect(overLimit.hits.count == 1)
+    #expect(overLimit.wasTruncated)
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(

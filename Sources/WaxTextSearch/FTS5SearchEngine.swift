@@ -371,6 +371,7 @@ package actor FTS5SearchEngine {
         }
         try await flushPendingOpsIfNeeded()
         let capped = max(0, min(limit, Self.maxResults))
+        let fetchLimit = capped > 0 ? capped + 1 : 0
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.read { db in
@@ -435,9 +436,10 @@ package actor FTS5SearchEngine {
                     LIMIT ?
                     """
 
-                args.append(capped)
+                args.append(fetchLimit)
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
-                let spanIds: [Int64] = rows.compactMap { $0["span_id"] }
+                let visibleRows = rows.prefix(capped)
+                let spanIds: [Int64] = visibleRows.compactMap { $0["span_id"] }
                 var evidenceBySpanId: [Int64: [StructuredEvidence]] = [:]
                 if !spanIds.isEmpty {
                     let placeholders = Array(repeating: "?", count: spanIds.count).joined(separator: ",")
@@ -465,7 +467,7 @@ package actor FTS5SearchEngine {
                     }
                 }
 
-                let hits: [StructuredFactHit] = rows.compactMap { row in
+                let hits: [StructuredFactHit] = visibleRows.compactMap { row in
                     guard let factId: Int64 = row["fact_id"] else { return nil }
                     let spanId: Int64? = row["span_id"]
                     let subjectKey: String = row["subject_key"] ?? ""
@@ -515,7 +517,7 @@ package actor FTS5SearchEngine {
                     )
                 }
 
-                let truncated = capped > 0 && hits.count >= capped
+                let truncated = capped > 0 && rows.count > capped
                 return StructuredFactsResult(hits: hits, wasTruncated: truncated)
             }
         }
