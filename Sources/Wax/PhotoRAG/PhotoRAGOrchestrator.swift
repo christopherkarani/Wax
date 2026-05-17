@@ -277,85 +277,101 @@ package actor PhotoRAGOrchestrator {
 
         let isConstraintOnlyQuery = (queryText == nil && queryEmbedding == nil)
             && (query.timeRange != nil || query.location != nil || !query.filters.isEmpty)
-        let fallbackLimit = max(query.resultLimit, config.searchTopK)
         let frameFilter: FrameFilter? = if filterFrameIds != nil || metadataFilter != nil {
             FrameFilter(frameIds: filterFrameIds, metadataFilter: metadataFilter)
         } else {
             nil
         }
 
-        let request = SearchRequest(
-            query: queryText,
-            embedding: queryEmbedding,
-            vectorEnginePreference: config.vectorEnginePreference,
-            mode: mode,
-            topK: max(query.resultLimit, config.searchTopK),
-            timeRange: timeRange,
-            frameFilter: frameFilter,
-            previewMaxBytes: 1024,
-            allowTimelineFallback: isConstraintOnlyQuery,
-            timelineFallbackLimit: fallbackLimit
-        )
+        let rootMetaById: [UInt64: FrameMeta]
+        let picked: [RootCandidate]
 
-        let response = try await session.search(request)
-        guard !response.results.isEmpty else {
+        if isConstraintOnlyQuery {
+            let direct = await constraintRootCandidates(
+                query: query,
+                timeRange: timeRange,
+                filterFrameIds: filterFrameIds,
+                metadataFilter: metadataFilter
+            )
+            rootMetaById = direct.rootMetaById
+            picked = Array(direct.candidates.prefix(query.resultLimit))
+        } else {
+            let request = SearchRequest(
+                query: queryText,
+                embedding: queryEmbedding,
+                vectorEnginePreference: config.vectorEnginePreference,
+                mode: mode,
+                topK: max(query.resultLimit, config.searchTopK),
+                timeRange: timeRange,
+                frameFilter: frameFilter,
+                previewMaxBytes: 1024,
+                allowTimelineFallback: false,
+                timelineFallbackLimit: max(query.resultLimit, config.searchTopK)
+            )
+
+            let response = try await session.search(request)
+            guard !response.results.isEmpty else {
+                return PhotoRAGContext(query: query, items: [], diagnostics: .init())
+            }
+
+            let frameIds = response.results.map(\.frameId)
+            let metaById = await wax.frameMetasIncludingPending(frameIds: frameIds)
+
+            var rootIds: Set<UInt64> = []
+            rootIds.reserveCapacity(response.results.count)
+            for result in response.results {
+                if let meta = metaById[result.frameId] {
+                    rootIds.insert(meta.parentId ?? meta.id)
+                }
+            }
+
+            rootMetaById = await wax.frameMetasIncludingPending(frameIds: Array(rootIds))
+
+            var candidates: [UInt64: RootCandidate] = [:]
+            candidates.reserveCapacity(rootIds.count)
+
+            for result in response.results {
+                guard let meta = metaById[result.frameId] else { continue }
+                let rootId = meta.parentId ?? meta.id
+                guard let rootMeta = rootMetaById[rootId] else { continue }
+                guard rootMeta.kind == FrameKind.root else { continue }
+                if rootMeta.status == .deleted { continue }
+                if rootMeta.supersededBy != nil { continue }
+
+                let ev = Self.evidence(from: result, meta: meta)
+
+                var entry = candidates[rootId] ?? RootCandidate(
+                    rootId: rootId,
+                    score: result.score,
+                    evidence: [],
+                    matchedRegions: [],
+                    textSnippet: nil
+                )
+                entry.score = max(entry.score, result.score)
+                if let ev, !entry.evidence.contains(ev) {
+                    entry.evidence.append(ev)
+                }
+                if let rect = Self.regionRect(from: meta) {
+                    entry.matchedRegions.append(rect)
+                }
+                if entry.textSnippet == nil, (result.sources.contains(.text) || meta.kind == FrameKind.ocrSummary) {
+                    entry.textSnippet = result.previewText
+                }
+                candidates[rootId] = entry
+            }
+
+            // Build summary text for the top candidates, then apply budgets.
+            let sorted = candidates.values.sorted { a, b in
+                if a.score != b.score { return a.score > b.score }
+                return a.rootId < b.rootId
+            }
+
+            picked = Array(sorted.prefix(query.resultLimit))
+        }
+
+        guard !picked.isEmpty else {
             return PhotoRAGContext(query: query, items: [], diagnostics: .init())
         }
-
-        let frameIds = response.results.map(\.frameId)
-        let metaById = await wax.frameMetasIncludingPending(frameIds: frameIds)
-
-        var rootIds: Set<UInt64> = []
-        rootIds.reserveCapacity(response.results.count)
-        for result in response.results {
-            if let meta = metaById[result.frameId] {
-                rootIds.insert(meta.parentId ?? meta.id)
-            }
-        }
-
-        let rootMetaById = await wax.frameMetasIncludingPending(frameIds: Array(rootIds))
-
-        var candidates: [UInt64: RootCandidate] = [:]
-        candidates.reserveCapacity(rootIds.count)
-
-        for result in response.results {
-            guard let meta = metaById[result.frameId] else { continue }
-            let rootId = meta.parentId ?? meta.id
-            guard let rootMeta = rootMetaById[rootId] else { continue }
-            guard rootMeta.kind == FrameKind.root else { continue }
-            if rootMeta.status == .deleted { continue }
-            if rootMeta.supersededBy != nil { continue }
-
-            let ev = Self.evidence(from: result, meta: meta)
-
-            var entry = candidates[rootId] ?? RootCandidate(
-                rootId: rootId,
-                score: result.score,
-                evidence: [],
-                matchedRegions: [],
-                textSnippet: nil
-            )
-            entry.score = max(entry.score, result.score)
-            if let ev, !entry.evidence.contains(ev) {
-                entry.evidence.append(ev)
-            }
-            if let rect = Self.regionRect(from: meta) {
-                entry.matchedRegions.append(rect)
-            }
-            if entry.textSnippet == nil, (result.sources.contains(.text) || meta.kind == FrameKind.ocrSummary) {
-                entry.textSnippet = result.previewText
-            }
-            candidates[rootId] = entry
-        }
-
-        // Build summary text for the top candidates, then apply budgets.
-        let sorted = candidates.values.sorted { a, b in
-            if a.score != b.score { return a.score > b.score }
-            return a.rootId < b.rootId
-        }
-
-        let limit = query.resultLimit
-        let picked = Array(sorted.prefix(limit))
         let rootIdsPicked = picked.map(\.rootId)
 
         // Resolve asset IDs and derived frame refs.
@@ -1322,6 +1338,49 @@ package actor PhotoRAGOrchestrator {
         return refs?.ocrSummary == nil && refs?.caption == nil
     }
 
+    private func constraintRootCandidates(
+        query: PhotoQuery,
+        timeRange: SearchTimeRange?,
+        filterFrameIds: Set<UInt64>?,
+        metadataFilter: MetadataFilter?
+    ) async -> (rootMetaById: [UInt64: FrameMeta], candidates: [RootCandidate]) {
+        var roots: [FrameMeta] = []
+        for meta in await wax.frameMetas() {
+            guard meta.kind == FrameKind.root else { continue }
+            if meta.status == .deleted { continue }
+            if meta.supersededBy != nil { continue }
+            if let timeRange, !timeRange.contains(meta.timestamp) { continue }
+            if let filterFrameIds, !filterFrameIds.contains(meta.id) { continue }
+            if let metadataFilter, !Self.matches(metadataFilter: metadataFilter, meta: meta) { continue }
+            roots.append(meta)
+        }
+
+        roots.sort { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
+            return lhs.id < rhs.id
+        }
+
+        var rootMetaById: [UInt64: FrameMeta] = [:]
+        rootMetaById.reserveCapacity(roots.count)
+        var candidates: [RootCandidate] = []
+        candidates.reserveCapacity(min(roots.count, query.resultLimit))
+
+        for (rank, root) in roots.enumerated() {
+            rootMetaById[root.id] = root
+            candidates.append(
+                RootCandidate(
+                    rootId: root.id,
+                    score: 1 / Float(rank + 1),
+                    evidence: [.timeline],
+                    matchedRegions: [],
+                    textSnippet: nil
+                )
+            )
+        }
+
+        return (rootMetaById, candidates)
+    }
+
     private func buildAssetAllowlist(assetIDs: Set<String>?) -> Set<UInt64>? {
         guard let assetIDs else { return nil }
         var frameIds: Set<UInt64> = []
@@ -1362,6 +1421,26 @@ package actor PhotoRAGOrchestrator {
         }
         guard !requiredEntries.isEmpty else { return nil }
         return MetadataFilter(requiredEntries: requiredEntries)
+    }
+
+    private static func matches(metadataFilter: MetadataFilter, meta: FrameMeta) -> Bool {
+        if !metadataFilter.requiredEntries.isEmpty {
+            let entries = meta.metadata?.entries ?? [:]
+            for (key, value) in metadataFilter.requiredEntries where entries[key] != value {
+                return false
+            }
+        }
+        if !metadataFilter.requiredTags.isEmpty {
+            for tag in metadataFilter.requiredTags where !meta.tags.contains(tag) {
+                return false
+            }
+        }
+        if !metadataFilter.requiredLabels.isEmpty {
+            for label in metadataFilter.requiredLabels where !meta.labels.contains(label) {
+                return false
+            }
+        }
+        return true
     }
 
     private func loadThumbnail(assetID: String) async throws -> PhotoPixel? {

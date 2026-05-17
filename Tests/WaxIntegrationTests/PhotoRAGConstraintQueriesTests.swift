@@ -281,3 +281,74 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
         try await orchestrator.flush()
     }
 }
+
+@Test
+func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let baseTimestamp: Int64 = 1_700_000_000_000
+        for index in 0..<3 {
+            var meta = Metadata()
+            meta.entries[PhotoMetadataKey.assetID.rawValue] = "newer-photo-\(index)"
+            meta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.photos.rawValue
+            _ = try await session.put(
+                Data(),
+                embedding: [1, 0, 0, 0],
+                identity: nil,
+                options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: meta),
+                compression: .plain,
+                timestampMs: baseTimestamp + Int64(index + 1)
+            )
+        }
+
+        var oldFileMeta = Metadata()
+        oldFileMeta.entries[PhotoMetadataKey.assetID.rawValue] = "old-file"
+        oldFileMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.file.rawValue
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: oldFileMeta),
+            compression: .plain,
+            timestampMs: baseTimestamp - 1
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.searchTopK = 2
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                filters: PhotoFilters(source: .file),
+                resultLimit: 1,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(ctx.items.map(\.assetID) == ["old-file"])
+        try await orchestrator.flush()
+    }
+}
