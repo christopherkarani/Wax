@@ -658,6 +658,24 @@ private extension WaxMCPTools {
         return active.count == 1 ? active.first : nil
     }
 
+    static func compatResolveSessionID(
+        _ explicit: UUID?,
+        requiringUnambiguousWorkingMemory includeWorking: Bool,
+        sessionRegistry: CompatSessionRegistry
+    ) async throws -> UUID? {
+        if let explicit { return explicit }
+        guard includeWorking else { return nil }
+        let active = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
+        switch active.count {
+        case 0:
+            return nil
+        case 1:
+            return active.first
+        default:
+            throw ToolValidationError.invalid("session_id is required when more than one session is active")
+        }
+    }
+
     static func compatPromotionProposalValue(_ proposal: BrokerPromotionProposal) -> Value {
         [
             "content": .string(proposal.content),
@@ -989,11 +1007,15 @@ private extension WaxMCPTools {
         guard (1...200).contains(topK) else {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
-        let sessionID = try compatParseSessionID(args)
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
+        let sessionID = try await compatResolveSessionID(
+            try compatParseSessionID(args),
+            requiringUnambiguousWorkingMemory: includeWorking,
+            sessionRegistry: sessionRegistry
+        )
+        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "text",
             alpha: try args.optionalDouble("alpha")
@@ -1403,7 +1425,11 @@ private extension WaxMCPTools {
 
     static func compatCompactContext(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
-        let sessionID = try await compatResolveSessionID(try compatParseSessionID(args), sessionRegistry: sessionRegistry)
+        let sessionID = try await compatResolveSessionID(
+            try compatParseSessionID(args),
+            requiringUnambiguousWorkingMemory: true,
+            sessionRegistry: sessionRegistry
+        )
         try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let query = try args.requiredString("query")
         let limit = min(try args.optionalInt("max_items") ?? 6, 12)

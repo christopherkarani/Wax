@@ -460,7 +460,10 @@ extension AgentBrokerService {
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
-        let sessionID = try resolveSessionID(try parseOptionalSessionID(args))
+        let sessionID = try resolveSessionID(
+            try parseOptionalSessionID(args),
+            requiringUnambiguousWorkingMemory: includeWorking
+        )
         let hits = try await layeredMemorySearch(
             query: query,
             mode: mode,
@@ -1056,7 +1059,10 @@ extension AgentBrokerService {
         }
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let sessionID = try resolveSessionID(try parseOptionalSessionID(args))
+        let sessionID = try resolveSessionID(
+            try parseOptionalSessionID(args),
+            requiringUnambiguousWorkingMemory: true
+        )
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await sessionMemory.flush()
@@ -2163,6 +2169,22 @@ extension AgentBrokerService {
             return activeSessions.keys.first
         }
         return nil
+    }
+
+    func resolveSessionID(
+        _ explicit: UUID?,
+        requiringUnambiguousWorkingMemory includeWorking: Bool
+    ) throws -> UUID? {
+        if let explicit { return explicit }
+        guard includeWorking else { return nil }
+        switch activeSessions.count {
+        case 0:
+            return nil
+        case 1:
+            return activeSessions.keys.first
+        default:
+            throw BrokerValidationError.invalid("session_id is required when more than one session is active")
+        }
     }
 
     struct ParsedSearchFilters {

@@ -2357,6 +2357,237 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
 }
 
 @Test
+func compatMemorySearchRequiresSessionIDWhenMultipleActiveSessionsIncludeWorking() async throws {
+    try await withMemory { memory in
+        let first = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        let firstID = try requireString(try parseJSONText(in: first), key: "session_id")
+
+        let second = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        let secondID = try requireString(try parseJSONText(in: second), key: "session_id")
+        let marker = "F034_COMPAT_WORKING_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("\(marker) first session working memory"),
+                    "session_id": .string(firstID),
+                ]
+            ),
+            memory: memory
+        )
+        _ = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("\(marker) second session working memory"),
+                    "session_id": .string(secondID),
+                ]
+            ),
+            memory: memory
+        )
+
+        let ambiguous = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_search",
+                arguments: [
+                    "query": .string(marker),
+                    "mode": .string("text"),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(ambiguous.isError == true)
+        #expect(firstText(in: ambiguous).contains("session_id is required when more than one"))
+
+        let explicit = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_search",
+                arguments: [
+                    "query": .string(marker),
+                    "session_id": .string(firstID),
+                    "mode": .string("text"),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(explicit.isError != true)
+        let explicitPayload = try parseJSONResource(in: explicit, uriSuffix: "memory-search-summary")
+        let results = try #require(explicitPayload["results"] as? [[String: Any]])
+        #expect(results.contains { ($0["text"] as? String)?.contains("first session working memory") == true })
+        #expect(results.allSatisfy { ($0["memory_id"] as? String)?.contains(firstID) == true })
+        #expect(!firstText(in: explicit).contains("second session working memory"))
+    }
+}
+
+@Test
+func compatCompactContextRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
+    try await withMemory { memory in
+        let first = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        _ = try requireString(try parseJSONText(in: first), key: "session_id")
+
+        let second = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        _ = try requireString(try parseJSONText(in: second), key: "session_id")
+
+        let compact = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "compact_context",
+                arguments: [
+                    "query": .string("F034_COMPAT_COMPACT"),
+                    "mode": .string("text"),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(compact.isError == true)
+        #expect(firstText(in: compact).contains("session_id is required when more than one"))
+    }
+}
+
+@Test
+func brokerMemorySearchRequiresSessionIDWhenMultipleActiveSessionsIncludeWorking() async throws {
+    try await withAgentBrokerService { service, _ in
+        let first = await service.handle(.init(command: "session_start"))
+        #expect(first.ok == true)
+        let firstID = try #require(first.payload?.objectValue?["session_id"]?.stringValue)
+
+        let second = await service.handle(.init(command: "session_start"))
+        #expect(second.ok == true)
+        let secondID = try #require(second.payload?.objectValue?["session_id"]?.stringValue)
+        let marker = "F034_BROKER_WORKING_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+
+        let firstWrite = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("\(marker) first session working memory"),
+                "session_id": .string(firstID),
+            ]
+        ))
+        #expect(firstWrite.ok == true)
+        let secondWrite = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("\(marker) second session working memory"),
+                "session_id": .string(secondID),
+            ]
+        ))
+        #expect(secondWrite.ok == true)
+
+        let ambiguous = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(marker),
+                "mode": .string("text"),
+                "include_working": .bool(true),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(false),
+            ]
+        ))
+        #expect(ambiguous.ok == false)
+        #expect((ambiguous.error ?? "").contains("session_id is required when more than one"))
+
+        let durableOnly = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(marker),
+                "mode": .string("text"),
+                "include_working": .bool(false),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(true),
+            ]
+        ))
+        #expect(durableOnly.ok == true)
+
+        let explicit = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(marker),
+                "session_id": .string(firstID),
+                "mode": .string("text"),
+                "include_working": .bool(true),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(false),
+            ]
+        ))
+        #expect(explicit.ok == true)
+        let payload = try #require(explicit.payload?.objectValue)
+        let results = try #require(payload["results"]?.arrayValue)
+        #expect(!results.isEmpty)
+        #expect(results.allSatisfy {
+            $0.objectValue?["memory_id"]?.stringValue?.contains(firstID) == true
+        })
+    }
+}
+
+@Test
+func brokerCompactContextRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
+    try await withAgentBrokerService { service, _ in
+        let first = await service.handle(.init(command: "session_start"))
+        #expect(first.ok == true)
+        let firstID = try #require(first.payload?.objectValue?["session_id"]?.stringValue)
+
+        let second = await service.handle(.init(command: "session_start"))
+        #expect(second.ok == true)
+        _ = try #require(second.payload?.objectValue?["session_id"]?.stringValue)
+        let marker = "F034_BROKER_COMPACT_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+
+        let write = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("\(marker) first session working memory"),
+                "session_id": .string(firstID),
+            ]
+        ))
+        #expect(write.ok == true)
+
+        let ambiguous = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(marker),
+                "mode": .string("text"),
+                "token_budget": .int(512),
+            ]
+        ))
+        #expect(ambiguous.ok == false)
+        #expect((ambiguous.error ?? "").contains("session_id is required when more than one"))
+
+        let explicit = await service.handle(.init(
+            command: "compact_context",
+            arguments: [
+                "query": .string(marker),
+                "session_id": .string(firstID),
+                "mode": .string("text"),
+                "token_budget": .int(512),
+            ]
+        ))
+        #expect(explicit.ok == true)
+        let payload = try #require(explicit.payload?.objectValue)
+        let shortContext = try #require(payload["short_context"]?.arrayValue)
+        #expect(shortContext.contains {
+            $0.objectValue?["preview"]?.stringValue?.contains("first session working memory") == true
+        })
+    }
+}
+
+@Test
 func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-broker-path-\(UUID().uuidString)", isDirectory: true)
