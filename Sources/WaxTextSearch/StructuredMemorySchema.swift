@@ -73,6 +73,7 @@ enum StructuredMemorySchema {
 
               valid_from_ms        INTEGER NOT NULL,
               valid_to_ms          INTEGER CHECK(valid_to_ms IS NULL OR valid_to_ms > valid_from_ms),
+              version_relation     INTEGER NOT NULL DEFAULT 0,
 
               system_from_ms       INTEGER NOT NULL,
               system_to_ms         INTEGER CHECK(system_to_ms IS NULL OR system_to_ms > system_from_ms),
@@ -80,6 +81,7 @@ enum StructuredMemorySchema {
               span_key_hash        BLOB NOT NULL,
               created_at_ms        INTEGER NOT NULL,
               CHECK (length(span_key_hash) == 32),
+              CHECK (version_relation IN (0, 1, 2, 3)),
               UNIQUE(span_key_hash)
             )
             """,

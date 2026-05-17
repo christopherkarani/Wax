@@ -14,4 +14,17 @@ package enum VersionRelation: UInt8, Sendable, Equatable, CaseIterable {
             return false
         }
     }
+
+    package var wireName: String {
+        switch self {
+        case .sets:
+            return "sets"
+        case .updates:
+            return "updates"
+        case .extends:
+            return "extends"
+        case .retracts:
+            return "retracts"
+        }
+    }
 }

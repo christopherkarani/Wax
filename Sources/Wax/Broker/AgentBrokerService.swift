@@ -1240,6 +1240,7 @@ extension AgentBrokerService {
                 "subject": .string(hit.fact.subject.rawValue),
                 "predicate": .string(hit.fact.predicate.rawValue),
                 "object": factValueAsBrokerValue(hit.fact.object),
+                "relation": .string(hit.relation.wireName),
                 "valid_from_ms": .from(hit.valid.fromMs),
                 "valid_to_ms": hit.valid.toMs.map(AgentBrokerValue.from) ?? .null,
                 "system_from_ms": .from(hit.system.fromMs),

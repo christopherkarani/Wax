@@ -300,6 +300,7 @@ struct WaxCLIMemoryTests {
 
         #expect(queryOutput.status == EXIT_SUCCESS, "facts-query should succeed: \(queryOutput.stderr)")
         #expect(queryOutput.stdout.contains("[1:1]"))
+        #expect(queryOutput.stdout.contains("relation=sets"))
         #expect(queryOutput.stdout.contains("valid=["))
         #expect(queryOutput.stdout.contains("system=["))
         #expect(queryOutput.stdout.contains("..open]"))

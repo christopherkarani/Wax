@@ -411,6 +411,7 @@ package actor FTS5SearchEngine {
                            f.object_blob AS object_blob,
                            f.object_time_ms AS object_time_ms,
                            obj.key AS object_entity_key,
+                           s.version_relation AS version_relation,
                            s.valid_from_ms AS valid_from_ms,
                            s.valid_to_ms AS valid_to_ms,
                            s.system_from_ms AS system_from_ms,
@@ -507,6 +508,10 @@ package actor FTS5SearchEngine {
                     let systemFrom: Int64 = row["system_from_ms"] ?? 0
                     let systemTo: Int64? = row["system_to_ms"]
                     let isOpenEnded = validTo == nil && systemTo == nil
+                    let relationRaw: Int = row["version_relation"] ?? 0
+                    guard let relation = VersionRelation(rawValue: UInt8(relationRaw)) else {
+                        return nil
+                    }
 
                     return StructuredFactHit(
                         factId: FactRowID(rawValue: factId),
@@ -516,6 +521,7 @@ package actor FTS5SearchEngine {
                             predicate: PredicateKey(predicateKey),
                             object: object
                         ),
+                        relation: relation,
                         valid: StructuredTimeRange(fromMs: validFrom, toMs: validTo),
                         system: StructuredTimeRange(fromMs: systemFrom, toMs: systemTo),
                         evidence: evidenceBySpanId[spanId] ?? [],
@@ -819,19 +825,17 @@ package actor FTS5SearchEngine {
                 let selectFactIdStmt = try db.makeStatement(sql: """
                     SELECT fact_id FROM sm_fact WHERE fact_hash = ?
                     """)
-                let updateFactRelationStmt = try db.makeStatement(sql: """
-                    UPDATE sm_fact SET version_relation = ? WHERE fact_id = ?
-                    """)
                 let insertSpanStmt = try db.makeStatement(sql: """
                     INSERT OR IGNORE INTO sm_fact_span(
                         fact_id,
                         valid_from_ms,
                         valid_to_ms,
+                        version_relation,
                         system_from_ms,
                         system_to_ms,
                         span_key_hash,
                         created_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """)
                 let selectSpanIdStmt = try db.makeStatement(sql: """
                     SELECT span_id FROM sm_fact_span WHERE span_key_hash = ?
@@ -947,8 +951,8 @@ package actor FTS5SearchEngine {
                               let factId: Int64 = factRow["fact_id"] else {
                             throw WaxError.io("missing fact_id after insert")
                         }
-                        try updateFactRelationStmt.execute(arguments: [Int(relation.rawValue), factId])
 
+                        var effectiveSystemFromMs = system.fromMs
                         if relation.supersedes {
                             let openSpans = try Row.fetchAll(
                                 selectOpenSpanForFactStmt,
@@ -958,24 +962,32 @@ package actor FTS5SearchEngine {
                                 let spanId: Int64 = row["span_id"] ?? 0
                                 let systemFrom: Int64 = row["system_from_ms"] ?? 0
                                 let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
+                                effectiveSystemFromMs = max(effectiveSystemFromMs, closeAt)
                                 try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
                             }
+                        }
+                        if let systemToMs = system.toMs, systemToMs <= effectiveSystemFromMs {
+                            throw WaxError.encodingError(
+                                reason: "superseding fact system range must end after its monotonic system_from_ms"
+                            )
                         }
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
                             factId: FactRowID(rawValue: factId),
                             valid: valid,
-                            systemFromMs: system.fromMs
+                            relation: relation,
+                            systemFromMs: effectiveSystemFromMs
                         )
 
                         try insertSpanStmt.execute(arguments: [
                             factId,
                             valid.fromMs,
                             valid.toMs,
-                            system.fromMs,
+                            Int(relation.rawValue),
+                            effectiveSystemFromMs,
                             system.toMs,
                             spanHash,
-                            system.fromMs,
+                            effectiveSystemFromMs,
                         ])
 
                         guard let spanRow = try Row.fetchOne(selectSpanIdStmt, arguments: [spanHash]),

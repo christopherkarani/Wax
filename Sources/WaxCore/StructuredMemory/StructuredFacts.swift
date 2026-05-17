@@ -18,6 +18,7 @@ package struct StructuredFactHit: Sendable, Equatable {
     package var factId: FactRowID
     package var spanId: Int64
     package var fact: StructuredFact
+    package var relation: VersionRelation
     package var valid: StructuredTimeRange
     package var system: StructuredTimeRange
     package var evidence: [StructuredEvidence]
@@ -28,6 +29,7 @@ package struct StructuredFactHit: Sendable, Equatable {
         factId: FactRowID,
         spanId: Int64,
         fact: StructuredFact,
+        relation: VersionRelation,
         valid: StructuredTimeRange,
         system: StructuredTimeRange,
         evidence: [StructuredEvidence],
@@ -36,6 +38,7 @@ package struct StructuredFactHit: Sendable, Equatable {
         self.factId = factId
         self.spanId = spanId
         self.fact = fact
+        self.relation = relation
         self.valid = valid
         self.system = system
         self.evidence = evidence

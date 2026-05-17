@@ -222,6 +222,7 @@ struct FactsQueryCommand: AsyncParsableCommand {
                             subject: brokerString(object, "subject") ?? "",
                             predicate: brokerString(object, "predicate") ?? "",
                             objectText: objStr,
+                            relation: brokerString(object, "relation") ?? "sets",
                             validFromMs: brokerInt64(object, "valid_from_ms") ?? 0,
                             validToMs: brokerInt64(object, "valid_to_ms"),
                             systemFromMs: brokerInt64(object, "system_from_ms") ?? 0,
@@ -251,6 +252,7 @@ struct FactsQueryCommand: AsyncParsableCommand {
                         "subject": hit.fact.subject.rawValue,
                         "predicate": hit.fact.predicate.rawValue,
                         "object": factValueToJSON(hit.fact.object),
+                        "relation": hit.relation.wireName,
                         "valid_from_ms": hit.valid.fromMs,
                         "valid_to_ms": hit.valid.toMs ?? NSNull(),
                         "system_from_ms": hit.system.fromMs,
@@ -277,6 +279,7 @@ struct FactsQueryCommand: AsyncParsableCommand {
                             subject: hit.fact.subject.rawValue,
                             predicate: hit.fact.predicate.rawValue,
                             objectText: objStr,
+                            relation: hit.relation.wireName,
                             validFromMs: hit.valid.fromMs,
                             validToMs: hit.valid.toMs,
                             systemFromMs: hit.system.fromMs,
@@ -370,6 +373,7 @@ func factTextLine(
     subject: String,
     predicate: String,
     objectText: String,
+    relation: String,
     validFromMs: Int64,
     validToMs: Int64?,
     systemFromMs: Int64,
@@ -377,7 +381,7 @@ func factTextLine(
 ) -> String {
     let valid = factTimeRangeText(fromMs: validFromMs, toMs: validToMs)
     let system = factTimeRangeText(fromMs: systemFromMs, toMs: systemToMs)
-    return "  [\(factId):\(spanId)] \(subject) -[\(predicate)]-> \(objectText) valid=\(valid) system=\(system)"
+    return "  [\(factId):\(spanId)] \(subject) -[\(predicate)]-> \(objectText) relation=\(relation) valid=\(valid) system=\(system)"
 }
 
 private func factTimeRangeText(fromMs: Int64, toMs: Int64?) -> String {

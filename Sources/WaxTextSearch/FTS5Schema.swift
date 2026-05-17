@@ -4,7 +4,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 6
+    static let userVersion: Int32 = 7
     private static let framesFTSSQL = "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content, tokenize = 'unicode61')"
 
     static func create(in db: Database) throws {
@@ -30,7 +30,7 @@ enum FTS5Schema {
             try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try applyApplicationId(in: db)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
 
@@ -40,38 +40,44 @@ enum FTS5Schema {
         if version == 0 {
             try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
         if version == 1 {
             try StructuredMemorySchema.create(in: db)
             try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
         if version == 2 {
             try migrateV2ToV3(in: db)
             try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
         if version == 3 {
             try migrateFramesFTSToPinnedTokenizerIfNeeded(in: db, targetVersion: 5)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
         if version == 4 {
             try requirePinnedFTSSchema(in: db)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
             return
         }
         if version == 5 {
             try requirePinnedFTSSchema(in: db)
             try StructuredMemorySchema.create(in: db)
-            try migrateV4ToV6(in: db)
+            try migrateV4ToV7(in: db)
+            return
+        }
+        if version == 6 {
+            try requirePinnedFTSSchema(in: db)
+            try StructuredMemorySchema.create(in: db)
+            try migrateV6ToV7(in: db)
             return
         }
         guard version == userVersion else {
@@ -111,7 +117,7 @@ enum FTS5Schema {
         try applyUserVersion(in: db, version: 3)
     }
 
-    private static func migrateV4ToV6(in db: Database) throws {
+    private static func migrateV4ToV7(in db: Database) throws {
         let factTableExists: String? = try String.fetchOne(
             db,
             sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='sm_fact'"
@@ -159,7 +165,79 @@ enum FTS5Schema {
                 arguments: [hash, factId]
             )
         }
+        try migrateV6ToV7(in: db)
+    }
+
+    private static func migrateV6ToV7(in db: Database) throws {
+        let spanTableExists: String? = try String.fetchOne(
+            db,
+            sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='sm_fact_span'"
+        )
+        guard spanTableExists == "sm_fact_span" else {
+            try applyUserVersion(in: db, version: userVersion)
+            return
+        }
+
+        if try !hasColumn("sm_fact_span", named: "version_relation", in: db) {
+            try db.execute(sql: "ALTER TABLE sm_fact_span ADD COLUMN version_relation INTEGER NOT NULL DEFAULT 0")
+        }
+        if try !hasColumn("sm_fact", named: "version_relation", in: db) {
+            try db.execute(sql: "ALTER TABLE sm_fact ADD COLUMN version_relation INTEGER NOT NULL DEFAULT 0")
+        }
+
+        try db.execute(sql: """
+            UPDATE sm_fact_span
+            SET version_relation = COALESCE(
+                (SELECT version_relation FROM sm_fact WHERE sm_fact.fact_id = sm_fact_span.fact_id),
+                0
+            )
+            """)
+        try rehashStructuredFactSpans(in: db)
         try applyUserVersion(in: db, version: userVersion)
+    }
+
+    private static func rehashStructuredFactSpans(in db: Database) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT
+              span_id,
+              fact_id,
+              valid_from_ms,
+              valid_to_ms,
+              version_relation,
+              system_from_ms
+            FROM sm_fact_span
+            ORDER BY span_id
+            """)
+        for row in rows {
+            let spanId: Int64 = row["span_id"]
+            let factId: Int64 = row["fact_id"]
+            let validFrom: Int64 = row["valid_from_ms"]
+            let validTo: Int64? = row["valid_to_ms"]
+            let relationRaw: Int = row["version_relation"] ?? 0
+            let systemFrom: Int64 = row["system_from_ms"]
+            guard let relation = VersionRelation(rawValue: UInt8(relationRaw)) else {
+                throw WaxError.io("unsupported structured fact version_relation \(relationRaw) during schema migration")
+            }
+            let hash = StructuredMemoryHasher.hashSpanKey(
+                factId: FactRowID(rawValue: factId),
+                valid: StructuredTimeRange(fromMs: validFrom, toMs: validTo),
+                relation: relation,
+                systemFromMs: systemFrom
+            )
+            try db.execute(
+                sql: "UPDATE sm_fact_span SET span_key_hash = ? WHERE span_id = ?",
+                arguments: [hash, spanId]
+            )
+        }
+    }
+
+    private static func hasColumn(_ table: String, named column: String, in db: Database) throws -> Bool {
+        let count = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?",
+            arguments: [table, column]
+        ) ?? 0
+        return count > 0
     }
 
     private static func factValue(kind: Int, row: Row) throws -> FactValue {

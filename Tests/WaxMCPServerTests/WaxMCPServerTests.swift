@@ -2200,6 +2200,7 @@ func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
         let spanIDs = hits.compactMap { $0["span_id"] as? Int }
         #expect(Set(spanIDs).count == 2)
         for hit in hits {
+            #expect(hit["relation"] as? String == "extends")
             #expect(hit["valid_from_ms"] as? Int == Int(nowMs))
             #expect(hit["valid_to_ms"] is NSNull)
             #expect(hit["system_from_ms"] as? Int != nil)

@@ -32,6 +32,7 @@ package enum StructuredMemoryHasher {
     package static func hashSpanKey(
         factId: FactRowID,
         valid: StructuredTimeRange,
+        relation: VersionRelation,
         systemFromMs: Int64
     ) -> Data {
         let validTo = valid.toMs ?? -1
@@ -44,6 +45,8 @@ package enum StructuredMemoryHasher {
         buffer.appendInt64(validTo)
         buffer.appendTag(0xB4)
         buffer.appendInt64(systemFromMs)
+        buffer.appendTag(0xB5)
+        buffer.appendInt64(Int64(relation.rawValue))
         return SHA256Checksum.digest(buffer.data)
     }
 }

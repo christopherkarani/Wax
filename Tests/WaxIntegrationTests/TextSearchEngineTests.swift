@@ -404,7 +404,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 6)
+    #expect(userVersion == 7)
 }
 
 @Test func serializedBlobPinsFTS5Tokenizer() async throws {
@@ -460,7 +460,7 @@ private enum SQLiteBlobInspector {
     let sql = try SQLiteBlobInspector.schemaSQL(table: "frames_fts", fromSerialized: upgraded).lowercased()
 
     #expect(appId == 0x5741_5854) // "WAXT"
-    #expect(userVersion == 6)
+    #expect(userVersion == 7)
     #expect(sql.contains("tokenize"))
     #expect(sql.contains("unicode61"))
 }

@@ -1713,6 +1713,7 @@ private extension WaxMCPTools {
                     "subject": .string(hit.fact.subject.rawValue),
                     "predicate": .string(hit.fact.predicate.rawValue),
                     "object": compatFactValuePayload(hit.fact.object),
+                    "relation": .string(hit.relation.wireName),
                     "valid_from_ms": .int(Int(hit.valid.fromMs)),
                     "valid_to_ms": hit.valid.toMs.map { .int(Int($0)) } ?? .null,
                     "system_from_ms": .int(Int(hit.system.fromMs)),
