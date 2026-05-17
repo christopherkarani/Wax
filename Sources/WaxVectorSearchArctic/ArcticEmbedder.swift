@@ -34,6 +34,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
     private static let maximumBatchSize = 256
+    private static let maximumCoreMLPredictionBatchSize = 64
     private var batchInputBuffers: BatchInputBuffers?
 
     /// The query prefix recommended by Snowflake for Arctic retrieval tasks.
@@ -257,7 +258,7 @@ private extension ArcticEmbedder {
 
     static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
         guard totalCount > 0 else { return [] }
-        let clampedMax = Swift.max(1, maxBatchSize)
+        let clampedMax = Swift.max(1, Swift.min(maxBatchSize, maximumCoreMLPredictionBatchSize))
 
         if totalCount <= clampedMax {
             return [totalCount]
