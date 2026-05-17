@@ -2047,6 +2047,14 @@ package actor Wax {
         }
     }
 
+    package func frameMetasIncludingPending() async -> [FrameMeta] {
+        await withReadLock {
+            let frameIds = frameIdsTouchedByCommittedOrPendingFramesUnlocked()
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
+            return metas.values.sorted { $0.id < $1.id }
+        }
+    }
+
     package func surrogateFrameId(sourceFrameId: UInt64) async -> UInt64? {
         await withReadLock {
             if surrogateIndex == nil {
@@ -2396,6 +2404,24 @@ package actor Wax {
         }
 
         return metas
+    }
+
+    private func frameIdsTouchedByCommittedOrPendingFramesUnlocked() -> [UInt64] {
+        var frameIds = Set(toc.frames.map(\.id))
+        for mutation in pendingMutations {
+            switch mutation.entry {
+            case .putFrame(let put):
+                frameIds.insert(put.frameId)
+            case .deleteFrame(let delete):
+                frameIds.insert(delete.frameId)
+            case .supersedeFrame(let supersede):
+                frameIds.insert(supersede.supersededId)
+                frameIds.insert(supersede.supersedingId)
+            case .putEmbedding:
+                continue
+            }
+        }
+        return Array(frameIds)
     }
 
     package func readCommittedLexIndexBytes() async throws -> Data? {

@@ -553,3 +553,39 @@ private enum SQLiteBlobInspector {
 
     try FileManager.default.removeItem(at: tempDir)
 }
+
+@Test func textSearchSessionCommitRemovesDeletedAndSupersededFramesFromFTSIndex() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
+    let wax = try await Wax.create(at: fileURL)
+    let session = try await wax.enableTextSearch()
+
+    let deletedId = try await wax.put(Data("delete payload".utf8))
+    let supersededId = try await wax.put(Data("old payload".utf8))
+    try await session.index(frameId: deletedId, text: "obsolete delete marker")
+    try await session.index(frameId: supersededId, text: "obsolete supersede marker")
+    try await session.commit()
+
+    let replacementId = try await wax.put(Data("new payload".utf8))
+    try await session.index(frameId: replacementId, text: "fresh replacement marker")
+    try await wax.delete(frameId: deletedId)
+    try await wax.supersede(supersededId: supersededId, supersedingId: replacementId)
+    try await session.commit()
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: fileURL)
+    let reopenedSession = try await reopened.enableTextSearch()
+    let deleteResults = try await reopenedSession.search(query: "obsolete delete", topK: 10)
+    let supersedeResults = try await reopenedSession.search(query: "obsolete supersede", topK: 10)
+    let replacementResults = try await reopenedSession.search(query: "fresh replacement", topK: 10)
+
+    #expect(!deleteResults.contains(where: { $0.frameId == deletedId }))
+    #expect(!supersedeResults.contains(where: { $0.frameId == supersededId }))
+    #expect(replacementResults.contains(where: { $0.frameId == replacementId }))
+    try await reopened.close()
+
+    try FileManager.default.removeItem(at: tempDir)
+}

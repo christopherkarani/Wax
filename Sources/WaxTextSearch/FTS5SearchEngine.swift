@@ -127,6 +127,42 @@ package actor FTS5SearchEngine {
         try await flushPendingOpsIfThresholdExceeded()
     }
 
+    package func removeInactiveFrames(_ metas: [FrameMeta]) async throws {
+        let inactiveFrameIds = try metas.compactMap { meta -> Int64? in
+            guard meta.status == .deleted || meta.supersededBy != nil else { return nil }
+            return try Self.toInt64(meta.id)
+        }
+        guard !inactiveFrameIds.isEmpty else { return }
+
+        try await flushPendingOpsIfNeeded()
+        let dbQueue = self.dbQueue
+        let removedCount = try await io.run {
+            try dbQueue.write { db in
+                let deleteFramesStmt = try db.makeStatement(sql: """
+                    DELETE FROM frames_fts
+                    WHERE rowid IN (SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?)
+                    """)
+                let deleteMappingStmt = try db.makeStatement(sql: """
+                    DELETE FROM frame_mapping
+                    WHERE frame_id = ?
+                    """)
+                var removed = 0
+                for frameId in inactiveFrameIds {
+                    try deleteFramesStmt.execute(arguments: [frameId])
+                    try deleteMappingStmt.execute(arguments: [frameId])
+                    if db.changesCount > 0 { removed += 1 }
+                }
+                return removed
+            }
+        }
+
+        if removedCount > 0 {
+            let removedU = UInt64(removedCount)
+            docCount = docCount > removedU ? (docCount &- removedU) : 0
+            dirty = true
+        }
+    }
+
     package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
         try await flushPendingOpsIfNeeded()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -591,6 +627,8 @@ package actor FTS5SearchEngine {
     }
 
     package func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
+        let metas = await wax.frameMetasIncludingPending()
+        try await removeInactiveFrames(metas)
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         let blob = try await serialize(compact: compact)
