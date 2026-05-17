@@ -443,6 +443,83 @@ func videoRAGRecallTracksThumbnailUnavailableDiagnosticsForPhotosBackedItems() a
 }
 
 @Test
+func videoRAGPhotosBackedLocalFileURLEnablesThumbnails() async throws {
+    try await TempFiles.withTempFile { url in
+        let token = "PHOTOS_LOCAL_URL_THUMBNAIL_TOKEN"
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        do {
+            let wax = try await Wax.create(at: url)
+            let session = try await VideoRAGTestSupport.openWritableTextOnlySession(wax: wax)
+
+            let captureMs: Int64 = 1_700_000_000_000
+            var rootMeta = Metadata()
+            rootMeta.entries[VideoMetadataKey.source.rawValue] = "photos"
+            rootMeta.entries[VideoMetadataKey.sourceID.rawValue] = "photos-local-url"
+            rootMeta.entries[VideoMetadataKey.fileURL.rawValue] = mp4Url.absoluteString
+            rootMeta.entries[VideoMetadataKey.captureMs.rawValue] = String(captureMs)
+            rootMeta.entries[VideoMetadataKey.durationMs.rawValue] = "1000"
+            rootMeta.entries[VideoMetadataKey.isLocal.rawValue] = "true"
+            rootMeta.entries[VideoMetadataKey.pipelineVersion.rawValue] = "test"
+
+            let rootId = try await session.put(
+                Data(),
+                options: FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta),
+                compression: .plain,
+                timestampMs: captureMs
+            )
+
+            var segMeta = rootMeta
+            segMeta.entries[VideoMetadataKey.segmentIndex.rawValue] = "0"
+            segMeta.entries[VideoMetadataKey.segmentCount.rawValue] = "1"
+            segMeta.entries[VideoMetadataKey.segmentStartMs.rawValue] = "0"
+            segMeta.entries[VideoMetadataKey.segmentEndMs.rawValue] = "1000"
+            segMeta.entries[VideoMetadataKey.segmentMidMs.rawValue] = "500"
+
+            let segmentId = try await session.put(
+                Data(token.utf8),
+                options: FrameMetaSubset(kind: VideoFrameKind.segment.rawValue, role: .blob, parentId: rootId, metadata: segMeta),
+                compression: .plain,
+                timestampMs: captureMs
+            )
+            try await session.indexText(frameId: segmentId, text: token)
+            try await session.commit()
+            await session.close()
+            try await wax.close()
+        }
+
+        var config = VideoRAGConfig.default
+        config.searchTopK = 20
+        config.includeThumbnailsInContext = true
+
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: TestVideoEmbedder(),
+            transcriptProvider: nil
+        )
+
+        let query = VideoQuery(
+            text: token,
+            timeRange: nil,
+            videoIDs: nil,
+            resultLimit: 1,
+            segmentLimitPerVideo: 1,
+            contextBudget: VideoContextBudget(maxTextTokens: 120, maxThumbnails: 1, maxTranscriptLinesPerSegment: 2)
+        )
+        let ctx = try await rag.recall(query)
+        #expect(ctx.items.count == 1)
+        #expect(ctx.items.first?.videoID.source == .photos)
+        #expect(ctx.items.first?.segments.first?.thumbnail != nil)
+        #expect(ctx.diagnostics.degradedVideoCount == 0)
+    }
+}
+
+@Test
 func videoRAGThumbnailBudgetDoesNotConsumeOnUnavailableBeforeFileBackedItems() async throws {
     try await TempFiles.withTempFile { url in
         let token = "MIXED_THUMB_BUDGET_TOKEN"
