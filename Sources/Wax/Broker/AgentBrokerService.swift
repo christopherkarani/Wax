@@ -548,6 +548,7 @@ extension AgentBrokerService {
     func memoryPromote(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
+        try validateActiveSession(sessionID)
         let approve = try args.optionalBool("approve") ?? false
         let requestedSourceFrameId = try args.optionalUInt64("frame_id")
         let explicitContent = try args.optionalStringPreservingWhitespace("content")

@@ -3606,6 +3606,66 @@ func brokerImplicitMemoryPromotePreservesResolvedSessionProvenance() async throw
 }
 
 @Test
+func brokerMemoryPromoteRejectsStaleSessionBeforeDurableWrite() async throws {
+    try await withAgentBrokerService { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try #require(started.payload?.objectValue)
+        let sessionIDString = try #require(startedPayload["session_id"]?.stringValue)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionIDString)]
+        ))
+        #expect(ended.ok == true)
+        let beforeStats = await service.handle(.init(command: "stats"))
+        let beforeFrameCount = try #require(beforeStats.payload?.objectValue?["frameCount"]?.intValue)
+        let token = "F179_PROMOTION_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let content = "Decision: Adopt \(token) as the durable release policy."
+        let proposal = await service.handle(.init(
+            command: "memory_promote",
+            arguments: [
+                "content": .string(content),
+                "memory_type": .string("decision"),
+            ]
+        ))
+        #expect(proposal.ok == true)
+        let proposalPayload = try #require(proposal.payload?.objectValue)
+        let proposalObject = try #require(proposalPayload["proposal"]?.objectValue)
+        #expect(proposalObject["should_write"]?.boolValue == true)
+
+        let promote = await service.handle(.init(
+            command: "memory_promote",
+            arguments: [
+                "session_id": .string(sessionIDString),
+                "content": .string(content),
+                "memory_type": .string("decision"),
+                "approve": .bool(true),
+            ]
+        ))
+        #expect(promote.ok == false)
+        let afterStats = await service.handle(.init(command: "stats"))
+        let afterFrameCount = try #require(afterStats.payload?.objectValue?["frameCount"]?.intValue)
+        #expect(afterFrameCount == beforeFrameCount)
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "include_working": .bool(false),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(true),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true)
+        let searchPayload = try #require(search.payload?.objectValue)
+        let results = try #require(searchPayload["results"]?.arrayValue)
+        #expect(results.isEmpty)
+    }
+}
+
+@Test
 func memorySearchSignalsInfluenceCompatSessionSynthesis() async throws {
     try await withMemory { memory in
         let started = await WaxMCPTools.handleCall(
