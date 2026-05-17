@@ -14,6 +14,7 @@ actor MCPHTTPApplication {
         var sessionTimeout: TimeInterval
         var retryInterval: Int?
         var maxRequestBodyBytes: Int
+        var authToken: String?
 
         init(
             host: String = "127.0.0.1",
@@ -21,7 +22,8 @@ actor MCPHTTPApplication {
             endpoint: String = "/mcp",
             sessionTimeout: TimeInterval = 3600,
             retryInterval: Int? = nil,
-            maxRequestBodyBytes: Int = 1_048_576
+            maxRequestBodyBytes: Int = 1_048_576,
+            authToken: String? = nil
         ) {
             self.host = host
             self.port = port
@@ -29,6 +31,7 @@ actor MCPHTTPApplication {
             self.sessionTimeout = sessionTimeout
             self.retryInterval = retryInterval
             self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
+            self.authToken = HTTPAuthPolicy.normalizedToken(authToken)
         }
     }
 
@@ -91,6 +94,10 @@ actor MCPHTTPApplication {
             ]
         )
 
+        if HTTPAuthPolicy.requiresAuthentication(host: configuration.host), configuration.authToken == nil {
+            throw MCP.MCPError.invalidRequest("HTTP auth token is required when binding off loopback")
+        }
+
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
         self.channel = channel
         Task { await sessionCleanupLoop() }
@@ -106,6 +113,18 @@ actor MCPHTTPApplication {
     }
 
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
+        if HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
+           !HTTPAuthPolicy.isAuthorized(
+               requestToken: request.header("authorization"),
+               configuredToken: configuration.authToken
+           ) {
+            return .error(
+                statusCode: 401,
+                .invalidRequest("Unauthorized: missing or invalid bearer token"),
+                extraHeaders: ["WWW-Authenticate": "Bearer"]
+            )
+        }
+
         let sessionID = request.header(HTTPHeaderName.sessionID)
 
         if let sessionID, var session = sessions[sessionID] {
@@ -194,6 +213,35 @@ actor MCPHTTPApplication {
                 await closeSession(sessionID)
             }
         }
+    }
+}
+
+enum HTTPAuthPolicy {
+    static func requiresAuthentication(host rawHost: String) -> Bool {
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch host {
+        case "localhost", "127.0.0.1", "::1", "[::1]":
+            return false
+        default:
+            return true
+        }
+    }
+
+    static func normalizedToken(_ token: String?) -> String? {
+        guard let token else { return nil }
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func isAuthorized(requestToken: String?, configuredToken: String?) -> Bool {
+        guard let configuredToken = normalizedToken(configuredToken),
+              let requestToken else {
+            return false
+        }
+        let trimmed = requestToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "Bearer "
+        guard trimmed.hasPrefix(prefix) else { return false }
+        return String(trimmed.dropFirst(prefix.count)) == configuredToken
     }
 }
 

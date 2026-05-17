@@ -60,6 +60,9 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
     var httpMaxBodyBytes = 1_048_576
 
+    @Option(name: .customLong("http-auth-token"), help: "Bearer token required for non-loopback HTTP binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    var httpAuthToken: String?
+
     mutating func run() throws {
         let command = self
         Task(priority: .userInitiated) {
@@ -168,7 +171,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                     host: httpHost,
                     port: httpPort,
                     endpoint: httpEndpoint,
-                    maxRequestBodyBytes: httpMaxBodyBytes
+                    maxRequestBodyBytes: httpMaxBodyBytes,
+                    authToken: normalizedHTTPAuthToken()
                 ),
                 serverFactory: { _, transport in
                     let server = await makeServer(
@@ -219,6 +223,11 @@ struct WaxMCPServerCommand: ParsableCommand {
             return licenseKey
         }
         return ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]
+    }
+
+    private func normalizedHTTPAuthToken() -> String? {
+        HTTPAuthPolicy.normalizedToken(httpAuthToken)
+            ?? HTTPAuthPolicy.normalizedToken(ProcessInfo.processInfo.environment["WAX_MCP_HTTP_AUTH_TOKEN"])
     }
 
     private func licenseValidationEnabled() -> Bool {

@@ -824,6 +824,53 @@ func httpRequestBodyLimitRejectsContentLengthAndStreamingOverflow() {
 }
 
 @Test
+func httpAuthPolicyRequiresTokenOffLoopbackOnly() {
+    #expect(!HTTPAuthPolicy.requiresAuthentication(host: "127.0.0.1"))
+    #expect(!HTTPAuthPolicy.requiresAuthentication(host: "localhost"))
+    #expect(!HTTPAuthPolicy.requiresAuthentication(host: "::1"))
+    #expect(HTTPAuthPolicy.requiresAuthentication(host: "0.0.0.0"))
+    #expect(HTTPAuthPolicy.requiresAuthentication(host: "::"))
+    #expect(HTTPAuthPolicy.requiresAuthentication(host: "192.168.1.10"))
+}
+
+@Test
+func httpAuthPolicyValidatesBearerToken() {
+    let token = "test-http-token"
+    #expect(HTTPAuthPolicy.isAuthorized(requestToken: "Bearer \(token)", configuredToken: token))
+    #expect(HTTPAuthPolicy.isAuthorized(requestToken: "  Bearer \(token)  ", configuredToken: token))
+    #expect(!HTTPAuthPolicy.isAuthorized(requestToken: nil, configuredToken: token))
+    #expect(!HTTPAuthPolicy.isAuthorized(requestToken: "Bearer wrong", configuredToken: token))
+    #expect(!HTTPAuthPolicy.isAuthorized(requestToken: token, configuredToken: token))
+}
+
+@Test
+func httpApplicationRejectsUnauthorizedOffLoopbackRequests() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(host: "0.0.0.0", authToken: "secret-token"),
+        serverFactory: { _, _ in
+            Issue.record("unauthorized request should not create an MCP server")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let body = try JSONSerialization.data(withJSONObject: [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [:],
+    ])
+
+    let response = await app.handleHTTPRequest(HTTPRequest(
+        method: "POST",
+        headers: ["Content-Type": "application/json"],
+        body: body,
+        path: "/mcp"
+    ))
+
+    #expect(response.statusCode == 401)
+    #expect(response.headers["WWW-Authenticate"] == "Bearer")
+}
+
+@Test
 func openClawPackageDeclaresSDKPeerDependency() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
