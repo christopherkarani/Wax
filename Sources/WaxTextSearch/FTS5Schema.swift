@@ -4,7 +4,7 @@ import WaxCore
 
 enum FTS5Schema {
     static let applicationId: Int32 = 0x5741_5854 // "WAXT"
-    static let userVersion: Int32 = 7
+    static let userVersion: Int32 = 8
     private static let framesFTSSQL = "CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(content, tokenize = 'unicode61')"
 
     static func create(in db: Database) throws {
@@ -78,6 +78,12 @@ enum FTS5Schema {
             try requirePinnedFTSSchema(in: db)
             try StructuredMemorySchema.create(in: db)
             try migrateV6ToV7(in: db)
+            return
+        }
+        if version == 7 {
+            try requirePinnedFTSSchema(in: db)
+            try StructuredMemorySchema.create(in: db)
+            try migrateV7ToV8(in: db)
             return
         }
         guard version == userVersion else {
@@ -192,6 +198,10 @@ enum FTS5Schema {
                 0
             )
             """)
+        try migrateV7ToV8(in: db)
+    }
+
+    private static func migrateV7ToV8(in db: Database) throws {
         try rehashStructuredFactSpans(in: db)
         try applyUserVersion(in: db, version: userVersion)
     }
@@ -204,7 +214,8 @@ enum FTS5Schema {
               valid_from_ms,
               valid_to_ms,
               version_relation,
-              system_from_ms
+              system_from_ms,
+              system_to_ms
             FROM sm_fact_span
             ORDER BY span_id
             """)
@@ -215,6 +226,7 @@ enum FTS5Schema {
             let validTo: Int64? = row["valid_to_ms"]
             let relationRaw: Int = row["version_relation"] ?? 0
             let systemFrom: Int64 = row["system_from_ms"]
+            let systemTo: Int64? = row["system_to_ms"]
             guard let relation = VersionRelation(rawValue: UInt8(relationRaw)) else {
                 throw WaxError.io("unsupported structured fact version_relation \(relationRaw) during schema migration")
             }
@@ -222,7 +234,7 @@ enum FTS5Schema {
                 factId: FactRowID(rawValue: factId),
                 valid: StructuredTimeRange(fromMs: validFrom, toMs: validTo),
                 relation: relation,
-                systemFromMs: systemFrom
+                system: StructuredTimeRange(fromMs: systemFrom, toMs: systemTo)
             )
             try db.execute(
                 sql: "UPDATE sm_fact_span SET span_key_hash = ? WHERE span_id = ?",

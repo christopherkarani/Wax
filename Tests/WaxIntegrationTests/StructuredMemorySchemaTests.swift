@@ -172,7 +172,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
 }
 
 @Test func deserializeUpgradesLegacyBlobSchemaIdentityToV2() async throws {
@@ -184,7 +184,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
 }
 
 @Test func deserializeUpgradesV1BlobToV2() async throws {
@@ -193,7 +193,7 @@ private enum SQLiteBlobInspector {
     let upgraded = try await engine.serialize()
 
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
 }
 
 @Test func migrationPreservesFTSSearchResults() async throws {
@@ -237,7 +237,7 @@ private enum SQLiteBlobInspector {
     #expect(repeatedFactID == originalFactID)
     let upgradedBlob = try await upgraded.serialize()
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
 }
 
 @Test func deserializeV5RecomputesStringFactHashes() async throws {
@@ -272,7 +272,7 @@ private enum SQLiteBlobInspector {
     #expect(repeatedFactID == originalFactID)
     let upgradedBlob = try await upgraded.serialize()
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
 }
 
 #endif // canImport(SQLite3)

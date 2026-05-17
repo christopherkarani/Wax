@@ -162,3 +162,20 @@ import Testing
 
     #expect(accented != unaccented)
 }
+
+@Test func hashSpanKeyDistinguishesOpenEndedValidRangeFromExplicitMinusOneEnd() {
+    let openEnded = StructuredMemoryHasher.hashSpanKey(
+        factId: FactRowID(rawValue: 1),
+        valid: StructuredTimeRange(fromMs: -2, toMs: nil),
+        relation: .sets,
+        system: StructuredTimeRange(fromMs: 10, toMs: nil)
+    )
+    let explicitMinusOne = StructuredMemoryHasher.hashSpanKey(
+        factId: FactRowID(rawValue: 1),
+        valid: StructuredTimeRange(fromMs: -2, toMs: -1),
+        relation: .sets,
+        system: StructuredTimeRange(fromMs: 10, toMs: nil)
+    )
+
+    #expect(openEnded != explicitMinusOne)
+}

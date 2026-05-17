@@ -365,6 +365,20 @@ private enum VersionRelationSQLiteFixture {
         }
     }
 
+    static func rewriteWithOldV7SpanHash(_ data: Data) throws -> Data {
+        return try mutateSerialized(data) { db in
+            let statements = [
+                "PRAGMA user_version = 7;",
+                "UPDATE sm_fact_span SET span_key_hash = zeroblob(32) WHERE span_id = 1;",
+            ]
+            for sql in statements {
+                guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                    throw WaxError.io("sqlite3_exec failed: \(sql)")
+                }
+            }
+        }
+    }
+
     static func mutateSerialized(
         _ data: Data,
         _ body: (OpaquePointer) throws -> Void
@@ -577,6 +591,79 @@ private enum VersionRelationSQLiteFixture {
     #expect(updated.hits.flatMap(\.evidence).map(\.sourceFrameId) == [2])
 }
 
+@Test func spanIdentityDistinguishesSystemEndBounds() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f016"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: 20),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f016"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: 30),
+        evidence: []
+    )
+
+    let secondWindow = try await engine.facts(
+        about: EntityKey("project:f016"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(secondWindow.hits.map(\.system.toMs) == [30])
+
+    #if canImport(SQLite3)
+    let serialized = try await engine.serialize()
+    #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 2)
+    #endif
+}
+
+@Test func closingSpanRehashesBeforeSameSystemStartReassert() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let factId = try await engine.assertFact(
+        subject: EntityKey("project:f016-close"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    try await engine.retractFact(factId: factId, atMs: 20)
+    _ = try await engine.assertFact(
+        subject: EntityKey("project:f016-close"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+
+    let current = try await engine.facts(
+        about: EntityKey("project:f016-close"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(current.hits.map(\.system.toMs) == [nil])
+
+    #if canImport(SQLite3)
+    let serialized = try await engine.serialize()
+    #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 2)
+    #endif
+}
+
 @Test func migrationRehashesLegacySpanIdentityBeforeReassertDedupe() async throws {
     let preMigration = try VersionRelationSQLiteFixture.makePreVersionRelationBlob()
     let engine = try FTS5SearchEngine.deserialize(from: preMigration)
@@ -613,12 +700,40 @@ private enum VersionRelationSQLiteFixture {
     ])
 }
 
+@Test func migrationRehashesOldV7BoundedSystemSpanIdentity() async throws {
+    let seed = try FTS5SearchEngine.inMemory()
+    _ = try await seed.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 0, toMs: 20),
+        evidence: []
+    )
+    let oldV7 = try VersionRelationSQLiteFixture.rewriteWithOldV7SpanHash(try await seed.serialize())
+    let engine = try FTS5SearchEngine.deserialize(from: oldV7)
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("user:chris"),
+        predicate: PredicateKey("employer"),
+        object: .string("Google"),
+        relation: .sets,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 0, toMs: 20),
+        evidence: []
+    )
+
+    let serialized = try await engine.serialize()
+    #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 1)
+}
+
 @Test func migrationUpgradesPreVersionRelationBlobAndSupportsUpdates() async throws {
     let preMigration = try VersionRelationSQLiteFixture.makePreVersionRelationBlob()
     let engine = try FTS5SearchEngine.deserialize(from: preMigration)
     let upgraded = try await engine.serialize()
     let userVersion = try VersionRelationSQLiteFixture.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 7)
+    #expect(userVersion == 8)
     #expect(try VersionRelationSQLiteFixture.spanRelations(fromSerialized: upgraded) == [
         Int64(VersionRelation.sets.rawValue),
     ])

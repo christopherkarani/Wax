@@ -856,11 +856,21 @@ package actor FTS5SearchEngine {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """)
                 let selectOpenSpanStmt = try db.makeStatement(sql: """
-                    SELECT span_id, system_from_ms FROM sm_fact_span
+                    SELECT span_id,
+                           fact_id,
+                           valid_from_ms,
+                           valid_to_ms,
+                           version_relation,
+                           system_from_ms
+                    FROM sm_fact_span
                     WHERE fact_id = ? AND system_to_ms IS NULL
                     """)
                 let selectOpenSpanForFactStmt = try db.makeStatement(sql: """
                     SELECT s.span_id AS span_id,
+                           s.fact_id AS fact_id,
+                           s.valid_from_ms AS valid_from_ms,
+                           s.valid_to_ms AS valid_to_ms,
+                           s.version_relation AS version_relation,
                            s.system_from_ms AS system_from_ms
                     FROM sm_fact_span s
                     WHERE s.fact_id = ?
@@ -869,12 +879,8 @@ package actor FTS5SearchEngine {
                       AND (s.valid_to_ms IS NULL OR s.valid_to_ms > ?)
                     """)
                 let closeSpanByIDStmt = try db.makeStatement(sql: """
-                    UPDATE sm_fact_span SET system_to_ms = ?
+                    UPDATE sm_fact_span SET system_to_ms = ?, span_key_hash = ?
                     WHERE span_id = ? AND system_to_ms IS NULL
-                    """)
-                let retractSpanStmt = try db.makeStatement(sql: """
-                    UPDATE sm_fact_span SET system_to_ms = ?
-                    WHERE fact_id = ? AND system_to_ms IS NULL
                     """)
 
                 func ensureEntityId(key: EntityKey, kind: String, nowMs: Int64) throws -> Int64 {
@@ -897,6 +903,25 @@ package actor FTS5SearchEngine {
                     }
                     try insertPredicateStmt.execute(arguments: [key.rawValue, nowMs])
                     return db.lastInsertedRowID
+                }
+
+                func closeSpan(_ row: Row, at closeAt: Int64) throws {
+                    let spanId: Int64 = row["span_id"] ?? 0
+                    let factId: Int64 = row["fact_id"] ?? 0
+                    let validFrom: Int64 = row["valid_from_ms"] ?? 0
+                    let validTo: Int64? = row["valid_to_ms"]
+                    let relationRaw: Int = row["version_relation"] ?? 0
+                    let systemFrom: Int64 = row["system_from_ms"] ?? 0
+                    guard let spanRelation = VersionRelation(rawValue: UInt8(relationRaw)) else {
+                        throw WaxError.io("unsupported structured fact version_relation \(relationRaw) while closing span")
+                    }
+                    let closedHash = StructuredMemoryHasher.hashSpanKey(
+                        factId: FactRowID(rawValue: factId),
+                        valid: StructuredTimeRange(fromMs: validFrom, toMs: validTo),
+                        relation: spanRelation,
+                        system: StructuredTimeRange(fromMs: systemFrom, toMs: closeAt)
+                    )
+                    try closeSpanByIDStmt.execute(arguments: [closeAt, closedHash, spanId])
                 }
 
                 for op in ops {
@@ -959,11 +984,10 @@ package actor FTS5SearchEngine {
                                 arguments: [factId, valid.toMs ?? Int64.max, valid.fromMs]
                             )
                             for row in openSpans {
-                                let spanId: Int64 = row["span_id"] ?? 0
                                 let systemFrom: Int64 = row["system_from_ms"] ?? 0
                                 let closeAt = system.fromMs > systemFrom ? system.fromMs : systemFrom + 1
                                 effectiveSystemFromMs = max(effectiveSystemFromMs, closeAt)
-                                try closeSpanByIDStmt.execute(arguments: [closeAt, spanId])
+                                try closeSpan(row, at: closeAt)
                             }
                         }
                         if let systemToMs = system.toMs, systemToMs <= effectiveSystemFromMs {
@@ -979,7 +1003,7 @@ package actor FTS5SearchEngine {
                             factId: FactRowID(rawValue: factId),
                             valid: valid,
                             relation: relation,
-                            systemFromMs: effectiveSystemFromMs
+                            system: StructuredTimeRange(fromMs: effectiveSystemFromMs, toMs: system.toMs)
                         )
 
                         try insertSpanStmt.execute(arguments: [
@@ -1029,7 +1053,9 @@ package actor FTS5SearchEngine {
                             }
                         }
 
-                        try retractSpanStmt.execute(arguments: [atMs, factId.rawValue])
+                        for row in spans {
+                            try closeSpan(row, at: atMs)
+                        }
                     }
                 }
             }

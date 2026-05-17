@@ -33,19 +33,20 @@ package enum StructuredMemoryHasher {
         factId: FactRowID,
         valid: StructuredTimeRange,
         relation: VersionRelation,
-        systemFromMs: Int64
+        system: StructuredTimeRange
     ) -> Data {
-        let validTo = valid.toMs ?? -1
         var buffer = HashBuffer()
         buffer.appendTag(0xB1)
         buffer.appendInt64(factId.rawValue)
         buffer.appendTag(0xB2)
         buffer.appendInt64(valid.fromMs)
         buffer.appendTag(0xB3)
-        buffer.appendInt64(validTo)
+        buffer.appendOptionalInt64(valid.toMs)
         buffer.appendTag(0xB4)
-        buffer.appendInt64(systemFromMs)
+        buffer.appendInt64(system.fromMs)
         buffer.appendTag(0xB5)
+        buffer.appendOptionalInt64(system.toMs)
+        buffer.appendTag(0xB6)
         buffer.appendInt64(Int64(relation.rawValue))
         return SHA256Checksum.digest(buffer.data)
     }
@@ -61,6 +62,15 @@ private struct HashBuffer {
     mutating func appendInt64(_ value: Int64) {
         var v = value.littleEndian
         data.append(Data(bytes: &v, count: 8))
+    }
+
+    mutating func appendOptionalInt64(_ value: Int64?) {
+        guard let value else {
+            data.append(0x00)
+            return
+        }
+        data.append(0x01)
+        appendInt64(value)
     }
 
     mutating func appendUInt64(_ value: UInt64) {
