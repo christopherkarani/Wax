@@ -905,6 +905,127 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
 }
 
 @Test
+func memorySearchOverfetchesBeforeHorizonFiltering() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(started.isError != true)
+        let startedPayload = try parseJSONText(in: started)
+        let sessionID = try #require(startedPayload["session_id"] as? String)
+        let query = "F033_POST_FILTER_ANCHOR"
+
+        let durable = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("\(query) \(query) \(query) durable result should be filtered out"),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(durable.isError != true)
+
+        let working = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_append",
+                arguments: [
+                    "content": .string("\(query) working result should survive filtering"),
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(working.isError != true)
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_search",
+                arguments: [
+                    "query": .string(query),
+                    "mode": .string("text"),
+                    "topK": .int(1),
+                    "session_id": .string(sessionID),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(search.isError != true)
+        let payload = try parseJSONResource(in: search, uriSuffix: "memory-search-summary")
+        let results = try #require(payload["results"] as? [[String: Any]])
+        #expect(results.count == 1)
+        #expect(results.first?["horizon"] as? String == "working")
+        #expect((results.first?["preview"] as? String)?.contains("working result should survive filtering") == true)
+    }
+}
+
+@Test
+func memorySearchOverfetchesAcrossManyFilteredHits() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(started.isError != true)
+        let startedPayload = try parseJSONText(in: started)
+        let sessionID = try #require(startedPayload["session_id"] as? String)
+        let query = "F033_MANY_FILTERED_ANCHOR"
+
+        for index in 0..<40 {
+            let durable = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "remember",
+                    arguments: [
+                        "content": .string("\(query) \(query) \(query) \(query) durable filtered result \(index)"),
+                    ]
+                ),
+                memory: memory
+            )
+            #expect(durable.isError != true)
+        }
+
+        for index in 0..<2 {
+            let working = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "memory_append",
+                    arguments: [
+                        "content": .string("\(query) working survivor \(index)"),
+                        "session_id": .string(sessionID),
+                    ]
+                ),
+                memory: memory
+            )
+            #expect(working.isError != true)
+        }
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_search",
+                arguments: [
+                    "query": .string(query),
+                    "mode": .string("text"),
+                    "topK": .int(2),
+                    "session_id": .string(sessionID),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(search.isError != true)
+        let payload = try parseJSONResource(in: search, uriSuffix: "memory-search-summary")
+        let results = try #require(payload["results"] as? [[String: Any]])
+        #expect(results.count == 2)
+        #expect(results.allSatisfy { ($0["horizon"] as? String) == "working" })
+    }
+}
+
+@Test
 func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
     try await withTemporaryDirectory { root in
         let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)

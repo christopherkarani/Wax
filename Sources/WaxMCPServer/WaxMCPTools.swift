@@ -993,10 +993,11 @@ private extension WaxMCPTools {
             alpha: try args.optionalDouble("alpha")
         )
 
+        let candidateTopK = compatPostFilterCandidateLimit(for: topK)
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
-            topK: topK,
+            topK: candidateTopK,
             frameFilter: nil,
             timeRange: nil
         )
@@ -1049,6 +1050,9 @@ private extension WaxMCPTools {
                 "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "explanations": .array(hit.explanations.map(Value.string)),
             ])
+            if results.count == topK {
+                break
+            }
         }
         if let sessionID {
             for hit in workingHitsToRecord {
@@ -1078,6 +1082,10 @@ private extension WaxMCPTools {
             ],
             uri: "wax://tool/memory-search-summary"
         )
+    }
+
+    static func compatPostFilterCandidateLimit(for topK: Int) -> Int {
+        min(1_000, max(topK * 5, topK + 200))
     }
 
     static func compatMemoryGet(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
