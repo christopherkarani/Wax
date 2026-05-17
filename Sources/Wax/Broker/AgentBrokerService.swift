@@ -1944,12 +1944,14 @@ extension AgentBrokerService {
         }
 
         var dailyNotePaths: [String] = []
+        var dailyNoteURLs = Set<URL>()
         for dateKey in dailyNotesByDate.keys.sorted() {
             let noteURL = memoryDir.appendingPathComponent("\(dateKey).md")
             var bodyLines = ["# \(dateKey)", ""]
             bodyLines.append(contentsOf: dailyNotesByDate[dateKey, default: []])
             let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
             try body.write(to: noteURL, atomically: true, encoding: .utf8)
+            dailyNoteURLs.insert(noteURL.standardizedFileURL)
             dailyNotePaths.append(noteURL.path)
         }
 
@@ -1960,6 +1962,8 @@ extension AgentBrokerService {
             let body = "# DREAMS\n\n" + dreamsLines.joined(separator: "\n") + "\n"
             try body.write(to: dreamsURL, atomically: true, encoding: .utf8)
             dreamsPath = dreamsURL.path
+        } else {
+            try removeGeneratedMarkdownFileIfPresent(at: dreamsURL, allowedSourceKinds: [MarkdownProjectionKind.dreams.rawValue])
         }
 
         var handoffSummaryPath: String?
@@ -1968,7 +1972,11 @@ extension AgentBrokerService {
             let body = "# Handoffs\n\n" + handoffLines.joined(separator: "\n") + "\n"
             try body.write(to: handoffURL, atomically: true, encoding: .utf8)
             handoffSummaryPath = handoffURL.path
+        } else {
+            try removeGeneratedMarkdownFileIfPresent(at: memoryDir.appendingPathComponent("HANDOFFS.md"), allowedSourceKinds: ["daily_note_event"])
         }
+
+        try removeStaleGeneratedDailyNotes(in: memoryDir, keeping: dailyNoteURLs)
 
         if let sessionID, activeSessions[sessionID] != nil {
             try await appendSessionEvent(
@@ -1984,6 +1992,53 @@ extension AgentBrokerService {
             dreamsPath: dreamsPath,
             handoffSummaryPath: handoffSummaryPath
         )
+    }
+
+    private func removeStaleGeneratedDailyNotes(in memoryDir: URL, keeping currentDailyNoteURLs: Set<URL>) throws {
+        guard FileManager.default.fileExists(atPath: memoryDir.path) else { return }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: memoryDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        for url in urls where url.pathExtension == "md" {
+            guard !url.lastPathComponent.hasPrefix("DREAMS"),
+                  !url.lastPathComponent.hasPrefix("HANDOFFS"),
+                  url.lastPathComponent.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil,
+                  !currentDailyNoteURLs.contains(url.standardizedFileURL)
+            else { continue }
+            try removeGeneratedMarkdownFileIfPresent(
+                at: url,
+                allowedSourceKinds: [MarkdownProjectionKind.dailyNote.rawValue, "daily_note_event"]
+            )
+        }
+    }
+
+    private func removeGeneratedMarkdownFileIfPresent(at url: URL, allowedSourceKinds: Set<String>) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let entries = try BrokerMarkdownSync.parseFile(at: url)
+        guard !entries.isEmpty else { return }
+        var generatedLines = Set<String>()
+        let generatedOnly = entries.allSatisfy { entry in
+            guard let marker = entry.marker else { return false }
+            guard allowedSourceKinds.contains(marker.sourceKind) else { return false }
+            guard marker.hash == Self.stableHash(entry.text) else { return false }
+            if marker.sourceKind == MarkdownProjectionKind.dreams.rawValue, entry.checked == true {
+                return false
+            }
+            generatedLines.insert(renderManagedMarkdownLine(text: entry.text, marker: marker, checked: entry.checked))
+            return true
+        }
+        guard generatedOnly else { return }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let hasUserContent = raw.components(separatedBy: .newlines).contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            guard !trimmed.hasPrefix("#") else { return false }
+            return !generatedLines.contains(trimmed)
+        }
+        guard !hasUserContent else { return }
+        try FileManager.default.removeItem(at: url)
     }
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {

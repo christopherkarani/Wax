@@ -3502,6 +3502,182 @@ func brokerMarkdownExportSkipsActiveSessionsOwnedByOtherBrokers() async throws {
 }
 
 @Test
+func brokerMarkdownExportRemovesStaleGeneratedFiles() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-stale-files-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let first = await service.handle(.init(command: "session_start"))
+        #expect(first.ok == true)
+        let firstSessionID = try #require(first.payload?.objectValue?["session_id"]?.stringValue)
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: stale generated Markdown files must be removed \(UUID().uuidString)"),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+        let handoff = await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("Stale generated handoff \(UUID().uuidString)"),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(handoff.ok == true)
+
+        let firstExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(firstExport.ok == true)
+        let firstPayload = try #require(firstExport.payload?.objectValue)
+        let staleDreamsPath = try #require(firstPayload["dreams_path"]?.stringValue)
+        let staleHandoffPath = try #require(firstPayload["handoff_summary_path"]?.stringValue)
+        let staleDailyPath = try #require(firstPayload["daily_note_paths"]?.arrayValue?.first?.stringValue)
+        let userNotesURL = URL(fileURLWithPath: staleDailyPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("project-notes.md")
+        try String(contentsOfFile: staleDailyPath, encoding: .utf8)
+            .write(to: userNotesURL, atomically: true, encoding: .utf8)
+        #expect(FileManager.default.fileExists(atPath: staleDreamsPath))
+        #expect(FileManager.default.fileExists(atPath: staleHandoffPath))
+        #expect(FileManager.default.fileExists(atPath: staleDailyPath))
+        #expect(FileManager.default.fileExists(atPath: userNotesURL.path))
+
+        let second = await service.handle(.init(command: "session_start"))
+        #expect(second.ok == true)
+        let secondSessionID = try #require(second.payload?.objectValue?["session_id"]?.stringValue)
+        let secondExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(secondSessionID),
+            ]
+        ))
+        #expect(secondExport.ok == true)
+        let secondPayload = try #require(secondExport.payload?.objectValue)
+        #expect(secondPayload["dreams_path"]?.stringValue == nil)
+        #expect(secondPayload["handoff_summary_path"]?.stringValue == nil)
+        #expect(secondPayload["daily_note_paths"]?.arrayValue?.isEmpty == true)
+        #expect(!FileManager.default.fileExists(atPath: staleDreamsPath))
+        #expect(!FileManager.default.fileExists(atPath: staleHandoffPath))
+        #expect(!FileManager.default.fileExists(atPath: staleDailyPath))
+        #expect(FileManager.default.fileExists(atPath: userNotesURL.path))
+    }
+}
+
+@Test
+func brokerMarkdownExportPreservesCheckedStaleDreams() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-checked-dream-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let first = await service.handle(.init(command: "session_start"))
+        #expect(first.ok == true)
+        let firstSessionID = try #require(first.payload?.objectValue?["session_id"]?.stringValue)
+        let dream = "Decision: preserve checked DREAMS approvals across empty export \(UUID().uuidString)"
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(dream),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let firstExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(firstExport.ok == true)
+        let firstPayload = try #require(firstExport.payload?.objectValue)
+        let dreamsPath = try #require(firstPayload["dreams_path"]?.stringValue)
+        let dreamsURL = URL(fileURLWithPath: dreamsPath)
+        var dreamsText = try String(contentsOf: dreamsURL, encoding: .utf8)
+        dreamsText = dreamsText.replacingOccurrences(of: "- [ ] \(dream)", with: "- [x] \(dream)")
+        try dreamsText.write(to: dreamsURL, atomically: true, encoding: .utf8)
+
+        let second = await service.handle(.init(command: "session_start"))
+        #expect(second.ok == true)
+        let secondSessionID = try #require(second.payload?.objectValue?["session_id"]?.stringValue)
+        let secondExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(secondSessionID),
+            ]
+        ))
+        #expect(secondExport.ok == true)
+        let secondPayload = try #require(secondExport.payload?.objectValue)
+        #expect(secondPayload["dreams_path"]?.stringValue == nil)
+        #expect(FileManager.default.fileExists(atPath: dreamsPath))
+        #expect(try String(contentsOf: dreamsURL, encoding: .utf8).contains("- [x] \(dream)"))
+    }
+}
+
+@Test
+func brokerMarkdownExportPreservesStaleDreamsWithUserProse() async throws {
+    try await withAgentBrokerService { service, _ in
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-prose-dream-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let first = await service.handle(.init(command: "session_start"))
+        #expect(first.ok == true)
+        let firstSessionID = try #require(first.payload?.objectValue?["session_id"]?.stringValue)
+        let dream = "Decision: preserve prose in stale DREAMS files \(UUID().uuidString)"
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(dream),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let firstExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(firstSessionID),
+            ]
+        ))
+        #expect(firstExport.ok == true)
+        let firstPayload = try #require(firstExport.payload?.objectValue)
+        let dreamsPath = try #require(firstPayload["dreams_path"]?.stringValue)
+        let dreamsURL = URL(fileURLWithPath: dreamsPath)
+        var dreamsText = try String(contentsOf: dreamsURL, encoding: .utf8)
+        let prose = "Pending: verify this before deleting."
+        dreamsText += "\n\(prose)\n"
+        try dreamsText.write(to: dreamsURL, atomically: true, encoding: .utf8)
+
+        let second = await service.handle(.init(command: "session_start"))
+        #expect(second.ok == true)
+        let secondSessionID = try #require(second.payload?.objectValue?["session_id"]?.stringValue)
+        let secondExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "session_id": .string(secondSessionID),
+            ]
+        ))
+        #expect(secondExport.ok == true)
+        #expect(FileManager.default.fileExists(atPath: dreamsPath))
+        #expect(try String(contentsOf: dreamsURL, encoding: .utf8).contains(prose))
+    }
+}
+
+@Test
 func brokerMarkdownSyncDoesNotTrustFrameIDWithMismatchedMarkerHash() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory
