@@ -365,7 +365,13 @@ extension WaxMCPTools {
     ) async -> CallTool.Result {
         let sessionRegistry = await compatSessionRegistries.registry(for: memory)
         do {
-            let normalizedName = migratedName(for: params.name) ?? params.name
+            if let migration = migratedName(for: params.name) {
+                return errorResult(
+                    message: "tool '\(params.name)' has been renamed to '\(migration)'",
+                    code: "tool_renamed"
+                )
+            }
+            let normalizedName = params.name
             try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: normalizedName, arguments: params.arguments)
 

@@ -292,6 +292,24 @@ func brokerRejectsUnknownTopLevelArguments() async throws {
 }
 
 @Test
+func compatibilityPathRejectsRenamedToolAliases() async throws {
+    try await withMemory { memory in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "wax_remember",
+                arguments: ["content": .string("legacy alias should not execute")]
+            ),
+            memory: memory
+        )
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("has been renamed to 'remember'"))
+        let payload = try parseJSONResource(in: result, uriSuffix: "tool_renamed")
+        #expect(payload["code"] as? String == "tool_renamed")
+    }
+}
+
+@Test
 func brokerSearchAppliesLifecycleAndFrameIDFilters() async throws {
     let rootURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-broker-lifecycle-filters-\(UUID().uuidString)", isDirectory: true)
