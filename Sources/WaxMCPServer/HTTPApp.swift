@@ -12,6 +12,7 @@ actor MCPHTTPApplication {
         var port: Int
         var endpoint: String
         var sessionTimeout: TimeInterval
+        var sessionCleanupInterval: Duration
         var retryInterval: Int?
         var maxRequestBodyBytes: Int
         var authToken: String?
@@ -21,6 +22,7 @@ actor MCPHTTPApplication {
             port: Int = 3000,
             endpoint: String = "/mcp",
             sessionTimeout: TimeInterval = 3600,
+            sessionCleanupInterval: Duration = .seconds(60),
             retryInterval: Int? = nil,
             maxRequestBodyBytes: Int = 1_048_576,
             authToken: String? = nil
@@ -29,6 +31,7 @@ actor MCPHTTPApplication {
             self.port = port
             self.endpoint = endpoint
             self.sessionTimeout = sessionTimeout
+            self.sessionCleanupInterval = sessionCleanupInterval
             self.retryInterval = retryInterval
             self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
             self.authToken = HTTPAuthPolicy.normalizedToken(authToken)
@@ -42,6 +45,7 @@ actor MCPHTTPApplication {
     private let validationPipeline: (any HTTPRequestValidationPipeline)?
     private var channel: Channel?
     private var sessions: [String: SessionContext] = [:]
+    private var cleanupTask: Task<Void, Never>?
 
     nonisolated let logger: Logger
     nonisolated let maxRequestBodyBytes: Int
@@ -100,16 +104,40 @@ actor MCPHTTPApplication {
 
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
         self.channel = channel
-        Task { await sessionCleanupLoop() }
-        try await channel.closeFuture.get()
+        startSessionCleanupTask()
+        do {
+            try await channel.closeFuture.get()
+        } catch {
+            await stopSessionCleanupTask()
+            try await group.shutdownGracefully()
+            throw error
+        }
+        await stopSessionCleanupTask()
         try await group.shutdownGracefully()
     }
 
     func stop() async {
+        await stopSessionCleanupTask()
         await closeAllSessions()
         try? await channel?.close()
         channel = nil
         logger.info("Wax MCP HTTP application stopped")
+    }
+
+    func startSessionCleanupTask() {
+        guard cleanupTask == nil else { return }
+        cleanupTask = Task { await sessionCleanupLoop() }
+    }
+
+    func stopSessionCleanupTask() async {
+        guard let task = cleanupTask else { return }
+        task.cancel()
+        await task.value
+        cleanupTask = nil
+    }
+
+    func hasActiveSessionCleanupTask() -> Bool {
+        cleanupTask != nil
     }
 
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
@@ -202,8 +230,12 @@ actor MCPHTTPApplication {
     }
 
     private func sessionCleanupLoop() async {
-        while true {
-            try? await Task.sleep(for: .seconds(60))
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: configuration.sessionCleanupInterval)
+            } catch {
+                break
+            }
             let now = Date()
             let expired = sessions.filter { _, context in
                 now.timeIntervalSince(context.lastAccessedAt) > configuration.sessionTimeout

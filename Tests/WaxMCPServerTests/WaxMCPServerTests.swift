@@ -940,6 +940,26 @@ func httpApplicationRejectsUnauthorizedOffLoopbackRequests() async throws {
 }
 
 @Test
+func httpSessionCleanupTaskStopsWithApplicationStop() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(port: 0, sessionCleanupInterval: .milliseconds(10)),
+        serverFactory: { _, _ in
+            Issue.record("cleanup lifecycle test should not create an MCP server")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+
+    let startTask = Task { try await app.start() }
+    while !(await app.hasActiveSessionCleanupTask()) {
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(await app.hasActiveSessionCleanupTask())
+    await app.stop()
+    try await startTask.value
+    #expect(!(await app.hasActiveSessionCleanupTask()))
+}
+
+@Test
 func openClawPackageDeclaresSDKPeerDependency() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
