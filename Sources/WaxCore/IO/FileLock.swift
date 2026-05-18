@@ -50,6 +50,18 @@ package final class FileLock {
         }
     }
 
+    package static func acquireExclusiveOrCreate(at url: URL, timeout: Duration?) throws -> FileLock {
+        let mode = LockMode.exclusive
+        let fd = try openFile(at: url, mode: mode, createIfMissing: true)
+        do {
+            _ = try lock(fd: fd, mode: mode, nonBlocking: false, timeout: timeout, url: url)
+            return FileLock(fd: fd, url: url, mode: mode)
+        } catch {
+            _ = close(fd)
+            throw error
+        }
+    }
+
     package static func tryAcquire(at url: URL, mode: LockMode) throws -> FileLock? {
         let fd = try openFile(at: url, mode: mode)
         do {
@@ -106,7 +118,11 @@ package final class FileLock {
 
     // MARK: - Helpers
 
-    private static func openFile(at url: URL, mode: LockMode) throws -> Int32 {
+    private static func openFile(
+        at url: URL,
+        mode: LockMode,
+        createIfMissing: Bool = false
+    ) throws -> Int32 {
         return try url.withUnsafeFileSystemRepresentation { path in
             guard let path else {
                 throw WaxError.io("Invalid file path: \(url.path)")
@@ -115,7 +131,13 @@ package final class FileLock {
             case .shared: O_RDONLY
             case .exclusive: O_RDWR
             }
-            let descriptor = open(path, flags | O_CLOEXEC)
+            let openFlags = flags | O_CLOEXEC | (createIfMissing ? O_CREAT : 0)
+            let descriptor: Int32
+            if createIfMissing {
+                descriptor = open(path, openFlags, mode_t(0o644))
+            } else {
+                descriptor = open(path, openFlags)
+            }
             guard descriptor >= 0 else {
                 throw WaxError.io("open failed for \(url.path): \(stringError())")
             }

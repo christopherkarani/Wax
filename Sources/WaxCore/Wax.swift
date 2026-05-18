@@ -478,17 +478,24 @@ package actor Wax {
             wal: WALRingWriter,
             dataEnd: UInt64
         ) in
-            let file = try FDFile.create(at: url)
-            let lock: FileLock
+            let lock = try FileLock.acquireExclusiveOrCreate(
+                at: url,
+                timeout: options.lockWaitTimeout
+            )
+            let file: FDFile
             do {
-                lock = try FileLock.acquire(
-                    at: url,
-                    mode: .exclusive,
-                    timeout: options.lockWaitTimeout
-                )
+                file = try FDFile.open(at: url)
+                try file.truncate(to: 0)
             } catch {
-                try? file.close()
+                try? lock.release()
                 throw error
+            }
+            var createSucceeded = false
+            defer {
+                if !createSucceeded {
+                    try? file.close()
+                    try? lock.release()
+                }
             }
 
             let walOffset = Constants.walOffset
@@ -537,6 +544,7 @@ package actor Wax {
                 fsyncPolicy: options.walFsyncPolicy
             )
 
+            createSucceeded = true
             return (
                 file: file,
                 lock: lock,
