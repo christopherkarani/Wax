@@ -23,7 +23,6 @@ PUBLIC_PATHS = [
     "Resources/skills/public",
     "Resources/website/docs",
     "Sources",
-    "docs/openclaw-native-memory.md",
 ]
 
 SHELL_LANGS = {"bash", "sh", "shell", "zsh", "console", "terminal"}
