@@ -55,6 +55,40 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
     #expect(decoded.walReplaySnapshot == snapshot)
 }
 
+@Test func headerRejectsOverflowingWalEndOffset() throws {
+    let header = WaxHeaderPage(
+        headerPageGeneration: 1,
+        fileGeneration: 5,
+        footerOffset: UInt64.max,
+        walOffset: UInt64.max - 10,
+        walSize: 100,
+        walWritePos: 0,
+        walCheckpointPos: 0,
+        walCommittedSeq: 0,
+        walReplaySnapshot: WaxHeaderPage.WALReplaySnapshot(
+            fileGeneration: 5,
+            walCommittedSeq: 0,
+            footerOffset: UInt64.max,
+            walWritePos: 0,
+            walCheckpointPos: 0,
+            walPendingBytes: 0,
+            walLastSequence: 0
+        ),
+        tocChecksum: Data(repeating: 0xAB, count: 32)
+    )
+
+    do {
+        _ = try WaxHeaderPage.decodeWithChecksumValidation(from: header.encodeWithChecksum())
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .invalidHeader(let reason) = error else {
+            #expect(Bool(false))
+            return
+        }
+        #expect(reason.contains("wal_offset + wal_size"))
+    }
+}
+
 @Test func headerChecksumDetectsCorruption() throws {
     let header = WaxHeaderPage(
         headerPageGeneration: 1,
