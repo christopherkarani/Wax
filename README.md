@@ -304,7 +304,6 @@ The published installer stages the bundled runtime into a stable local directory
 registers `wax-mcp` directly, so steady-state MCP sessions do not launch through raw `npx`.
 For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
-For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
 The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`,
 including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync`
 also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on

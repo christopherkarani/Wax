@@ -16,7 +16,6 @@ DerivedData/
 *.profdata
 .claude/agents/
 .vscode/
-AGENTS.md
 .worktrees/
 *.d
 *.dia
@@ -24,6 +23,7 @@ AGENTS.md
 *.swiftdeps
 tasks/
 task/
+marketing/
 output/
 .tmp/
 .linux-scratch/
@@ -47,9 +47,15 @@ AUDIT_REPORT.md
 /skills/
 /scripts/
 docs/plans/
+docs/product/
+docs/superpowers/
 docs/framework-audit-*.md
 Resources/docs/plans/
 Resources/skills/internal/
+WAX_TECHNICAL_ANALYSIS.md
+issue*_full.png
+issue*_snapshot.md
+*screenshot*.png
 Package.resolved
 **/Package.resolved
 .build-codex/
