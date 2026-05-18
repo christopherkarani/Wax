@@ -4491,6 +4491,67 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
 }
 
 @Test
+func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func remember(arguments: [String: AgentBrokerValue])"))
+    let end = try #require(source[start.upperBound...].range(of: "func memoryAppend(arguments: [String: AgentBrokerValue])"))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    let appendEvent = try #require(body.range(of: "appendSessionEvent("))
+    let flush = try #require(body.range(of: "try await memory.flush()"))
+    #expect(appendEvent.lowerBound < flush.lowerBound)
+}
+
+@Test
+func brokerHandoffRecordsEventBeforeCommittingHandoffFrame() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func handoff(arguments: [String: AgentBrokerValue])"))
+    let end = try #require(source[start.upperBound...].range(of: "func handoffLatest(arguments: [String: AgentBrokerValue])"))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    #expect(body.contains("commit: false"))
+    let recordHandoff = try #require(body.range(of: "recordHandoff(sessionID: sessionID, content: content)"))
+    let flush = try #require(body.range(of: "try await longTermMemory.flush()"))
+    #expect(recordHandoff.lowerBound < flush.lowerBound)
+}
+
+@Test
+func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func recordHandoff(sessionID: UUID, content: String)"))
+    let end = try #require(source[start.upperBound...].range(of: "func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String)"))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    let appendEvent = try #require(body.range(of: "appendSessionEvent("))
+    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)"))
+    #expect(appendEvent.lowerBound < saveManifest.lowerBound)
+}
+
+@Test
 func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

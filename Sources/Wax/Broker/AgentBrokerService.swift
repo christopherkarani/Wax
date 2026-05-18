@@ -282,7 +282,6 @@ extension AgentBrokerService {
 
         let before = await memory.runtimeStats()
         try await memory.remember(content, metadata: metadata)
-        try await memory.flush()
         if let sessionID {
             try await refreshSessionManifest(sessionID)
             try await appendSessionEvent(
@@ -295,6 +294,7 @@ extension AgentBrokerService {
                 ]
             )
         }
+        try await memory.flush()
         let after = await memory.runtimeStats()
         let totalBefore = before.frameCount + before.pendingFrames
         let totalAfter = after.frameCount + after.pendingFrames
@@ -1017,11 +1017,12 @@ extension AgentBrokerService {
             project: project,
             pendingTasks: pendingTasks,
             sessionId: sessionID,
-            commit: true
+            commit: false
         )
         if let sessionID {
             try await recordHandoff(sessionID: sessionID, content: content)
         }
+        try await longTermMemory.flush()
         return .object([
             "status": .string("ok"),
             "frame_id": .from(frameId),
@@ -1470,8 +1471,6 @@ extension AgentBrokerService {
         state.manifest.lastHandoffAtMs = nowMs
         state.manifest.latestHandoff = MemorySemantics.summarizeCandidate(content, maxLength: 220)
         state.manifest.updatedAtMs = nowMs
-        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        activeSessions[sessionID] = state
         try await appendSessionEvent(
             sessionID: sessionID,
             kind: .handoff,
@@ -1479,6 +1478,8 @@ extension AgentBrokerService {
                 "summary": state.manifest.latestHandoff ?? "",
             ]
         )
+        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
+        activeSessions[sessionID] = state
     }
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
