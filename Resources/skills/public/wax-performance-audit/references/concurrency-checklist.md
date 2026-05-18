@@ -42,7 +42,7 @@ Inspect these areas first:
 - Bound concurrency when the work allocates buffers, decodes images, or runs CoreML.
 - Keep long-running work off `MainActor`.
 - Use `nonisolated` only when the implementation is actually thread-safe.
-- Treat `@preconcurrency` interop and `@unchecked Sendable` around CoreML, GRDB, USearch, Photos, and tokenizer internals as review hotspots, not automatic bugs.
+- Treat `@preconcurrency` interop and `@unchecked Sendable` around CoreML, GRDB, Photos, and tokenizer internals as review hotspots, not automatic bugs.
 
 ## Verification
 

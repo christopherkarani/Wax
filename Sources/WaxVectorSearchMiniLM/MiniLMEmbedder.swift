@@ -10,6 +10,17 @@ import WaxVectorSearch
 @available(macOS 15.0, iOS 18.0, *)
 extension MiniLMEmbeddings: @unchecked Sendable {}
 
+@available(macOS 15.0, iOS 18.0, *)
+package protocol MiniLMEmbeddingModel: Sendable {
+    var computeUnits: MLComputeUnits { get }
+
+    func encode(sentence: String) async throws -> [Float]?
+    func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async throws -> [[Float]]?
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension MiniLMEmbeddings: MiniLMEmbeddingModel {}
+
 /// High-performance MiniLM embedder with batch support for optimal ANE/GPU utilization.
 /// Implements BatchEmbeddingProvider for significant throughput improvements during ingest.
 @available(macOS 15.0, iOS 18.0, *)
@@ -23,11 +34,12 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         normalized: true
     )
 
-    private nonisolated let model: MiniLMEmbeddings
+    private nonisolated let model: any MiniLMEmbeddingModel
     
     /// Configurable batch size to balance throughput and memory usage.
     private let batchSize: Int
     private static let maximumBatchSize = 256
+    private static let maximumCoreMLPredictionBatchSize = 1
     private var batchInputBuffers: BatchInputBuffers?
 
     package struct Config {
@@ -40,7 +52,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         }
     }
 
-    private init(model: MiniLMEmbeddings, batchSize: Int) {
+    package init(model: any MiniLMEmbeddingModel, batchSize: Int) {
         self.model = model
         self.batchSize = max(1, batchSize)
         logComputeUnits()
@@ -115,13 +127,13 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
+        guard let vector = try await model.encode(sentence: text) else {
             throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
             throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
-        return vector
+        return try Self.validatedNormalizedVector(vector, dimensions: dimensions)
     }
     
     /// Batch embed multiple texts using Core ML batch prediction for optimal ANE/GPU utilization.
@@ -158,7 +170,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         // Copy buffer out, call async encode, copy back — required because
         // actor-isolated inout properties can't be passed to async functions.
         var buffers = batchInputBuffers
-        let vectors = await model.encode(batch: texts, reuseBuffers: &buffers)
+        let vectors = try await model.encode(batch: texts, reuseBuffers: &buffers)
         batchInputBuffers = buffers
         guard let vectors else {
             throw WaxError.io("MiniLMAll batch embedding failed.")
@@ -171,7 +183,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
                 throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
             }
         }
-        return vectors
+        return try vectors.map { try Self.validatedNormalizedVector($0, dimensions: dimensions) }
     }
 
     package func prewarm(batchSize: Int = 16) async throws {
@@ -242,6 +254,24 @@ extension MiniLMEmbedder {
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbedder {
+    static func validatedNormalizedVector(_ vector: [Float], dimensions: Int) throws -> [Float] {
+        guard vector.count == dimensions else {
+            throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
+        }
+        guard vector.allSatisfy(\.isFinite) else {
+            throw WaxError.io("MiniLMAll produced a non-finite embedding value.")
+        }
+        let sumOfSquares = vector.reduce(Float(0)) { $0 + $1 * $1 }
+        guard sumOfSquares.isFinite else {
+            throw WaxError.io("MiniLMAll produced a non-finite embedding magnitude.")
+        }
+        guard sumOfSquares > 0 else {
+            throw WaxError.io("MiniLMAll produced a zero-magnitude embedding.")
+        }
+        let inverseMagnitude = 1 / sqrt(sumOfSquares)
+        return vector.map { $0 * inverseMagnitude }
+    }
+
     static func describe(_ units: MLComputeUnits) -> String {
         switch units {
         case .all:
@@ -259,7 +289,7 @@ private extension MiniLMEmbedder {
 
     static func planBatchSizes(for totalCount: Int, maxBatchSize: Int) -> [Int] {
         guard totalCount > 0 else { return [] }
-        let clampedMax = Swift.max(1, maxBatchSize)
+        let clampedMax = Swift.max(1, Swift.min(maxBatchSize, maximumCoreMLPredictionBatchSize))
 
         if totalCount <= clampedMax {
             return [totalCount]

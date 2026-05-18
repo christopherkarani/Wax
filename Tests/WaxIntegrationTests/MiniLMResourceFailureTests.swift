@@ -13,9 +13,9 @@ func openMiniLMThrowsWhenModelMissing() async throws {
                 config: .default,
                 overrides: .missingModel
             )
-            #expect(Bool(false))
+            Issue.record("Expected missing model resource error")
         } catch {
-            #expect(Bool(true))
+            expectMiniLMInitError(error, matches: .missingModelResource)
         }
     }
 }
@@ -30,10 +30,32 @@ func openMiniLMThrowsWhenTokenizerMissing() async throws {
                 config: .default,
                 overrides: .missingTokenizer
             )
-            #expect(Bool(false))
+            Issue.record("Expected tokenizer load error")
         } catch {
-            #expect(Bool(true))
+            expectMiniLMInitError(error, matches: .tokenizerLoadFailed("override requested failure"))
         }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+private func expectMiniLMInitError(
+    _ error: any Error,
+    matches expected: MiniLMEmbeddings.InitError
+) {
+    guard let actual = error as? MiniLMEmbeddings.InitError else {
+        Issue.record("Expected MiniLMEmbeddings.InitError, got \(error)")
+        return
+    }
+
+    switch (actual, expected) {
+    case (.missingModelResource, .missingModelResource):
+        break
+    case (.modelLoadFailed(let actualMessage), .modelLoadFailed(let expectedMessage)):
+        #expect(actualMessage == expectedMessage)
+    case (.tokenizerLoadFailed(let actualMessage), .tokenizerLoadFailed(let expectedMessage)):
+        #expect(actualMessage == expectedMessage)
+    default:
+        Issue.record("Expected \(expected), got \(actual)")
     }
 }
 

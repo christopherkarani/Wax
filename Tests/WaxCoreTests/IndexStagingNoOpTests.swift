@@ -30,7 +30,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: url) }
 
     let wax = try await Wax.create(at: url)
-    let bytes = Data("vec-v1".utf8)
+    let bytes = validFlatVecIndexSegment(vectorCount: 2, dimension: 4, similarity: .cosine)
     try await wax.stageVecIndexForNextCommit(
         bytes: bytes,
         vectorCount: 2,
@@ -56,6 +56,52 @@ import Testing
     #expect(generationAfterNoOpCommit == generationAfterFirstCommit)
 
     try await wax.close()
+}
+
+@Test func stageVecIndexRejectsMalformedSegmentBytes() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    await #expect(throws: WaxError.self) {
+        try await wax.stageVecIndexForNextCommit(
+            bytes: Data([0x01]),
+            vectorCount: 0,
+            dimension: 4,
+            similarity: .cosine
+        )
+    }
+
+    try await wax.close()
+}
+
+private func validFlatVecIndexSegment(
+    vectorCount: UInt64,
+    dimension: UInt32,
+    similarity: VecSimilarity
+) -> Data {
+    var data = Data([0x4D, 0x56, 0x32, 0x56])
+    var version = UInt16(1).littleEndian
+    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
+    data.append(3)
+    data.append(similarity.rawValue)
+    var dimensionLE = dimension.littleEndian
+    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
+    var vectorCountLE = vectorCount.littleEndian
+    withUnsafeBytes(of: &vectorCountLE) { data.append(contentsOf: $0) }
+
+    let floatCount = Int(vectorCount) * Int(dimension)
+    let vectors = [Float](repeating: 0, count: floatCount)
+    var payloadLength = UInt64(floatCount * MemoryLayout<Float>.stride).littleEndian
+    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
+    data.append(Data(repeating: 0, count: 8))
+    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+
+    let frameIds = (0..<vectorCount).map { UInt64($0) }
+    var frameIdLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
+    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    return data
 }
 
 @Test func noOpLexStagingDoesNotBlockFrameCommit() async throws {

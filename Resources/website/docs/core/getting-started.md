@@ -4,94 +4,43 @@ title: "WaxCore Getting Started"
 sidebar_label: "Getting Started"
 ---
 
-Create, open, and interact with `.wax` memory files using the Wax actor.
+Understand the `.wax` persistence layer without depending on package-only storage actors.
 
 ## Overview
 
-WaxCore is the persistence foundation for all Wax modules. Every operation — text indexing, vector search, structured memory — ultimately stores data as **frames** inside a `.wax` file managed by the `Wax` actor.
+WaxCore is the persistence foundation for all Wax modules. Text indexing, vector search, and structured memory ultimately store data as **frames** inside `.wax` files, but the package-only `Wax` actor that coordinates those files is not public API.
 
-## Creating a Store
+For downstream application code, import the top-level `Wax` product and use the public orchestration APIs there. Use this article as contributor-oriented context for the lower-level storage behavior behind those APIs.
 
-Use `Wax/create(at:walSize:options:)` to create a new `.wax` file:
+## Package Boundary
 
-```swift
-import WaxCore
+Direct store creation, opening, writer leases, frame writes, payload reads, commits, and close operations are implemented behind package access control. Public docs should not teach consumers to call those internals directly.
 
-let url = URL(filePath: "/path/to/memory.wax")
-let store = try await Wax.create(at: url)
-```
+Inside the package, store creation can tune the WAL ring buffer and replay behavior with options such as `walFsyncPolicy:` and `walReplayStateSnapshotEnabled:`. Those labels are documented here to explain the implementation contract, not to advertise a public initializer.
 
-You can customize the WAL ring buffer size and fsync policy:
+## Storage Lifecycle
 
-```swift
-let options = WaxOptions(
-    fsyncPolicy: .everyBytes(1_048_576),  // fsync every 1 MiB
-    enableReplayStateSnapshot: true
-)
-let store = try await Wax.create(
-    at: url,
-    walSize: 128 * 1024 * 1024,  // 128 MiB WAL
-    options: options
-)
-```
+The package-only store lifecycle has four conceptual phases:
 
-## Opening an Existing Store
+1. Create or open a `.wax` file and replay any pending WAL records.
+2. Acquire exclusive write ownership before mutating frame state.
+3. Append frame mutations through the WAL and commit them into the table of contents and footer.
+4. Release resources after outstanding reads and writes complete.
 
-Use `Wax/open(at:options:)` to open a previously created file. If the WAL contains uncommitted records, they are automatically replayed during open:
-
-```swift
-let store = try await Wax.open(at: url)
-```
+Each phase is exposed to public consumers through higher-level Wax APIs rather than through the package-only `Wax` actor.
 
 ## Writing Frames
 
-All writes require a **writer lease** — only one writer can be active at a time:
-
-```swift
-let lease = try await store.acquireWriterLease(policy: .wait)
-
-let frameId = try await store.putFrame(/* frame data */)
-
-try await store.commit()
-store.releaseWriterLease(lease)
-```
-
-The writer policy controls what happens when another writer already holds the lease:
-
-- `WaxWriterPolicy/fail` — Immediately throws `WaxError/writerBusy`
-- `WaxWriterPolicy/wait` — Suspends until the lease becomes available
-- `WaxWriterPolicy/timeout(_:)` — Waits up to a duration, then throws `WaxError/writerTimeout`
+Frames are the durable records in a `.wax` file. A frame can carry payload bytes, metadata, tags, status, and superseding relationships. Mutations are first staged in the WAL so crash recovery can replay or discard incomplete work deterministically.
 
 ## Reading Frames
 
-Reads do not require a writer lease and can execute concurrently:
-
-```swift
-let stats = await store.stats()
-print("Frame count: \(stats.frameCount)")
-
-if let meta = await store.frame(id: 0) {
-    let payload = try await store.readPayload(
-        at: meta.payloadOffset,
-        length: meta.payloadLength
-    )
-}
-```
+Committed frame metadata is indexed by frame ID in the table of contents. Payload reads use the stored payload offset and length, while higher-level modules decide how to interpret text, embeddings, structured facts, or media-derived records.
 
 ## Committing Changes
 
-After writing frames, call `Wax/commit()` to flush the WAL, write the updated TOC and footer, and update the header:
-
-```swift
-try await store.commit()
-```
-
-Until a commit, writes exist only in the WAL ring buffer. The WAL provides crash safety — uncommitted records are replayed automatically on next open.
+Commits flush staged WAL mutations, persist the updated table of contents and footer, and update the mirrored header state. Until a commit completes, recovery treats staged records as replay input rather than as fully committed state.
 
 ## Closing the Store
 
-Always close the store when done:
-
-```swift
-try await store.close()
-```
+Package code closes stores when a subsystem is done with the file so file descriptors, locks, and pending I/O work are released cleanly. Public consumers normally reach that behavior through orchestrator lifecycle methods in the top-level `Wax` module.

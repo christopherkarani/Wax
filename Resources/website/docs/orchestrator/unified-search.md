@@ -4,156 +4,79 @@ title: "Unified Search"
 sidebar_label: "Unified Search"
 ---
 
-Fuse BM25, vector, structured memory, and timeline results with reciprocal rank fusion.
+Understand how Wax fuses BM25, vector, structured-memory, and timeline results.
 
 ## Overview
 
-Wax's unified search runs multiple search strategies in parallel and fuses their results using reciprocal rank fusion (RRF). This hybrid approach combines the precision of keyword search with the recall of semantic search.
+Wax's unified search pipeline is a package-only implementation detail, not public API. Public callers should use orchestrator recall methods such as `MemoryOrchestrator.recall(query:)` and configure behavior through supported orchestrator entry points.
+
+Internally, the pipeline runs multiple retrieval lanes and combines their candidates with reciprocal rank fusion (RRF). This hybrid approach combines exact keyword matches with semantic and temporal recall while keeping the user-facing API focused on memory ingestion and recall.
 
 ## Search Lanes
 
-Each search request can activate up to four lanes:
+The internal request model can activate up to four lanes:
 
-| Lane | Engine | Best For |
-|------|--------|----------|
-| **Text (BM25)** | `FTS5SearchEngine` | Exact keyword matches, names, codes |
-| **Vector** | `VectorSearchEngine` | Semantic similarity, paraphrased queries |
-| **Structured Memory** | Entity/fact queries | Known entities and relationships |
-| **Timeline** | Reverse chronological | "Recent" and "latest" queries |
+| Lane | Role | Best For |
+|------|------|----------|
+| Text (BM25) | FTS-backed keyword retrieval | Exact names, codes, and phrases |
+| Vector | Embedding similarity | Paraphrased and semantic queries |
+| Structured Memory | Entity and fact evidence | Known relationships and attributed facts |
+| Timeline | Reverse chronological fallback | Recent or latest information |
 
 ### Text Lane
 
-Runs an FTS5 MATCH query with BM25 scoring. If the primary query returns insufficient results, a fallback OR-expanded query broadens the search.
+The text lane runs an FTS5 MATCH query with BM25 scoring. If the primary query returns too few results, a fallback OR-expanded query broadens retrieval.
 
 ### Vector Lane
 
-Computes the cosine similarity between the query embedding and all indexed frame embeddings. Requires an `EmbeddingProvider` to be configured.
+The vector lane compares the query embedding with indexed frame embeddings. It is only active when the orchestrator has vector search enabled and an embedding provider is available.
 
 ### Structured Memory Lane
 
-Resolves entity mentions in the query, finds related facts, and retrieves evidence frames. This lane surfaces frames that are semantically connected through the knowledge graph.
+The structured-memory lane resolves entity mentions, finds related facts, and retrieves evidence frames. It is designed to surface frames connected through the knowledge graph.
 
 ### Timeline Lane
 
-A reverse-chronological fallback activated for queries that imply recency (e.g., "what happened recently?"). This ensures temporal queries return results even when keyword/vector matches are sparse.
+The timeline lane is a reverse-chronological fallback for queries that imply recency, such as "what happened recently?".
 
-## Reciprocal Rank Fusion (RRF)
+## Reciprocal Rank Fusion
 
-Results from all active lanes are merged using RRF:
+Results from active lanes are merged using RRF:
 
 ```
-score(d) = Σ (weight_lane / (rrfK + rank_lane(d)))
+score(d) = sum(weight_lane / (rrfK + rank_lane(d)))
 ```
 
 Where:
-- `rrfK` is a smoothing constant (default 60)
-- `weight_lane` is the per-lane weight from the adaptive fusion config
-- `rank_lane(d)` is the document's rank in that lane (1-based)
 
-RRF is robust to score scale differences between lanes and naturally handles documents that appear in multiple lanes.
+- `rrfK` is a smoothing constant.
+- `weight_lane` is the lane weight chosen by the internal classifier.
+- `rank_lane(d)` is the document's one-based rank in that lane.
+
+RRF avoids comparing raw scores across heterogeneous engines and naturally rewards documents that appear in more than one lane.
 
 ## Query Classification
 
-The `RuleBasedQueryClassifier` categorizes queries to adjust fusion weights:
+The package-only classifier adjusts lane weights using simple offline rules:
 
-| Type | Triggers | Weight Adjustment |
-|------|----------|-------------------|
-| Factual | "what is", "who is", "define" | Higher BM25 weight |
-| Semantic | "how", "why", "explain" | Higher vector weight |
-| Temporal | "when", "recent", "yesterday" | Include timeline lane |
-| Exploratory | Default | Balanced weights |
+| Type | Trigger Examples | Weight Bias |
+|------|------------------|-------------|
+| Factual | "what is", "who is", "define" | Text lane |
+| Semantic | "how", "why", "explain" | Vector lane |
+| Temporal | "when", "recent", "yesterday" | Timeline lane |
+| Exploratory | Default | Balanced lanes |
 
-Classification is fully offline -- no ML models or network calls required.
+Classification is fully offline. It does not call network services or external models.
 
-## Search Request
+## Public Usage
 
-Configure searches with `SearchRequest`:
-
-```swift
-let request = SearchRequest(
-    query: "quarterly roadmap",
-    embedding: queryEmbedding,     // Optional
-    mode: .hybrid(alpha: 0.5),     // 0 = vector only, 1 = text only
-    topK: 20,
-    rrfK: 60
-)
-
-let response = try await session.search(request)
-```
-
-### Search Modes
-
-`SearchMode` controls which lanes are active:
-
-| Mode | Active Lanes |
-|------|-------------|
-| `.textOnly` | BM25 only |
-| `.vectorOnly` | Vector only |
-| `.hybrid(alpha: Float)` | Both BM25 and vector, blended by alpha |
-
-### Frame Filtering
-
-Restrict results with metadata predicates:
+Use the memory orchestrator for supported recall:
 
 ```swift
-var filter = FrameFilter()
-filter.requiredTags = ["meetings"]
-filter.requiredLabels = ["important"]
-filter.timeRange = TimeRange(after: lastWeekMs, before: nowMs)
-filter.includeDeleted = false
-filter.includeSuperseded = false
-
-let request = SearchRequest(
-    query: "standup notes",
-    frameFilter: filter
-)
-```
-
-### Structured Memory Options
-
-Fine-tune the structured memory lane:
-
-```swift
-var smOptions = StructuredMemorySearchOptions()
-smOptions.weight = 1.0
-smOptions.maxEntityCandidates = 5
-smOptions.maxFacts = 20
-smOptions.maxEvidenceFrames = 10
-smOptions.requireEvidenceSpan = false
-```
-
-## Search Response
-
-`SearchResponse` contains ranked results with source attribution:
-
-```swift
-for result in response.results {
-    print("Frame \(result.frameId): \(result.score)")
-    print("Sources: \(result.sources)")  // [.text, .vector, ...]
-    print("Preview: \(result.previewText ?? "")")
+let context = try await memory.recall(query: "quarterly roadmap")
+for item in context.items {
+    print(item.text)
 }
 ```
 
-Each result reports which lanes contributed via the `sources` array:
-- `.text` -- Matched in BM25 lane
-- `.vector` -- Matched in vector lane
-- `.timeline` -- From timeline fallback
-- `.structuredMemory` -- Surfaced via knowledge graph
-
-### Ranking Diagnostics
-
-Enable diagnostics for debugging:
-
-```swift
-var request = SearchRequest(query: "test")
-request.enableRankingDiagnostics = true
-request.rankingDiagnosticsTopK = 5
-
-let response = try await session.search(request)
-for result in response.results {
-    if let diag = result.rankingDiagnostics {
-        print("Best lane rank: \(diag.bestLaneRank)")
-        print("Contributions: \(diag.laneContributions)")
-    }
-}
-```
+The package-only request, response, filtering, and diagnostics types are intentionally omitted from the public documentation because downstream apps cannot construct or name them directly.

@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStateStopsCollectingOnDecodeFailure() throws {
+@Test func walPendingScanWithStateSkipsDecodeFailureButKeepsLaterPendingMutations() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -143,10 +143,12 @@ import Testing
         let legacyState = try reader.scanState(from: 0)
         #expect(legacyState.lastSequence == 2)
 
-        // scanPendingMutationsWithState stops collecting pending mutations on decode
-        // failure but continues scanning for state positions (non-fatal).
+        // scanPendingMutationsWithState skips the corrupt pending entry but keeps
+        // collecting later valid mutations while continuing state-position tracking.
         let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(result.pendingMutations.isEmpty)
+        #expect(result.pendingMutations.count == 1)
+        #expect(result.pendingMutations.first?.sequence == 2)
+        #expect(result.pendingMutations.first?.entry == .deleteFrame(DeleteFrame(frameId: 42)))
         #expect(result.state.lastSequence == 2)
     }
 }
@@ -164,5 +166,64 @@ import Testing
         let reader = WALRingReader(file: file, walOffset: 0, walSize: 2048)
         #expect(try reader.isTerminalMarker(at: writer.writePos))
         #expect((try reader.isTerminalMarker(at: 0)) == false)
+    }
+}
+
+@Test func openRejectsPendingPutFrameWithCorruptStoredPayload() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+        _ = try await wax.put(Data("committed".utf8))
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+
+        let payload = Data("pending-ok".utf8)
+        let corruptedPayload = Data("pending-xx".utf8)
+        let payloadOffset = try file.size()
+        let checksum = SHA256Checksum.digest(payload)
+
+        try file.writeAll(corruptedPayload, at: payloadOffset)
+
+        let put = PutFrame(
+            frameId: 1,
+            timestampMs: 1_234,
+            options: FrameMetaSubset(),
+            payloadOffset: payloadOffset,
+            payloadLength: UInt64(payload.count),
+            canonicalEncoding: .plain,
+            canonicalLength: UInt64(payload.count),
+            canonicalChecksum: checksum,
+            storedChecksum: checksum
+        )
+        let writer = WALRingWriter(
+            file: file,
+            walOffset: selected.page.walOffset,
+            walSize: selected.page.walSize,
+            writePos: selected.page.walWritePos,
+            checkpointPos: selected.page.walCheckpointPos,
+            pendingBytes: 0,
+            lastSequence: selected.page.walCommittedSeq
+        )
+        _ = try writer.append(payload: try WALEntryCodec.encode(.putFrame(put)))
+        try file.fsync()
+    }
+
+    do {
+        let reopened = try await Wax.open(at: url)
+        try await reopened.close()
+        Issue.record("Expected open to reject the corrupt pending payload before replay")
+    } catch WaxError.checksumMismatch {
+        // Expected path.
     }
 }

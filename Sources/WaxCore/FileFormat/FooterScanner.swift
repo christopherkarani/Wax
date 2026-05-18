@@ -104,7 +104,7 @@ package enum FooterScanner {
 
         let fileSize = try file.size()
         let footerSize = UInt64(WaxFooter.size)
-        guard footerOffset + footerSize <= fileSize else { return nil }
+        guard footerOffset <= fileSize, footerSize <= fileSize - footerOffset else { return nil }
 
         let footerBytes = try file.readExactly(length: Int(footerSize), at: footerOffset)
         guard let footer = try? WaxFooter.decode(from: footerBytes) else { return nil }
@@ -205,7 +205,8 @@ package enum FooterScanner {
             guard footer.tocLen <= limits.maxTocBytes else { continue }
 
             let footerOffset = windowBaseOffset + UInt64(localPos)
-            guard footerOffset + UInt64(footerSize) <= fileSize else { continue }
+            let footerSize64 = UInt64(footerSize)
+            guard footerOffset <= fileSize, footerSize64 <= fileSize - footerOffset else { continue }
             guard footerOffset >= footer.tocLen else { continue }
             let tocOffset = footerOffset - footer.tocLen
 

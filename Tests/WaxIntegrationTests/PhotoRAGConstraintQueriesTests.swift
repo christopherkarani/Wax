@@ -172,3 +172,398 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
         try await orchestrator.flush()
     }
 }
+
+@Test
+func photoRAGLocationRadiusAppliesExactDistanceAfterCoarseBin() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let tsA: Int64 = 1_700_000_000_000
+        let tsB: Int64 = 1_700_000_100_000
+
+        var nearbyMeta = Metadata()
+        nearbyMeta.entries[PhotoMetadataKey.assetID.rawValue] = "nearby"
+        nearbyMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(tsA)
+        nearbyMeta.entries[PhotoMetadataKey.lat.rawValue] = "37.33180"
+        nearbyMeta.entries[PhotoMetadataKey.lon.rawValue] = "-122.03120"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: nearbyMeta),
+            compression: .plain,
+            timestampMs: tsA
+        )
+
+        var sameBinButOutsideMeta = Metadata()
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.assetID.rawValue] = "same-bin-outside-radius"
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(tsB)
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.lat.rawValue] = "37.33180"
+        sameBinButOutsideMeta.entries[PhotoMetadataKey.lon.rawValue] = "-122.03040"
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: sameBinButOutsideMeta),
+            compression: .plain,
+            timestampMs: tsB
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let query = PhotoQuery(
+            text: nil,
+            image: nil,
+            timeRange: nil,
+            location: PhotoLocationQuery(
+                center: PhotoCoordinate(latitude: 37.33180, longitude: -122.03120),
+                radiusMeters: 30
+            ),
+            filters: .none,
+            resultLimit: 10,
+            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+        )
+
+        let ctx = try await orchestrator.recall(query)
+        #expect(ctx.items.map(\.assetID) == ["nearby"])
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGLocationRadiusHandlesAntimeridianBins() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var acrossDatelineMeta = Metadata()
+        acrossDatelineMeta.entries[PhotoMetadataKey.assetID.rawValue] = "across-dateline"
+        acrossDatelineMeta.entries[PhotoMetadataKey.captureMs.rawValue] = String(timestamp)
+        acrossDatelineMeta.entries[PhotoMetadataKey.lat.rawValue] = "0.00000"
+        acrossDatelineMeta.entries[PhotoMetadataKey.lon.rawValue] = "-179.99900"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: acrossDatelineMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                location: PhotoLocationQuery(
+                    center: PhotoCoordinate(latitude: 0, longitude: 179.999),
+                    radiusMeters: 300
+                ),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(ctx.items.map(\.assetID) == ["across-dateline"])
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var localMeta = Metadata()
+        localMeta.entries[PhotoMetadataKey.assetID.rawValue] = "local-photo"
+        localMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
+        localMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.file.rawValue
+        let localRoot = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+        let localText = "shared receipt token"
+        let localSummary = try await session.put(
+            Data(localText.utf8),
+            options: FrameMetaSubset(kind: PhotoFrameKind.ocrSummary.rawValue, parentId: localRoot, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        var remoteMeta = Metadata()
+        remoteMeta.entries[PhotoMetadataKey.assetID.rawValue] = "icloud-only-photo"
+        remoteMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "false"
+        remoteMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.photos.rawValue
+        let remoteRoot = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: remoteMeta),
+            compression: .plain,
+            timestampMs: timestamp + 1
+        )
+        let remoteText = "shared receipt token"
+        let remoteSummary = try await session.put(
+            Data(remoteText.utf8),
+            options: FrameMetaSubset(kind: PhotoFrameKind.ocrSummary.rawValue, parentId: remoteRoot, metadata: remoteMeta),
+            compression: .plain,
+            timestampMs: timestamp + 1
+        )
+
+        try await session.indexTextBatch(frameIds: [localSummary, remoteSummary], texts: [localText, remoteText])
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(isLocal: true),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(ctx.items.map(\.assetID) == ["local-photo"])
+
+        let remoteByAssetID = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(assetIDs: ["icloud-only-photo"]),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(remoteByAssetID.items.map(\.assetID) == ["icloud-only-photo"])
+
+        let remoteBySource = try await orchestrator.recall(
+            PhotoQuery(
+                text: "receipt",
+                filters: PhotoFilters(source: .photos),
+                resultLimit: 10,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(remoteBySource.items.map(\.assetID) == ["icloud-only-photo"])
+
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let baseTimestamp: Int64 = 1_700_000_000_000
+        for index in 0..<3 {
+            var meta = Metadata()
+            meta.entries[PhotoMetadataKey.assetID.rawValue] = "newer-photo-\(index)"
+            meta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.photos.rawValue
+            _ = try await session.put(
+                Data(),
+                embedding: [1, 0, 0, 0],
+                identity: nil,
+                options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: meta),
+                compression: .plain,
+                timestampMs: baseTimestamp + Int64(index + 1)
+            )
+        }
+
+        var oldFileMeta = Metadata()
+        oldFileMeta.entries[PhotoMetadataKey.assetID.rawValue] = "old-file"
+        oldFileMeta.entries[PhotoMetadataKey.source.rawValue] = PhotoSource.file.rawValue
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: oldFileMeta),
+            compression: .plain,
+            timestampMs: baseTimestamp - 1
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.searchTopK = 2
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                filters: PhotoFilters(source: .file),
+                resultLimit: 1,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+        #expect(ctx.items.map(\.assetID) == ["old-file"])
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let timestamp: Int64 = 1_700_000_000_000
+
+        var localMeta = Metadata()
+        localMeta.entries[PhotoMetadataKey.assetID.rawValue] = "local-no-derived"
+        localMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "true"
+        _ = try await session.put(
+            Data(),
+            embedding: [1, 0, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: localMeta),
+            compression: .plain,
+            timestampMs: timestamp
+        )
+
+        var nonLocalMeta = Metadata()
+        nonLocalMeta.entries[PhotoMetadataKey.assetID.rawValue] = "icloud-only"
+        nonLocalMeta.entries[PhotoMetadataKey.isLocal.rawValue] = "false"
+        _ = try await session.put(
+            Data(),
+            embedding: [0, 1, 0, 0],
+            identity: nil,
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: nonLocalMeta),
+            compression: .plain,
+            timestampMs: timestamp - 1
+        )
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: StubMultimodalEmbedder()
+        )
+
+        let ctx = try await orchestrator.recall(
+            PhotoQuery(
+                filters: PhotoFilters(assetIDs: ["local-no-derived", "icloud-only"]),
+                resultLimit: 2,
+                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            )
+        )
+
+        #expect(Set(ctx.items.map(\.assetID)) == ["local-no-derived", "icloud-only"])
+        #expect(ctx.diagnostics.degradedResultCount == 1)
+        try await orchestrator.flush()
+    }
+}

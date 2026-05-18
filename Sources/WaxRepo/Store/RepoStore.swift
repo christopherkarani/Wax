@@ -118,8 +118,11 @@ actor RepoStore {
         guard !hits.isEmpty else { return [] }
 
         return hits.compactMap { hit -> CommitSearchResult? in
-            guard let preview = hit.previewText else { return nil }
-            return Self.parseResult(from: preview, score: hit.score)
+            Self.result(
+                metadata: hit.metadata,
+                preview: hit.previewText,
+                score: hit.score
+            )
         }
     }
 
@@ -154,24 +157,48 @@ actor RepoStore {
         return header + "\n" + commit.ingestContent
     }
 
-    /// Parses a `CommitSearchResult` from a preview string containing the structured header.
-    ///
-    /// Returns `nil` if the preview lacks the structured header or has an invalid format.
-    /// Callers use `compactMap` to silently filter out unparseable results rather than
-    /// displaying results with empty hash/author/date fields in the TUI.
+    private static func result(
+        metadata: [String: String],
+        preview: String?,
+        score: Float
+    ) -> CommitSearchResult? {
+        guard let hash = metadata["commit.hash"],
+              let author = metadata["commit.author"],
+              let date = metadata["commit.date"],
+              let subject = metadata["commit.subject"] else {
+            guard let preview else { return nil }
+            return parseResult(from: preview, score: score)
+        }
+
+        return CommitSearchResult(
+            hash: hash,
+            shortHash: metadata["commit.hash.short"] ?? String(hash.prefix(7)),
+            author: author,
+            date: date,
+            subject: subject,
+            score: score,
+            previewText: displayPreview(from: preview)
+        )
+    }
+
+    private static func displayPreview(from preview: String?) -> String {
+        guard let preview else { return "" }
+        guard preview.hasPrefix(headerPrefix) else { return preview }
+        let firstNewline = preview.firstIndex(of: "\n") ?? preview.endIndex
+        guard firstNewline < preview.endIndex else { return "" }
+        return String(preview[preview.index(after: firstNewline)...])
+    }
+
     private static func parseResult(from preview: String, score: Float) -> CommitSearchResult? {
         guard preview.hasPrefix(headerPrefix) else {
-            // No structured header — result cannot be displayed meaningfully.
             return nil
         }
 
-        // Extract header line
         let firstNewline = preview.firstIndex(of: "\n") ?? preview.endIndex
         let headerLine = String(preview[preview.index(preview.startIndex, offsetBy: headerPrefix.count)..<firstNewline])
         let parts = headerLine.components(separatedBy: "|")
 
         guard parts.count >= 5 else {
-            // Malformed header — filter out rather than showing empty fields.
             return nil
         }
 

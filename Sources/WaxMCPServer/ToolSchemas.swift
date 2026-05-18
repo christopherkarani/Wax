@@ -60,11 +60,6 @@ enum ToolSchemas {
             inputSchema: waxMemoryHealth
         ),
         Tool(
-            name: "knowledge_capture",
-            description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
-            inputSchema: waxKnowledgeCapture
-        ),
-        Tool(
             name: "corpus_search",
             description: "Search broker-managed session history with provenance-rich results.",
             inputSchema: waxCorpusSearch
@@ -118,6 +113,11 @@ enum ToolSchemas {
 
         if structuredMemoryEnabled {
             tools.append(contentsOf: [
+                Tool(
+                    name: "knowledge_capture",
+                    description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
+                    inputSchema: waxKnowledgeCapture
+                ),
                 Tool(
                     name: "entity_upsert",
                     description: "Upsert a structured-memory entity by key.",
@@ -226,7 +226,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Optional search mode override for recall retrieval.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "alpha": [
                 "type": "number",
@@ -260,7 +260,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Search mode.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "topK": [
                 "type": "integer",
@@ -287,7 +287,7 @@ enum ToolSchemas {
             "query": ["type": "string", "description": "Search query text."],
             "topK": ["type": "integer", "description": "Max hit count. Default: 10.", "minimum": 1, "maximum": 200],
             "session_id": ["type": "string", "description": "Optional active session UUID for current working-memory retrieval."],
-            "mode": ["type": "string", "enum": ["text", "hybrid"]],
+            "mode": ["type": "string", "enum": ["text", "vector", "hybrid"]],
             "alpha": ["type": "number", "minimum": 0.0, "maximum": 1.0],
             "include_working": ["type": "boolean"],
             "include_episodic": ["type": "boolean"],
@@ -328,7 +328,7 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional maximum number of durable candidates to surface.",
                 "minimum": 1,
-                "maximum": 32,
+                "maximum": .int(BrokerPromotionSettings.maxCandidateLimit),
             ],
         ],
         required: []
@@ -396,7 +396,7 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional maximum number of durable candidates to surface in related synthesis flows.",
                 "minimum": 1,
-                "maximum": 32,
+                "maximum": .int(BrokerPromotionSettings.maxCandidateLimit),
             ],
         ],
         required: []
@@ -420,7 +420,7 @@ enum ToolSchemas {
             "mode": [
                 "type": "string",
                 "description": "Search mode for the shared corpus.",
-                "enum": ["text", "hybrid"],
+                "enum": ["text", "vector", "hybrid"],
             ],
             "alpha": [
                 "type": "number",
@@ -557,9 +557,25 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Optional exclusive upper bound timestamp (ms since epoch).",
             ],
+            "include_deleted": [
+                "type": "boolean",
+                "description": "Whether deleted frames can be included. Default: false.",
+            ],
+            "include_superseded": [
+                "type": "boolean",
+                "description": "Whether frames superseded by newer frames can be included. Default: false.",
+            ],
             "include_surrogates": [
                 "type": "boolean",
                 "description": "Whether surrogate frames can be included. Default: false.",
+            ],
+            "frame_ids": [
+                "type": "array",
+                "description": "Optional allow-list of frame IDs to search.",
+                "items": [
+                    "type": "integer",
+                    "minimum": 0,
+                ],
             ],
         ],
         required: []
@@ -580,7 +596,7 @@ enum ToolSchemas {
             "session_id": ["type": "string", "description": "Optional active session UUID."],
             "token_budget": ["type": "integer", "minimum": 128, "maximum": 32000],
             "max_items": ["type": "integer", "minimum": 1, "maximum": 64],
-            "mode": ["type": "string", "enum": ["text", "hybrid"]],
+            "mode": ["type": "string", "enum": ["text", "vector", "hybrid"]],
             "alpha": ["type": "number", "minimum": 0.0, "maximum": 1.0],
         ],
         required: ["query"]
@@ -662,14 +678,52 @@ enum ToolSchemas {
                     [
                         "type": "object",
                         "properties": [
-                            "type": ["type": "string"],
-                            "value": .object([:]),
+                            "type": [
+                                "type": "string",
+                                "enum": ["entity"],
+                            ],
+                            "value": [
+                                "type": "string",
+                            ],
+                        ],
+                        "required": ["type", "value"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": [
+                                "type": "string",
+                                "enum": ["time_ms"],
+                            ],
+                            "value": [
+                                "type": "integer",
+                            ],
+                        ],
+                        "required": ["type", "value"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": [
+                                "type": "string",
+                                "enum": ["data_base64"],
+                            ],
+                            "value": [
+                                "type": "string",
+                            ],
                         ],
                         "required": ["type", "value"],
                         "additionalProperties": false,
                     ],
                 ],
                 "description": "Fact object value: primitive or typed object (entity, time_ms, data_base64).",
+            ],
+            "relation": [
+                "type": "string",
+                "description": "Version relation for this assertion.",
+                "enum": ["sets", "updates", "extends", "retracts"],
             ],
             "valid_from": [
                 "type": "integer",
@@ -678,6 +732,25 @@ enum ToolSchemas {
             "valid_to": [
                 "type": "integer",
                 "description": "Optional valid-to timestamp (ms since epoch).",
+            ],
+            "evidence": [
+                "type": "array",
+                "description": "Optional provenance evidence for this fact.",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "source_frame_id": ["type": "integer", "minimum": 0],
+                        "chunk_index": ["type": "integer", "minimum": 0],
+                        "span_start_utf8": ["type": "integer", "minimum": 0],
+                        "span_end_utf8": ["type": "integer", "minimum": 1],
+                        "extractor_id": ["type": "string"],
+                        "extractor_version": ["type": "string"],
+                        "confidence": ["type": "number", "minimum": 0.0, "maximum": 1.0],
+                        "asserted_at_ms": ["type": "integer"],
+                    ],
+                    "required": ["source_frame_id", "extractor_id", "extractor_version", "asserted_at_ms"],
+                    "additionalProperties": false,
+                ],
             ],
         ],
         required: ["subject", "predicate", "object"]
@@ -709,7 +782,15 @@ enum ToolSchemas {
             ],
             "as_of": [
                 "type": "integer",
-                "description": "Optional query timestamp in ms since epoch.",
+                "description": "Optional query timestamp in ms since epoch for both system and valid time.",
+            ],
+            "system_as_of": [
+                "type": "integer",
+                "description": "Optional system-time query timestamp in ms since epoch. Overrides as_of for transaction time.",
+            ],
+            "valid_as_of": [
+                "type": "integer",
+                "description": "Optional valid-time query timestamp in ms since epoch. Overrides as_of for fact validity time.",
             ],
             "limit": [
                 "type": "integer",

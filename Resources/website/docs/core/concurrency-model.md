@@ -12,11 +12,11 @@ WaxCore uses an **actor-per-subsystem** concurrency model where each major compo
 
 ## Actor Isolation
 
-The `Wax` actor is the central coordinator. All frame reads and writes go through it, ensuring sequential consistency for mutations while allowing concurrent reads.
+WaxCore's file coordinator is the package-only `Wax` actor. It serializes mutation coordination for package internals, but it is not public API. Public consumers should use the top-level `Wax` module APIs instead of depending on this storage actor.
 
 ```
 ┌─────────────────────────────────────┐
-│         Wax (actor)                 │
+│ package-only store actor            │
 │                                     │
 │  AsyncReadWriteLock (opLock)        │
 │  ├── Readers: concurrent            │
@@ -30,13 +30,7 @@ The `Wax` actor is the central coordinator. All frame reads and writes go throug
 
 ## Writer Leases
 
-Only one writer can be active at a time, enforced by a lease system:
-
-```swift
-let lease = try await store.acquireWriterLease(policy: .wait)
-// ... perform writes ...
-store.releaseWriterLease(lease)
-```
+Only one package-internal writer can be active at a time, enforced by a lease system.
 
 The `WaxWriterPolicy` enum controls acquisition behavior:
 

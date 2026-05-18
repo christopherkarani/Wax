@@ -7,27 +7,27 @@ let package = Package(
         .macOS(.v26),
     ],
     dependencies: [
-        .package(path: "../Wax"),
+        .package(path: "../.."),
     ],
     targets: [
         .executableTarget(
             name: "WaxDemo",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
             name: "WaxDemoCorruptTOC",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .executableTarget(
             name: "WaxDemoMultiFooter",
             dependencies: [
-                .product(name: "WaxCore", package: "Wax"),
+                .product(name: "Wax", package: "Wax"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),

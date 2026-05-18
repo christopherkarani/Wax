@@ -71,52 +71,25 @@ enum WaxMCPTools {
 
 private extension WaxMCPTools {
     static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
-    static let structuredCommands: Set<String> = ["entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
-    static let commandArguments: [String: Set<String>] = [
-        "memory_append": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked"],
-        "memory_search": ["query", "topK", "session_id", "mode", "alpha", "include_working", "include_episodic", "include_durable"],
-        "memory_get": ["memory_id"],
-        "remember": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked"],
-        "recall": ["query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters"],
-        "search": ["query", "mode", "topK", "session_id", "alpha", "filters"],
-        "session_synthesize": ["session_id", "minimum_confidence", "minimum_recall_count", "max_candidates"],
-        "memory_promote": ["session_id", "frame_id", "content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "approve", "minimum_confidence", "minimum_recall_count", "max_candidates"],
-        "promote": ["session_id", "frame_id", "content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "approve", "minimum_confidence", "minimum_recall_count", "max_candidates"],
-        "memory_health": [],
-        "knowledge_capture": ["content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object"],
-        "corpus_search": ["query", "rebuild", "recursive", "mode", "alpha", "topK"],
-        "flush": [],
-        "stats": [],
-        "session_start": ["session_id", "agent_id", "run_id"],
-        "session_resume": ["session_id", "agent_id", "run_id"],
-        "session_end": ["session_id"],
-        "handoff": ["content", "session_id", "project", "pending_tasks"],
-        "handoff_latest": ["project"],
-        "compact_context": ["query", "session_id", "token_budget", "max_items", "mode", "alpha"],
-        "markdown_export": ["output_dir", "session_id"],
-        "markdown_sync": ["root_dir", "dry_run"],
-        "entity_upsert": ["key", "kind", "aliases"],
-        "fact_assert": ["subject", "predicate", "object", "relation", "valid_from", "valid_to"],
-        "fact_retract": ["fact_id", "at_ms"],
-        "facts_query": ["subject", "predicate", "as_of", "limit"],
-        "entity_resolve": ["alias", "limit"],
-    ]
+    static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
         if structuredCommands.contains(name), !structuredMemoryEnabled {
             throw ToolValidationError.invalid("tool '\(name)' requires structured memory to be enabled")
         }
-        guard commandArguments[name] != nil else {
+        guard AgentBrokerCommandSurface.allowedPublicArguments(for: name) != nil else {
             throw ToolValidationError.invalid("Unknown tool '\(name)'.")
         }
     }
 
     static func validateArgumentSurface(name: String, arguments: [String: Value]?) throws {
-        let allowed = commandArguments[name] ?? []
-        let provided = arguments.map { Set($0.keys) } ?? []
-        let unknown = provided.subtracting(allowed)
-        guard unknown.isEmpty else {
-            throw ToolValidationError.invalid("unsupported argument(s): \(unknown.sorted().joined(separator: ", "))")
+        do {
+            try AgentBrokerCommandSurface.validateArgumentSurface(
+                command: name,
+                providedKeys: arguments.map { Set($0.keys) } ?? []
+            )
+        } catch {
+            throw ToolValidationError.invalid(error.localizedDescription)
         }
     }
 
@@ -134,7 +107,6 @@ private extension WaxMCPTools {
         case "wax_memory_health": return "memory_health"
         case "wax_knowledge_capture": return "knowledge_capture"
         case "wax_corpus_search": return "corpus_search"
-        case "wax_flush": return "flush"
         case "wax_stats": return "stats"
         case "wax_session_start": return "session_start"
         case "wax_session_resume": return "session_resume"
@@ -158,6 +130,30 @@ private extension WaxMCPTools {
             return "invalid_arguments"
         }
         return "execution_failed"
+    }
+
+    static func compatSearchMode(modeRaw: String, alpha: Double?) throws -> MemoryOrchestrator.DirectSearchMode {
+        switch modeRaw {
+        case "text":
+            return .text
+        case "vector":
+            return .vector
+        case "hybrid":
+            return .hybrid(alpha: Float(alpha ?? 0.5))
+        default:
+            throw ToolValidationError.invalid("mode must be one of: text, vector, hybrid")
+        }
+    }
+
+    static func compatEmbeddingPolicy(for mode: MemoryOrchestrator.DirectSearchMode) -> MemoryOrchestrator.QueryEmbeddingPolicy {
+        switch mode {
+        case .text:
+            return .never
+        case .vector:
+            return .always
+        case .hybrid:
+            return .ifAvailable
+        }
     }
 
     static func renderResult(name: String, payload: AgentBrokerValue) -> CallTool.Result {
@@ -369,10 +365,14 @@ extension WaxMCPTools {
     ) async -> CallTool.Result {
         let sessionRegistry = await compatSessionRegistries.registry(for: memory)
         do {
-            let normalizedName = migratedName(for: params.name) ?? params.name.replacingOccurrences(of: "wax_", with: "")
-            if normalizedName != "flush" {
-                try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
+            if let migration = migratedName(for: params.name) {
+                return errorResult(
+                    message: "tool '\(params.name)' has been renamed to '\(migration)'",
+                    code: "tool_renamed"
+                )
             }
+            let normalizedName = params.name
+            try validateToolAvailability(name: normalizedName, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: normalizedName, arguments: params.arguments)
 
             switch normalizedName {
@@ -479,10 +479,10 @@ private extension WaxMCPTools {
                 guard double.rounded() == double else {
                     throw ToolValidationError.invalid("\(key) must be an integer")
                 }
-                guard double >= Double(Int.min), double <= Double(Int.max) else {
+                guard let int = Int(exactly: double) else {
                     throw ToolValidationError.invalid("\(key) is out of range")
                 }
-                return Int(double)
+                return int
             default:
                 throw ToolValidationError.invalid("\(key) must be an integer")
             }
@@ -500,10 +500,10 @@ private extension WaxMCPTools {
                 guard double.rounded() == double else {
                     throw ToolValidationError.invalid("\(key) must be an integer")
                 }
-                guard double >= Double(Int64.min), double <= Double(Int64.max) else {
+                guard let int = Int64(exactly: double) else {
                     throw ToolValidationError.invalid("\(key) is out of range")
                 }
-                return Int64(double)
+                return int
             default:
                 throw ToolValidationError.invalid("\(key) must be an integer")
             }
@@ -658,6 +658,24 @@ private extension WaxMCPTools {
         return active.count == 1 ? active.first : nil
     }
 
+    static func compatResolveSessionID(
+        _ explicit: UUID?,
+        requiringUnambiguousWorkingMemory includeWorking: Bool,
+        sessionRegistry: CompatSessionRegistry
+    ) async throws -> UUID? {
+        if let explicit { return explicit }
+        guard includeWorking else { return nil }
+        let active = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
+        switch active.count {
+        case 0:
+            return nil
+        case 1:
+            return active.first
+        default:
+            throw ToolValidationError.invalid("session_id is required when more than one session is active")
+        }
+    }
+
     static func compatPromotionProposalValue(_ proposal: BrokerPromotionProposal) -> Value {
         [
             "content": .string(proposal.content),
@@ -687,11 +705,30 @@ private extension WaxMCPTools {
         let filters = try args.optionalObject("filters")
         var metadataEntries: [String: String] = [:]
         var labels: [String] = []
+        var includeDeleted = false
+        var includeSuperseded = false
         var includeSurrogates = false
+        var frameIds: Set<UInt64>?
         var timeAfterMs: Int64?
         var timeBeforeMs: Int64?
 
         if let filters {
+            let allowedFilterKeys: Set<String> = [
+                "metadata",
+                "labels",
+                "include_deleted",
+                "include_superseded",
+                "include_surrogates",
+                "frame_ids",
+                "time_after_ms",
+                "time_before_ms",
+            ]
+            let unknownFilterKeys = Set(filters.keys).subtracting(allowedFilterKeys)
+            guard unknownFilterKeys.isEmpty else {
+                let names = unknownFilterKeys.sorted().map { "filters.\($0)" }.joined(separator: ", ")
+                throw ToolValidationError.invalid("unsupported filter key(s): \(names)")
+            }
+
             if let metadataRaw = filters["metadata"] {
                 guard case .object(let metadataObject) = metadataRaw else {
                     throw ToolValidationError.invalid("filters.metadata must be an object")
@@ -716,11 +753,37 @@ private extension WaxMCPTools {
                     return raw
                 }
             }
+            if let includeRaw = filters["include_deleted"] {
+                guard case .bool(let value) = includeRaw else {
+                    throw ToolValidationError.invalid("filters.include_deleted must be a boolean")
+                }
+                includeDeleted = value
+            }
+            if let includeRaw = filters["include_superseded"] {
+                guard case .bool(let value) = includeRaw else {
+                    throw ToolValidationError.invalid("filters.include_superseded must be a boolean")
+                }
+                includeSuperseded = value
+            }
             if let includeRaw = filters["include_surrogates"] {
                 guard case .bool(let value) = includeRaw else {
                     throw ToolValidationError.invalid("filters.include_surrogates must be a boolean")
                 }
                 includeSurrogates = value
+            }
+            if let frameIdsRaw = filters["frame_ids"] {
+                guard case .array(let rawFrameIds) = frameIdsRaw else {
+                    throw ToolValidationError.invalid("filters.frame_ids must be an array of non-negative integers")
+                }
+                var parsedFrameIds = Set<UInt64>()
+                parsedFrameIds.reserveCapacity(rawFrameIds.count)
+                for value in rawFrameIds {
+                    guard case .int(let raw) = value, raw >= 0 else {
+                        throw ToolValidationError.invalid("filters.frame_ids must contain only non-negative integers")
+                    }
+                    parsedFrameIds.insert(UInt64(raw))
+                }
+                frameIds = parsedFrameIds
             }
             if let timeAfterRaw = filters["time_after_ms"] {
                 guard case .int(let value) = timeAfterRaw else {
@@ -741,8 +804,14 @@ private extension WaxMCPTools {
         let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
             ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
             : nil
-        let frameFilter: FrameFilter? = (metadataFilter != nil || includeSurrogates)
-            ? FrameFilter(includeSurrogates: includeSurrogates, metadataFilter: metadataFilter)
+        let frameFilter: FrameFilter? = (metadataFilter != nil || includeDeleted || includeSuperseded || includeSurrogates || frameIds != nil)
+            ? FrameFilter(
+                includeDeleted: includeDeleted,
+                includeSuperseded: includeSuperseded,
+                includeSurrogates: includeSurrogates,
+                frameIds: frameIds,
+                metadataFilter: metadataFilter
+            )
             : nil
         let timeRange: SearchTimeRange? = (timeAfterMs != nil || timeBeforeMs != nil)
             ? SearchTimeRange(after: timeAfterMs, before: timeBeforeMs)
@@ -757,7 +826,10 @@ private extension WaxMCPTools {
                 "labels": .array(labels.map(Value.string)),
                 "time_after_ms": timeAfterMs.map { .int(Int($0)) } ?? .null,
                 "time_before_ms": timeBeforeMs.map { .int(Int($0)) } ?? .null,
+                "include_deleted": .bool(includeDeleted),
+                "include_superseded": .bool(includeSuperseded),
                 "include_surrogates": .bool(includeSurrogates),
+                "frame_ids": .array((frameIds ?? []).sorted().map { .int(Int($0)) }),
                 "has_frame_filter": .bool(frameFilter != nil),
                 "has_time_range": .bool(timeRange != nil),
             ]
@@ -805,12 +877,11 @@ private extension WaxMCPTools {
         guard (1...200).contains(effectiveTopK) else {
             throw ToolValidationError.invalid("search_top_k must be between 1 and 200")
         }
-        let mode = try args.optionalString("mode") ?? "hybrid"
-        guard mode == "text" || mode == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
-        let directMode: MemoryOrchestrator.DirectSearchMode = mode == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = mode == "text" ? .never : .ifAvailable
+        let directMode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "hybrid",
+            alpha: try args.optionalDouble("alpha")
+        )
+        let embeddingPolicy = compatEmbeddingPolicy(for: directMode)
         let execution = try await memory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
@@ -881,11 +952,10 @@ private extension WaxMCPTools {
         }
         let filters = try compatParseSearchFilters(args)
         try await compatValidateActiveSession(filters.sessionID, in: sessionRegistry)
-        let modeRaw = try args.optionalString("mode") ?? "text"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
-        let mode: MemoryOrchestrator.DirectSearchMode = modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
@@ -937,20 +1007,25 @@ private extension WaxMCPTools {
         guard (1...200).contains(topK) else {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
-        let sessionID = try compatParseSessionID(args)
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
-        let modeRaw = try args.optionalString("mode") ?? "text"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
+        let sessionID = try await compatResolveSessionID(
+            try compatParseSessionID(args),
+            requiringUnambiguousWorkingMemory: includeWorking,
+            sessionRegistry: sessionRegistry
+        )
+        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
 
+        let candidateTopK = compatPostFilterCandidateLimit(for: topK)
         let execution = try await memory.searchExecution(
             query: query,
-            mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5)),
-            topK: topK,
+            mode: mode,
+            topK: candidateTopK,
             frameFilter: nil,
             timeRange: nil
         )
@@ -1003,6 +1078,9 @@ private extension WaxMCPTools {
                 "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "explanations": .array(hit.explanations.map(Value.string)),
             ])
+            if results.count == topK {
+                break
+            }
         }
         if let sessionID {
             for hit in workingHitsToRecord {
@@ -1032,6 +1110,10 @@ private extension WaxMCPTools {
             ],
             uri: "wax://tool/memory-search-summary"
         )
+    }
+
+    static func compatPostFilterCandidateLimit(for topK: Int) -> Int {
+        min(1_000, max(topK * 5, topK + 200))
     }
 
     static func compatMemoryGet(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
@@ -1190,6 +1272,7 @@ private extension WaxMCPTools {
         metadata = try compatNormalizedMetadata(args: args, metadata: metadata, sessionID: nil)
         if let sessionID {
             metadata[MemoryMetadataKeys.promotedFromSession] = sessionID.uuidString
+            metadata.removeValue(forKey: "session_id")
         }
         if let frameID {
             metadata[MemoryMetadataKeys.promotedFromFrame] = String(frameID)
@@ -1342,24 +1425,28 @@ private extension WaxMCPTools {
 
     static func compatCompactContext(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
-        let sessionID = try await compatResolveSessionID(try compatParseSessionID(args), sessionRegistry: sessionRegistry)
+        let sessionID = try await compatResolveSessionID(
+            try compatParseSessionID(args),
+            requiringUnambiguousWorkingMemory: true,
+            sessionRegistry: sessionRegistry
+        )
         try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let query = try args.requiredString("query")
         let limit = min(try args.optionalInt("max_items") ?? 6, 12)
-        let modeRaw = try args.optionalString("mode") ?? "hybrid"
-        guard modeRaw == "text" || modeRaw == "hybrid" else {
-            throw ToolValidationError.invalid("mode must be one of: text, hybrid")
-        }
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "hybrid",
+            alpha: try args.optionalDouble("alpha")
+        )
         let frameFilter = sessionID.map {
             FrameFilter(metadataFilter: MetadataFilter(requiredEntries: ["session_id": $0.uuidString]))
         }
         let execution = try await memory.recallExecution(
             query: query,
-            embeddingPolicy: modeRaw == "text" ? .never : .ifAvailable,
+            embeddingPolicy: compatEmbeddingPolicy(for: mode),
             frameFilter: frameFilter,
             timeRange: nil,
             topK: limit,
-            mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5))
+            mode: mode
         )
         let documents = try await memory.corpusSourceDocuments()
         let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
@@ -1565,6 +1652,7 @@ private extension WaxMCPTools {
         let predicate = try args.requiredString("predicate")
         let object = try compatFactValue(args.requiredValue("object"))
         let relation = try compatVersionRelation(try args.optionalString("relation") ?? "sets")
+        let evidence = try compatStructuredEvidence(args.optionalValue("evidence"))
         let factID = try await memory.assertFact(
             subject: EntityKey(subject),
             predicate: PredicateKey(predicate),
@@ -1572,11 +1660,13 @@ private extension WaxMCPTools {
             relation: relation,
             validFromMs: try args.optionalInt64("valid_from"),
             validToMs: try args.optionalInt64("valid_to"),
+            evidence: evidence,
             commit: true
         )
         return jsonResult([
             "status": .string("ok"),
             "fact_id": .int(Int(factID.rawValue)),
+            "evidence_count": .int(evidence.count),
             "committed": .bool(true),
         ])
     }
@@ -1598,22 +1688,39 @@ private extension WaxMCPTools {
         let args = CompatArguments(arguments)
         let limit = try args.optionalInt("limit") ?? 20
         let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
+        let systemAsOfMs = try args.optionalInt64("system_as_of")
+        let validAsOfMs = try args.optionalInt64("valid_as_of")
         let result = try await memory.facts(
             about: try args.optionalString("subject").map { EntityKey($0) },
             predicate: try args.optionalString("predicate").map { PredicateKey($0) },
             asOfMs: asOfMs,
+            systemAsOfMs: systemAsOfMs,
+            validAsOfMs: validAsOfMs,
             limit: limit
         )
+        let effectiveSystemAsOfMs = systemAsOfMs ?? asOfMs
+        let effectiveValidAsOfMs = validAsOfMs ?? asOfMs
         return jsonResult([
             "count": .int(result.hits.count),
             "truncated": .bool(result.wasTruncated),
             "as_of": .int(Int(asOfMs)),
+            "system_as_of": .int(Int(effectiveSystemAsOfMs)),
+            "valid_as_of": .int(Int(effectiveValidAsOfMs)),
             "hits": .array(result.hits.map { hit in
                 [
                     "fact_id": .int(Int(hit.factId.rawValue)),
+                    "span_id": .int(Int(hit.spanId)),
                     "subject": .string(hit.fact.subject.rawValue),
                     "predicate": .string(hit.fact.predicate.rawValue),
                     "object": compatFactValuePayload(hit.fact.object),
+                    "relation": .string(hit.relation.wireName),
+                    "valid_from_ms": .int(Int(hit.valid.fromMs)),
+                    "valid_to_ms": hit.valid.toMs.map { .int(Int($0)) } ?? .null,
+                    "system_from_ms": .int(Int(hit.system.fromMs)),
+                    "system_to_ms": hit.system.toMs.map { .int(Int($0)) } ?? .null,
+                    "is_open_ended": .bool(hit.isOpenEnded),
+                    "evidence_count": .int(hit.evidence.count),
+                    "evidence": .array(hit.evidence.map(compatStructuredEvidencePayload)),
                 ]
             }),
         ])
@@ -1643,12 +1750,15 @@ private extension WaxMCPTools {
         let corpusStoreRaw = try args.optionalString("corpus_store_path") ?? "~/.wax/corpus.wax"
         let rebuild = try args.optionalBool("rebuild") ?? true
         let recursive = try args.optionalBool("recursive") ?? true
-        let modeRaw = try args.optionalString("mode") ?? "text"
+        let mode = try compatSearchMode(
+            modeRaw: try args.optionalString("mode") ?? "text",
+            alpha: try args.optionalDouble("alpha")
+        )
         let topK = try args.optionalInt("topK") ?? 10
         guard (1...200).contains(topK) else {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
-        let corpusNoEmbedder = modeRaw == "text" ? true : noEmbedder
+        let corpusNoEmbedder = mode == .text ? true : noEmbedder
         let sessionsDirectoryURL = try MCPPathing.resolveDirectoryURL(sessionsDirRaw)
         let corpusStoreURL = try MCPPathing.resolveStoreURL(corpusStoreRaw)
         let buildSummary: CorpusBuildSummary?
@@ -1673,7 +1783,7 @@ private extension WaxMCPTools {
         ) { corpusMemory in
             try await corpusMemory.searchExecution(
                 query: query,
-                mode: modeRaw == "text" ? .text : .hybrid(alpha: Float(try args.optionalDouble("alpha") ?? 0.5)),
+                mode: mode,
                 topK: topK,
                 frameFilter: nil,
                 timeRange: nil
@@ -1729,6 +1839,29 @@ private extension WaxMCPTools {
         case .double(let double):
             return .double(double)
         case .object(let object):
+            if object.count == 2,
+               case .string(let type)? = object["type"],
+               let genericValue = object["value"] {
+                switch type {
+                case "entity":
+                    guard case .string(let raw) = genericValue else {
+                        throw ToolValidationError.invalid("entity typed object value must be a string")
+                    }
+                    return .entity(EntityKey(raw))
+                case "time_ms":
+                    guard case .int(let raw) = genericValue else {
+                        throw ToolValidationError.invalid("time_ms typed object value must be an integer")
+                    }
+                    return .timeMs(Int64(raw))
+                case "data_base64":
+                    guard case .string(let raw) = genericValue, let decoded = Data(base64Encoded: raw) else {
+                        throw ToolValidationError.invalid("data_base64 typed object value must be a base64 string")
+                    }
+                    return .data(decoded)
+                default:
+                    throw ToolValidationError.invalid("typed object type must be one of: entity, time_ms, data_base64")
+                }
+            }
             if let entity = object["entity"], case .string(let raw) = entity, object.count == 1 {
                 return .entity(EntityKey(raw))
             }
@@ -1754,6 +1887,112 @@ private extension WaxMCPTools {
         case .timeMs(let ms): return .object(["time_ms": .int(Int(ms))])
         case .data(let data): return .object(["data_base64": .string(data.base64EncodedString())])
         }
+    }
+
+    static func compatStructuredEvidence(_ value: Value?) throws -> [StructuredEvidence] {
+        guard let value else { return [] }
+        guard case .array(let array) = value else {
+            throw ToolValidationError.invalid("evidence must be an array")
+        }
+        return try array.map { item in
+            guard case .object(let object) = item else {
+                throw ToolValidationError.invalid("evidence must contain only objects")
+            }
+            let allowedKeys: Set<String> = [
+                "source_frame_id",
+                "chunk_index",
+                "span_start_utf8",
+                "span_end_utf8",
+                "extractor_id",
+                "extractor_version",
+                "confidence",
+                "asserted_at_ms",
+            ]
+            let unknownKeys = Set(object.keys).subtracting(allowedKeys)
+            guard unknownKeys.isEmpty else {
+                throw ToolValidationError.invalid("unknown evidence fields: \(unknownKeys.sorted().joined(separator: ", "))")
+            }
+            guard case .int(let sourceRaw)? = object["source_frame_id"], sourceRaw >= 0 else {
+                throw ToolValidationError.invalid("evidence.source_frame_id must be a non-negative integer")
+            }
+            let chunkIndex: UInt32? = try {
+                guard let value = object["chunk_index"] else { return nil }
+                guard case .int(let raw) = value, raw >= 0, raw <= Int(UInt32.max) else {
+                    throw ToolValidationError.invalid("evidence.chunk_index must be a non-negative integer")
+                }
+                return UInt32(raw)
+            }()
+            let span = try compatEvidenceSpan(object)
+            let extractorId = try compatRequiredEvidenceString(object, key: "extractor_id")
+            let extractorVersion = try compatRequiredEvidenceString(object, key: "extractor_version")
+            let confidence = try compatEvidenceConfidence(object["confidence"])
+            guard case .int(let assertedAtMs)? = object["asserted_at_ms"] else {
+                throw ToolValidationError.invalid("evidence.asserted_at_ms must be an integer")
+            }
+            return StructuredEvidence(
+                sourceFrameId: UInt64(sourceRaw),
+                chunkIndex: chunkIndex,
+                spanUTF8: span,
+                extractorId: extractorId,
+                extractorVersion: extractorVersion,
+                confidence: confidence,
+                assertedAtMs: Int64(assertedAtMs)
+            )
+        }
+    }
+
+    static func compatEvidenceSpan(_ object: [String: Value]) throws -> Range<Int>? {
+        guard object["span_start_utf8"] != nil || object["span_end_utf8"] != nil else {
+            return nil
+        }
+        guard case .int(let start)? = object["span_start_utf8"],
+              case .int(let end)? = object["span_end_utf8"],
+              start >= 0, end > start else {
+            throw ToolValidationError.invalid("evidence span must include non-negative span_start_utf8 and greater span_end_utf8")
+        }
+        return start..<end
+    }
+
+    static func compatRequiredEvidenceString(_ object: [String: Value], key: String) throws -> String {
+        guard case .string(let raw)? = object[key] else {
+            throw ToolValidationError.invalid("evidence.\(key) must be a string")
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ToolValidationError.invalid("evidence.\(key) must not be empty")
+        }
+        return trimmed
+    }
+
+    static func compatEvidenceConfidence(_ value: Value?) throws -> Double? {
+        guard let value else { return nil }
+        let confidence: Double
+        switch value {
+        case .double(let raw):
+            confidence = raw
+        case .int(let raw):
+            confidence = Double(raw)
+        default:
+            throw ToolValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
+        }
+        guard confidence.isFinite, (0...1).contains(confidence) else {
+            throw ToolValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
+        }
+        return confidence
+    }
+
+    static func compatStructuredEvidencePayload(_ evidence: StructuredEvidence) -> Value {
+        var object: [String: Value] = [
+            "source_frame_id": .int(Int(evidence.sourceFrameId)),
+            "extractor_id": .string(evidence.extractorId),
+            "extractor_version": .string(evidence.extractorVersion),
+            "asserted_at_ms": .int(Int(evidence.assertedAtMs)),
+        ]
+        object["chunk_index"] = evidence.chunkIndex.map { .int(Int($0)) } ?? .null
+        object["span_start_utf8"] = evidence.spanUTF8.map { .int($0.lowerBound) } ?? .null
+        object["span_end_utf8"] = evidence.spanUTF8.map { .int($0.upperBound) } ?? .null
+        object["confidence"] = evidence.confidence.map { .double($0) } ?? .null
+        return .object(object)
     }
 
     static func compatVersionRelation(_ raw: String) throws -> VersionRelation {

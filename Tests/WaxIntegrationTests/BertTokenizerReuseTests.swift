@@ -1,4 +1,5 @@
-#if canImport(WaxBertTokenizer)
+#if canImport(WaxBertTokenizer) && canImport(CoreML)
+import CoreML
 import Testing
 @testable import WaxBertTokenizer
 
@@ -48,5 +49,41 @@ func sharedTokenizerProducesSameTokensForBothTargets() throws {
     #expect(ids.count == tokens.count)
     let recovered = try tokenizer.idsToTokens(tokenIds: ids)
     #expect(recovered == tokens)
+}
+
+@Test
+func bertTokenizerTreatsNewlinesAsWhitespace() throws {
+    let tokenizer = try BertTokenizer()
+
+    let newlineSeparatedTokens = tokenizer.tokenize(text: "Hello\nworld\nthis is Wax")
+    let whitespaceSeparatedTokens = tokenizer.tokenize(text: "Hello world this is Wax")
+
+    #expect(newlineSeparatedTokens == whitespaceSeparatedTokens)
+}
+
+@Test
+func bertTokenizerSingleSentenceTypeIdsKeepSepAndPaddingInSegmentZero() throws {
+    let tokenizer = try BertTokenizer()
+    let inputTokens = try tokenizer.buildModelTokens(sentence: "hello world")
+
+    let (_, attentionMask, tokenTypeIds) = try tokenizer.buildModelInputsWithTypeIds(from: inputTokens)
+
+    let mask = MLMultiArray.toIntArray(attentionMask)
+    let types = MLMultiArray.toIntArray(tokenTypeIds)
+    #expect(types.count == inputTokens.count)
+    #expect(mask.contains(0))
+    #expect(types.allSatisfy { $0 == 0 })
+}
+
+@Test
+func bertTokenizerPairTypeIdsKeepOnlySecondSegmentActive() throws {
+    let tokenizer = try BertTokenizer()
+    let inputTokens = try tokenizer.convertTokensToIds(tokens: [
+        "[CLS]", "hello", "[SEP]", "world", "[SEP]", "[PAD]",
+    ])
+
+    let (_, _, tokenTypeIds) = try tokenizer.buildModelInputsWithTypeIds(from: inputTokens)
+
+    #expect(MLMultiArray.toIntArray(tokenTypeIds) == [0, 0, 0, 1, 1, 0])
 }
 #endif

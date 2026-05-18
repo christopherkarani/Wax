@@ -67,7 +67,7 @@ Default checks:
 - Watch task groups for hidden fan-out that increases memory pressure.
 - Keep blocking I/O off actor executors.
 - Verify `@MainActor` crossings in UI-adjacent or Photos code.
-- Treat `@preconcurrency` interop and `@unchecked Sendable` around CoreML, GRDB, USearch, Photos, and tokenizer internals as review hotspots, not automatic bugs.
+- Treat `@preconcurrency` interop and `@unchecked Sendable` around CoreML, GRDB, Photos, and tokenizer internals as review hotspots, not automatic bugs.
 
 ## Reporting
 

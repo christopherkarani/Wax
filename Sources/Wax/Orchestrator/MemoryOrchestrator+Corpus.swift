@@ -44,7 +44,7 @@ extension MemoryOrchestrator {
         var documentMetas: [FrameMeta] = []
         documentMetas.reserveCapacity(frameMetas.count)
 
-        for meta in frameMetas where meta.status == .active && meta.role == .document && meta.payloadLength > 0 {
+        for meta in frameMetas where meta.status == .active && meta.supersededBy == nil && meta.role == .document && meta.payloadLength > 0 {
             documentMetas.append(meta)
         }
 
@@ -54,9 +54,8 @@ extension MemoryOrchestrator {
 
         for meta in documentMetas {
             guard let data = contentsByID[meta.id],
-                  let text = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else {
+                  let text = String(data: data, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
 

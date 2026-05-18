@@ -60,6 +60,58 @@ func memoryOrchestratorCloseDrainsEnrichmentQueue() async throws {
 }
 
 @Test
+func memoryOrchestratorPersistsEnrichmentResults() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+        config.enableAsyncEnrichment = true
+        config.chunking = .tokenCount(targetTokens: 64, overlapTokens: 0)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember("Swift concurrency enrichment stores durable keywords.")
+        try await orchestrator.close()
+
+        let wax = try await Wax.open(at: url)
+        let metas = await wax.frameMetas()
+        try await wax.close()
+
+        let enrichment = try #require(metas.first { meta in
+            meta.kind == "enrichment" && meta.role == .system
+        })
+        #expect(enrichment.parentId != nil)
+        let metadata = enrichment.metadata?.entries ?? [:]
+        #expect(metadata["wax.enrichment.keywords"]?.contains("concurrency") == true)
+    }
+}
+
+@Test
+func memoryOrchestratorPersistsEnrichmentEntities() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+        config.enableAsyncEnrichment = true
+        config.chunking = .tokenCount(targetTokens: 64, overlapTokens: 0)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember("Atlas-10 launch review assigned to Ada Lovelace.")
+        try await orchestrator.close()
+
+        let wax = try await Wax.open(at: url)
+        let metas = await wax.frameMetas()
+        try await wax.close()
+
+        let enrichment = try #require(metas.first { meta in
+            meta.kind == "enrichment" && meta.role == .system
+        })
+        let metadata = enrichment.metadata?.entries ?? [:]
+        #expect(metadata["wax.enrichment.entities"]?.contains("Atlas-10|mentioned_in|source_text") == true)
+        #expect(metadata["wax.enrichment.entities"]?.contains("Ada Lovelace|mentioned_in|source_text") == true)
+    }
+}
+
+@Test
 func memoryOrchestratorCloseHandlesLongEnrichmentWorkload() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default

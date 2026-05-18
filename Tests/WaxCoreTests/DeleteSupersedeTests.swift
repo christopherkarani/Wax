@@ -34,6 +34,19 @@ import Testing
     try await wax.close()
 }
 
+@Test func deleteRejectsUnknownFrameBeforeAppendingWal() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+
+    await #expect(throws: WaxError.self) {
+        try await wax.delete(frameId: 0)
+    }
+
+    try await wax.close()
+}
+
 @Test func supersedeUpdatesBothSidesAfterCommit() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -67,6 +80,20 @@ import Testing
     let newMeta = try await wax.frameMeta(frameId: newId)
     #expect(oldMeta.supersededBy == newId)
     #expect(newMeta.supersedes == oldId)
+    try await wax.close()
+}
+
+@Test func supersedeRejectsSelfReferenceBeforeAppendingWal() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let frameId = try await wax.put(Data("self".utf8))
+
+    await #expect(throws: WaxError.self) {
+        try await wax.supersede(supersededId: frameId, supersedingId: frameId)
+    }
+
     try await wax.close()
 }
 
@@ -150,12 +177,10 @@ import Testing
 
     let wax = try await Wax.create(at: url)
     let a = try await wax.put(Data("a".utf8))
-    // Self-supersede is caught at commit time — distinct IDs are required
-    try await wax.supersede(supersededId: a, supersedingId: a)
     await #expect(throws: WaxError.self) {
-        try await wax.commit()
+        try await wax.supersede(supersededId: a, supersedingId: a)
     }
-    _ = try? await wax.close()
+    try await wax.close()
 }
 
 @Test func supersedeChainABCIsNotACycle() async throws {
@@ -245,6 +270,62 @@ import Testing
     #expect(metaA.supersededBy == b)
     #expect(metaB.supersedes == a)
     try await reopened.close()
+}
+
+@Test func failedCommitDoesNotLeaveCommittedSupersedeStateMutated() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let oldId: UInt64
+    let newId: UInt64
+    do {
+        let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+        oldId = try await wax.put(Data("old".utf8))
+        newId = try await wax.put(Data("new".utf8))
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+
+        let writer = WALRingWriter(
+            file: file,
+            walOffset: selected.page.walOffset,
+            walSize: selected.page.walSize,
+            writePos: selected.page.walWritePos,
+            checkpointPos: selected.page.walCheckpointPos,
+            pendingBytes: 0,
+            lastSequence: selected.page.walCommittedSeq
+        )
+        _ = try writer.append(
+            payload: try WALEntryCodec.encode(
+                .supersedeFrame(SupersedeFrame(supersededId: oldId, supersedingId: newId))
+            )
+        )
+        _ = try writer.append(payload: try WALEntryCodec.encode(.deleteFrame(DeleteFrame(frameId: 99))))
+        try file.fsync()
+    }
+
+    let wax = try await Wax.open(at: url)
+    do {
+        try await wax.commit()
+        Issue.record("Expected commit to fail on the invalid trailing delete mutation")
+    } catch WaxError.invalidToc(let reason) {
+        #expect(reason.contains("unknown frameId"))
+    }
+
+    let oldCommitted = try await wax.frameMeta(frameId: oldId)
+    let newCommitted = try await wax.frameMeta(frameId: newId)
+    #expect(oldCommitted.supersededBy == nil)
+    #expect(newCommitted.supersedes == nil)
+
+    try? await wax.close()
 }
 
 @Test func supersededFrameExcludedFromTimeline() async throws {

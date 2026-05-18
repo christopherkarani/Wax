@@ -30,8 +30,8 @@ Every major subsystem is an actor with its own serial executor:
 | `WaxSession` | Frame writes, search delegation, structured memory |
 | `Wax` (WaxCore) | File I/O, WAL, frame storage, writer leasing |
 | `FTS5SearchEngine` | BM25 indexing/search, structured memory persistence |
-| `USearchVectorEngine` | CPU vector index |
-| `MetalVectorEngine` | GPU vector index |
+| `AccelerateVectorEngine` | CPU vector index |
+| `MetalANNSVectorEngine` | GPU vector index |
 | `MiniLMEmbedder` | CoreML inference |
 
 ### Actor Boundaries
@@ -52,11 +52,11 @@ MemoryOrchestrator.remember()
   │
   ├─ Embed chunks (EmbeddingProvider.embed(batch:))
   │
-  ├─ WaxSession.put() ──► Wax.putFrame() ──► WAL
+  ├─ Frame payload write ──► WAL
   │
   ├─ FTS5SearchEngine.index() ──► SQLite FTS5
   │
-  ├─ VectorEngine.add() ──► HNSW / Metal buffer
+  ├─ VectorEngine.add() ──► Flat vector / MetalANNS index
   │
   └─ WaxSession.commit() ──► TOC + Footer + Header
 ```

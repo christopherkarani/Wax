@@ -201,6 +201,7 @@ package actor MemoryOrchestrator {
     private var hasEnsuredMemoryBinding = false
     private var queryEmbeddingCircuitOpen = false
     private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
+    private var lastStructuredSystemMs: Int64?
 
     private var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -292,12 +293,15 @@ package actor MemoryOrchestrator {
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
         if let enrichmentPipeline {
+            let session = self.session
             await enrichmentPipeline.start { task in
                 EnrichmentResult(
                     frameId: task.frameId,
                     keywords: KeywordExtractor.extract(from: task.text),
-                    entities: []
+                    entities: EntityExtractor.extract(from: task.text)
                 )
+            } resultHandler: { result in
+                try await Self.persistEnrichmentResult(result, in: session)
             }
         }
         if resolvedConfig.enableAccessStatsScoring {
@@ -615,6 +619,49 @@ package actor MemoryOrchestrator {
             dimensions: identity.dimensions,
             normalized: identity.normalized
         )
+    }
+
+    private static func persistEnrichmentResult(
+        _ result: EnrichmentResult,
+        in session: WaxSession
+    ) async throws {
+        guard !result.keywords.isEmpty || !result.entities.isEmpty else {
+            return
+        }
+
+        var metadata = Metadata()
+        metadata.entries["wax.enrichment.source_frame_id"] = String(result.frameId)
+        if !result.keywords.isEmpty {
+            metadata.entries["wax.enrichment.keywords"] = result.keywords.joined(separator: ",")
+        }
+        if !result.entities.isEmpty {
+            metadata.entries["wax.enrichment.entities"] = result.entities
+                .map { "\($0.subject)|\($0.predicate)|\($0.object)" }
+                .joined(separator: "\n")
+        }
+
+        _ = try await session.put(
+            Data(renderEnrichmentResult(result).utf8),
+            options: FrameMetaSubset(
+                kind: "enrichment",
+                role: .system,
+                parentId: result.frameId,
+                searchText: result.keywords.joined(separator: " "),
+                metadata: metadata
+            )
+        )
+    }
+
+    private static func renderEnrichmentResult(_ result: EnrichmentResult) -> String {
+        var lines: [String] = []
+        if !result.keywords.isEmpty {
+            lines.append("keywords: \(result.keywords.joined(separator: ", "))")
+        }
+        if !result.entities.isEmpty {
+            lines.append("entities:")
+            lines.append(contentsOf: result.entities.map { "- \($0.subject) \($0.predicate) \($0.object)" })
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
@@ -1143,18 +1190,17 @@ package actor MemoryOrchestrator {
         sessionId: UUID? = nil,
         commit: Bool = true
     ) async throws -> UInt64 {
-        let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         let pending = pendingTasks
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         let text: String
         if pending.isEmpty {
-            text = normalizedContent
+            text = content
         } else {
             let items = pending.map { "- \($0)" }.joined(separator: "\n")
             text = """
-            \(normalizedContent)
+            \(content)
 
             Pending tasks:
             \(items)
@@ -1246,7 +1292,7 @@ package actor MemoryOrchestrator {
         commit: Bool = true
     ) async throws -> FactRowID {
         try ensureStructuredMemoryEnabled()
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let nowMs = try nextStructuredSystemMs()
         let valid = StructuredTimeRange(fromMs: validFromMs ?? nowMs, toMs: validToMs)
         let system = StructuredTimeRange(fromMs: nowMs, toMs: nil)
         let factID = try await session.assertFact(
@@ -1266,11 +1312,29 @@ package actor MemoryOrchestrator {
 
     package func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
         try ensureStructuredMemoryEnabled()
-        let timestamp = atMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+        let timestamp = try atMs ?? nextStructuredSystemMs()
         try await session.retractFact(factId: factId, atMs: timestamp)
         if commit {
             try await session.commit()
         }
+    }
+
+    private func nextStructuredSystemMs() throws -> Int64 {
+        let wallNow = Int64(Date().timeIntervalSince1970 * 1000)
+        guard wallNow < Int64.max else {
+            throw WaxError.encodingError(reason: "structured system timestamp must be less than Int64.max")
+        }
+        guard let last = lastStructuredSystemMs, wallNow <= last else {
+            lastStructuredSystemMs = wallNow
+            return wallNow
+        }
+
+        let next = last.addingReportingOverflow(1)
+        guard !next.overflow, next.partialValue < Int64.max else {
+            throw WaxError.encodingError(reason: "structured system timestamp overflow")
+        }
+        lastStructuredSystemMs = next.partialValue
+        return next.partialValue
     }
 
     private func executeRecall(
@@ -1281,16 +1345,27 @@ package actor MemoryOrchestrator {
         topK: Int?,
         requestedMode: DirectSearchMode?
     ) async throws -> RecallExecution {
-        let queryEmbedding = try await queryEmbeddingResult(for: query, policy: embeddingPolicy)
         let recallConfig = ragConfigForRecall()
         let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            let modeSummary = Self.modeSummary(requestedSearchMode)
+            return RecallExecution(
+                context: RAGContext(query: query, items: [], totalTokens: 0),
+                requestedModeSummary: modeSummary,
+                effectiveModeSummary: modeSummary,
+                queryEmbeddingState: .notRequested
+            )
+        }
+
+        let queryEmbedding = try await queryEmbeddingResult(for: trimmedQuery, policy: embeddingPolicy)
         let effectiveSearchMode = Self.resolveSearchMode(
             requested: requestedSearchMode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
 
         let context = try await buildRecallContext(
-            query: query,
+            query: trimmedQuery,
             embedding: queryEmbedding.embedding,
             frameFilter: frameFilter,
             timeRange: timeRange,
@@ -1363,13 +1438,40 @@ package actor MemoryOrchestrator {
         about subject: EntityKey? = nil,
         predicate: PredicateKey? = nil,
         asOfMs: Int64 = Int64.max,
+        systemAsOfMs: Int64? = nil,
+        validAsOfMs: Int64? = nil,
         limit: Int = 50
     ) async throws -> StructuredFactsResult {
         try ensureStructuredMemoryEnabled()
         return try await session.facts(
             about: subject,
             predicate: predicate,
-            asOf: StructuredMemoryAsOf(asOfMs: asOfMs),
+            asOf: StructuredMemoryAsOf(
+                systemTimeMs: systemAsOfMs ?? asOfMs,
+                validTimeMs: validAsOfMs ?? asOfMs
+            ),
+            limit: limit
+        )
+    }
+
+    package func edges(
+        for entity: EntityKey,
+        direction: StructuredEdgeDirection,
+        predicate: PredicateKey? = nil,
+        asOfMs: Int64 = Int64.max,
+        systemAsOfMs: Int64? = nil,
+        validAsOfMs: Int64? = nil,
+        limit: Int = 50
+    ) async throws -> StructuredEdgesResult {
+        try ensureStructuredMemoryEnabled()
+        return try await session.edges(
+            for: entity,
+            direction: direction,
+            predicate: predicate,
+            asOf: StructuredMemoryAsOf(
+                systemTimeMs: systemAsOfMs ?? asOfMs,
+                validTimeMs: validAsOfMs ?? asOfMs
+            ),
             limit: limit
         )
     }

@@ -1,17 +1,17 @@
 # Text Search Engine
 
-Index text, search with BM25 scoring, and manage structured knowledge — all through a single actor.
+Understand the package-only text search actor used by Wax internals.
 
 ## Overview
 
-``FTS5SearchEngine`` is an actor that combines SQLite FTS5 full-text search with a complete structured memory system. It handles batching, serialization, and persistence automatically.
+``FTS5SearchEngine`` is a package-only actor that combines SQLite FTS5 full-text search with a complete structured memory system. It is not public API; downstream applications should use the public Wax memory APIs instead. This article documents the implementation surface for Wax contributors.
 
-## Creating an Engine
+## Package-Internal Setup
 
-There are three ways to create an engine:
+Inside Wax package targets and tests, the engine can be created from memory, serialized state, or a Wax store:
 
 ```swift
-// In-memory (fresh)
+// Package-internal: in-memory (fresh)
 let engine = try await FTS5SearchEngine.inMemory()
 
 // From serialized data
@@ -58,7 +58,7 @@ Search returns results ranked by BM25 relevance:
 let results = try await engine.search(query: "quarterly review", topK: 10)
 ```
 
-Each ``TextSearchResult`` contains:
+Each package-internal search hit contains:
 
 - **`frameId`** — The matching frame's identifier
 - **`score`** — BM25 relevance score (higher is better)
@@ -85,43 +85,11 @@ The engine also stores and queries an entity-fact knowledge graph. See the WaxCo
 
 ### Entity Management
 
-```swift
-// Create or update an entity
-let entityId = try await engine.upsertEntity(
-    key: EntityKey("alice"),
-    kind: "Person",
-    aliases: ["Alice Smith", "A. Smith"],
-    nowMs: Int64(Date().timeIntervalSince1970 * 1000)
-)
-
-// Fuzzy-match entities by alias
-let matches = try await engine.resolveEntities(
-    matchingAlias: "alice",
-    limit: 10
-)
-```
+Wax package internals use the structured-memory engine to upsert canonical entities, store aliases, and resolve fuzzy alias matches during broker and orchestrator workflows.
 
 ### Fact Assertion and Querying
 
-```swift
-// Assert a fact with temporal bounds
-let factId = try await engine.assertFact(
-    subject: EntityKey("alice"),
-    predicate: PredicateKey("works_at"),
-    object: .string("Acme Corp"),
-    valid: StructuredTimeRange(fromMs: startMs, toMs: nil),
-    system: StructuredTimeRange(fromMs: nowMs, toMs: nil),
-    evidence: [evidence]
-)
-
-// Query facts
-let result = try await engine.facts(
-    about: EntityKey("alice"),
-    predicate: nil,
-    asOf: StructuredMemoryAsOf(systemTimeMs: nowMs, validTimeMs: nowMs),
-    limit: 100
-)
-```
+Structured fact writes include subject, predicate, object, valid time, system time, and evidence links. Fact reads apply bitemporal filters and return package-internal result values for the higher-level Wax APIs to translate.
 
 ## Persistence
 

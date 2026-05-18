@@ -96,5 +96,5 @@ cd /path/to/Wax
 swift build --product wax-cli --traits MCPServer
 swift build --product wax-mcp --traits MCPServer
 export WAX_CLI_BIN=/path/to/Wax/.build/debug/wax-cli
-npx --yes ./npm/waxmcp mcp doctor
+npx --yes ./Resources/npm/waxmcp mcp doctor
 ```

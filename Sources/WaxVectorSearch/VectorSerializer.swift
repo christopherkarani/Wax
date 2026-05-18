@@ -1,5 +1,4 @@
 import Foundation
-import USearch
 import WaxCore
 
 package enum VectorSerializer {
@@ -18,7 +17,6 @@ package enum VectorSerializer {
     }
 
     package enum VecSegmentPayload: Sendable, Equatable {
-        case uSearch(info: SegmentInfo, payload: Data)
         case metal(info: SegmentInfo, vectors: [Float], frameIds: [UInt64])
     }
 
@@ -49,26 +47,6 @@ package enum VectorSerializer {
         return encoding
     }
 
-    package static func serializeUSearchIndex(
-        _ index: USearchIndex,
-        metric: VectorMetric,
-        dimensions: Int,
-        vectorCount: UInt64
-    ) throws -> Data {
-        let payload = try saveUSearchPayload(index)
-        let header = VecSegmentHeaderV1(
-            similarity: metric.toVecSimilarity(),
-            dimension: UInt32(dimensions),
-            vectorCount: vectorCount,
-            payloadLength: UInt64(payload.count)
-        )
-        var encoder = BinaryEncoder()
-        header.encode(to: &encoder)
-        var data = encoder.data
-        data.append(payload)
-        return data
-    }
-
     package static func serializeFlatVectors(
         _ vectors: [Float],
         frameIds: [UInt64],
@@ -81,6 +59,7 @@ package enum VectorSerializer {
         guard vectors.count == frameIds.count * dimensions else {
             throw WaxError.invalidToc(reason: "flat vector payload mismatch")
         }
+        try validateUniqueFrameIds(frameIds)
 
         let vectorBytes = vectors.count * MemoryLayout<Float>.stride
         let frameIdBytes = frameIds.count * MemoryLayout<UInt64>.stride
@@ -103,16 +82,6 @@ package enum VectorSerializer {
         return data
     }
 
-    package static func decodeUSearchPayload(from data: Data) throws -> (info: SegmentInfo, payload: Data) {
-        let payload = try decodeVecSegment(from: data)
-        switch payload {
-        case .uSearch(let info, let bytes):
-            return (info, bytes)
-        case .metal:
-            throw WaxError.invalidToc(reason: "vec segment encoding is not usearch; USearch payload unavailable")
-        }
-    }
-
     package static func decodeVecSegment(from data: Data) throws -> VecSegmentPayload {
         guard data.count >= VecSegmentHeaderV1.encodedSize else {
             throw WaxError.invalidToc(reason: "vec segment too small: \(data.count) bytes")
@@ -132,27 +101,23 @@ package enum VectorSerializer {
 
         switch header.encoding {
         case VecEncoding.uSearch.rawValue:
-            guard header.payloadLength <= UInt64(Int.max) else {
-                throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
-            }
-            let expectedTotal = VecSegmentHeaderV1.encodedSize + Int(header.payloadLength)
-            guard data.count == expectedTotal else {
-                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
-            }
-            let payload = data.suffix(Int(header.payloadLength))
-            return .uSearch(info: info, payload: payload)
+            throw WaxError.invalidToc(reason: Self.legacyUSearchUnsupportedReason)
         case VecEncoding.metal.rawValue, VecEncoding.flat.rawValue:
             guard header.payloadLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec payload_length exceeds Int.max: \(header.payloadLength)")
             }
             let vectorLength = Int(header.payloadLength)
-            let expectedVectorBytes = Int(header.vectorCount) * Int(header.dimension) * MemoryLayout<Float>.stride
-            guard vectorLength == expectedVectorBytes else {
+            let expectedVectorBytes = try checkedVectorByteCount(
+                vectorCount: header.vectorCount,
+                dimension: header.dimension
+            )
+            guard header.payloadLength == expectedVectorBytes else {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
 
             var offset = VecSegmentHeaderV1.encodedSize
-            guard data.count >= offset + vectorLength + MemoryLayout<UInt64>.stride else {
+            let frameIdLengthOffset = offset + vectorLength
+            guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
@@ -166,8 +131,8 @@ package enum VectorSerializer {
             guard frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
             }
-            let expectedFrameIdBytes = Int(header.vectorCount) * MemoryLayout<UInt64>.stride
-            guard Int(frameIdLength) == expectedFrameIdBytes else {
+            let expectedFrameIdBytes = try checkedFrameIdByteCount(vectorCount: header.vectorCount)
+            guard frameIdLength == expectedFrameIdBytes else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }
             let expectedTotal = offset + Int(frameIdLength)
@@ -181,6 +146,7 @@ package enum VectorSerializer {
             let frameIds = Array(data[offset..<offset + Int(frameIdLength)].withUnsafeBytes {
                 Array($0.bindMemory(to: UInt64.self))
             })
+            try validateUniqueFrameIds(frameIds)
 
             return .metal(info: info, vectors: vectors, frameIds: frameIds)
         default:
@@ -188,13 +154,44 @@ package enum VectorSerializer {
         }
     }
 
-    package static func loadUSearchIndex(_ index: USearchIndex, fromPayload payload: Data) throws {
-        try index.deserializeFromData(payload)
+    private static func checkedVectorByteCount(vectorCount: UInt64, dimension: UInt32) throws -> UInt64 {
+        let dimProduct = vectorCount.multipliedReportingOverflow(by: UInt64(dimension))
+        guard !dimProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec vector data length overflow")
+        }
+        let byteProduct = dimProduct.partialValue.multipliedReportingOverflow(by: UInt64(MemoryLayout<Float>.stride))
+        guard !byteProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec vector data length overflow")
+        }
+        guard byteProduct.partialValue <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "vec vector data length exceeds Int.max: \(byteProduct.partialValue)")
+        }
+        return byteProduct.partialValue
     }
 
-    private static func saveUSearchPayload(_ index: USearchIndex) throws -> Data {
-        try index.serializeToData()
+    private static func checkedFrameIdByteCount(vectorCount: UInt64) throws -> UInt64 {
+        let byteProduct = vectorCount.multipliedReportingOverflow(by: UInt64(MemoryLayout<UInt64>.stride))
+        guard !byteProduct.overflow else {
+            throw WaxError.invalidToc(reason: "vec frameId data length overflow")
+        }
+        guard byteProduct.partialValue <= UInt64(Int.max) else {
+            throw WaxError.invalidToc(reason: "vec frameId data length exceeds Int.max: \(byteProduct.partialValue)")
+        }
+        return byteProduct.partialValue
     }
+
+    package static func validateUniqueFrameIds(_ frameIds: [UInt64]) throws {
+        var seen = Set<UInt64>()
+        seen.reserveCapacity(frameIds.count)
+        for frameId in frameIds {
+            guard seen.insert(frameId).inserted else {
+                throw WaxError.invalidToc(reason: "vec frameIds contain duplicate id \(frameId)")
+            }
+        }
+    }
+
+    package static let legacyUSearchUnsupportedReason =
+        "Legacy USearch vector index is unsupported; rebuild the vector index."
 
     private struct VecSegmentHeaderV1 {
         static let encodedSize: Int = 36
@@ -223,14 +220,6 @@ package enum VectorSerializer {
             encoder.encode(vectorCount)
             encoder.encode(payloadLength)
             encoder.encodeFixedBytes(Data(repeating: 0, count: 8))
-        }
-
-        static func decode(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {
-            let header = try decodeAnyEncoding(from: &decoder)
-            guard header.encoding == VecEncoding.uSearch.rawValue else {
-                throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
-            }
-            return header
         }
 
         static func decodeAnyEncoding(from decoder: inout BinaryDecoder) throws -> VecSegmentHeaderV1 {

@@ -120,6 +120,7 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 ### Swift
 
 ```swift
+import Foundation
 import Wax
 
 // Use a sandbox-safe, writable location (works in apps and CLI tools)
@@ -131,7 +132,7 @@ let memory = try await Memory(at: url)
 // 2. Save a memory
 try await memory.save("The user is building a habit tracker in SwiftUI.")
 
-// 3. Search with hybrid recall (text + vector)
+// 3. Search with text-only recall (no embedding provider required)
 let results = try await memory.search("What is the user building?")
 
 if let best = results.items.first {
@@ -179,6 +180,7 @@ struct ContentView: View {
 <summary><strong>CLI tool (main.swift)</strong></summary>
 
 ```swift
+import Foundation
 import Wax
 
 @main

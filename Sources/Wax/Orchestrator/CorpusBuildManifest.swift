@@ -63,7 +63,11 @@ package enum CorpusBuildManifestStore {
             return nil
         }
         let data = try Data(contentsOf: manifestURL)
-        return try decoder.decode(CorpusBuildManifest.self, from: data)
+        do {
+            return try decoder.decode(CorpusBuildManifest.self, from: data)
+        } catch is DecodingError {
+            return nil
+        }
     }
 
     package static func save(_ manifest: CorpusBuildManifest, for targetStoreURL: URL) throws {

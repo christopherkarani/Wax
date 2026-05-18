@@ -48,6 +48,7 @@ struct IndexCommand: ParsableCommand {
         let waxDir = URL(fileURLWithPath: repoRoot).appendingPathComponent(".wax-repo")
         let storePath = waxDir.appendingPathComponent("store.wax")
         let lastHashFile = waxDir.appendingPathComponent("last-indexed-hash")
+        let fullReindexStorePath = full ? temporaryFullReindexStorePath(in: waxDir) : storePath
 
         // Create .wax-repo directory
         try FileManager.default.createDirectory(at: waxDir, withIntermediateDirectories: true)
@@ -75,14 +76,20 @@ struct IndexCommand: ParsableCommand {
         )
 
         guard !commits.isEmpty else {
+            try resetFullReindexOutputsIfNeeded(
+                full: full,
+                storePath: storePath,
+                lastHashFile: lastHashFile
+            )
             print("No new commits to index.")
             return
         }
 
         print("Found \(commits.count) commit\(commits.count == 1 ? "" : "s") to index.")
+        let checkpointHash = checkpointHash(for: commits, maxCommits: maxCommits)
 
         // Open store and ingest
-        let store = try await RepoStore(storeURL: storePath, textOnly: textOnly)
+        let store = try await RepoStore(storeURL: fullReindexStorePath, textOnly: textOnly)
         let repoName = URL(fileURLWithPath: repoRoot).lastPathComponent
 
         let startTime = CFAbsoluteTimeGetCurrent()
@@ -95,12 +102,18 @@ struct IndexCommand: ParsableCommand {
         }
         print() // newline after progress
 
-        // Write last indexed hash
-        if let latestHash = commits.first?.hash {
-            try latestHash.write(to: lastHashFile, atomically: true, encoding: .utf8)
-        }
-
         try await store.close()
+
+        if full {
+            try finalizeFullReindex(
+                tempStorePath: fullReindexStorePath,
+                storePath: storePath,
+                lastHashFile: lastHashFile,
+                checkpointHash: checkpointHash
+            )
+        } else if let checkpointHash {
+            try checkpointHash.write(to: lastHashFile, atomically: true, encoding: .utf8)
+        }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         print("Indexed \(commits.count) commit\(commits.count == 1 ? "" : "s") in \(String(format: "%.1f", elapsed))s")
@@ -126,6 +139,89 @@ private func ensureGitignore(repoRoot: String) {
         // Create new .gitignore
         try? (entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
     }
+}
+
+private func temporaryFullReindexStorePath(in waxDir: URL) -> URL {
+    waxDir.appendingPathComponent("store.reindex.\(UUID().uuidString).wax")
+}
+
+private func checkpointHash(for commits: [GitCommit], maxCommits: Int) -> String? {
+    guard let latestHash = commits.first?.hash else { return nil }
+    guard maxCommits <= 0 || commits.count < maxCommits else { return nil }
+    return latestHash
+}
+
+private func resetFullReindexOutputsIfNeeded(full: Bool, storePath: URL, lastHashFile: URL) throws {
+    guard full else { return }
+    try removeItemIfExists(at: storePath)
+    try removeItemIfExists(at: lastHashFile)
+}
+
+private func finalizeFullReindex(
+    tempStorePath: URL,
+    storePath: URL,
+    lastHashFile: URL,
+    checkpointHash: String?
+) throws {
+    let fileManager = FileManager.default
+    let backupStorePath = storePath
+        .deletingLastPathComponent()
+        .appendingPathComponent("store.backup.\(UUID().uuidString).wax")
+    let backupHashPath = lastHashFile
+        .deletingLastPathComponent()
+        .appendingPathComponent("last-indexed-hash.backup.\(UUID().uuidString)")
+    let tempHashPath = lastHashFile
+        .deletingLastPathComponent()
+        .appendingPathComponent("last-indexed-hash.reindex.\(UUID().uuidString)")
+
+    if let checkpointHash {
+        try checkpointHash.write(to: tempHashPath, atomically: true, encoding: .utf8)
+    }
+
+    var movedStoreBackup = false
+    var movedHashBackup = false
+    var movedNewStore = false
+
+    do {
+        if fileManager.fileExists(atPath: storePath.path) {
+            try fileManager.moveItem(at: storePath, to: backupStorePath)
+            movedStoreBackup = true
+        }
+        if fileManager.fileExists(atPath: lastHashFile.path) {
+            try fileManager.moveItem(at: lastHashFile, to: backupHashPath)
+            movedHashBackup = true
+        }
+
+        try fileManager.moveItem(at: tempStorePath, to: storePath)
+        movedNewStore = true
+        if checkpointHash != nil {
+            try fileManager.moveItem(at: tempHashPath, to: lastHashFile)
+        }
+    } catch {
+        if movedNewStore {
+            try? fileManager.removeItem(at: storePath)
+        }
+        if movedStoreBackup {
+            try? fileManager.moveItem(at: backupStorePath, to: storePath)
+        }
+        if movedHashBackup {
+            try? fileManager.moveItem(at: backupHashPath, to: lastHashFile)
+        }
+        try? fileManager.removeItem(at: tempHashPath)
+        throw error
+    }
+
+    if movedStoreBackup {
+        try? fileManager.removeItem(at: backupStorePath)
+    }
+    if movedHashBackup {
+        try? fileManager.removeItem(at: backupHashPath)
+    }
+}
+
+private func removeItemIfExists(at url: URL) throws {
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    try FileManager.default.removeItem(at: url)
 }
 
 #endif

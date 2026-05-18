@@ -288,6 +288,14 @@ private func makeBuffer(tocBytes: Data, footer: WaxFooter) throws -> Data {
     }
 }
 
+@Test func footerScannerFindFooterAtOffsetRejectsOverflowingFooterEnd() throws {
+    try TempFiles.withTempFile { url in
+        try Data(repeating: 0x00, count: WaxFooter.size).write(to: url)
+        let result = try FooterScanner.findFooter(at: UInt64.max, in: url)
+        #expect(result == nil)
+    }
+}
+
 @Test func footerScannerFindFooterAtOffsetBadMagic() throws {
     // A buffer whose bytes at the target offset do not decode as a valid footer.
     let buf = Data(repeating: 0x00, count: WaxFooter.size * 2)

@@ -259,6 +259,10 @@ package struct WaxHeaderPage: Equatable, Sendable {
         guard walCheckpointPos <= walSize else {
             throw WaxError.invalidHeader(reason: "wal_checkpoint_pos must be <= wal_size")
         }
+        let walEnd = walOffset.addingReportingOverflow(walSize)
+        guard !walEnd.overflow else {
+            throw WaxError.invalidHeader(reason: "wal_offset + wal_size overflows")
+        }
         if let walReplaySnapshot {
             guard walReplaySnapshot.walWritePos <= walSize else {
                 throw WaxError.invalidHeader(reason: "wal_replay_snapshot.wal_write_pos must be <= wal_size")
@@ -269,13 +273,13 @@ package struct WaxHeaderPage: Equatable, Sendable {
             guard walReplaySnapshot.walPendingBytes <= walSize else {
                 throw WaxError.invalidHeader(reason: "wal_replay_snapshot.wal_pending_bytes must be <= wal_size")
             }
-            guard walReplaySnapshot.footerOffset >= walOffset + walSize else {
+            guard walReplaySnapshot.footerOffset >= walEnd.partialValue else {
                 throw WaxError.invalidHeader(
                     reason: "wal_replay_snapshot.footer_offset must be >= wal_offset + wal_size"
                 )
             }
         }
-        guard footerOffset >= walOffset + walSize else {
+        guard footerOffset >= walEnd.partialValue else {
             throw WaxError.invalidHeader(reason: "footer_offset must be >= wal_offset + wal_size")
         }
 

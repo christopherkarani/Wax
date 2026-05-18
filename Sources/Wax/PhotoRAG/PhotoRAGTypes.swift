@@ -24,9 +24,37 @@ package struct ContextBudget: Sendable, Equatable {
 
 /// Optional filters applied during photo recall.
 package struct PhotoFilters: Sendable, Equatable {
-    package init() {}
+    package var assetIDs: Set<String>?
+    package var source: PhotoSource?
+    package var isLocal: Bool?
+
+    package init(
+        assetIDs: Set<String>? = nil,
+        source: PhotoSource? = nil,
+        isLocal: Bool? = nil
+    ) {
+        self.assetIDs = Self.normalizedNonEmptySet(assetIDs)
+        self.source = source
+        self.isLocal = isLocal
+    }
 
     package static let none = PhotoFilters()
+
+    package var isEmpty: Bool {
+        assetIDs == nil && source == nil && isLocal == nil
+    }
+
+    private static func normalizedNonEmptySet(_ values: Set<String>?) -> Set<String>? {
+        guard let values else { return nil }
+        let normalized = Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        return normalized.isEmpty ? nil : normalized
+    }
+}
+
+/// Source backing a photo record in the package-only Photo RAG pipeline.
+package enum PhotoSource: String, Sendable, Equatable {
+    case photos
+    case file
 }
 
 /// A GPS coordinate used for location-based photo queries.
@@ -61,6 +89,30 @@ package enum PhotoScope: Sendable, Equatable {
     case fullLibrary
     /// Sync only the specified asset identifiers.
     case assetIDs([String])
+}
+
+/// A local image file to ingest into the package-only Photo RAG pipeline.
+package struct PhotoFile: Sendable, Equatable {
+    /// Stable caller-provided identifier used as the photo asset ID in Wax metadata.
+    package var id: String
+    /// Local file URL for the image bytes.
+    package var url: URL
+    /// Optional capture date when no image metadata timestamp is available.
+    package var captureDate: Date?
+
+    package init(id: String, url: URL, captureDate: Date? = nil) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.id = trimmed.isEmpty ? url.standardizedFileURL.absoluteString : trimmed
+        self.url = url
+        self.captureDate = captureDate
+    }
+}
+
+/// Errors thrown during photo ingestion.
+package enum PhotoIngestError: Error, Sendable, Equatable {
+    case fileMissing(id: String, url: URL)
+    case invalidImage(reason: String)
+    case embedderDimensionMismatch(expected: Int, got: Int)
 }
 
 /// A Sendable wrapper for query-time images.
@@ -206,4 +258,3 @@ package struct PhotoRAGItem: Sendable, Equatable {
         self.regions = regions
     }
 }
-

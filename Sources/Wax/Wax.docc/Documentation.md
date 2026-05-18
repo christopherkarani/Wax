@@ -9,7 +9,6 @@ The Wax module is the primary public API surface for building memory-augmented a
 - **``MemoryOrchestrator``** — The main text RAG orchestrator: ingest text, recall context, manage sessions
 - **``PhotoRAGOrchestrator``** — Multimodal RAG for photo libraries with OCR and CLIP embeddings
 - **``VideoRAGOrchestrator``** — Video segment RAG with transcript integration
-- **``WaxSession``** — Unified frame, search, and structured memory interface with read/write multiplexing
 - **Unified search** — BM25 + vector + structured memory fusion with reciprocal rank fusion (RRF)
 - **RAG pipeline** — Token-budget-aware context assembly with surrogate tiers and intent-aware reranking
 
@@ -48,7 +47,6 @@ print(context.items.map(\.text))
 ### Sessions
 
 - <doc:SessionManagement>
-- ``WaxSession``
 
 ### RAG Pipeline
 
@@ -60,9 +58,6 @@ print(context.items.map(\.text))
 ### Search
 
 - <doc:UnifiedSearch>
-- ``SearchRequest``
-- ``SearchResponse``
-- ``SearchMode``
 
 ### Photo RAG
 

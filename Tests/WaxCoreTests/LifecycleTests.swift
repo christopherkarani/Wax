@@ -51,6 +51,42 @@ import Testing
     }
 }
 
+@Test func createDoesNotTruncateExistingStoreWhenLockUnavailable() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    do {
+        let wax = try await Wax.create(at: url)
+        _ = try await wax.put(Data("preserved".utf8))
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    let sizeBefore = try fileSize(at: url)
+    let holder = try FileLock.acquire(at: url, mode: .exclusive)
+    defer { try? holder.release() }
+
+    do {
+        _ = try await Wax.create(
+            at: url,
+            options: WaxOptions(lockWaitTimeout: .milliseconds(10))
+        )
+        Issue.record("Expected create to fail while another writer holds the store lock")
+    } catch WaxError.lockUnavailable {
+        // Expected path.
+    }
+
+    let sizeAfter = try fileSize(at: url)
+    #expect(sizeAfter == sizeBefore)
+
+    try holder.release()
+
+    let reopened = try await Wax.open(at: url)
+    let payload = try await reopened.frameContent(frameId: 0)
+    #expect(payload == Data("preserved".utf8))
+    try await reopened.close()
+}
+
 @Test func emptyCommitIsNoOp() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -97,6 +133,11 @@ import Testing
         #expect(frameId == 2)
         try await wax.close()
     }
+}
+
+private func fileSize(at url: URL) throws -> UInt64 {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return try #require(attributes[.size] as? NSNumber).uint64Value
 }
 
 @Test func closeCommitsPendingMutations() async throws {

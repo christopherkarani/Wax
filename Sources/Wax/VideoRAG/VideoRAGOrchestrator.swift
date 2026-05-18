@@ -629,7 +629,7 @@ package actor VideoRAGOrchestrator {
             durationMs: durationMs,
             pipelineVersion: config.pipelineVersion,
             isLocal: record.isLocal,
-            fileURL: nil
+            fileURL: record.localFileURL
         )
         let rootOptions = FrameMetaSubset(kind: FrameKind.root, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)

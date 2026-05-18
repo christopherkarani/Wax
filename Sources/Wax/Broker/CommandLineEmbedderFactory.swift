@@ -21,7 +21,12 @@ package enum CommandLineEmbedderFactory {
             return nil
         }
 
-        if embedderChoice.lowercased() == "arctic" {
+        let choice = embedderChoice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard choice == "auto" || choice == "minilm" || choice == "arctic" else {
+            throw WaxError.encodingError(reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, or auto.")
+        }
+
+        if choice == "arctic" {
             #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
             if #available(macOS 15.0, iOS 18.0, *) {
                 return DeferredCommandLineEmbedder(kind: .arctic, tuning: tuning)

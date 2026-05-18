@@ -12,23 +12,29 @@ actor MCPHTTPApplication {
         var port: Int
         var endpoint: String
         var sessionTimeout: TimeInterval
+        var sessionCleanupInterval: Duration
         var retryInterval: Int?
         var maxRequestBodyBytes: Int
+        var authToken: String?
 
         init(
             host: String = "127.0.0.1",
             port: Int = 3000,
             endpoint: String = "/mcp",
             sessionTimeout: TimeInterval = 3600,
+            sessionCleanupInterval: Duration = .seconds(60),
             retryInterval: Int? = nil,
-            maxRequestBodyBytes: Int = 1_048_576
+            maxRequestBodyBytes: Int = 1_048_576,
+            authToken: String? = nil
         ) {
             self.host = host
             self.port = port
             self.endpoint = endpoint
             self.sessionTimeout = sessionTimeout
+            self.sessionCleanupInterval = sessionCleanupInterval
             self.retryInterval = retryInterval
             self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
+            self.authToken = HTTPAuthPolicy.normalizedToken(authToken)
         }
     }
 
@@ -39,6 +45,7 @@ actor MCPHTTPApplication {
     private let validationPipeline: (any HTTPRequestValidationPipeline)?
     private var channel: Channel?
     private var sessions: [String: SessionContext] = [:]
+    private var cleanupTask: Task<Void, Never>?
 
     nonisolated let logger: Logger
     nonisolated let maxRequestBodyBytes: Int
@@ -91,21 +98,61 @@ actor MCPHTTPApplication {
             ]
         )
 
+        if HTTPAuthPolicy.requiresAuthentication(host: configuration.host), configuration.authToken == nil {
+            throw MCP.MCPError.invalidRequest("HTTP auth token is required when binding off loopback")
+        }
+
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
         self.channel = channel
-        Task { await sessionCleanupLoop() }
-        try await channel.closeFuture.get()
+        startSessionCleanupTask()
+        do {
+            try await channel.closeFuture.get()
+        } catch {
+            await stopSessionCleanupTask()
+            try await group.shutdownGracefully()
+            throw error
+        }
+        await stopSessionCleanupTask()
         try await group.shutdownGracefully()
     }
 
     func stop() async {
+        await stopSessionCleanupTask()
         await closeAllSessions()
         try? await channel?.close()
         channel = nil
         logger.info("Wax MCP HTTP application stopped")
     }
 
+    func startSessionCleanupTask() {
+        guard cleanupTask == nil else { return }
+        cleanupTask = Task { await sessionCleanupLoop() }
+    }
+
+    func stopSessionCleanupTask() async {
+        guard let task = cleanupTask else { return }
+        task.cancel()
+        await task.value
+        cleanupTask = nil
+    }
+
+    func hasActiveSessionCleanupTask() -> Bool {
+        cleanupTask != nil
+    }
+
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
+        if HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
+           !HTTPAuthPolicy.isAuthorized(
+               requestToken: request.header("authorization"),
+               configuredToken: configuration.authToken
+           ) {
+            return .error(
+                statusCode: 401,
+                .invalidRequest("Unauthorized: missing or invalid bearer token"),
+                extraHeaders: ["WWW-Authenticate": "Bearer"]
+            )
+        }
+
         let sessionID = request.header(HTTPHeaderName.sessionID)
 
         if let sessionID, var session = sessions[sessionID] {
@@ -183,8 +230,12 @@ actor MCPHTTPApplication {
     }
 
     private func sessionCleanupLoop() async {
-        while true {
-            try? await Task.sleep(for: .seconds(60))
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: configuration.sessionCleanupInterval)
+            } catch {
+                break
+            }
             let now = Date()
             let expired = sessions.filter { _, context in
                 now.timeIntervalSince(context.lastAccessedAt) > configuration.sessionTimeout
@@ -194,6 +245,35 @@ actor MCPHTTPApplication {
                 await closeSession(sessionID)
             }
         }
+    }
+}
+
+enum HTTPAuthPolicy {
+    static func requiresAuthentication(host rawHost: String) -> Bool {
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch host {
+        case "localhost", "127.0.0.1", "::1", "[::1]":
+            return false
+        default:
+            return true
+        }
+    }
+
+    static func normalizedToken(_ token: String?) -> String? {
+        guard let token else { return nil }
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func isAuthorized(requestToken: String?, configuredToken: String?) -> Bool {
+        guard let configuredToken = normalizedToken(configuredToken),
+              let requestToken else {
+            return false
+        }
+        let trimmed = requestToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "Bearer "
+        guard trimmed.hasPrefix(prefix) else { return false }
+        return String(trimmed.dropFirst(prefix.count)) == configuredToken
     }
 }
 
@@ -219,7 +299,7 @@ enum HTTPRequestBodyLimit {
     }
 }
 
-private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
+final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
@@ -242,15 +322,19 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         switch part {
         case .head(let head):
             let contentLength = head.headers.first(name: "content-length").flatMap(Int.init)
+            if HTTPRequestBodyLimit.exceedsLimit(
+                currentBytes: 0,
+                incomingBytes: 0,
+                contentLength: contentLength,
+                maxBytes: app.maxRequestBodyBytes
+            ) {
+                requestState = nil
+                writePayloadTooLarge(version: head.version, context: context)
+                return
+            }
             requestState = RequestState(
                 head: head,
-                bodyBuffer: context.channel.allocator.buffer(capacity: 0),
-                exceededBodyLimit: HTTPRequestBodyLimit.exceedsLimit(
-                    currentBytes: 0,
-                    incomingBytes: 0,
-                    contentLength: contentLength,
-                    maxBytes: app.maxRequestBodyBytes
-                )
+                bodyBuffer: context.channel.allocator.buffer(capacity: 0)
             )
         case .body(var buffer):
             guard var state = requestState else { return }
@@ -260,8 +344,8 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 contentLength: nil,
                 maxBytes: app.maxRequestBodyBytes
             ) {
-                state.exceededBodyLimit = true
-                requestState = state
+                requestState = nil
+                writePayloadTooLarge(version: state.head.version, context: context)
                 return
             }
             state.bodyBuffer.writeBuffer(&buffer)
@@ -274,6 +358,21 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 await self.handleRequest(state: state, context: ctx)
             }
         }
+    }
+
+    private func writePayloadTooLarge(version: HTTPVersion, context: ChannelHandlerContext) {
+        let response = HTTPResponse.error(statusCode: 413, .invalidRequest("Payload Too Large"))
+        var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: response.statusCode))
+        for (name, value) in response.headers {
+            head.headers.add(name: name, value: value)
+        }
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        if let bodyData = response.bodyData {
+            var body = context.channel.allocator.buffer(capacity: bodyData.count)
+            body.writeBytes(bodyData)
+            context.write(wrapOutboundOut(.body(.byteBuffer(body))), promise: nil)
+        }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
     }
 
     private func handleRequest(state: RequestState, context: ChannelHandlerContext) async {

@@ -138,23 +138,25 @@ package final class MiniLMEmbeddings {
         inputIds: MLMultiArray,
         attentionMask: MLMultiArray,
         batchSize: Int
-    ) async -> [[Float]]? {
+    ) async throws -> [[Float]]? {
         let localModel = model
         let outputDimension = self.outputDimension
-        return await withCheckedContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             Self.predictionQueue.async {
-                let output: all_MiniLM_L6_v2Output? = try? localModel.prediction(
-                    input_ids: inputIds,
-                    attention_mask: attentionMask
-                )
-                let decoded = output.flatMap {
-                    Self.decodeEmbeddings(
-                        $0.var_554,
+                do {
+                    let output = try localModel.prediction(
+                        input_ids: inputIds,
+                        attention_mask: attentionMask
+                    )
+                    let decoded = Self.decodeEmbeddings(
+                        output.var_554,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )
+                    continuation.resume(returning: decoded)
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                continuation.resume(returning: decoded)
             }
         }
     }
@@ -162,13 +164,13 @@ package final class MiniLMEmbeddings {
     // MARK: - Dense Embeddings
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
-    package func encode(sentence: String) async -> [Float]? {
+    package func encode(sentence: String) async throws -> [Float]? {
         guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: [sentence],
             sequenceLengthBuckets: Self.sequenceLengthBuckets
         ), batchInputs.sequenceLength > 0 else { return nil }
 
-        guard let embeddings = await batchPredictionOffPool(
+        guard let embeddings = try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
             attentionMask: batchInputs.attentionMask,
             batchSize: 1
@@ -180,15 +182,15 @@ package final class MiniLMEmbeddings {
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    package func encode(batch sentences: [String]) async -> [[Float]]? {
+    package func encode(batch sentences: [String]) async throws -> [[Float]]? {
         var reuse: BatchInputBuffers?
-        return await encode(batch: sentences, reuseBuffers: &reuse)
+        return try await encode(batch: sentences, reuseBuffers: &reuse)
     }
 
     package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
-    ) async -> [[Float]]? {
+    ) async throws -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
         guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
@@ -197,24 +199,27 @@ package final class MiniLMEmbeddings {
             reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
 
-        return await batchPredictionOffPool(
+        return try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
             attentionMask: batchInputs.attentionMask,
             batchSize: sentences.count
         )
     }
 
-    /// Generate an embedding from pre-tokenized input IDs and attention mask (for advanced use cases).
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async -> [Float]? {
-        guard let embeddings = await batchPredictionOffPool(
+    /// Generate embeddings from pre-tokenized input IDs and attention mask (for advanced use cases).
+    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async throws -> [[Float]]? {
+        guard let batchSize = Self.preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask) else {
+            return nil
+        }
+        guard let embeddings = try await batchPredictionOffPool(
             inputIds: inputIds,
             attentionMask: attentionMask,
-            batchSize: 1
+            batchSize: batchSize
         ) else {
             return nil
         }
 
-        return embeddings.first
+        return embeddings
     }
 
 }
@@ -360,6 +365,9 @@ private extension MiniLMEmbeddings {
         let shape = embeddings.shape.map { $0.intValue }
         let strides = embeddings.strides.map { $0.intValue }
         let dataType = embeddings.dataType
+        guard dataType == .float16 || dataType == .float32 else {
+            return nil
+        }
 
         if shape.count == 2 {
             let batch = shape[0]
@@ -484,6 +492,22 @@ private extension MiniLMEmbeddings {
 
         return nil
     }
+
+    static func preTokenizedBatchSize(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> Int? {
+        let inputShape = inputIds.shape.map(\.intValue)
+        let maskShape = attentionMask.shape.map(\.intValue)
+        guard inputShape == maskShape else { return nil }
+        guard !inputShape.isEmpty else { return nil }
+
+        if inputShape.count == 1 {
+            return inputShape[0] > 0 ? 1 : nil
+        }
+
+        let batchSize = inputShape[0]
+        let sequenceLength = inputShape[1]
+        guard batchSize > 0, sequenceLength > 0 else { return nil }
+        return batchSize
+    }
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -495,6 +519,13 @@ package extension MiniLMEmbeddings {
         outputDimension: Int
     ) -> [[Float]]? {
         decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
+    }
+
+    static func _preTokenizedBatchSizeForTesting(
+        inputIds: MLMultiArray,
+        attentionMask: MLMultiArray
+    ) -> Int? {
+        preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask)
     }
 }
 #endif // canImport(CoreML)

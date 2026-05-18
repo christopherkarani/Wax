@@ -16,6 +16,428 @@ import Wax
     #expect(matches.map(\.key) == [EntityKey("person:alice")])
 }
 
+@Test func upsertEntityCorrectsExistingNonEmptyKind() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.upsertEntity(
+        key: EntityKey("agent:alice"),
+        kind: "person",
+        aliases: ["Alice"],
+        nowMs: 100
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("agent:alice"),
+        kind: "agent",
+        aliases: ["Alice"],
+        nowMs: 200
+    )
+
+    let matches = try await engine.resolveEntities(matchingAlias: "alice", limit: 10)
+    #expect(matches.map(\.key) == [EntityKey("agent:alice")])
+    #expect(matches.first?.kind == "agent")
+}
+
+@Test func resolveEntitiesUsesDeterministicFuzzyAliasMatching() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:ada"),
+        kind: "person",
+        aliases: ["Ada"],
+        nowMs: 0
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:ada-lovelace"),
+        kind: "person",
+        aliases: ["Ada Lovelace"],
+        nowMs: 0
+    )
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:grace-hopper"),
+        kind: "person",
+        aliases: ["Grace Hopper"],
+        nowMs: 0
+    )
+
+    let prefixMatches = try await engine.resolveEntities(matchingAlias: "ada", limit: 10)
+    #expect(prefixMatches.map(\.key) == [
+        EntityKey("person:ada"),
+        EntityKey("person:ada-lovelace"),
+    ])
+
+    let wordMatches = try await engine.resolveEntities(matchingAlias: "hopper", limit: 10)
+    #expect(wordMatches.map(\.key) == [EntityKey("person:grace-hopper")])
+
+    let wildcardMatches = try await engine.resolveEntities(matchingAlias: "%", limit: 10)
+    #expect(wildcardMatches.isEmpty)
+}
+
+@Test func structuredEdgesTraverseEntityValuedFactsByDirectionAndPredicate() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("works_with"),
+        object: .entity(EntityKey("person:bob")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:carol"),
+        predicate: PredicateKey("reports_to"),
+        object: .entity(EntityKey("person:alice")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("located_in"),
+        object: .string("London"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    let outbound = try await engine.edges(
+        for: EntityKey("person:alice"),
+        direction: .outbound,
+        predicate: PredicateKey("works_with"),
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+    let inbound = try await engine.edges(
+        for: EntityKey("person:alice"),
+        direction: .inbound,
+        predicate: nil,
+        asOf: .init(systemTimeMs: 25, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(outbound.hits == [
+        EdgeHit(
+            factId: FactRowID(rawValue: 1),
+            predicate: PredicateKey("works_with"),
+            direction: .outbound,
+            neighbor: EntityKey("person:bob")
+        ),
+    ])
+    #expect(outbound.wasTruncated == false)
+    #expect(inbound.hits.map(\.predicate) == [PredicateKey("reports_to")])
+    #expect(inbound.hits.map(\.direction) == [.inbound])
+    #expect(inbound.hits.map(\.neighbor) == [EntityKey("person:carol")])
+}
+
+@Test func memoryOrchestratorExposesStructuredEdgeTraversal() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableStructuredMemory = true
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+
+        _ = try await memory.assertFact(
+            subject: EntityKey("service:indexer"),
+            predicate: PredicateKey("depends_on"),
+            object: .entity(EntityKey("service:store")),
+            validFromMs: 0
+        )
+
+        let edges = try await memory.edges(
+            for: EntityKey("service:indexer"),
+            direction: .outbound,
+            predicate: PredicateKey("depends_on"),
+            validAsOfMs: 0,
+            limit: 10
+        )
+
+        #expect(edges.hits.map(\.neighbor) == [EntityKey("service:store")])
+        #expect(edges.hits.map(\.direction) == [.outbound])
+        #expect(edges.wasTruncated == false)
+        try await memory.close()
+    }
+}
+
+@Test func structuredMemoryRejectsInvalidEntityAndPredicateKeys() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let overlong = String(repeating: "x", count: 4_097)
+
+    for raw in ["", " \n\t ", overlong] {
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.upsertEntity(
+                key: EntityKey(raw),
+                kind: "person",
+                aliases: [],
+                nowMs: 0
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey(raw),
+                predicate: PredicateKey("status"),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey(raw),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey("manager"),
+                object: .entity(EntityKey(raw)),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 0, toMs: nil),
+                evidence: []
+            )
+        }
+    }
+}
+
+@Test func assertFactRejectsInvalidEvidence() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let invalidEvidence = [
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: -1..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 0.5,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 4..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 0.5,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: -0.1,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: 1.1,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: .nan,
+            assertedAtMs: 10
+        ),
+        StructuredEvidence(
+            sourceFrameId: 1,
+            chunkIndex: nil,
+            spanUTF8: 0..<4,
+            extractorId: "test",
+            extractorVersion: "1",
+            confidence: .infinity,
+            assertedAtMs: 10
+        ),
+    ]
+
+    for evidence in invalidEvidence {
+        await #expect(throws: WaxError.self) {
+            _ = try await engine.assertFact(
+                subject: EntityKey("person:alice"),
+                predicate: PredicateKey("status"),
+                object: .string("active"),
+                valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                system: StructuredTimeRange(fromMs: 10, toMs: nil),
+                evidence: [evidence]
+            )
+        }
+    }
+}
+
+@Test func assertFactPreservesSubjectAndPredicateCaseInIdentity() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let upperSubjectFact = try await engine.assertFact(
+        subject: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let lowerSubjectFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    let upperPredicateFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("Status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 30, toMs: nil),
+        evidence: []
+    )
+
+    #expect(upperSubjectFact != lowerSubjectFact)
+    #expect(lowerSubjectFact != upperPredicateFact)
+
+    let upperSubjectFacts = try await engine.facts(
+        about: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 10
+    )
+    let lowerSubjectFacts = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(upperSubjectFacts.hits.map(\.factId) == [upperSubjectFact])
+    #expect(lowerSubjectFacts.hits.map(\.factId).contains(lowerSubjectFact))
+}
+
+@Test func assertFactPreservesStringObjectCaseInIdentity() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let upperFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let lowerFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("openai"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    #expect(upperFact != lowerFact)
+
+    let facts = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+    let objects = facts.hits.map(\.fact.object)
+    #expect(objects.contains(.string("OpenAI")))
+    #expect(objects.contains(.string("openai")))
+}
+
+@Test func factsWasTruncatedRequiresExtraMatchingRowBeyondLimit() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+
+    let exactLimit = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 1
+    )
+    #expect(exactLimit.hits.count == 1)
+    #expect(exactLimit.wasTruncated == false)
+
+    _ = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("Anthropic"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    let overLimit = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 1
+    )
+    #expect(overLimit.hits.count == 1)
+    #expect(overLimit.wasTruncated)
+}
+
+@Test func factsDuplicateOpenSpansForSameFactAreDistinguishable() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let firstFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    let secondFact = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        relation: .extends,
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+    #expect(secondFact == firstFact)
+
+    let result = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 20, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(result.hits.count == 2)
+    #expect(result.hits.allSatisfy { $0.factId == firstFact })
+    #expect(result.hits[0] != result.hits[1])
+}
+
 @Test func assertFactAndQueryAsOfReturnsCurrentFact() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     _ = try await engine.upsertEntity(
@@ -60,6 +482,9 @@ import Wax
     #expect(result.hits.count == 1)
     #expect(result.hits[0].fact.subject == EntityKey("person:alice"))
     #expect(result.hits[0].fact.object == .entity(EntityKey("place:paris")))
+    #expect(result.hits[0].evidence.count == 1)
+    #expect(result.hits[0].evidence[0].sourceFrameId == 0)
+    #expect(result.hits[0].evidence[0].extractorId == "test")
     #expect(result.hits[0].isOpenEnded == true)
 }
 
@@ -133,6 +558,37 @@ import Wax
         limit: 10
     )
     #expect(after.hits.isEmpty == true)
+}
+
+@Test func retractFactAtSameSystemTimestampClosesAtNextMillisecond() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+
+    let factId = try await engine.assertFact(
+        subject: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+
+    try await engine.retractFact(factId: factId, atMs: 10)
+
+    let atStart = try await engine.facts(
+        about: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 10
+    )
+    let afterClose = try await engine.facts(
+        about: EntityKey("person:f018"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 11, validTimeMs: 0),
+        limit: 10
+    )
+
+    #expect(atStart.hits.map(\.fact.object) == [.string("active")])
+    #expect(afterClose.hits.isEmpty)
 }
 
 @Test func queryOrderIsDeterministicForTies() async throws {

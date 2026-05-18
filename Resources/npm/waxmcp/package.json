@@ -16,9 +16,13 @@
   "bin": {
     "waxmcp": "bin/waxmcp.js"
   },
+  "scripts": {
+    "prepack": "node scripts/verify-dist.mjs"
+  },
   "files": [
     "bin",
     "dist",
+    "scripts",
     "README.md"
   ],
   "engines": {

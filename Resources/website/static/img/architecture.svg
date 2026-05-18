@@ -66,7 +66,7 @@
     
     <rect x="500" y="0" width="350" height="100" rx="8" style="fill: #1e1b17; stroke: #dfa04d; stroke-width: 1.5;" />
     <text x="675" y="30" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #ede8df; font-size: 14px; font-weight: 500;">WaxVectorSearch</text>
-    <text x="675" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">HNSW (USearch) • Metal GPU</text>
+    <text x="675" y="55" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Accelerate CPU • MetalANNS GPU</text>
     <text x="675" y="75" text-anchor="middle" style="font-family: 'Arial', sans-serif; fill: #7c7268; font-size: 12px;">Vector Acceleration</text>
   </g>
 

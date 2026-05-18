@@ -1,4 +1,4 @@
-#if MCPServer
+#if MCPServer && canImport(CoreGraphics) && canImport(ImageIO)
 import CoreGraphics
 import Foundation
 import Wax

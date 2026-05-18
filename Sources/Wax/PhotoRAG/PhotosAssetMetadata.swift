@@ -155,7 +155,7 @@ enum PhotosAssetMetadata {
     }
     #endif
 
-    private static func extractEXIF(from data: Data?) -> EXIF {
+    static func extractEXIF(from data: Data?) -> EXIF {
         guard let data else { return EXIF() }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return EXIF() }
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {

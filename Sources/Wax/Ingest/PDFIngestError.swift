@@ -5,6 +5,7 @@ package enum PDFIngestError: Error, Sendable, Equatable {
     case fileNotFound(url: URL)
     case loadFailed(url: URL)
     case noExtractableText(url: URL, pageCount: Int)
+    case unsupportedPlatform(url: URL)
 }
 
 extension PDFIngestError: LocalizedError {
@@ -16,6 +17,8 @@ extension PDFIngestError: LocalizedError {
             return "PDF file could not be opened: \(url.path)"
         case let .noExtractableText(url, pageCount):
             return "PDF has no extractable text (pages: \(pageCount)): \(url.path)"
+        case let .unsupportedPlatform(url):
+            return "PDF ingest is unavailable because PDFKit is not available on this platform: \(url.path)"
         }
     }
 }

@@ -37,6 +37,10 @@ struct DaemonCommand: AsyncParsableCommand {
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder.rawValue,
             requireVector: store.requireVector,
+            enableAccessStatsScoring: featureFlagEnabled(
+                "WAX_MCP_FEATURE_ACCESS_STATS",
+                default: false
+            ),
             embedderTuning: store.embedderTuning
         )
 
@@ -68,6 +72,8 @@ private extension DaemonCommand {
     #elseif canImport(Glibc)
     var unixStreamSocketType: Int32 { Int32(SOCK_STREAM.rawValue) }
     #endif
+    var socketClientReadTimeoutMS: Int32 { 1_000 }
+    var maxSocketRequestBytes: Int { 1_048_576 }
 
     func runLoop(
         service: AgentBrokerService,
@@ -117,7 +123,7 @@ private extension DaemonCommand {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        unlink(socketURL.path)
+        try removeExistingSocket(at: socketURL.path)
 
         let listener = socket(AF_UNIX, unixStreamSocketType, 0)
         guard listener >= 0 else {
@@ -189,13 +195,9 @@ private extension DaemonCommand {
 
     func handleSocketClient(service: AgentBrokerService, fd: Int32) async throws -> Bool {
         let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        let data = try fileHandle.readToEnd() ?? Data()
         let response: AgentBrokerResponse
 
-        if let line = String(data: data, encoding: .utf8)?
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+        if let line = try readSocketRequestLine(fd: fd) {
             do {
                 let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
                 response = await service.handle(request)
@@ -241,6 +243,60 @@ private extension DaemonCommand {
         }
     }
 
+    func readSocketRequestLine(fd: Int32) throws -> String? {
+        var buffer = Data()
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, socketClientReadTimeoutMS)
+            if pollResult == 0 {
+                return nil
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker client poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker client read failed: \(String(cString: strerror(errno)))")
+            }
+
+            buffer.append(contentsOf: chunk.prefix(count))
+            guard buffer.count <= maxSocketRequestBytes else {
+                throw CLIError("Broker socket request exceeds \(maxSocketRequestBytes) bytes")
+            }
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: buffer[..<newlineIndex], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return line.isEmpty ? nil : line
+            }
+        }
+
+        guard !buffer.isEmpty else { return nil }
+        let line = String(decoding: buffer, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : line
+    }
+
+    func removeExistingSocket(at path: String) throws {
+        var existing = stat()
+        if lstat(path, &existing) != 0 {
+            if errno == ENOENT { return }
+            throw CLIError("Unable to inspect broker socket path \(path): \(String(cString: strerror(errno)))")
+        }
+
+        guard existing.st_mode & S_IFMT == S_IFSOCK else {
+            throw CLIError("Refusing to replace non-socket file at broker socket path: \(path)")
+        }
+
+        guard unlink(path) == 0 else {
+            throw CLIError("Unable to remove stale broker socket at \(path): \(String(cString: strerror(errno)))")
+        }
+    }
+
     func writeJSONLine(_ response: AgentBrokerResponse, to output: FileHandle) throws {
         let data = try JSONEncoder().encode(response)
         output.write(data)
@@ -249,3 +305,21 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+
+private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty
+    else {
+        return defaultValue
+    }
+
+    switch raw.lowercased() {
+    case "1", "true", "yes", "on":
+        return true
+    case "0", "false", "no", "off":
+        return false
+    default:
+        return defaultValue
+    }
+}

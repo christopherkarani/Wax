@@ -55,7 +55,7 @@ extension Wax {
             includeVector = true
         }
 
-        let candidateLimit = Self.candidateLimit(for: requestedTopK)
+        let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {
@@ -123,17 +123,24 @@ extension Wax {
             }
 
             do {
-                let base = try await textEngine.search(query: primaryQuery, topK: candidateLimit)
+                let base = if primaryQuery == trimmedQuery {
+                    try await textEngine.search(query: primaryQuery, topK: candidateLimit)
+                } else {
+                    try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
+                }
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
                     return Array(base.prefix(candidateLimit))
                 }
-                let fallback = try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
+                let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
+                if base.isEmpty {
+                    return Array(fallback.prefix(candidateLimit))
+                }
                 return merged(base: base, fallback: fallback, limit: candidateLimit)
             } catch {
                 guard let fallbackQuery else {
                     throw error
                 }
-                return try await textEngine.search(query: fallbackQuery, topK: candidateLimit)
+                return try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
             }
         }()
 
@@ -186,8 +193,7 @@ extension Wax {
             )
             guard !candidates.isEmpty else { return [] }
 
-            let asOfMs = request.timeRange?.before ?? request.asOfMs
-            let asOf = StructuredMemoryAsOf(asOfMs: asOfMs)
+            let asOf = StructuredMemoryAsOf(asOfMs: request.asOfMs)
             return try await structuredEngine.evidenceFrameIds(
                 subjectKeys: candidates,
                 asOf: asOf,
@@ -1346,6 +1352,24 @@ extension Wax {
         let expanded = topK > Int.max / 3 ? Int.max : topK * 3
         let capped = min(expanded, 1000)
         return max(topK, capped)
+    }
+
+    private static func candidateLimit(for topK: Int, filter: FrameFilter) -> Int {
+        let baseLimit = candidateLimit(for: topK)
+        guard needsCallerFilterOverfetch(filter) else { return baseLimit }
+
+        let multiplied = topK > Int.max / 5 ? Int.max : topK * 5
+        let withSlack = topK > Int.max - 200 ? Int.max : topK + 200
+        let overfetchLimit = min(1000, max(multiplied, withSlack))
+        return max(baseLimit, overfetchLimit)
+    }
+
+    private static func needsCallerFilterOverfetch(_ filter: FrameFilter) -> Bool {
+        if filter.frameIds != nil { return true }
+        guard let metadataFilter = filter.metadataFilter else { return false }
+        return !metadataFilter.requiredEntries.isEmpty
+            || !metadataFilter.requiredTags.isEmpty
+            || !metadataFilter.requiredLabels.isEmpty
     }
 
     private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)

@@ -30,7 +30,7 @@ enum WaxMCPServerMetadata {
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-mcp",
-        abstract: "MCP server exposing Wax memory and multimodal RAG tools over stdio or HTTP."
+        abstract: "MCP server exposing Wax memory tools over stdio or HTTP."
     )
 
     @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.wax)")
@@ -60,18 +60,21 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
     var httpMaxBodyBytes = 1_048_576
 
+    @Option(name: .customLong("http-auth-token"), help: "Bearer token required for non-loopback HTTP binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    var httpAuthToken: String?
+
     mutating func run() throws {
         let command = self
         Task(priority: .userInitiated) {
             do {
                 try await command.runServer()
-                Darwin.exit(EXIT_SUCCESS)
+                exitProcess(EXIT_SUCCESS)
             } catch let error as LicenseValidator.ValidationError {
                 writeStderr(error.localizedDescription)
-                Darwin.exit(EXIT_FAILURE)
+                exitProcess(EXIT_FAILURE)
             } catch {
                 writeStderr("wax-mcp failed: \(error)")
-                Darwin.exit(EXIT_FAILURE)
+                exitProcess(EXIT_FAILURE)
             }
         }
 
@@ -168,7 +171,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                     host: httpHost,
                     port: httpPort,
                     endpoint: httpEndpoint,
-                    maxRequestBodyBytes: httpMaxBodyBytes
+                    maxRequestBodyBytes: httpMaxBodyBytes,
+                    authToken: normalizedHTTPAuthToken()
                 ),
                 serverFactory: { _, transport in
                     let server = await makeServer(
@@ -219,6 +223,11 @@ struct WaxMCPServerCommand: ParsableCommand {
             return licenseKey
         }
         return ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]
+    }
+
+    private func normalizedHTTPAuthToken() -> String? {
+        HTTPAuthPolicy.normalizedToken(httpAuthToken)
+            ?? HTTPAuthPolicy.normalizedToken(ProcessInfo.processInfo.environment["WAX_MCP_HTTP_AUTH_TOKEN"])
     }
 
     private func licenseValidationEnabled() -> Bool {
@@ -294,6 +303,10 @@ private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -
 func writeStderr(_ message: String) {
     guard let data = (message + "\n").data(using: .utf8) else { return }
     FileHandle.standardError.write(data)
+}
+
+private func exitProcess(_ status: Int32) -> Never {
+    exit(status)
 }
 
 WaxMCPServerCommand.main()

@@ -18,6 +18,7 @@ package actor AgentBrokerService {
     let noEmbedder: Bool
     let embedderChoice: String
     let embedderTuning: CommandLineEmbedderRuntimeTuning
+    let enableAccessStatsScoring: Bool
     let scopeContext: MemoryScopeContext
     let promotionSettings: BrokerPromotionSettings
     let brokerInstanceID = UUID().uuidString
@@ -29,6 +30,7 @@ package actor AgentBrokerService {
         noEmbedder: Bool,
         embedderChoice: String,
         requireVector: Bool,
+        enableAccessStatsScoring: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
@@ -36,6 +38,7 @@ package actor AgentBrokerService {
         self.noEmbedder = noEmbedder
         self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
+        self.enableAccessStatsScoring = enableAccessStatsScoring
         self.scopeContext = MemorySemantics.inferScopeContext()
         self.promotionSettings = BrokerPromotionSettings.fromEnvironment()
 
@@ -63,6 +66,7 @@ package actor AgentBrokerService {
         }
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false
@@ -89,6 +93,10 @@ package actor AgentBrokerService {
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
         do {
             let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            try AgentBrokerCommandSurface.validateArgumentSurface(
+                command: command,
+                providedKeys: Set(request.arguments.keys)
+            )
             let payload: AgentBrokerValue
             let shouldExit: Bool
 
@@ -207,7 +215,7 @@ extension AgentBrokerService {
     static let maxGraphLimit = 500
     static let maxGraphIdentifierBytes = 256
     static let maxGraphKindBytes = 64
-    static let maxPromotionCandidates = 12
+    static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
     static let defaultSessionLeaseSeconds = 300
     static let maxCompactContextTokenBudget = 32_000
 
@@ -256,7 +264,7 @@ extension AgentBrokerService {
 
     func remember(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         let sessionID = try parseOptionalSessionID(args)
         let rawMetadata = try coerceMetadata(try args.optionalObject("metadata"))
         if rawMetadata["session_id"] != nil {
@@ -274,7 +282,6 @@ extension AgentBrokerService {
 
         let before = await memory.runtimeStats()
         try await memory.remember(content, metadata: metadata)
-        try await memory.flush()
         if let sessionID {
             try await refreshSessionManifest(sessionID)
             try await appendSessionEvent(
@@ -287,6 +294,7 @@ extension AgentBrokerService {
                 ]
             )
         }
+        try await memory.flush()
         let after = await memory.runtimeStats()
         let totalBefore = before.frameCount + before.pendingFrames
         let totalAfter = after.frameCount + after.pendingFrames
@@ -452,7 +460,10 @@ extension AgentBrokerService {
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
-        let sessionID = try resolveSessionID(try parseOptionalSessionID(args))
+        let sessionID = try resolveSessionID(
+            try parseOptionalSessionID(args),
+            requiringUnambiguousWorkingMemory: includeWorking
+        )
         let hits = try await layeredMemorySearch(
             query: query,
             mode: mode,
@@ -540,9 +551,10 @@ extension AgentBrokerService {
     func memoryPromote(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
+        try validateActiveSession(sessionID)
         let approve = try args.optionalBool("approve") ?? false
         let requestedSourceFrameId = try args.optionalUInt64("frame_id")
-        let explicitContent = try args.optionalString("content")
+        let explicitContent = try args.optionalStringPreservingWhitespace("content")
         let writeSemantics = try parseWriteSemantics(args)
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         let settings = try parsePromotionSettings(args)
@@ -584,6 +596,7 @@ extension AgentBrokerService {
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
+            normalizedMetadata.removeValue(forKey: "session_id")
         }
         if let sourceFrameId {
             normalizedMetadata[MemoryMetadataKeys.promotedFromFrame] = String(sourceFrameId)
@@ -678,7 +691,7 @@ extension AgentBrokerService {
 
     func knowledgeCapture(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         var writeSemantics = try parseWriteSemantics(args)
         if !writeSemantics.lock, writeSemantics.durability == nil {
             writeSemantics.durability = .durable
@@ -696,6 +709,9 @@ extension AgentBrokerService {
         let objectValue = try args.optionalValue("object")
         let kind = try args.optionalString("kind")
         let aliases = try args.optionalStringArray("aliases") ?? []
+        let parsedObject = try objectValue.map { try parseFactValue($0) }
+
+        try await longTermMemory.remember(content, metadata: metadata)
 
         var entityID: Int64?
         if let subject, let kind {
@@ -703,23 +719,22 @@ extension AgentBrokerService {
                 key: EntityKey(subject),
                 kind: kind,
                 aliases: aliases,
-                commit: true
+                commit: false
             ).rawValue
         }
         var factID: Int64?
-        if let subject, let predicate, let objectValue {
+        if let subject, let predicate, let parsedObject {
             factID = try await longTermMemory.assertFact(
                 subject: EntityKey(subject),
                 predicate: PredicateKey(predicate),
-                object: try parseFactValue(objectValue),
+                object: parsedObject,
                 relation: .sets,
                 validFromMs: nil,
                 validToMs: nil,
-                commit: true
+                commit: false
             ).rawValue
         }
 
-        try await longTermMemory.remember(content, metadata: metadata)
         try await longTermMemory.flush()
 
         return .object([
@@ -861,7 +876,6 @@ extension AgentBrokerService {
             createdAtMs: nowMs,
             updatedAtMs: nowMs
         )
-        try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
         try BrokerSessionPersistence.appendEvent(
             BrokerSessionEvent(
                 sessionID: sessionID,
@@ -876,6 +890,7 @@ extension AgentBrokerService {
             ),
             to: eventLogURL
         )
+        try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
         let state = SessionState(
             id: sessionID,
             manifest: manifest,
@@ -916,7 +931,6 @@ extension AgentBrokerService {
         refreshed.updatedAtMs = nowMs
 
         let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: manifest.sessionID)
-        try BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)
         let eventLogURL = URL(fileURLWithPath: refreshed.eventLogPath)
         try BrokerSessionPersistence.appendEvent(
             BrokerSessionEvent(
@@ -931,6 +945,7 @@ extension AgentBrokerService {
             ),
             to: eventLogURL
         )
+        try BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)
         let state = SessionState(
             id: refreshed.sessionID,
             manifest: refreshed,
@@ -964,7 +979,7 @@ extension AgentBrokerService {
         default:
             throw BrokerValidationError.invalid("session_id is required when more than one session is active")
         }
-        if let state = activeSessions.removeValue(forKey: target) {
+        if let state = activeSessions[target] {
             var manifest = state.manifest
             manifest.status = .ended
             manifest.updatedAtMs = Self.nowMs()
@@ -983,6 +998,7 @@ extension AgentBrokerService {
             )
             try await state.memory.flush()
             try await state.memory.close()
+            activeSessions.removeValue(forKey: target)
         }
         return .object([
             "status": .string("ok"),
@@ -993,7 +1009,7 @@ extension AgentBrokerService {
 
     func handoff(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let content = try args.requiredString("content", maxBytes: Self.maxContentBytes)
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
         let sessionID = try parseOptionalSessionID(args)
@@ -1003,11 +1019,12 @@ extension AgentBrokerService {
             project: project,
             pendingTasks: pendingTasks,
             sessionId: sessionID,
-            commit: true
+            commit: false
         )
         if let sessionID {
             try await recordHandoff(sessionID: sessionID, content: content)
         }
+        try await longTermMemory.flush()
         return .object([
             "status": .string("ok"),
             "frame_id": .from(frameId),
@@ -1046,7 +1063,10 @@ extension AgentBrokerService {
         }
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let sessionID = try resolveSessionID(try parseOptionalSessionID(args))
+        let sessionID = try resolveSessionID(
+            try parseOptionalSessionID(args),
+            requiringUnambiguousWorkingMemory: true
+        )
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await sessionMemory.flush()
@@ -1084,6 +1104,7 @@ extension AgentBrokerService {
         let args = BrokerArguments(arguments)
         let outputDir = try args.requiredString("output_dir", maxBytes: 4096)
         let sessionID = try parseOptionalSessionID(args)
+        try validateMarkdownExportSession(sessionID)
         let exportURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(outputDir), isDirectory: true).standardizedFileURL
         let report = try await exportMarkdownProjection(outputURL: exportURL, sessionID: sessionID)
         return .object([
@@ -1095,6 +1116,18 @@ extension AgentBrokerService {
             "handoff_summary_path": .from(report.handoffSummaryPath),
             "display_text": .string("Exported Markdown projection to \(exportURL.path)"),
         ])
+    }
+
+    private func validateMarkdownExportSession(_ sessionID: UUID?) throws {
+        guard let sessionID else { return }
+        let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw BrokerValidationError.invalid("No session manifest found for session_id \(sessionID.uuidString)")
+        }
+        let manifest = try BrokerSessionPersistence.loadManifest(at: manifestURL)
+        if manifest.status == .active && activeSessions[sessionID] == nil {
+            throw BrokerValidationError.invalid("session_id is active in another broker process; call session_resume before exporting it")
+        }
     }
 
     func markdownSync(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -1151,6 +1184,7 @@ extension AgentBrokerService {
         let predicate = try args.requiredString("predicate", maxBytes: Self.maxGraphIdentifierBytes)
         let objectValue = try args.requiredValue("object")
         let relation = try parseVersionRelation(try args.optionalString("relation") ?? "sets")
+        let evidence = try parseStructuredEvidence(args.optionalValue("evidence"))
         let factID = try await longTermMemory.assertFact(
             subject: EntityKey(subject),
             predicate: PredicateKey(predicate),
@@ -1158,11 +1192,13 @@ extension AgentBrokerService {
             relation: relation,
             validFromMs: try args.optionalInt64("valid_from"),
             validToMs: try args.optionalInt64("valid_to"),
+            evidence: evidence,
             commit: true
         )
         return .object([
             "status": .string("ok"),
             "fact_id": .from(factID.rawValue),
+            "evidence_count": .from(evidence.count),
             "committed": .bool(true),
         ])
     }
@@ -1189,26 +1225,41 @@ extension AgentBrokerService {
         let subject = try args.optionalString("subject").map { EntityKey($0) }
         let predicate = try args.optionalString("predicate").map { PredicateKey($0) }
         let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
+        let systemAsOfMs = try args.optionalInt64("system_as_of")
+        let validAsOfMs = try args.optionalInt64("valid_as_of")
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
             asOfMs: asOfMs,
+            systemAsOfMs: systemAsOfMs,
+            validAsOfMs: validAsOfMs,
             limit: limit
         )
+        let effectiveSystemAsOfMs = systemAsOfMs ?? asOfMs
+        let effectiveValidAsOfMs = validAsOfMs ?? asOfMs
         let hits: [AgentBrokerValue] = result.hits.map { hit in
             AgentBrokerValue.object([
                 "fact_id": .from(hit.factId.rawValue),
+                "span_id": .from(hit.spanId),
                 "subject": .string(hit.fact.subject.rawValue),
                 "predicate": .string(hit.fact.predicate.rawValue),
                 "object": factValueAsBrokerValue(hit.fact.object),
+                "relation": .string(hit.relation.wireName),
+                "valid_from_ms": .from(hit.valid.fromMs),
+                "valid_to_ms": hit.valid.toMs.map(AgentBrokerValue.from) ?? .null,
+                "system_from_ms": .from(hit.system.fromMs),
+                "system_to_ms": hit.system.toMs.map(AgentBrokerValue.from) ?? .null,
                 "is_open_ended": .from(hit.isOpenEnded),
                 "evidence_count": .from(hit.evidence.count),
+                "evidence": .array(hit.evidence.map(renderStructuredEvidence)),
             ])
         }
         return .object([
             "count": .from(result.hits.count),
             "truncated": .from(result.wasTruncated),
             "as_of": .from(asOfMs),
+            "system_as_of": .from(effectiveSystemAsOfMs),
+            "valid_as_of": .from(effectiveValidAsOfMs),
             "hits": .array(hits),
         ])
     }
@@ -1325,6 +1376,7 @@ extension AgentBrokerService {
 
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
         let filtered = manifests.filter { manifest in
+            guard manifest.status == .active else { return false }
             if let agentID, manifest.agentID != agentID { return false }
             if let runID, manifest.runID != runID { return false }
             return true
@@ -1421,8 +1473,6 @@ extension AgentBrokerService {
         state.manifest.lastHandoffAtMs = nowMs
         state.manifest.latestHandoff = MemorySemantics.summarizeCandidate(content, maxLength: 220)
         state.manifest.updatedAtMs = nowMs
-        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        activeSessions[sessionID] = state
         try await appendSessionEvent(
             sessionID: sessionID,
             kind: .handoff,
@@ -1430,6 +1480,8 @@ extension AgentBrokerService {
                 "summary": state.manifest.latestHandoff ?? "",
             ]
         )
+        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
+        activeSessions[sessionID] = state
     }
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
@@ -1684,21 +1736,22 @@ extension AgentBrokerService {
                 topK: min(4, maxItems),
                 mode: mode
             )
-            short = execution.context.items.map { item in
-                LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: item.frameId),
+            for item in execution.context.items {
+                let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: state.memory)
+                short.append(LayeredMemoryHit(
+                    reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: canonicalFrameID),
                     horizon: .working,
                     sessionID: sessionID,
                     agentID: state.manifest.agentID,
                     runID: state.manifest.runID,
-                    frameID: item.frameId,
+                    frameID: canonicalFrameID,
                     score: item.score,
                     text: item.text,
                     preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
                     metadata: item.metadata,
                     explanations: ["current session"] + item.explanations,
                     timestampMs: state.manifest.updatedAtMs
-                )
+                ))
             }
         }
 
@@ -1710,21 +1763,22 @@ extension AgentBrokerService {
             topK: min(4, maxItems),
             mode: mode
         )
-        long = longExecution.context.items.map { item in
-            LayeredMemoryHit(
-                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: item.frameId),
+        for item in longExecution.context.items {
+            let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: longTermMemory)
+            long.append(LayeredMemoryHit(
+                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: canonicalFrameID),
                 horizon: .durable,
                 sessionID: nil,
                 agentID: nil,
                 runID: nil,
-                frameID: item.frameId,
+                frameID: canonicalFrameID,
                 score: item.score,
                 text: item.text,
                 preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
                 metadata: item.metadata,
                 explanations: ["durable memory"] + item.explanations,
                 timestampMs: item.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0
-            )
+            ))
         }
 
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
@@ -1736,14 +1790,13 @@ extension AgentBrokerService {
                 }
                 return manifest.status == .ended
             }
-            .prefix(4)
         for manifest in selectedManifests {
-            let episodicItems = try await openAdhocMemory(
+            let episodicHits = try await openAdhocMemory(
                 at: URL(fileURLWithPath: manifest.storePath),
                 structuredMemoryEnabled: false,
                 noEmbedder: noEmbedder
             ) { memory in
-                try await memory.recallExecution(
+                let items = try await memory.recallExecution(
                     query: query,
                     embeddingPolicy: mode == .text ? .never : .ifAvailable,
                     frameFilter: nil,
@@ -1751,52 +1804,88 @@ extension AgentBrokerService {
                     topK: 2,
                     mode: mode
                 ).context.items
+                var hits: [LayeredMemoryHit] = []
+                hits.reserveCapacity(items.count)
+                for item in items {
+                    let canonicalFrameID = try await self.canonicalDocumentFrameID(for: item.frameId, memory: memory)
+                    hits.append(LayeredMemoryHit(
+                        reference: Self.makeMemoryReference(.episodic, sessionID: manifest.sessionID, frameID: canonicalFrameID),
+                        horizon: .episodic,
+                        sessionID: manifest.sessionID,
+                        agentID: manifest.agentID,
+                        runID: manifest.runID,
+                        frameID: canonicalFrameID,
+                        score: item.score,
+                        text: item.text,
+                        preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
+                        metadata: item.metadata,
+                        explanations: ["recent session episode"] + item.explanations,
+                        timestampMs: manifest.updatedAtMs
+                    ))
+                }
+                return hits
             }
-            medium.append(contentsOf: episodicItems.map { item in
-                LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.episodic, sessionID: manifest.sessionID, frameID: item.frameId),
-                    horizon: .episodic,
-                    sessionID: manifest.sessionID,
-                    agentID: manifest.agentID,
-                    runID: manifest.runID,
-                    frameID: item.frameId,
-                    score: item.score,
-                    text: item.text,
-                    preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
-                    metadata: item.metadata,
-                    explanations: ["recent session episode"] + item.explanations,
-                    timestampMs: manifest.updatedAtMs
-                )
-            })
+            medium.append(contentsOf: episodicHits)
         }
 
+        short = Self.deduplicateLayeredHits(short)
+        medium = Self.deduplicateLayeredHits(medium).sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.timestampMs != $1.timestampMs { return $0.timestampMs > $1.timestampMs }
+            return $0.reference < $1.reference
+        }
+        long = Self.deduplicateLayeredHits(long)
+
         let ordered = Array((short.prefix(maxItems) + medium.prefix(maxItems) + long.prefix(maxItems)).prefix(maxItems * 3))
-        let tokenCounts = await counter.countBatch(ordered.map(\.text))
-        var usedTokens = 0
         var selectedShort: [LayeredMemoryHit] = []
         var selectedMedium: [LayeredMemoryHit] = []
         var selectedLong: [LayeredMemoryHit] = []
+        var usedTokens = await counter.count(renderCompactedContext(
+            query: query,
+            short: selectedShort,
+            medium: selectedMedium,
+            long: selectedLong
+        ))
 
-        for (index, hit) in ordered.enumerated() {
-            let tokens = tokenCounts[index]
-            if usedTokens + tokens > tokenBudget { continue }
-            usedTokens += tokens
+        for hit in ordered {
+            var candidateShort = selectedShort
+            var candidateMedium = selectedMedium
+            var candidateLong = selectedLong
             switch hit.horizon {
             case .working:
-                selectedShort.append(hit)
+                candidateShort.append(hit)
             case .episodic:
-                selectedMedium.append(hit)
+                candidateMedium.append(hit)
             case .durable:
-                selectedLong.append(hit)
+                candidateLong.append(hit)
             }
+            let candidateText = renderCompactedContext(
+                query: query,
+                short: candidateShort,
+                medium: candidateMedium,
+                long: candidateLong
+            )
+            let candidateTokens = await counter.count(candidateText)
+            guard candidateTokens <= tokenBudget else { continue }
+            selectedShort = candidateShort
+            selectedMedium = candidateMedium
+            selectedLong = candidateLong
+            usedTokens = candidateTokens
         }
 
-        let compactedText = renderCompactedContext(
+        var compactedText = renderCompactedContext(
             query: query,
             short: selectedShort,
             medium: selectedMedium,
             long: selectedLong
         )
+        let renderedTokens = await counter.count(compactedText)
+        if renderedTokens > tokenBudget {
+            compactedText = await counter.truncate(compactedText, maxTokens: tokenBudget)
+            usedTokens = await counter.count(compactedText)
+        } else {
+            usedTokens = renderedTokens
+        }
         let summary = [
             selectedShort.first?.preview,
             selectedMedium.first?.preview,
@@ -1814,6 +1903,16 @@ extension AgentBrokerService {
             summary: summary.isEmpty ? "No compacted context available." : summary,
             usedTokens: usedTokens
         )
+    }
+
+    static func deduplicateLayeredHits(_ hits: [LayeredMemoryHit]) -> [LayeredMemoryHit] {
+        var seen = Set<String>()
+        var deduped: [LayeredMemoryHit] = []
+        deduped.reserveCapacity(hits.count)
+        for hit in hits where seen.insert(hit.reference).inserted {
+            deduped.append(hit)
+        }
+        return deduped
     }
 
     func exportMarkdownProjection(outputURL: URL, sessionID: UUID?) async throws -> MarkdownProjectionReport {
@@ -1884,20 +1983,25 @@ extension AgentBrokerService {
             .sorted { lhs, rhs in
                 if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                 return lhs.frameId > rhs.frameId
-            }
+        }
         for document in managedDailyNotes {
-            let dateKey = document.metadata[MemoryMetadataKeys.sourceDate] ?? Self.dayString(fromMs: document.timestampMs)
+            let dateKey = Self.safeMarkdownDailyDateKey(
+                document.metadata[MemoryMetadataKeys.sourceDate],
+                fallbackMs: document.timestampMs
+            )
             let marker = marker(for: document, kind: .dailyNote, dateKey: dateKey)
             dailyNotesByDate[dateKey, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
         }
 
         var dailyNotePaths: [String] = []
+        var dailyNoteURLs = Set<URL>()
         for dateKey in dailyNotesByDate.keys.sorted() {
             let noteURL = memoryDir.appendingPathComponent("\(dateKey).md")
             var bodyLines = ["# \(dateKey)", ""]
             bodyLines.append(contentsOf: dailyNotesByDate[dateKey, default: []])
             let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
             try body.write(to: noteURL, atomically: true, encoding: .utf8)
+            dailyNoteURLs.insert(noteURL.standardizedFileURL)
             dailyNotePaths.append(noteURL.path)
         }
 
@@ -1908,6 +2012,8 @@ extension AgentBrokerService {
             let body = "# DREAMS\n\n" + dreamsLines.joined(separator: "\n") + "\n"
             try body.write(to: dreamsURL, atomically: true, encoding: .utf8)
             dreamsPath = dreamsURL.path
+        } else {
+            try removeGeneratedMarkdownFileIfPresent(at: dreamsURL, allowedSourceKinds: [MarkdownProjectionKind.dreams.rawValue])
         }
 
         var handoffSummaryPath: String?
@@ -1916,9 +2022,13 @@ extension AgentBrokerService {
             let body = "# Handoffs\n\n" + handoffLines.joined(separator: "\n") + "\n"
             try body.write(to: handoffURL, atomically: true, encoding: .utf8)
             handoffSummaryPath = handoffURL.path
+        } else {
+            try removeGeneratedMarkdownFileIfPresent(at: memoryDir.appendingPathComponent("HANDOFFS.md"), allowedSourceKinds: ["daily_note_event"])
         }
 
-        if let sessionID {
+        try removeStaleGeneratedDailyNotes(in: memoryDir, keeping: dailyNoteURLs)
+
+        if let sessionID, activeSessions[sessionID] != nil {
             try await appendSessionEvent(
                 sessionID: sessionID,
                 kind: .markdownExported,
@@ -1932,6 +2042,53 @@ extension AgentBrokerService {
             dreamsPath: dreamsPath,
             handoffSummaryPath: handoffSummaryPath
         )
+    }
+
+    private func removeStaleGeneratedDailyNotes(in memoryDir: URL, keeping currentDailyNoteURLs: Set<URL>) throws {
+        guard FileManager.default.fileExists(atPath: memoryDir.path) else { return }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: memoryDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        for url in urls where url.pathExtension == "md" {
+            guard !url.lastPathComponent.hasPrefix("DREAMS"),
+                  !url.lastPathComponent.hasPrefix("HANDOFFS"),
+                  url.lastPathComponent.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil,
+                  !currentDailyNoteURLs.contains(url.standardizedFileURL)
+            else { continue }
+            try removeGeneratedMarkdownFileIfPresent(
+                at: url,
+                allowedSourceKinds: [MarkdownProjectionKind.dailyNote.rawValue, "daily_note_event"]
+            )
+        }
+    }
+
+    private func removeGeneratedMarkdownFileIfPresent(at url: URL, allowedSourceKinds: Set<String>) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let entries = try BrokerMarkdownSync.parseFile(at: url)
+        guard !entries.isEmpty else { return }
+        var generatedLines = Set<String>()
+        let generatedOnly = entries.allSatisfy { entry in
+            guard let marker = entry.marker else { return false }
+            guard allowedSourceKinds.contains(marker.sourceKind) else { return false }
+            guard marker.hash == Self.stableHash(entry.text) else { return false }
+            if marker.sourceKind == MarkdownProjectionKind.dreams.rawValue, entry.checked == true {
+                return false
+            }
+            generatedLines.insert(renderManagedMarkdownLine(text: entry.text, marker: marker, checked: entry.checked))
+            return true
+        }
+        guard generatedOnly else { return }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let hasUserContent = raw.components(separatedBy: .newlines).contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            guard !trimmed.hasPrefix("#") else { return false }
+            return !generatedLines.contains(trimmed)
+        }
+        guard !hasUserContent else { return }
+        try FileManager.default.removeItem(at: url)
     }
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
@@ -1959,6 +2116,7 @@ extension AgentBrokerService {
         )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = false
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false
@@ -1985,6 +2143,7 @@ extension AgentBrokerService {
         )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
+        config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         if embedder == nil {
             config.enableVectorSearch = false
@@ -2022,6 +2181,22 @@ extension AgentBrokerService {
         return nil
     }
 
+    func resolveSessionID(
+        _ explicit: UUID?,
+        requiringUnambiguousWorkingMemory includeWorking: Bool
+    ) throws -> UUID? {
+        if let explicit { return explicit }
+        guard includeWorking else { return nil }
+        switch activeSessions.count {
+        case 0:
+            return nil
+        case 1:
+            return activeSessions.keys.first
+        default:
+            throw BrokerValidationError.invalid("session_id is required when more than one session is active")
+        }
+    }
+
     struct ParsedSearchFilters {
         let sessionId: UUID?
         let frameFilter: FrameFilter?
@@ -2035,11 +2210,30 @@ extension AgentBrokerService {
 
         var metadataEntries: [String: String] = [:]
         var labels: [String] = []
+        var includeDeleted = false
+        var includeSuperseded = false
         var includeSurrogates = false
+        var frameIds: Set<UInt64>?
         var timeAfterMs: Int64?
         var timeBeforeMs: Int64?
 
         if let filters {
+            let allowedFilterKeys: Set<String> = [
+                "metadata",
+                "labels",
+                "include_deleted",
+                "include_superseded",
+                "include_surrogates",
+                "frame_ids",
+                "time_after_ms",
+                "time_before_ms",
+            ]
+            let unknownFilterKeys = Set(filters.keys).subtracting(allowedFilterKeys)
+            guard unknownFilterKeys.isEmpty else {
+                let names = unknownFilterKeys.sorted().map { "filters.\($0)" }.joined(separator: ", ")
+                throw BrokerValidationError.invalid("unsupported filter key(s): \(names)")
+            }
+
             if let metadataRaw = filters["metadata"] {
                 guard let metadataObject = metadataRaw.objectValue else {
                     throw BrokerValidationError.invalid("filters.metadata must be an object")
@@ -2068,11 +2262,37 @@ extension AgentBrokerService {
                     return trimmed
                 }
             }
+            if let includeRaw = filters["include_deleted"] {
+                guard let parsed = includeRaw.boolValue else {
+                    throw BrokerValidationError.invalid("filters.include_deleted must be a boolean")
+                }
+                includeDeleted = parsed
+            }
+            if let includeRaw = filters["include_superseded"] {
+                guard let parsed = includeRaw.boolValue else {
+                    throw BrokerValidationError.invalid("filters.include_superseded must be a boolean")
+                }
+                includeSuperseded = parsed
+            }
             if let includeRaw = filters["include_surrogates"] {
                 guard let parsed = includeRaw.boolValue else {
                     throw BrokerValidationError.invalid("filters.include_surrogates must be a boolean")
                 }
                 includeSurrogates = parsed
+            }
+            if let frameIdsRaw = filters["frame_ids"] {
+                guard let rawArray = frameIdsRaw.arrayValue else {
+                    throw BrokerValidationError.invalid("filters.frame_ids must be an array of non-negative integers")
+                }
+                var parsedFrameIds = Set<UInt64>()
+                parsedFrameIds.reserveCapacity(rawArray.count)
+                for value in rawArray {
+                    guard case .int(let raw) = value, raw >= 0 else {
+                        throw BrokerValidationError.invalid("filters.frame_ids must contain only non-negative integers")
+                    }
+                    parsedFrameIds.insert(UInt64(raw))
+                }
+                frameIds = parsedFrameIds
             }
             timeAfterMs = filters["time_after_ms"]?.intValue
             timeBeforeMs = filters["time_before_ms"]?.intValue
@@ -2080,8 +2300,14 @@ extension AgentBrokerService {
         let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
             ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
             : nil
-        let frameFilter: FrameFilter? = (metadataFilter != nil || includeSurrogates)
-            ? FrameFilter(includeSurrogates: includeSurrogates, metadataFilter: metadataFilter)
+        let frameFilter: FrameFilter? = (metadataFilter != nil || includeDeleted || includeSuperseded || includeSurrogates || frameIds != nil)
+            ? FrameFilter(
+                includeDeleted: includeDeleted,
+                includeSuperseded: includeSuperseded,
+                includeSurrogates: includeSurrogates,
+                frameIds: frameIds,
+                metadataFilter: metadataFilter
+            )
             : nil
         let timeRange: SearchTimeRange? = (timeAfterMs != nil || timeBeforeMs != nil)
             ? SearchTimeRange(after: timeAfterMs, before: timeBeforeMs)
@@ -2096,7 +2322,10 @@ extension AgentBrokerService {
                 "labels": .array(labels.map(AgentBrokerValue.string)),
                 "time_after_ms": .from(timeAfterMs),
                 "time_before_ms": .from(timeBeforeMs),
+                "include_deleted": .from(includeDeleted),
+                "include_superseded": .from(includeSuperseded),
                 "include_surrogates": .from(includeSurrogates),
+                "frame_ids": .array((frameIds ?? []).sorted().map(AgentBrokerValue.from)),
                 "has_frame_filter": .from(frameFilter != nil),
                 "has_time_range": .from(timeRange != nil),
             ])
@@ -2194,7 +2423,7 @@ extension AgentBrokerService {
             ?? promotionSettings.minimumConfidence
         let minimumRecallCount = try args.optionalInt("minimum_recall_count").map { max(0, $0) }
             ?? promotionSettings.minimumRecallCount
-        let maxCandidates = try args.optionalInt("max_candidates").map { max(1, $0) }
+        let maxCandidates = try args.optionalInt("max_candidates").map { min(max(1, $0), Self.maxPromotionCandidates) }
             ?? promotionSettings.maxCandidates
         return BrokerPromotionSettings(
             minimumConfidence: minimumConfidence,
@@ -2246,6 +2475,29 @@ extension AgentBrokerService {
         case .double(let raw):
             return .double(raw)
         case .object(let raw):
+            if raw.count == 2,
+               let type = raw["type"]?.stringValue,
+               let genericValue = raw["value"] {
+                switch type {
+                case "entity":
+                    guard let entity = genericValue.stringValue else {
+                        throw BrokerValidationError.invalid("entity typed object value must be a string")
+                    }
+                    return .entity(EntityKey(entity))
+                case "time_ms":
+                    guard let time = genericValue.intValue else {
+                        throw BrokerValidationError.invalid("time_ms typed object value must be an integer")
+                    }
+                    return .timeMs(time)
+                case "data_base64":
+                    guard let data = genericValue.stringValue, let decoded = Data(base64Encoded: data) else {
+                        throw BrokerValidationError.invalid("data_base64 typed object value must be a base64 string")
+                    }
+                    return .data(decoded)
+                default:
+                    throw BrokerValidationError.invalid("typed object type must be one of: entity, time_ms, data_base64")
+                }
+            }
             if let entity = raw["entity"]?.stringValue, raw.count == 1 {
                 return .entity(EntityKey(entity))
             }
@@ -2270,6 +2522,104 @@ extension AgentBrokerService {
         default:
             throw BrokerValidationError.invalid("relation must be one of: sets, updates, extends, retracts")
         }
+    }
+
+    func parseStructuredEvidence(_ value: AgentBrokerValue?) throws -> [StructuredEvidence] {
+        guard let value else { return [] }
+        guard let array = value.arrayValue else {
+            throw BrokerValidationError.invalid("evidence must be an array")
+        }
+        return try array.map { item in
+            guard let object = item.objectValue else {
+                throw BrokerValidationError.invalid("evidence must contain only objects")
+            }
+            let allowedKeys: Set<String> = [
+                "source_frame_id",
+                "chunk_index",
+                "span_start_utf8",
+                "span_end_utf8",
+                "extractor_id",
+                "extractor_version",
+                "confidence",
+                "asserted_at_ms",
+            ]
+            let unknownKeys = Set(object.keys).subtracting(allowedKeys)
+            guard unknownKeys.isEmpty else {
+                throw BrokerValidationError.invalid("unknown evidence fields: \(unknownKeys.sorted().joined(separator: ", "))")
+            }
+            guard let sourceFrameId = object["source_frame_id"], case .int(let sourceRaw) = sourceFrameId, sourceRaw >= 0 else {
+                throw BrokerValidationError.invalid("evidence.source_frame_id must be a non-negative integer")
+            }
+            let chunkIndex: UInt32? = try {
+                guard let value = object["chunk_index"] else { return nil }
+                guard case .int(let raw) = value, raw >= 0, raw <= Int64(UInt32.max) else {
+                    throw BrokerValidationError.invalid("evidence.chunk_index must be a non-negative integer")
+                }
+                return UInt32(raw)
+            }()
+            let span = try parseEvidenceSpan(object)
+            let extractorId = try requiredEvidenceString(object, key: "extractor_id")
+            let extractorVersion = try requiredEvidenceString(object, key: "extractor_version")
+            let confidence = try parseEvidenceConfidence(object["confidence"])
+            guard let assertedAtValue = object["asserted_at_ms"], case .int(let assertedAtMs) = assertedAtValue else {
+                throw BrokerValidationError.invalid("evidence.asserted_at_ms must be an integer")
+            }
+            return StructuredEvidence(
+                sourceFrameId: UInt64(sourceRaw),
+                chunkIndex: chunkIndex,
+                spanUTF8: span,
+                extractorId: extractorId,
+                extractorVersion: extractorVersion,
+                confidence: confidence,
+                assertedAtMs: assertedAtMs
+            )
+        }
+    }
+
+    func parseEvidenceSpan(_ object: [String: AgentBrokerValue]) throws -> Range<Int>? {
+        guard object["span_start_utf8"] != nil || object["span_end_utf8"] != nil else {
+            return nil
+        }
+        guard let startValue = object["span_start_utf8"], case .int(let startRaw) = startValue,
+              let endValue = object["span_end_utf8"], case .int(let endRaw) = endValue,
+              startRaw >= 0, endRaw > startRaw,
+              startRaw <= Int64(Int.max), endRaw <= Int64(Int.max) else {
+            throw BrokerValidationError.invalid("evidence span must include non-negative span_start_utf8 and greater span_end_utf8")
+        }
+        return Int(startRaw)..<Int(endRaw)
+    }
+
+    func requiredEvidenceString(_ object: [String: AgentBrokerValue], key: String) throws -> String {
+        guard let value = object[key], let raw = value.stringValue else {
+            throw BrokerValidationError.invalid("evidence.\(key) must be a string")
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw BrokerValidationError.invalid("evidence.\(key) must not be empty")
+        }
+        return trimmed
+    }
+
+    func parseEvidenceConfidence(_ value: AgentBrokerValue?) throws -> Double? {
+        guard let value else { return nil }
+        guard let confidence = value.doubleValue, confidence.isFinite, (0...1).contains(confidence) else {
+            throw BrokerValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
+        }
+        return confidence
+    }
+
+    func renderStructuredEvidence(_ evidence: StructuredEvidence) -> AgentBrokerValue {
+        var object: [String: AgentBrokerValue] = [
+            "source_frame_id": .from(evidence.sourceFrameId),
+            "extractor_id": .string(evidence.extractorId),
+            "extractor_version": .string(evidence.extractorVersion),
+            "asserted_at_ms": .from(evidence.assertedAtMs),
+        ]
+        object["chunk_index"] = evidence.chunkIndex.map { .int(Int64($0)) } ?? .null
+        object["span_start_utf8"] = evidence.spanUTF8.map { .from($0.lowerBound) } ?? .null
+        object["span_end_utf8"] = evidence.spanUTF8.map { .from($0.upperBound) } ?? .null
+        object["confidence"] = evidence.confidence.map { .double($0) } ?? .null
+        return .object(object)
     }
 
     func factValueAsBrokerValue(_ value: FactValue) -> AgentBrokerValue {
@@ -2398,7 +2748,7 @@ extension AgentBrokerService {
         for document in documents {
             let info = MemorySemantics.parse(metadata: document.metadata)
             guard info.durability == .durable || info.durability == .locked else { continue }
-            let type = MemorySemantics.classifyCandidate(text: document.text, metadata: document.metadata)
+            let type = info.type
             let marker = marker(for: document, kind: .memory)
             sections[type, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
         }
@@ -2420,6 +2770,17 @@ extension AgentBrokerService {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000))
+    }
+
+    static func safeMarkdownDailyDateKey(_ rawValue: String?, fallbackMs: Int64) -> String {
+        guard let rawValue else {
+            return dayString(fromMs: fallbackMs)
+        }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
+            return dayString(fromMs: fallbackMs)
+        }
+        return trimmed
     }
 
     static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID?, frameID: UInt64) -> String {
@@ -2472,12 +2833,26 @@ struct BrokerArguments {
         return raw
     }
 
+    func requiredStringPreservingWhitespace(_ key: String, maxBytes: Int) throws -> String {
+        guard let raw = try optionalStringPreservingWhitespace(key) else {
+            throw BrokerValidationError.missing(key)
+        }
+        guard raw.utf8.count <= maxBytes else {
+            throw BrokerValidationError.invalid("\(key) exceeds \(maxBytes) bytes")
+        }
+        return raw
+    }
+
     func optionalString(_ key: String) throws -> String? {
+        try optionalStringPreservingWhitespace(key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func optionalStringPreservingWhitespace(_ key: String) throws -> String? {
         guard let value = values[key] else { return nil }
         guard let stringValue = value.stringValue else {
             throw BrokerValidationError.invalid("\(key) must be a string")
         }
-        return stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stringValue
     }
 
     func optionalStringArray(_ key: String) throws -> [String]? {
@@ -2534,10 +2909,23 @@ struct BrokerArguments {
 
     func optionalInt64(_ key: String) throws -> Int64? {
         guard let value = values[key] else { return nil }
-        guard let intValue = value.intValue else {
+        switch value {
+        case .int(let intValue):
+            return intValue
+        case .double(let double):
+            guard double.isFinite else {
+                throw BrokerValidationError.invalid("\(key) is out of range")
+            }
+            guard double.rounded() == double else {
+                throw BrokerValidationError.invalid("\(key) must be an integer")
+            }
+            guard let intValue = Int64(exactly: double) else {
+                throw BrokerValidationError.invalid("\(key) is out of range")
+            }
+            return intValue
+        default:
             throw BrokerValidationError.invalid("\(key) must be an integer")
         }
-        return intValue
     }
 
     func optionalDouble(_ key: String) throws -> Double? {

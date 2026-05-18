@@ -109,5 +109,21 @@ missing = sorted(required - tool_names)
 if missing:
     raise RuntimeError(f"missing HTTP MCP tool(s): {missing}")
 
+_, stats_body = post({
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+        "name": "stats",
+        "arguments": {},
+    },
+}, session_id=session_id)
+stats_json = extract_json(stats_body)
+stats_result = stats_json.get("result", {})
+if stats_result.get("isError") is True:
+    raise RuntimeError(f"HTTP MCP stats tool returned error: {stats_json}")
+if not stats_result.get("content"):
+    raise RuntimeError(f"HTTP MCP stats tool returned no content: {stats_json}")
+
 print("Wax MCP HTTP verification passed.")
 PY

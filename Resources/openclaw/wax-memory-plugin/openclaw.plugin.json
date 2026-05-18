@@ -32,7 +32,7 @@
     },
     "command": {
       "label": "Wax MCP Command",
-      "placeholder": "wax-mcp"
+      "placeholder": "waxmcp"
     },
     "args": {
       "label": "Wax MCP Arguments",

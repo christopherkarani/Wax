@@ -4,11 +4,17 @@ title: "Photo RAG"
 sidebar_label: "Photo RAG"
 ---
 
-Build a semantic search layer over photo libraries with OCR, captions, and CLIP embeddings.
+Understand the package-only Photo RAG pipeline for contributor work.
+
+## Status
+
+Photo RAG is an experimental, package-only implementation. The current `PhotoRAGOrchestrator` actor and related photo types use Swift `package` access, so they are not public API for application or downstream package consumers.
+
+Use this page as internal implementation documentation for Wax contributors. Public integration docs should wait for a stable public facade or an explicit access-level change.
 
 ## Overview
 
-`PhotoRAGOrchestrator` provides retrieval-augmented generation for photo libraries. It ingests photos from the Photos framework or local files, extracts text (OCR), generates captions, computes embeddings, and enables natural-language queries over the photo collection.
+The package-scoped pipeline builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and metadata tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
 
 ## Architecture
 
@@ -20,41 +26,30 @@ Each photo is represented as a hierarchy of frames:
 | `ocrBlock` | Individual OCR text blocks |
 | `ocrSummary` | Concatenated OCR text for the full image |
 | `captionShort` | Short image caption |
-| `tags` | Detected tags/labels |
+| `tags` | Metadata keywords, or caption-derived search terms when no keywords are present |
 | `region` | Bounding box regions of interest |
 | `syncState` | Library sync checkpoint |
 
-## Setup
+## Internal Components
 
-```swift
-let orchestrator = try await PhotoRAGOrchestrator(
-    storeURL: storeURL,
-    config: PhotoRAGConfig(),
-    embedder: clipEmbedder,       // Multimodal embedding provider
-    ocr: myOCRProvider,           // Optional OCR provider
-    captioner: myCaptionProvider  // Optional caption provider
-)
-```
-
-### Providers
-
-- **Embedder** — Any `EmbeddingProvider` that works with image descriptions (e.g., CLIP-based)
-- **OCR** — Extracts text from images (optional)
-- **Captioner** — Generates natural-language descriptions of images (optional)
+| Component | Role |
+|-----------|------|
+| `PhotoRAGOrchestrator` | Package-scoped actor that owns photo sync, ingestion, indexing, recall, deletion, and flush flows |
+| `PhotoRAGConfig` | Package-scoped configuration for pixel sizes, OCR, regions, vector search, and context budgets |
+| `MultimodalEmbeddingProvider` | Package-scoped provider requirement for image and text embeddings |
+| `OCRProvider` | Package-scoped provider for image text extraction |
+| `CaptionProvider` | Package-scoped provider for generated image descriptions |
+| `PhotoQuery` | Package-scoped query model for text, metadata, location, and evidence constraints |
+| `PhotoRAGContext` | Package-scoped recall result grouped into photo items and evidence |
 
 ## Ingestion
 
-### From Photos Framework
+The package-only ingestion path currently supports:
 
-Sync and ingest from the user's photo library:
-
-```swift
-// Sync library metadata
-try await orchestrator.syncLibrary(scope: .all)
-
-// Ingest specific assets
-try await orchestrator.ingest(assetIDs: ["asset-id-1", "asset-id-2"])
-```
+- Photos-library sync for full-library or selected-asset scopes
+- Local image ingestion when the package is compiled with ImageIO support
+- Optional OCR, captions, metadata tags, and region evidence
+- On-device provider enforcement when configured
 
 ### Metadata
 
@@ -73,21 +68,9 @@ Each ingested photo stores rich metadata:
 | `orientation` | EXIF orientation |
 | `pipelineVersion` | Ingestion pipeline version |
 
-## Querying
+## Recall Behavior
 
-```swift
-let context = try await orchestrator.recall(PhotoQuery(
-    text: "photos with handwritten notes",
-    topK: 10
-))
-
-for item in context.items {
-    print("Asset: \(item.assetID), Score: \(item.score)")
-    print("OCR text: \(item.ocrText ?? "none")")
-}
-```
-
-The query pipeline:
+The package-only recall flow:
 1. Embeds the query text
 2. Searches across OCR text (BM25) and image embeddings (vector similarity)
 3. Fuses results with RRF
@@ -95,7 +78,7 @@ The query pipeline:
 
 ## Configuration
 
-`PhotoRAGConfig` controls ingestion and search:
+`PhotoRAGConfig` controls internal ingestion and search:
 
 | Parameter | Description |
 |-----------|-------------|
@@ -104,7 +87,6 @@ The query pipeline:
 | `enableOCR` | Whether to run OCR on ingested photos |
 | `enableRegions` | Whether to extract bounding box regions |
 | `ingestConcurrency` | Parallel ingestion tasks |
-| `vectorEnginePreference` | CPU vs GPU vector engine |
 | `hybridAlpha` | BM25 vs vector blend (0 = vector, 1 = text) |
 | `searchTopK` | Candidates to retrieve |
 | `requireOnDeviceProviders` | Reject network-dependent providers |

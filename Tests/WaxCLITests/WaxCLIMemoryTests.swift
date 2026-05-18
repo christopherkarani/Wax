@@ -3,6 +3,17 @@ import Dispatch
 import Testing
 import Wax
 @testable import wax_cli
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+#if MCPServer
+private let mcpServerTraitEnabled = true
+#else
+private let mcpServerTraitEnabled = false
+#endif
 
 @Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
@@ -255,6 +266,125 @@ struct WaxCLIMemoryTests {
         }
     }
 
+    @Test func directFactsQueryTextRendersSpanTemporalBounds() throws {
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-facts-text-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let storeURL = tempDir.appendingPathComponent("facts.wax")
+
+        let assertOutput = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "fact-assert",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", storeURL.path,
+                "--format", "text",
+                "--subject", "project:f019-cli",
+                "--predicate", "status",
+                "--object", "active",
+            ],
+            timeout: 20
+        )
+        #expect(assertOutput.status == EXIT_SUCCESS, "fact-assert should succeed: \(assertOutput.stderr)")
+
+        let queryOutput = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "facts-query",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", storeURL.path,
+                "--format", "text",
+                "--subject", "project:f019-cli",
+                "--predicate", "status",
+            ],
+            timeout: 20
+        )
+
+        #expect(queryOutput.status == EXIT_SUCCESS, "facts-query should succeed: \(queryOutput.stderr)")
+        #expect(queryOutput.stdout.contains("[1:1]"))
+        #expect(queryOutput.stdout.contains("relation=sets"))
+        #expect(queryOutput.stdout.contains("valid=["))
+        #expect(queryOutput.stdout.contains("system=["))
+        #expect(queryOutput.stdout.contains("..open]"))
+    }
+
+    @Test func directStatsAndFlushHonorRequireVectorWithNoEmbedder() throws {
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-direct-require-vector-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        for command in ["stats", "flush"] {
+            let output = try runProcess(
+                executableURL: executable,
+                arguments: [
+                    command,
+                    "--direct-store",
+                    "--no-embedder",
+                    "--require-vector",
+                    "--store-path",
+                    tempDir.appendingPathComponent("\(command).wax").path,
+                ],
+                timeout: 15
+            )
+
+            #expect(output.status != 0, "\(command) should fail when vector search is required but no embedder is configured")
+            #expect((output.stderr + output.stdout).contains("Vector search required"))
+            #expect((output.stderr + output.stdout).contains("--no-embedder"))
+        }
+    }
+
+    @Test func invalidEmbedderRuntimeFlagsAreRejected() throws {
+        let invalidArgumentSets = [
+            ["--embedder-compute-unit", "definitelyInvalid"],
+            ["--embedder-compute-unit", " "],
+            ["--embedder-batch-size", "0"],
+            ["--embedder-batch-size", "-1"],
+            ["--embedder-prewarm-batch-size", "0"],
+            ["--embedder-timeout-secs", "0"],
+            ["--embedder-timeout-secs", "-0.1"],
+        ]
+
+        for arguments in invalidArgumentSets {
+            #expect(throws: Error.self, "Expected invalid runtime arguments to be rejected: \(arguments)") {
+                _ = try VectorStoreOptions.parse(arguments)
+            }
+        }
+    }
+
+    @Test func brokerStatsHonorAccessStatsFeatureFlag() throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxas-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = brokerRoot.appendingPathComponent("access-stats.wax")
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "stats",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--format", "json",
+            ],
+            environment: [
+                "WAX_BROKER_DIR": brokerRoot.path,
+                "WAX_MCP_FEATURE_ACCESS_STATS": "1",
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "broker-backed stats should succeed: \(output.stderr)")
+        let object = try #require(JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any])
+        let features = try #require(object["features"] as? [String: Any])
+        #expect(features["accessStatsScoringEnabled"] as? Bool == true)
+    }
+
     @Test func agentDaemonPolicyPrefersDaemonForVectorCommands() throws {
         let vectorStore = try VectorStoreOptions.parse([])
         let textStore = try VectorStoreOptions.parse(["--no-embedder"])
@@ -267,8 +397,8 @@ struct WaxCLIMemoryTests {
     }
 
     @Test func agentDaemonConfigurationUsesStableSocketPaths() throws {
-        let daemonRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wax-cli-daemon-config-\(UUID().uuidString)", isDirectory: true)
+        let daemonRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxdc-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: daemonRoot) }
 
         setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
@@ -427,6 +557,79 @@ struct WaxCLIMemoryTests {
                 Issue.record("expected shutdown payload")
             }
         }
+    }
+
+    @Test func daemonSocketPathDoesNotReplaceRegularFile() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-daemon-socket-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let victimURL = tempRoot.appendingPathComponent("victim.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try "do not unlink\n".write(to: victimURL, atomically: true, encoding: .utf8)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "daemon",
+                "--store-path", storeURL.path,
+                "--no-embedder",
+                "--socket-path", victimURL.path,
+                "--idle-timeout-secs", "0.1",
+            ],
+            timeout: 10
+        )
+
+        #expect(output.status != EXIT_SUCCESS, "daemon should reject a regular file socket path")
+        #expect(FileManager.default.fileExists(atPath: victimURL.path))
+        let preserved = try String(contentsOf: victimURL, encoding: .utf8)
+        #expect(preserved == "do not unlink\n")
+    }
+
+    @Test func daemonSocketClientTimeoutDoesNotBlockLaterRequests() throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxds-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [
+            "daemon",
+            "--store-path", storeURL.path,
+            "--no-embedder",
+            "--socket-path", socketURL.path,
+            "--idle-timeout-secs", "10",
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        try waitForSocket(atPath: socketURL.path, timeout: 5)
+
+        let stalledClient = try connectUnixSocket(path: socketURL.path)
+        defer { close(stalledClient) }
+        _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
+
+        let responseLine = try sendBrokerSocketRequest(
+            AgentBrokerRequest(command: "stats"),
+            socketPath: socketURL.path,
+            timeoutSeconds: 3
+        )
+        let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
+        #expect(response.ok)
     }
 
     @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() throws {
@@ -607,6 +810,56 @@ struct WaxCLIMemoryTests {
         #expect(configuration.socketPath.utf8.count < 100)
     }
 
+    @Test func brokerSocketEnvironmentRootUsesPrivateDirectory() throws {
+        let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbr-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: brokerRoot) }
+
+        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
+        defer { unsetenv("WAX_BROKER_DIR") }
+
+        let configuration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+            storePath: brokerRoot.appendingPathComponent("private-root.wax").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false
+        )
+
+        #expect(configuration.socketPath.hasPrefix(brokerRoot.path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: brokerRoot.path)
+        let permissionNumber = try #require(attributes[.posixPermissions] as? NSNumber)
+        let ownerNumber = try #require(attributes[.ownerAccountID] as? NSNumber)
+        #expect(permissionNumber.intValue & 0o777 == 0o700)
+        #expect(ownerNumber.uint32Value == UInt32(getuid()))
+    }
+
+    @Test func brokerSocketEnvironmentRootRejectsSymlink() throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxbr-symlink-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let targetRoot = tempRoot.appendingPathComponent("target", isDirectory: true)
+        let symlinkRoot = tempRoot.appendingPathComponent("link", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: symlinkRoot, withDestinationURL: targetRoot)
+        setenv("WAX_BROKER_DIR", symlinkRoot.path, 1)
+        defer { unsetenv("WAX_BROKER_DIR") }
+
+        do {
+            _ = try AgentBrokerPathing.configuration(
+                brokerExecutablePath: try builtProductPath(named: "wax-cli"),
+                storePath: tempRoot.appendingPathComponent("symlink-root.wax").path,
+                embedderChoice: "minilm",
+                noEmbedder: true,
+                requireVector: false
+            )
+            Issue.record("Expected broker socket root to reject symlink directories")
+        } catch {
+            #expect(error.localizedDescription.contains("must not be a symlink"))
+        }
+    }
+
     @Test func brokerBackedVectorRequirementFailsFastWhenNoEmbedderIsConfigured() async throws {
         let brokerRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxbv-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -762,6 +1015,72 @@ struct WaxCLIMemoryTests {
         #expect(!mcpChecksum.contains(fixtureRoot.path))
     }
 
+    @Test func mcpInstallDryRunRedactsLicenseKey() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-redaction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let secret = "wax_secret_\(UUID().uuidString)"
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "install",
+                "--dry-run",
+                "--skip-build",
+                "--server-path", fakeServer.path,
+                "--license-key", secret,
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "mcp install --dry-run should succeed")
+        #expect(!output.stdout.contains(secret), "dry-run stdout must not include the raw license key")
+        #expect(!output.stderr.contains(secret), "dry-run stderr must not include the raw license key")
+        #expect(output.stdout.contains("WAX_LICENSE_KEY=<redacted>"))
+    }
+
+    @Test func mcpServePassesLicenseKeyInEnvironmentOnly() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-serve-license-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let argvFile = tempRoot.appendingPathComponent("argv.txt")
+        let envFile = tempRoot.appendingPathComponent("env.txt")
+        let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
+        try """
+        #!/bin/sh
+        printf '%s\n' "$*" > "\(argvFile.path)"
+        printf '%s\n' "$WAX_LICENSE_KEY" > "\(envFile.path)"
+        exit 0
+        """.write(to: fakeServer, atomically: true, encoding: .utf8)
+        try setExecutable(fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let secret = "wax_secret_\(UUID().uuidString)"
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "serve",
+                "--server-path", fakeServer.path,
+                "--store-path", tempRoot.appendingPathComponent("memory.wax").path,
+                "--license-key", secret,
+            ],
+            timeout: 20
+        )
+
+        #expect(output.status == EXIT_SUCCESS, "mcp serve should propagate the stub server exit status")
+        let argv = try String(contentsOf: argvFile, encoding: .utf8)
+        let env = try String(contentsOf: envFile, encoding: .utf8)
+        #expect(!argv.contains(secret), "mcp serve must not expose the raw license key in child argv")
+        #expect(env.trimmingCharacters(in: .whitespacesAndNewlines) == secret)
+    }
+
     @Test func entityUpsertNoCommitFallsBackToDirectStore() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-commit-flag-\(UUID().uuidString)", isDirectory: true)
@@ -787,7 +1106,9 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains(#""committed" : false"#))
     }
 
-    @Test func mcpDoctorRecognizesRenamedToolSurface() throws {
+    @Test(.disabled(if: !mcpServerTraitEnabled,
+                    "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
+    func mcpDoctorRecognizesRenamedToolSurface() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-doctor-\(UUID().uuidString)", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("doctor.wax")
@@ -812,7 +1133,9 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains("Doctor passed."))
     }
 
-    @Test func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() throws {
+    @Test(.disabled(if: !mcpServerTraitEnabled,
+                    "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
+    func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-path-launch-\(UUID().uuidString)", isDirectory: true)
         let runtimeDir = tempRoot.appendingPathComponent("runtime/bin", isDirectory: true)
@@ -962,6 +1285,118 @@ struct WaxCLIMemoryTests {
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private func waitForSocket(atPath path: String, timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: path) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw CLIError("Timed out waiting for socket at \(path)")
+    }
+
+    private func connectUnixSocket(path: String) throws -> Int32 {
+        #if canImport(Darwin)
+        let socketType = SOCK_STREAM
+        #else
+        let socketType = Int32(SOCK_STREAM.rawValue)
+        #endif
+        let fd = socket(AF_UNIX, socketType, 0)
+        guard fd >= 0 else {
+            throw CLIError("Unable to create Unix socket: \(String(cString: strerror(errno)))")
+        }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            close(fd)
+            throw CLIError("Unix socket path is too long: \(path)")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            let message = String(cString: strerror(errno))
+            close(fd)
+            throw CLIError("Unable to connect to Unix socket at \(path): \(message)")
+        }
+        return fd
+    }
+
+    private func sendBrokerSocketRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double
+    ) throws -> String {
+        let fd = try connectUnixSocket(path: socketPath)
+        defer { close(fd) }
+
+        var payload = try JSONEncoder().encode(request)
+        payload.append(0x0A)
+        try payload.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            let written = write(fd, base, payload.count)
+            guard written == payload.count else {
+                throw CLIError("Unable to write broker socket request")
+            }
+        }
+        #if canImport(Darwin)
+        shutdown(fd, SHUT_WR)
+        #else
+        shutdown(fd, Int32(SHUT_WR))
+        #endif
+
+        return try readSocketLine(fd: fd, timeoutSeconds: timeoutSeconds)
+    }
+
+    private func readSocketLine(fd: Int32, timeoutSeconds: Double) throws -> String {
+        var buffer = Data()
+        let timeoutMS = Int32(timeoutSeconds * 1000)
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let result = poll(&descriptor, 1, timeoutMS)
+            if result == 0 {
+                throw CLIError("Timed out waiting for broker socket response")
+            }
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker socket poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker socket read failed: \(String(cString: strerror(errno)))")
+            }
+            buffer.append(contentsOf: chunk.prefix(count))
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                return String(decoding: buffer[..<newlineIndex], as: UTF8.self)
+            }
+        }
+
+        guard !buffer.isEmpty else {
+            throw CLIError("Broker socket closed without a response")
+        }
+        return String(decoding: buffer, as: UTF8.self)
     }
 
     private func runMCPSmokeProcess(

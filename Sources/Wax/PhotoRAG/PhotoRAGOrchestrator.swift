@@ -32,6 +32,8 @@ package actor PhotoRAGOrchestrator {
 
     private enum MetaKey {
         static let assetID = PhotoMetadataKey.assetID.rawValue
+        static let source = PhotoMetadataKey.source.rawValue
+        static let fileURL = PhotoMetadataKey.fileURL.rawValue
         static let captureMs = PhotoMetadataKey.captureMs.rawValue
         static let isLocal = PhotoMetadataKey.isLocal.rawValue
         static let pipelineVersion = PhotoMetadataKey.pipelineVersion.rawValue
@@ -53,6 +55,10 @@ package actor PhotoRAGOrchestrator {
         static let bboxW = PhotoMetadataKey.bboxW.rawValue
         static let bboxH = PhotoMetadataKey.bboxH.rawValue
         static let regionType = PhotoMetadataKey.regionType.rawValue
+
+        static let syncScope = PhotoMetadataKey.syncScope.rawValue
+        static let syncAssetCount = PhotoMetadataKey.syncAssetCount.rawValue
+        static let syncCompletedAtMs = PhotoMetadataKey.syncCompletedAtMs.rawValue
     }
 
     private struct LocationBin: Hashable, Sendable {
@@ -80,6 +86,7 @@ package actor PhotoRAGOrchestrator {
         var assetIDByRoot: [UInt64: String] = [:]
         var derivedByRoot: [UInt64: DerivedRefs] = [:]
         var locationBins: [LocationBin: Set<UInt64>] = [:]
+        var locationByFrame: [UInt64: PhotoCoordinate] = [:]
     }
 
     /// The underlying Wax store for frame storage and indexing.
@@ -161,7 +168,7 @@ package actor PhotoRAGOrchestrator {
             await MainActor.run {
                 let opts = PHFetchOptions()
                 opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-                let result = PHAsset.fetchAssets(with: opts)
+                let result = PHAsset.fetchAssets(with: .image, options: opts)
                 if result.count == 0 { return [] }
                 var ids: [String] = []
                 ids.reserveCapacity(result.count)
@@ -172,6 +179,7 @@ package actor PhotoRAGOrchestrator {
             }
         }
         try await ingest(assetIDs: ids)
+        try await writeSyncState(scope: scope, assetCount: ids.count)
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
         #endif
@@ -218,6 +226,36 @@ package actor PhotoRAGOrchestrator {
         try await rebuildIndex()
     }
 
+    /// Ingest local image files into the Photo RAG index.
+    package func ingest(files: [PhotoFile]) async throws {
+        let uniqueFiles = Self.dedupePhotoFiles(files)
+        guard !uniqueFiles.isEmpty else { return }
+
+        let concurrency = config.ingestConcurrency
+        var iterator = uniqueFiles.makeIterator()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<concurrency {
+                guard let file = iterator.next() else { break }
+                group.addTask {
+                    try Task.checkCancellation()
+                    try await self.ingestOne(file: file)
+                }
+            }
+            for try await _ in group {
+                if let file = iterator.next() {
+                    group.addTask {
+                        try Task.checkCancellation()
+                        try await self.ingestOne(file: file)
+                    }
+                }
+            }
+        }
+
+        try await session.commit()
+        try await rebuildIndex()
+    }
+
     /// Recall RAG context for a photo query, returning ranked items with text surrogates and optional pixel payloads.
     package func recall(_ query: PhotoQuery) async throws -> PhotoRAGContext {
         let cleanedText = query.text?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -239,83 +277,107 @@ package actor PhotoRAGOrchestrator {
         let timeRange = Self.toWaxTimeRange(query.timeRange)
 
         let locationAllowlist = query.location.flatMap { buildLocationAllowlist(location: $0) }
+        let assetAllowlist = buildAssetAllowlist(assetIDs: query.filters.assetIDs)
+        let filterFrameIds = Self.intersectAllowlists(locationAllowlist, assetAllowlist)
+        let metadataFilter = Self.metadataFilter(from: query.filters)
 
         let isConstraintOnlyQuery = (queryText == nil && queryEmbedding == nil)
-            && (query.timeRange != nil || query.location != nil)
-        let fallbackLimit = max(query.resultLimit, config.searchTopK)
+            && (query.timeRange != nil || query.location != nil || !query.filters.isEmpty)
+        let frameFilter: FrameFilter? = if filterFrameIds != nil || metadataFilter != nil {
+            FrameFilter(frameIds: filterFrameIds, metadataFilter: metadataFilter)
+        } else {
+            nil
+        }
 
-        let request = SearchRequest(
-            query: queryText,
-            embedding: queryEmbedding,
-            vectorEnginePreference: config.vectorEnginePreference,
-            mode: mode,
-            topK: max(query.resultLimit, config.searchTopK),
-            timeRange: timeRange,
-            frameFilter: locationAllowlist.map { FrameFilter(frameIds: $0) },
-            previewMaxBytes: 1024,
-            allowTimelineFallback: isConstraintOnlyQuery,
-            timelineFallbackLimit: fallbackLimit
-        )
+        let rootMetaById: [UInt64: FrameMeta]
+        let picked: [RootCandidate]
 
-        let response = try await session.search(request)
-        guard !response.results.isEmpty else {
+        if isConstraintOnlyQuery {
+            let direct = await constraintRootCandidates(
+                query: query,
+                timeRange: timeRange,
+                filterFrameIds: filterFrameIds,
+                metadataFilter: metadataFilter
+            )
+            rootMetaById = direct.rootMetaById
+            picked = Array(direct.candidates.prefix(query.resultLimit))
+        } else {
+            let request = SearchRequest(
+                query: queryText,
+                embedding: queryEmbedding,
+                vectorEnginePreference: config.vectorEnginePreference,
+                mode: mode,
+                topK: max(query.resultLimit, config.searchTopK),
+                timeRange: timeRange,
+                frameFilter: frameFilter,
+                previewMaxBytes: 1024,
+                allowTimelineFallback: false,
+                timelineFallbackLimit: max(query.resultLimit, config.searchTopK)
+            )
+
+            let response = try await session.search(request)
+            guard !response.results.isEmpty else {
+                return PhotoRAGContext(query: query, items: [], diagnostics: .init())
+            }
+
+            let frameIds = response.results.map(\.frameId)
+            let metaById = await wax.frameMetasIncludingPending(frameIds: frameIds)
+
+            var rootIds: Set<UInt64> = []
+            rootIds.reserveCapacity(response.results.count)
+            for result in response.results {
+                if let meta = metaById[result.frameId] {
+                    rootIds.insert(meta.parentId ?? meta.id)
+                }
+            }
+
+            rootMetaById = await wax.frameMetasIncludingPending(frameIds: Array(rootIds))
+
+            var candidates: [UInt64: RootCandidate] = [:]
+            candidates.reserveCapacity(rootIds.count)
+
+            for result in response.results {
+                guard let meta = metaById[result.frameId] else { continue }
+                let rootId = meta.parentId ?? meta.id
+                guard let rootMeta = rootMetaById[rootId] else { continue }
+                guard rootMeta.kind == FrameKind.root else { continue }
+                if rootMeta.status == .deleted { continue }
+                if rootMeta.supersededBy != nil { continue }
+
+                let ev = Self.evidence(from: result, meta: meta)
+
+                var entry = candidates[rootId] ?? RootCandidate(
+                    rootId: rootId,
+                    score: result.score,
+                    evidence: [],
+                    matchedRegions: [],
+                    textSnippet: nil
+                )
+                entry.score = max(entry.score, result.score)
+                if let ev, !entry.evidence.contains(ev) {
+                    entry.evidence.append(ev)
+                }
+                if let rect = Self.regionRect(from: meta) {
+                    entry.matchedRegions.append(rect)
+                }
+                if entry.textSnippet == nil, (result.sources.contains(.text) || meta.kind == FrameKind.ocrSummary) {
+                    entry.textSnippet = result.previewText
+                }
+                candidates[rootId] = entry
+            }
+
+            // Build summary text for the top candidates, then apply budgets.
+            let sorted = candidates.values.sorted { a, b in
+                if a.score != b.score { return a.score > b.score }
+                return a.rootId < b.rootId
+            }
+
+            picked = Array(sorted.prefix(query.resultLimit))
+        }
+
+        guard !picked.isEmpty else {
             return PhotoRAGContext(query: query, items: [], diagnostics: .init())
         }
-
-        let frameIds = response.results.map(\.frameId)
-        let metaById = await wax.frameMetasIncludingPending(frameIds: frameIds)
-
-        var rootIds: Set<UInt64> = []
-        rootIds.reserveCapacity(response.results.count)
-        for result in response.results {
-            if let meta = metaById[result.frameId] {
-                rootIds.insert(meta.parentId ?? meta.id)
-            }
-        }
-
-        let rootMetaById = await wax.frameMetasIncludingPending(frameIds: Array(rootIds))
-
-        var candidates: [UInt64: RootCandidate] = [:]
-        candidates.reserveCapacity(rootIds.count)
-
-        for result in response.results {
-            guard let meta = metaById[result.frameId] else { continue }
-            let rootId = meta.parentId ?? meta.id
-            guard let rootMeta = rootMetaById[rootId] else { continue }
-            guard rootMeta.kind == FrameKind.root else { continue }
-            if rootMeta.status == .deleted { continue }
-            if rootMeta.supersededBy != nil { continue }
-
-            let ev = Self.evidence(from: result, meta: meta)
-
-            var entry = candidates[rootId] ?? RootCandidate(
-                rootId: rootId,
-                score: result.score,
-                evidence: [],
-                matchedRegions: [],
-                textSnippet: nil
-            )
-            entry.score = max(entry.score, result.score)
-            if let ev, !entry.evidence.contains(ev) {
-                entry.evidence.append(ev)
-            }
-            if let rect = Self.regionRect(from: meta) {
-                entry.matchedRegions.append(rect)
-            }
-            if entry.textSnippet == nil, (result.sources.contains(.text) || meta.kind == FrameKind.ocrSummary) {
-                entry.textSnippet = result.previewText
-            }
-            candidates[rootId] = entry
-        }
-
-        // Build summary text for the top candidates, then apply budgets.
-        let sorted = candidates.values.sorted { a, b in
-            if a.score != b.score { return a.score > b.score }
-            return a.rootId < b.rootId
-        }
-
-        let limit = query.resultLimit
-        let picked = Array(sorted.prefix(limit))
         let rootIdsPicked = picked.map(\.rootId)
 
         // Resolve asset IDs and derived frame refs.
@@ -409,7 +471,7 @@ package actor PhotoRAGOrchestrator {
             maxRegions: query.contextBudget.maxRegions
         )
 
-        let degradedCount = itemsWithPixels.filter { isDegraded(assetID: $0.assetID) }.count
+        let degradedCount = await degradedResultCount(assetIDs: itemsWithPixels.map(\.assetID))
         let diagnostics = PhotoRAGContext.Diagnostics(usedTextTokens: usedTokens, degradedResultCount: degradedCount)
         return PhotoRAGContext(query: query, items: itemsWithPixels, diagnostics: diagnostics)
     }
@@ -439,6 +501,32 @@ package actor PhotoRAGOrchestrator {
     }
 
     // MARK: - Ingest internals
+
+    private func writeSyncState(scope: PhotoScope, assetCount: Int) async throws {
+        let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        var metadata = Metadata()
+        metadata.entries[MetaKey.syncScope] = Self.syncScopeValue(scope)
+        metadata.entries[MetaKey.syncAssetCount] = String(assetCount)
+        metadata.entries[MetaKey.syncCompletedAtMs] = String(completedAtMs)
+        metadata.entries[MetaKey.pipelineVersion] = config.pipelineVersion
+
+        _ = try await session.put(
+            Data(),
+            options: FrameMetaSubset(kind: FrameKind.syncState, metadata: metadata),
+            compression: .plain,
+            timestampMs: completedAtMs
+        )
+        try await session.commit()
+    }
+
+    private static func syncScopeValue(_ scope: PhotoScope) -> String {
+        switch scope {
+        case .fullLibrary:
+            return "full_library"
+        case .assetIDs:
+            return "asset_ids"
+        }
+    }
 
     private func ingestOne(assetID: String) async throws {
         guard inFlightAssetIDs.insert(assetID).inserted else { return }
@@ -627,48 +715,27 @@ package actor PhotoRAGOrchestrator {
                 // Collect all crops first
                 var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
                 crops.reserveCapacity(regions.count)
-                for (i, region) in regions.enumerated() {
+                for region in regions {
                     guard let crop = Self.crop(embedImage, rect: region.bbox) else { continue }
-                    crops.append((i, crop, region))
+                    crops.append((crops.count, crop, region))
                 }
 
-                guard !crops.isEmpty else { return }
+                if !crops.isEmpty {
+                    // Embed in parallel with bounded concurrency (4 concurrent tasks)
+                    var regionEmbeddings: [[Float]] = []
+                    var regionContents: [Data] = []
+                    var regionOptions: [FrameMetaSubset] = []
+                    regionEmbeddings.reserveCapacity(crops.count)
+                    regionContents.reserveCapacity(crops.count)
+                    regionOptions.reserveCapacity(crops.count)
 
-                // Embed in parallel with bounded concurrency (4 concurrent tasks)
-                var regionEmbeddings: [[Float]] = []
-                var regionContents: [Data] = []
-                var regionOptions: [FrameMetaSubset] = []
-                regionEmbeddings.reserveCapacity(crops.count)
-                regionContents.reserveCapacity(crops.count)
-                regionOptions.reserveCapacity(crops.count)
+                    try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
+                        var activeCount = 0
+                        let maxConcurrency = self.config.regionEmbeddingConcurrency
+                        var cropIterator = crops.makeIterator()
 
-                try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-                    var activeCount = 0
-                    let maxConcurrency = self.config.regionEmbeddingConcurrency
-                    var cropIterator = crops.makeIterator()
-
-                    // Start initial batch
-                    while activeCount < maxConcurrency, let item = cropIterator.next() {
-                        let (index, crop, _) = item
-                        group.addTask {
-                            var vec = try await self.embedder.embed(image: crop)
-                            if self.embedder.normalize, !vec.isEmpty {
-                                vec = VectorMath.normalizeL2(vec)
-                            }
-                            guard vec.count == self.embedder.dimensions else {
-                                throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
-                            }
-                            return (index, vec)
-                        }
-                        activeCount += 1
-                    }
-
-                    // Collect results and spawn new tasks
-                    var results: [(Int, [Float])] = []
-                    results.reserveCapacity(crops.count)
-                    for try await result in group {
-                        results.append(result)
-                        if let item = cropIterator.next() {
+                        // Start initial batch
+                        while activeCount < maxConcurrency, let item = cropIterator.next() {
                             let (index, crop, _) = item
                             group.addTask {
                                 var vec = try await self.embedder.embed(image: crop)
@@ -680,34 +747,55 @@ package actor PhotoRAGOrchestrator {
                                 }
                                 return (index, vec)
                             }
+                            activeCount += 1
+                        }
+
+                        // Collect results and spawn new tasks
+                        var results: [(Int, [Float])] = []
+                        results.reserveCapacity(crops.count)
+                        for try await result in group {
+                            results.append(result)
+                            if let item = cropIterator.next() {
+                                let (index, crop, _) = item
+                                group.addTask {
+                                    var vec = try await self.embedder.embed(image: crop)
+                                    if self.embedder.normalize, !vec.isEmpty {
+                                        vec = VectorMath.normalizeL2(vec)
+                                    }
+                                    guard vec.count == self.embedder.dimensions else {
+                                        throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                                    }
+                                    return (index, vec)
+                                }
+                            }
+                        }
+
+                        // Sort results by index to maintain deterministic ordering
+                        results.sort { $0.0 < $1.0 }
+
+                        // Build final arrays in correct order
+                        for (index, vec) in results {
+                            let (_, _, region) = crops[index]
+                            regionEmbeddings.append(vec)
+                            regionContents.append(Data())
+
+                            var meta = baseMeta
+                            Self.writeBBox(into: &meta, rect: region.bbox)
+                            meta.entries[MetaKey.regionType] = region.type
+                            let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
+                            regionOptions.append(subset)
                         }
                     }
 
-                    // Sort results by index to maintain deterministic ordering
-                    results.sort { $0.0 < $1.0 }
-
-                    // Build final arrays in correct order
-                    for (index, vec) in results {
-                        let (_, _, region) = crops[index]
-                        regionEmbeddings.append(vec)
-                        regionContents.append(Data())
-
-                        var meta = baseMeta
-                        Self.writeBBox(into: &meta, rect: region.bbox)
-                        meta.entries[MetaKey.regionType] = region.type
-                        let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
-                        regionOptions.append(subset)
-                    }
+                    _ = try await session.putBatch(
+                        contents: regionContents,
+                        embeddings: regionEmbeddings,
+                        identity: embedder.identity,
+                        options: regionOptions,
+                        timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
+                        compression: .plain
+                    )
                 }
-
-                _ = try await session.putBatch(
-                    contents: regionContents,
-                    embeddings: regionEmbeddings,
-                    identity: embedder.identity,
-                    options: regionOptions,
-                    timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
-                    compression: .plain
-                )
             }
         }
 
@@ -717,6 +805,266 @@ package actor PhotoRAGOrchestrator {
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
         #endif
+    }
+
+    private func ingestOne(file: PhotoFile) async throws {
+        let assetID = file.id
+        guard inFlightAssetIDs.insert(assetID).inserted else { return }
+        defer { inFlightAssetIDs.remove(assetID) }
+
+        guard FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)) else {
+            throw PhotoIngestError.fileMissing(id: assetID, url: file.url)
+        }
+
+        let imageData: Data
+        do {
+            imageData = try Data(contentsOf: file.url)
+        } catch {
+            throw PhotoIngestError.invalidImage(reason: "failed to read local image: \(file.url.path)")
+        }
+        let exif = PhotosAssetMetadata.extractEXIF(from: imageData)
+        let embedImage: CGImage
+        let ocrImage: CGImage
+        do {
+            embedImage = try Self.decodeThumbnail(from: imageData, maxPixelSize: config.embedMaxPixelSize)
+            ocrImage = try Self.decodeThumbnail(from: imageData, maxPixelSize: config.ocrMaxPixelSize)
+        } catch {
+            throw PhotoIngestError.invalidImage(reason: "failed to decode local image: \(file.url.path)")
+        }
+        let originalDimensions = Self.imagePixelDimensions(from: imageData) ?? (width: embedImage.width, height: embedImage.height)
+        let captureMs = exif.dateTimeOriginalMs ?? file.captureDate.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let frameTimestampMs = captureMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+        let location: PhotosAssetMetadata.Location? = if let lat = exif.gpsLatitude, let lon = exif.gpsLongitude {
+            PhotosAssetMetadata.Location(latitude: lat, longitude: lon, horizontalAccuracyMeters: nil)
+        } else {
+            nil
+        }
+        let metadata = PhotosAssetMetadata.Record(
+            assetID: assetID,
+            creationDateMs: nil,
+            captureMs: captureMs,
+            location: location,
+            isFavorite: false,
+            pixelWidth: originalDimensions.width,
+            pixelHeight: originalDimensions.height,
+            isLocal: true,
+            imageData: imageData,
+            exif: exif
+        )
+        let baseMeta = Self.baseMetadata(
+            assetID: assetID,
+            captureMs: captureMs,
+            pipelineVersion: config.pipelineVersion,
+            isLocal: true,
+            location: location,
+            pixelWidth: originalDimensions.width,
+            pixelHeight: originalDimensions.height,
+            exif: exif,
+            source: "file",
+            fileURL: file.url
+        )
+        let previousRoot = index.rootByAssetID[assetID]
+
+        var globalEmbedding = try await embedder.embed(image: embedImage)
+        if embedder.normalize, !globalEmbedding.isEmpty {
+            globalEmbedding = VectorMath.normalizeL2(globalEmbedding)
+        }
+        guard globalEmbedding.count == embedder.dimensions else {
+            throw PhotoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: globalEmbedding.count)
+        }
+
+        let rootId = try await session.put(
+            Data(),
+            embedding: globalEmbedding,
+            identity: embedder.identity,
+            options: FrameMetaSubset(kind: FrameKind.root, metadata: baseMeta),
+            compression: .plain,
+            timestampMs: frameTimestampMs
+        )
+
+        var ocrBlocks: [RecognizedTextBlock] = []
+        if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
+            ocrBlocks = try await ocr.recognizeText(in: ocrImage)
+        }
+
+        let captionText: String?
+        if let captioner {
+            do {
+                captionText = try await captioner.caption(for: ocrImage)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "local photo caption generation",
+                    fallback: "skip caption for file"
+                )
+                captionText = nil
+            }
+        } else {
+            captionText = Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
+        }
+
+        let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)
+        var derivedContents: [Data] = []
+        var derivedOptions: [FrameMetaSubset] = []
+        var derivedTextsForIndex: [(frameIndex: Int, text: String)] = []
+
+        func addDerived(kind: String, text: String, searchable: Bool) {
+            let idx = derivedContents.count
+            derivedContents.append(Data(text.utf8))
+            var subset = FrameMetaSubset(kind: kind, parentId: rootId, metadata: baseMeta)
+            subset.role = FrameRole.blob
+            derivedOptions.append(subset)
+            if searchable {
+                derivedTextsForIndex.append((frameIndex: idx, text: text))
+            }
+        }
+
+        if let captionText, !captionText.isEmpty {
+            addDerived(kind: FrameKind.captionShort, text: captionText, searchable: true)
+        }
+        if let derivedTagsText {
+            addDerived(kind: FrameKind.tags, text: derivedTagsText, searchable: true)
+        }
+        if !ocrBlocks.isEmpty {
+            let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
+            if !summary.isEmpty {
+                addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
+            }
+            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
+                var meta = baseMeta
+                Self.writeBBox(into: &meta, rect: block.bbox)
+                meta.entries["photo.ocr.confidence"] = String(block.confidence)
+                if let lang = block.language {
+                    meta.entries["photo.ocr.language"] = lang
+                }
+                derivedContents.append(Data(block.text.utf8))
+                var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
+                subset.role = FrameRole.blob
+                derivedOptions.append(subset)
+            }
+        }
+
+        let derivedIds = try await session.putBatch(
+            contents: derivedContents,
+            options: derivedOptions,
+            compression: .plain,
+            timestampsMs: Array(repeating: frameTimestampMs, count: derivedContents.count)
+        )
+        if !derivedTextsForIndex.isEmpty {
+            var frameIds: [UInt64] = []
+            var texts: [String] = []
+            for entry in derivedTextsForIndex {
+                frameIds.append(derivedIds[entry.frameIndex])
+                texts.append(entry.text)
+            }
+            try await session.indexTextBatch(frameIds: frameIds, texts: texts)
+        }
+
+        try await writeRegionEmbeddingsIfNeeded(
+            rootId: rootId,
+            baseMeta: baseMeta,
+            sourceImage: embedImage,
+            ocrBlocks: ocrBlocks,
+            timestampMs: frameTimestampMs
+        )
+
+        if let previousRoot {
+            try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+        }
+    }
+
+    private func writeRegionEmbeddingsIfNeeded(
+        rootId: UInt64,
+        baseMeta: Metadata,
+        sourceImage: CGImage,
+        ocrBlocks: [RecognizedTextBlock],
+        timestampMs: Int64
+    ) async throws {
+        guard config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 else { return }
+        let regions = Self.proposeRegions(from: ocrBlocks, maxRegions: config.maxRegionsPerPhoto)
+        guard !regions.isEmpty else { return }
+
+        var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
+        crops.reserveCapacity(regions.count)
+        for region in regions {
+            guard let crop = Self.crop(sourceImage, rect: region.bbox) else { continue }
+            crops.append((crops.count, crop, region))
+        }
+        guard !crops.isEmpty else { return }
+
+        var regionEmbeddings: [[Float]] = []
+        var regionContents: [Data] = []
+        var regionOptions: [FrameMetaSubset] = []
+        regionEmbeddings.reserveCapacity(crops.count)
+        regionContents.reserveCapacity(crops.count)
+        regionOptions.reserveCapacity(crops.count)
+
+        try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
+            var activeCount = 0
+            let maxConcurrency = config.regionEmbeddingConcurrency
+            var cropIterator = crops.makeIterator()
+
+            while activeCount < maxConcurrency, let item = cropIterator.next() {
+                let (index, crop, _) = item
+                group.addTask {
+                    var vec = try await self.embedder.embed(image: crop)
+                    if self.embedder.normalize, !vec.isEmpty {
+                        vec = VectorMath.normalizeL2(vec)
+                    }
+                    guard vec.count == self.embedder.dimensions else {
+                        throw PhotoIngestError.embedderDimensionMismatch(
+                            expected: self.embedder.dimensions,
+                            got: vec.count
+                        )
+                    }
+                    return (index, vec)
+                }
+                activeCount += 1
+            }
+
+            var results: [(Int, [Float])] = []
+            results.reserveCapacity(crops.count)
+            for try await result in group {
+                results.append(result)
+                if let item = cropIterator.next() {
+                    let (index, crop, _) = item
+                    group.addTask {
+                        var vec = try await self.embedder.embed(image: crop)
+                        if self.embedder.normalize, !vec.isEmpty {
+                            vec = VectorMath.normalizeL2(vec)
+                        }
+                        guard vec.count == self.embedder.dimensions else {
+                            throw PhotoIngestError.embedderDimensionMismatch(
+                                expected: self.embedder.dimensions,
+                                got: vec.count
+                            )
+                        }
+                        return (index, vec)
+                    }
+                }
+            }
+
+            results.sort { $0.0 < $1.0 }
+            for (index, vec) in results {
+                let (_, _, region) = crops[index]
+                regionEmbeddings.append(vec)
+                regionContents.append(Data())
+
+                var meta = baseMeta
+                Self.writeBBox(into: &meta, rect: region.bbox)
+                meta.entries[MetaKey.regionType] = region.type
+                regionOptions.append(FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta))
+            }
+        }
+
+        _ = try await session.putBatch(
+            contents: regionContents,
+            embeddings: regionEmbeddings,
+            identity: embedder.identity,
+            options: regionOptions,
+            timestampsMs: Array(repeating: timestampMs, count: regionContents.count),
+            compression: .plain
+        )
     }
 
     // MARK: - Indexing
@@ -769,6 +1117,7 @@ package actor PhotoRAGOrchestrator {
             if Self.isSearchablePhotoKind(kind),
                let bin = Self.locationBin(from: entries) {
                 next.locationBins[bin, default: []].insert(meta.id)
+                next.locationByFrame[meta.id] = Self.locationCoordinate(from: entries)
             }
         }
 
@@ -810,19 +1159,13 @@ package actor PhotoRAGOrchestrator {
         let minLatBin = max(-9000, Int(floor(minLat * 100.0)))
         let maxLatBin = min(9000, Int(floor(maxLat * 100.0)))
 
-        let minLonBin = Int(floor(minLon * 100.0))
-        let maxLonBin = Int(floor(maxLon * 100.0))
+        let lonRanges = Self.longitudeBinRanges(minLon: minLon, maxLon: maxLon, lonDelta: lonDelta)
 
         // Compute total bin count. If the search area is degenerate (too many bins),
         // return nil to gracefully degrade to "no location filter".
         let latBinCount = maxLatBin - minLatBin + 1
-        let lonBinCount: Int
-        if minLonBin <= maxLonBin {
-            lonBinCount = maxLonBin - minLonBin + 1
-        } else {
-            // Antimeridian wraparound: bins split across -180/180 boundary.
-            // e.g., minLonBin=17900, maxLonBin=-17900 -> wraps around.
-            lonBinCount = (18000 - minLonBin) + (maxLonBin - (-18000)) + 1
+        let lonBinCount = lonRanges.reduce(0) { partial, range in
+            partial + (range.upperBound - range.lowerBound + 1)
         }
 
         guard latBinCount > 0, lonBinCount > 0 else { return nil }
@@ -832,26 +1175,44 @@ package actor PhotoRAGOrchestrator {
 
         var allowlist: Set<UInt64> = []
 
-        // Build longitude bin ranges. If minLonBin <= maxLonBin, it is a single
-        // contiguous range. Otherwise, split across the antimeridian into two ranges.
-        let lonRanges: [ClosedRange<Int>]
-        if minLonBin <= maxLonBin {
-            lonRanges = [minLonBin...maxLonBin]
-        } else {
-            lonRanges = [minLonBin...18000, -18000...maxLonBin]
-        }
-
         for latBin in minLatBin...maxLatBin {
             for lonRange in lonRanges {
                 for lonBin in lonRange {
                     let bin = LocationBin(latBin: latBin, lonBin: lonBin)
                     if let ids = index.locationBins[bin] {
-                        allowlist.formUnion(ids)
+                        for id in ids {
+                            guard let coordinate = index.locationByFrame[id] else { continue }
+                            if Self.distanceMeters(from: center, to: coordinate) <= radius {
+                                allowlist.insert(id)
+                            }
+                        }
                     }
                 }
             }
         }
         return allowlist
+    }
+
+    private static func longitudeBinRanges(minLon: Double, maxLon: Double, lonDelta: Double) -> [ClosedRange<Int>] {
+        guard lonDelta < 180 else {
+            return [-18000...18000]
+        }
+
+        if minLon < -180 {
+            let wrappedMin = Int(floor((minLon + 360.0) * 100.0))
+            let maxBin = Int(floor(maxLon * 100.0))
+            return [max(-18000, wrappedMin)...18000, -18000...min(18000, maxBin)]
+        }
+
+        if maxLon > 180 {
+            let minBin = Int(floor(minLon * 100.0))
+            let wrappedMax = Int(floor((maxLon - 360.0) * 100.0))
+            return [max(-18000, minBin)...18000, -18000...min(18000, wrappedMax)]
+        }
+
+        let minBin = max(-18000, Int(floor(minLon * 100.0)))
+        let maxBin = min(18000, Int(floor(maxLon * 100.0)))
+        return [minBin...maxBin]
     }
 
     static func dedupeAssetIDs(_ assetIDs: [String]) -> [String] {
@@ -866,6 +1227,18 @@ package actor PhotoRAGOrchestrator {
         return unique
     }
 
+    static func dedupePhotoFiles(_ files: [PhotoFile]) -> [PhotoFile] {
+        guard files.count > 1 else { return files }
+        var seen: Set<String> = []
+        seen.reserveCapacity(files.count)
+        var unique: [PhotoFile] = []
+        unique.reserveCapacity(files.count)
+        for file in files where seen.insert(file.id).inserted {
+            unique.append(file)
+        }
+        return unique
+    }
+
     private static func locationBin(from meta: [String: String]) -> LocationBin? {
         guard let latStr = meta[MetaKey.lat],
               let lonStr = meta[MetaKey.lon],
@@ -873,6 +1246,28 @@ package actor PhotoRAGOrchestrator {
               let lon = Double(lonStr)
         else { return nil }
         return LocationBin(latBin: Int(floor(lat * 100.0)), lonBin: Int(floor(lon * 100.0)))
+    }
+
+    private static func locationCoordinate(from meta: [String: String]) -> PhotoCoordinate? {
+        guard let latStr = meta[MetaKey.lat],
+              let lonStr = meta[MetaKey.lon],
+              let lat = Double(latStr),
+              let lon = Double(lonStr)
+        else { return nil }
+        return PhotoCoordinate(latitude: lat, longitude: lon)
+    }
+
+    private static func distanceMeters(from lhs: PhotoCoordinate, to rhs: PhotoCoordinate) -> Double {
+        let earthRadiusMeters = 6_371_000.0
+        let lat1 = lhs.latitude * .pi / 180
+        let lat2 = rhs.latitude * .pi / 180
+        let deltaLat = (rhs.latitude - lhs.latitude) * .pi / 180
+        let deltaLon = (rhs.longitude - lhs.longitude) * .pi / 180
+
+        let a = sin(deltaLat / 2) * sin(deltaLat / 2)
+            + cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
+        return earthRadiusMeters * c
     }
 
     // MARK: - Query embedding
@@ -1003,14 +1398,151 @@ package actor PhotoRAGOrchestrator {
         index.rootByAssetID[assetID]
     }
 
-    private func isDegraded(assetID: String) -> Bool {
-        guard let rootId = index.rootByAssetID[assetID] else { return true }
-        // If the root has no derived refs and no embedding, treat as degraded. (MVP heuristic)
-        let refs = index.derivedByRoot[rootId]
-        return refs?.ocrSummary == nil && refs?.caption == nil
+    private func degradedResultCount(assetIDs: [String]) async -> Int {
+        var rootIds: [UInt64] = []
+        rootIds.reserveCapacity(assetIDs.count)
+        var missingRootCount = 0
+        for assetID in assetIDs {
+            if let rootId = index.rootByAssetID[assetID] {
+                rootIds.append(rootId)
+            } else {
+                missingRootCount += 1
+            }
+        }
+        guard !rootIds.isEmpty else { return missingRootCount }
+
+        let metas = await wax.frameMetasIncludingPending(frameIds: rootIds)
+        var degraded = missingRootCount
+        for rootId in rootIds {
+            guard let rawValue = metas[rootId]?.metadata?.entries[MetaKey.isLocal],
+                  let isLocal = Bool(rawValue)
+            else {
+                degraded += 1
+                continue
+            }
+            if !isLocal {
+                degraded += 1
+            }
+        }
+        return degraded
+    }
+
+    private func constraintRootCandidates(
+        query: PhotoQuery,
+        timeRange: SearchTimeRange?,
+        filterFrameIds: Set<UInt64>?,
+        metadataFilter: MetadataFilter?
+    ) async -> (rootMetaById: [UInt64: FrameMeta], candidates: [RootCandidate]) {
+        var roots: [FrameMeta] = []
+        for meta in await wax.frameMetas() {
+            guard meta.kind == FrameKind.root else { continue }
+            if meta.status == .deleted { continue }
+            if meta.supersededBy != nil { continue }
+            if let timeRange, !timeRange.contains(meta.timestamp) { continue }
+            if let filterFrameIds, !filterFrameIds.contains(meta.id) { continue }
+            if let metadataFilter, !Self.matches(metadataFilter: metadataFilter, meta: meta) { continue }
+            roots.append(meta)
+        }
+
+        roots.sort { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
+            return lhs.id < rhs.id
+        }
+
+        var rootMetaById: [UInt64: FrameMeta] = [:]
+        rootMetaById.reserveCapacity(roots.count)
+        var candidates: [RootCandidate] = []
+        candidates.reserveCapacity(min(roots.count, query.resultLimit))
+
+        for (rank, root) in roots.enumerated() {
+            rootMetaById[root.id] = root
+            candidates.append(
+                RootCandidate(
+                    rootId: root.id,
+                    score: 1 / Float(rank + 1),
+                    evidence: [.timeline],
+                    matchedRegions: [],
+                    textSnippet: nil
+                )
+            )
+        }
+
+        return (rootMetaById, candidates)
+    }
+
+    private func buildAssetAllowlist(assetIDs: Set<String>?) -> Set<UInt64>? {
+        guard let assetIDs else { return nil }
+        var frameIds: Set<UInt64> = []
+        frameIds.reserveCapacity(assetIDs.count * 4)
+
+        for assetID in assetIDs {
+            guard let rootId = index.rootByAssetID[assetID] else { continue }
+            frameIds.insert(rootId)
+            if let refs = index.derivedByRoot[rootId] {
+                if let id = refs.ocrSummary { frameIds.insert(id) }
+                if let id = refs.caption { frameIds.insert(id) }
+                if let id = refs.tags { frameIds.insert(id) }
+                frameIds.formUnion(refs.regions)
+            }
+        }
+
+        return frameIds
+    }
+
+    private static func intersectAllowlists(_ lhs: Set<UInt64>?, _ rhs: Set<UInt64>?) -> Set<UInt64>? {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return nil
+        case (let ids?, nil), (nil, let ids?):
+            return ids
+        case (let lhs?, let rhs?):
+            return lhs.intersection(rhs)
+        }
+    }
+
+    private static func metadataFilter(from filters: PhotoFilters) -> MetadataFilter? {
+        var requiredEntries: [String: String] = [:]
+        if let source = filters.source {
+            requiredEntries[MetaKey.source] = source.rawValue
+        }
+        if let isLocal = filters.isLocal {
+            requiredEntries[MetaKey.isLocal] = isLocal ? "true" : "false"
+        }
+        guard !requiredEntries.isEmpty else { return nil }
+        return MetadataFilter(requiredEntries: requiredEntries)
+    }
+
+    private static func matches(metadataFilter: MetadataFilter, meta: FrameMeta) -> Bool {
+        if !metadataFilter.requiredEntries.isEmpty {
+            let entries = meta.metadata?.entries ?? [:]
+            for (key, value) in metadataFilter.requiredEntries where entries[key] != value {
+                return false
+            }
+        }
+        if !metadataFilter.requiredTags.isEmpty {
+            for tag in metadataFilter.requiredTags where !meta.tags.contains(tag) {
+                return false
+            }
+        }
+        if !metadataFilter.requiredLabels.isEmpty {
+            for label in metadataFilter.requiredLabels where !meta.labels.contains(label) {
+                return false
+            }
+        }
+        return true
     }
 
     private func loadThumbnail(assetID: String) async throws -> PhotoPixel? {
+        if let data = try await localFileImageData(assetID: assetID) {
+            do {
+                let thumb = try Self.decodeThumbnail(from: data, maxPixelSize: config.thumbnailMaxPixelSize)
+                let encoded = try Self.encodePNG(thumb)
+                return PhotoPixel(data: encoded, format: .png, width: thumb.width, height: thumb.height)
+            } catch {
+                return nil
+            }
+        }
+
         #if canImport(Photos)
         let data = try await PhotosAssetMetadata.loadImageData(assetID: assetID)
         guard let data else { return nil }
@@ -1023,6 +1555,14 @@ package actor PhotoRAGOrchestrator {
     }
 
     private func loadRegionSourceImage(assetID: String) async throws -> CGImage? {
+        if let data = try await localFileImageData(assetID: assetID) {
+            do {
+                return try Self.decodeThumbnail(from: data, maxPixelSize: config.regionCropMaxPixelSize)
+            } catch {
+                return nil
+            }
+        }
+
         #if canImport(Photos)
         let data = try await PhotosAssetMetadata.loadImageData(assetID: assetID)
         guard let data else { return nil }
@@ -1030,6 +1570,24 @@ package actor PhotoRAGOrchestrator {
         #else
         return nil
         #endif
+    }
+
+    private func localFileImageData(assetID: String) async throws -> Data? {
+        guard let rootId = index.rootByAssetID[assetID] else { return nil }
+        let metas = await wax.frameMetasIncludingPending(frameIds: [rootId])
+        guard let meta = metas[rootId],
+              meta.metadata?.entries[MetaKey.source] == "file",
+              let urlString = meta.metadata?.entries[MetaKey.fileURL],
+              let url = URL(string: urlString),
+              url.isFileURL
+        else {
+            return nil
+        }
+        do {
+            return try Data(contentsOf: url)
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Helpers
@@ -1211,10 +1769,16 @@ package actor PhotoRAGOrchestrator {
         location: PhotosAssetMetadata.Location?,
         pixelWidth: Int,
         pixelHeight: Int,
-        exif: PhotosAssetMetadata.EXIF
+        exif: PhotosAssetMetadata.EXIF,
+        source: String = "photos",
+        fileURL: URL? = nil
     ) -> Metadata {
         var meta = Metadata()
         meta.entries[MetaKey.assetID] = assetID
+        meta.entries[MetaKey.source] = source
+        if let fileURL {
+            meta.entries[MetaKey.fileURL] = fileURL.absoluteString
+        }
         if let captureMs {
             meta.entries[MetaKey.captureMs] = String(captureMs)
         }
@@ -1293,6 +1857,18 @@ package actor PhotoRAGOrchestrator {
             throw WaxError.io("failed to decode thumbnail")
         }
         return image
+    }
+
+    private static func imagePixelDimensions(from data: Data) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return nil }
+        guard let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int,
+              width > 0,
+              height > 0
+        else { return nil }
+        return (width, height)
     }
 
     private static func encodePNG(_ image: CGImage) throws -> Data {

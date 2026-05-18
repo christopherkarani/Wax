@@ -28,7 +28,7 @@ import Testing
     let wax = try await Wax.create(at: url)
     try await wax.putEmbedding(frameId: 0, vector: [0.1, 0.2])
     try await wax.stageVecIndexForNextCommit(
-        bytes: Data([0x01, 0x02, 0x03]),
+        bytes: validFlatVecIndexSegment(vectors: [0.1, 0.2], frameIds: [0], dimension: 2, similarity: .cosine),
         vectorCount: 1,
         dimension: 2,
         similarity: .cosine
@@ -45,6 +45,31 @@ import Testing
         }
         #expect(reason.contains("vector index is stale relative to pending embeddings"))
     }
+}
+
+private func validFlatVecIndexSegment(
+    vectors: [Float],
+    frameIds: [UInt64],
+    dimension: UInt32,
+    similarity: VecSimilarity
+) -> Data {
+    var data = Data([0x4D, 0x56, 0x32, 0x56])
+    var version = UInt16(1).littleEndian
+    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
+    data.append(3)
+    data.append(similarity.rawValue)
+    var dimensionLE = dimension.littleEndian
+    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
+    var vectorCountLE = UInt64(frameIds.count).littleEndian
+    withUnsafeBytes(of: &vectorCountLE) { data.append(contentsOf: $0) }
+    var payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride).littleEndian
+    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
+    data.append(Data(repeating: 0, count: 8))
+    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    var frameIdLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
+    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    return data
 }
 
 @Test func frameContentRejectsCorruptedPayloadChecksum() async throws {
@@ -88,4 +113,24 @@ import Testing
         }
     }
     try await wax.close()
+}
+
+@Test func commitLockedRestoresActorStateWhenDurableCommitFails() throws {
+    let source = try String(
+        contentsOfFile: "Sources/WaxCore/Wax.swift",
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
+    let remainder = source[start.lowerBound...]
+    let end = try #require(remainder.range(of: "    // MARK: - Reads"))
+    let body = String(remainder[..<end.lowerBound])
+
+    let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))
+    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC()"))
+    let restoreDefer = try #require(body.range(of: "defer {\n            if !commitSucceeded {\n                rollbackState.restore(into: self)"))
+    let successMark = try #require(body.range(of: "commitSucceeded = true"))
+
+    #expect(rollbackCapture.lowerBound < applyPending.lowerBound)
+    #expect(rollbackCapture.lowerBound < restoreDefer.lowerBound)
+    #expect(applyPending.lowerBound < successMark.lowerBound)
 }

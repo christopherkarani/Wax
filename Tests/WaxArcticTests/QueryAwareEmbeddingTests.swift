@@ -41,7 +41,8 @@ struct QueryAwareEmbeddingTests {
         #expect(plain.count == 384)
     }
 
-    @Test
+    @Test(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+                    "Set WAX_TEST_MINILM=1 to run MiniLM inference consistency tests"))
     func miniLMEmbedIsConsistentWithoutQueryPrefix() async throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try makeMiniLMEmbedderForTesting()

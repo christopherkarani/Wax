@@ -97,3 +97,85 @@ import Testing
     )
     #expect(hashInt != hashString)
 }
+
+@Test func hashFactPreservesEntityAndPredicateKeyCase() throws {
+    let upper = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerSubject = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerPredicate = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .entity(EntityKey("Place:Paris")),
+        qualifiersHash: nil
+    )
+    let lowerEntityObject = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("Person:Alice"),
+        predicate: PredicateKey("Status"),
+        object: .entity(EntityKey("place:paris")),
+        qualifiersHash: nil
+    )
+
+    #expect(upper != lowerSubject)
+    #expect(upper != lowerPredicate)
+    #expect(upper != lowerEntityObject)
+}
+
+@Test func hashFactPreservesStringObjectCase() throws {
+    let upper = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        qualifiersHash: nil
+    )
+    let lower = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("openai"),
+        qualifiersHash: nil
+    )
+
+    #expect(upper != lower)
+}
+
+@Test func hashFactPreservesStringObjectDiacritics() throws {
+    let accented = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:zoe"),
+        predicate: PredicateKey("display_name"),
+        object: .string("Zoë"),
+        qualifiersHash: nil
+    )
+    let unaccented = try StructuredMemoryHasher.hashFact(
+        subject: EntityKey("person:zoe"),
+        predicate: PredicateKey("display_name"),
+        object: .string("Zoe"),
+        qualifiersHash: nil
+    )
+
+    #expect(accented != unaccented)
+}
+
+@Test func hashSpanKeyDistinguishesOpenEndedValidRangeFromExplicitMinusOneEnd() {
+    let openEnded = StructuredMemoryHasher.hashSpanKey(
+        factId: FactRowID(rawValue: 1),
+        valid: StructuredTimeRange(fromMs: -2, toMs: nil),
+        relation: .sets,
+        system: StructuredTimeRange(fromMs: 10, toMs: nil)
+    )
+    let explicitMinusOne = StructuredMemoryHasher.hashSpanKey(
+        factId: FactRowID(rawValue: 1),
+        valid: StructuredTimeRange(fromMs: -2, toMs: -1),
+        relation: .sets,
+        system: StructuredTimeRange(fromMs: 10, toMs: nil)
+    )
+
+    #expect(openEnded != explicitMinusOne)
+}

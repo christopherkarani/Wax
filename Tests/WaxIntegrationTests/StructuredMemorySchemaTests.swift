@@ -119,6 +119,86 @@ private enum SQLiteBlobInspector {
         defer { sqlite3_free(raw) }
         return Data(bytes: raw, count: Int(size))
     }
+
+    static func mutatedSerializedBlob(_ data: Data, statements: [String]) throws -> Data {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let size = data.count
+        guard let buffer = sqlite3_malloc64(UInt64(size)) else {
+            throw WaxError.io("sqlite3_malloc64 failed")
+        }
+        data.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+                memcpy(buffer, base, size)
+            }
+        }
+        let flags = UInt32(SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE)
+        let rc = sqlite3_deserialize(
+            db,
+            "main",
+            buffer.assumingMemoryBound(to: UInt8.self),
+            Int64(size),
+            Int64(size),
+            flags
+        )
+        guard rc == SQLITE_OK else {
+            throw WaxError.io("sqlite3_deserialize failed")
+        }
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                throw WaxError.io("sqlite3_exec failed: \(sql)")
+            }
+        }
+
+        var serializedSize: Int64 = 0
+        guard let raw = sqlite3_serialize(db, "main", &serializedSize, 0) else {
+            throw WaxError.io("sqlite3_serialize failed")
+        }
+        defer { sqlite3_free(raw) }
+        return Data(bytes: raw, count: Int(serializedSize))
+    }
+
+    static func statementsSucceed(_ statements: [String], inSerialized data: Data) throws -> Bool {
+        var db: OpaquePointer?
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK else {
+            throw WaxError.io("sqlite3_open failed")
+        }
+        defer { sqlite3_close(db) }
+
+        let size = data.count
+        guard let buffer = sqlite3_malloc64(UInt64(size)) else {
+            throw WaxError.io("sqlite3_malloc64 failed")
+        }
+        data.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+                memcpy(buffer, base, size)
+            }
+        }
+        let flags = UInt32(SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE)
+        let rc = sqlite3_deserialize(
+            db,
+            "main",
+            buffer.assumingMemoryBound(to: UInt8.self),
+            Int64(size),
+            Int64(size),
+            flags
+        )
+        guard rc == SQLITE_OK else {
+            throw WaxError.io("sqlite3_deserialize failed")
+        }
+
+        for sql in statements {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 @Test func structuredSchemaCreatesWithIdentityPragmas() async throws {
@@ -129,7 +209,21 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: blob)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 3)
+    #expect(userVersion == 9)
+}
+
+@Test func structuredSchemaRejectsUnclosableSystemFromMax() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let blob = try await engine.serialize()
+
+    let succeeds = try SQLiteBlobInspector.statementsSucceed([
+        "INSERT INTO sm_entity(entity_id, key, kind, created_at_ms) VALUES (1, 'project:f017-schema', 'project', 0);",
+        "INSERT INTO sm_predicate(predicate_id, key, created_at_ms) VALUES (1, 'status', 0);",
+        "INSERT INTO sm_fact(fact_id, subject_entity_id, predicate_id, object_kind, object_text, qualifiers_hash, fact_hash, created_at_ms) VALUES (1, 1, 1, 1, 'active', NULL, zeroblob(32), 0);",
+        "INSERT INTO sm_fact_span(span_id, fact_id, valid_from_ms, valid_to_ms, version_relation, system_from_ms, system_to_ms, span_key_hash, created_at_ms) VALUES (1, 1, 0, NULL, 0, 9223372036854775807, NULL, zeroblob(32), 0);",
+    ], inSerialized: blob)
+
+    #expect(!succeeds)
 }
 
 @Test func deserializeUpgradesLegacyBlobSchemaIdentityToV2() async throws {
@@ -141,7 +235,7 @@ private enum SQLiteBlobInspector {
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
 
     #expect(appId == 0x5741_5854)
-    #expect(userVersion == 3)
+    #expect(userVersion == 9)
 }
 
 @Test func deserializeUpgradesV1BlobToV2() async throws {
@@ -150,7 +244,7 @@ private enum SQLiteBlobInspector {
     let upgraded = try await engine.serialize()
 
     let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgraded)
-    #expect(userVersion == 3)
+    #expect(userVersion == 9)
 }
 
 @Test func migrationPreservesFTSSearchResults() async throws {
@@ -160,6 +254,76 @@ private enum SQLiteBlobInspector {
 
     #expect(results.count == 1)
     #expect(results[0].frameId == 0)
+}
+
+@Test func deserializeV4RecomputesStructuredFactHashes() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let originalFactID = try await engine.assertFact(
+        subject: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .entity(EntityKey("place:Paris")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    #expect(originalFactID.rawValue == 1)
+
+    let original = try await engine.serialize()
+    let fakeLegacyHash = String(repeating: "ab", count: 32)
+    let legacyV4 = try SQLiteBlobInspector.mutatedSerializedBlob(original, statements: [
+        "UPDATE sm_fact SET fact_hash = X'\(fakeLegacyHash)' WHERE fact_id = 1;",
+        "PRAGMA user_version = 4;",
+    ])
+
+    let upgraded = try FTS5SearchEngine.deserialize(from: legacyV4)
+    let repeatedFactID = try await upgraded.assertFact(
+        subject: EntityKey("person:Alice"),
+        predicate: PredicateKey("status"),
+        object: .entity(EntityKey("place:Paris")),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    #expect(repeatedFactID == originalFactID)
+    let upgradedBlob = try await upgraded.serialize()
+    let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
+    #expect(userVersion == 9)
+}
+
+@Test func deserializeV5RecomputesStringFactHashes() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let originalFactID = try await engine.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    #expect(originalFactID.rawValue == 1)
+
+    let original = try await engine.serialize()
+    let fakeLegacyHash = String(repeating: "cd", count: 32)
+    let legacyV5 = try SQLiteBlobInspector.mutatedSerializedBlob(original, statements: [
+        "UPDATE sm_fact SET fact_hash = X'\(fakeLegacyHash)' WHERE fact_id = 1;",
+        "PRAGMA user_version = 5;",
+    ])
+
+    let upgraded = try FTS5SearchEngine.deserialize(from: legacyV5)
+    let repeatedFactID = try await upgraded.assertFact(
+        subject: EntityKey("person:alice"),
+        predicate: PredicateKey("employer"),
+        object: .string("OpenAI"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 20, toMs: nil),
+        evidence: []
+    )
+
+    #expect(repeatedFactID == originalFactID)
+    let upgradedBlob = try await upgraded.serialize()
+    let userVersion = try SQLiteBlobInspector.int32Pragma("user_version", fromSerialized: upgradedBlob)
+    #expect(userVersion == 9)
 }
 
 #endif // canImport(SQLite3)

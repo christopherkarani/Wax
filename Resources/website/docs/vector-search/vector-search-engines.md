@@ -8,35 +8,28 @@ Compare the CPU and GPU backends and understand their performance characteristic
 
 ## Overview
 
-WaxVectorSearch ships two `VectorSearchEngine` implementations. Both are actors with the same async API, making them interchangeable at runtime.
+WaxVectorSearch ships package-only CPU and GPU vector engines for Wax internals. They conform to the package-only `VectorSearchEngine` protocol, which is not public API for downstream applications. This page documents the contributor-facing implementation surface.
 
-## USearchVectorEngine (CPU)
+## AccelerateVectorEngine (CPU)
 
-`USearchVectorEngine` uses the USearch library's HNSW (Hierarchical Navigable Small Worlds) graph index. HNSW provides approximate nearest neighbor search with sub-linear query time.
+`AccelerateVectorEngine` stores flat vectors and performs exact CPU search. It uses Accelerate for matrix multiplication when available and a Swift fallback elsewhere.
 
 ### Configuration
 
 | Parameter | Value |
 |-----------|-------|
-| Connectivity | 16 (HNSW graph edges per node) |
-| Quantization | Float32 |
-| Initial capacity | 64 vectors |
-| Capacity growth | Doubling strategy |
+| Storage | Flat Float32 vectors |
+| Search | Exact top-K scan |
 | Metrics | Cosine, Dot Product, L2 |
 
 ### When to Use
 
 - Cross-platform deployments (no Metal required)
-- Small to medium index sizes (up to ~1M vectors)
+- Small to medium index sizes
 - When you need dot product or L2 metrics
-- When approximate results are acceptable
+- When deterministic exact results are preferred
 
-```swift
-let engine = try USearchVectorEngine(metric: .cosine, dimensions: 384)
-try await engine.add(frameId: 1, vector: embedding)
-
-let results = try await engine.search(vector: query, topK: 10)
-```
+Wax package internals select this engine for CPU-backed indexes through the vector engine loader and session configuration.
 
 ## MetalVectorEngine (GPU)
 
@@ -68,48 +61,25 @@ Transient buffers (query vectors, distance arrays) are pooled and reused across 
 
 ### Availability
 
-```swift
-if MetalVectorEngine.isAvailable {
-    let engine = try MetalVectorEngine(metric: .cosine, dimensions: 384)
-}
-```
-
-`MetalVectorEngine.isAvailable` checks for a Metal-capable GPU device. It is always available on Apple Silicon Macs and iPhones.
+Wax package internals check Metal availability before selecting this backend. Metal is normally available on Apple Silicon Macs and iPhones.
 
 ### Limitations
 
 - **Cosine similarity only** — The Metal kernels assume the query vector is pre-normalized
 - **Brute-force search** — O(n) per query, best for indexes under ~100K vectors where GPU parallelism compensates
 
-## Choosing an Engine
+## Engine Selection
 
-Use `VectorEnginePreference` to let the system decide:
-
-```swift
-let preference: VectorEnginePreference = .auto
-```
-
-| Preference | Behavior |
-|------------|----------|
-| `.auto` | Metal if available, otherwise USearch |
-| `.metalPreferred` | Metal if available, otherwise USearch |
-| `.cpuOnly` | Always USearch |
+Wax package internals choose the backend when a vector index is loaded or created. The selection logic prefers MetalANNS for compatible larger Apple-platform indexes and falls back to Accelerate when required by platform capability or index size.
 
 ## Common Operations
 
-Both engines share the `VectorSearchEngine` protocol:
+Both package-only engines use the same operation flow:
 
 ```swift
 // Add vectors
 try await engine.add(frameId: 1, vector: embedding)
 try await engine.addBatch(frameIds: ids, vectors: vectors)
-
-// Streaming for large ingestions (prevents lock starvation)
-try await engine.addBatchStreaming(
-    frameIds: ids,
-    vectors: vectors,
-    chunkSize: 256
-)
 
 // Search
 let results = try await engine.search(vector: queryVector, topK: 10)
@@ -143,4 +113,4 @@ Both engines serialize to the MV2V binary format:
 [Payload: variable]
 ```
 
-The `Encoding` byte distinguishes USearch (1) from Metal (2) format. Cross-format deserialization is supported — a Metal engine can load a USearch-serialized index by re-inserting vectors.
+Encoding `1` is reserved for legacy USearch indexes and is no longer supported. Rebuild the vector index to persist the current flat-vector format used by Accelerate and MetalANNS.

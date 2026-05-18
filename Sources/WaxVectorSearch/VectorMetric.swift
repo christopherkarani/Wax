@@ -1,5 +1,4 @@
 import Foundation
-import USearch
 import WaxCore
 
 package enum VectorMetric: Sendable, Equatable {
@@ -18,23 +17,11 @@ package enum VectorMetric: Sendable, Equatable {
         }
     }
 
-    package func toUSearchMetric() -> USearchMetric {
-        switch self {
-        case .cosine:
-            return .cos
-        case .dot:
-            return .ip
-        case .l2:
-            return .l2sq
-        }
-    }
-
     package func score(fromDistance d: Float) -> Float {
         guard d.isFinite else { return 0 }
         switch self {
         case .cosine:
-            // USearch returns a distance; expose score where higher is better.
-            // For cosine distance, common distance is (1 - cosineSimilarity).
+            // Metal kernels return cosine distance; expose score where higher is better.
             return 1 - d
         case .dot, .l2:
             // For ip and L2 distances, lower is better.

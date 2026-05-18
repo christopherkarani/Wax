@@ -145,8 +145,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     package func search(vector query: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        guard !frameIds.isEmpty else { return [] }
         try validate(query)
+        guard !frameIds.isEmpty else { return [] }
         try await ensureIndex()
         guard let index else { return [] }
         let results = try await index.search(query: preparedVector(query), topK: topK)
@@ -173,8 +173,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private func deserialize(_ data: Data) async throws {
         let decoded = try VectorSerializer.decodeVecSegment(from: data)
         switch decoded {
-        case .uSearch:
-            throw WaxError.invalidToc(reason: "MetalANNSVectorEngine cannot deserialize usearch payloads")
         case .metal(let info, let decodedVectors, let decodedFrameIds):
             guard info.dimension == UInt32(dimensions) else {
                 throw WaxError.invalidToc(reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)")
@@ -255,15 +253,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     private func validate(_ vector: [Float]) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
-        guard vector.count <= Constants.maxEmbeddingDimensions else {
-            throw WaxError.capacityExceeded(
-                limit: UInt64(Constants.maxEmbeddingDimensions),
-                requested: UInt64(vector.count)
-            )
-        }
+        try VectorValidation.validate(vector, dimensions: dimensions)
     }
 }
 

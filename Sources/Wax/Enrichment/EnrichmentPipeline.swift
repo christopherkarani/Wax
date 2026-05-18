@@ -29,7 +29,8 @@ package actor EnrichmentPipeline {
     package init() {}
 
     package func start(
-        handler: @escaping @Sendable (EnrichmentTask) async -> EnrichmentResult
+        handler: @escaping @Sendable (EnrichmentTask) async -> EnrichmentResult,
+        resultHandler: (@Sendable (EnrichmentResult) async throws -> Void)? = nil
     ) {
         guard state == .idle || state == .stopped else { return }
 
@@ -39,7 +40,18 @@ package actor EnrichmentPipeline {
 
         processingTask = Task {
             for await task in stream {
-                _ = await handler(task)
+                let result = await handler(task)
+                if let resultHandler {
+                    do {
+                        try await resultHandler(result)
+                    } catch {
+                        WaxDiagnostics.logSwallowed(
+                            error,
+                            context: "enrichment result persistence",
+                            fallback: "continuing enrichment processing without persisted result"
+                        )
+                    }
+                }
                 await self.didProcessTask()
             }
             await self.didFinishProcessingLoop()

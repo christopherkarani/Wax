@@ -32,6 +32,20 @@ jobs:
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set release version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            ./Resources/scripts/sync-waxmcp-version.sh "${VERSION}"
+          else
+            ./Resources/scripts/sync-waxmcp-version.sh "${GITHUB_REF_NAME#waxmcp-v}"
+          fi
+        env:
+          VERSION: ${{ inputs.version }}
 
       - name: Build binaries
         if: ${{ matrix.source_build }}
@@ -51,15 +65,26 @@ jobs:
           PLATFORM_DIR="Resources/npm/waxmcp/dist/${{ matrix.platform }}"
           test -f "$PLATFORM_DIR/wax-cli"
           test -f "$PLATFORM_DIR/wax-cli.sha256"
-          if command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 -c "$PLATFORM_DIR/wax-cli.sha256"
-          else
-            sha256sum -c "$PLATFORM_DIR/wax-cli.sha256"
-          fi
+          (
+            cd "$PLATFORM_DIR"
+            if command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 -c wax-cli.sha256
+            else
+              sha256sum -c wax-cli.sha256
+            fi
+          )
           # Verify wax-mcp binary exists (for source builds)
           if [[ "${{ matrix.source_build }}" == "true" ]]; then
             test -f "$PLATFORM_DIR/wax-mcp"
             test -f "$PLATFORM_DIR/wax-mcp.sha256"
+            (
+              cd "$PLATFORM_DIR"
+              if command -v shasum >/dev/null 2>&1; then
+                shasum -a 256 -c wax-mcp.sha256
+              else
+                sha256sum -c wax-mcp.sha256
+              fi
+            )
           fi
           test -d "$PLATFORM_DIR/Wax_WaxVectorSearchMiniLM.bundle"
           echo "MiniLM bundle present"
@@ -105,14 +130,12 @@ jobs:
           path: Resources/npm/waxmcp/dist/darwin-arm64
 
       - name: Set package version
-        working-directory: Resources/npm/waxmcp
         run: |
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            ./Resources/scripts/sync-waxmcp-version.sh "${VERSION}"
           else
-            VERSION="${GITHUB_REF_NAME#waxmcp-v}"
-            npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            ./Resources/scripts/sync-waxmcp-version.sh "${GITHUB_REF_NAME#waxmcp-v}"
           fi
         env:
           VERSION: ${{ inputs.version }}
@@ -139,11 +162,14 @@ jobs:
             for bin in wax-cli wax-mcp; do
               chk="Resources/npm/waxmcp/dist/$arch/$bin.sha256"
               if [[ -f "$chk" ]]; then
-                if command -v shasum >/dev/null 2>&1; then
-                  shasum -a 256 -c "$chk"
-                else
-                  sha256sum -c "$chk"
-                fi
+                (
+                  cd "Resources/npm/waxmcp/dist/$arch"
+                  if command -v shasum >/dev/null 2>&1; then
+                    shasum -a 256 -c "$bin.sha256"
+                  else
+                    sha256sum -c "$bin.sha256"
+                  fi
+                )
               fi
             done
           done
@@ -153,12 +179,12 @@ jobs:
           set -euo pipefail
           NPM_VERSION=$(node -p "require('./Resources/npm/waxmcp/package.json').version")
           echo "npm package version: $NPM_VERSION"
-          # Extract the hardcoded version from main.swift and compare
-          SWIFT_VERSION=$(grep -E 'let serverVersion = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/WaxMCPServer/main.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          # Extract the server metadata version from main.swift and compare
+          SWIFT_VERSION=$(grep -E 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/WaxMCPServer/main.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           echo "Swift server version: $SWIFT_VERSION"
           if [ "$NPM_VERSION" != "$SWIFT_VERSION" ]; then
             echo "ERROR: version mismatch — npm=$NPM_VERSION swift=$SWIFT_VERSION"
-            echo "Update 'serverVersion' in Sources/WaxMCPServer/main.swift to match Resources/npm/waxmcp/package.json"
+            echo "Update 'WaxMCPServerMetadata.version' in Sources/WaxMCPServer/main.swift to match Resources/npm/waxmcp/package.json"
             exit 1
           fi
           echo "Version consistency check passed: $NPM_VERSION"

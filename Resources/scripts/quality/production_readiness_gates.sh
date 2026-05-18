@@ -21,7 +21,7 @@ run_and_capture() {
 
 assert_no_skips() {
   local log_file="$1"
-  if grep -E "(Test skipped|test skipped)" "$log_file" >/dev/null; then
+  if grep -E "([Tt]est skipped|(^|[[:space:]])(Suite|Test)[[:space:]].* skipped:)" "$log_file" >/dev/null; then
     echo "FAIL: skipped tests detected in $log_file" >&2
     return 1
   fi
@@ -45,7 +45,7 @@ assert_full_pass_rate() {
   local executed skipped failures runnable passed
   executed="$(echo "$summary" | sed -E 's/.*Executed ([0-9]+) tests?.*/\1/')"
   skipped="$(echo "$summary" | sed -nE 's/.*with ([0-9]+) test skipped.*/\1/p')"
-  failures="$(echo "$summary" | sed -E 's/.* and ([0-9]+) failures.*/\1/')"
+  failures="$(echo "$summary" | sed -nE 's/.*(and|with) ([0-9]+) failures?.*/\2/p')"
   skipped="${skipped:-0}"
 
   runnable=$((executed - skipped))
@@ -73,6 +73,44 @@ require_swiftpm_traits() {
   fi
 }
 
+assert_default_mcp_trait_tests_omitted() {
+  local log_file="$1"
+  if grep -E "^wax_mcpTests\.(WaxMCPProcessTests[/.]|toolsListContainsExpectedTools\(\)|toolsRememberRecallSearchFlushStatsHappyPath\(\)|vectorSearchRememberFlushRecallHappyPath\(\))" "$log_file" >/dev/null; then
+    echo "FAIL: default SwiftPM test list unexpectedly includes MCP trait suites." >&2
+    return 1
+  fi
+  echo "MCP_TRAIT_DEFAULT_LIST: real MCP trait suites omitted as expected"
+}
+
+assert_mcp_trait_tests_listed() {
+  local log_file="$1"
+  if ! grep -E "^wax_mcpTests\.WaxMCPProcessTests[/.]" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing wax_mcpTests.WaxMCPProcessTests." >&2
+    return 1
+  fi
+  if ! grep -E "^wax_mcpTests\.toolsListContainsExpectedTools\(\)" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing wax_mcpTests.toolsListContainsExpectedTools()." >&2
+    return 1
+  fi
+
+  local count
+  count="$(grep -Ec "^wax_mcpTests\." "$log_file")"
+  echo "MCP_TRAIT_TESTS: listed=$count"
+}
+
+assert_mcp_trait_test_inventory() {
+  local default_list_log="/tmp/wax-gate-default-test-list.log"
+  local mcp_list_log="/tmp/wax-gate-mcp-test-list.log"
+
+  run_and_capture "$default_list_log" \
+    swift test --disable-automatic-resolution list
+  assert_default_mcp_trait_tests_omitted "$default_list_log"
+
+  run_and_capture "$mcp_list_log" \
+    swift test --traits MCPServer --disable-automatic-resolution list
+  assert_mcp_trait_tests_listed "$mcp_list_log"
+}
+
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
   local mcp_log_file="/tmp/wax-gate-full-mcp.log"
@@ -85,6 +123,7 @@ run_full() {
   assert_full_pass_rate "$log_file"
 
   require_swiftpm_traits
+  assert_mcp_trait_test_inventory
 
   run_and_capture "$mcp_log_file" \
     swift test --parallel --traits MCPServer --skip "$skip_regex"
@@ -104,6 +143,7 @@ run_soak_smoke() {
     WAX_STABILITY_MAX_RSS_GROWTH_MB="${WAX_STABILITY_MAX_RSS_GROWTH_MB:-256}" \
     WAX_STABILITY_MAX_P50_DRIFT_PCT="${WAX_STABILITY_MAX_P50_DRIFT_PCT:-140}" \
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-180}" \
+    WAX_STABILITY_SEARCH_MODE="${WAX_STABILITY_SEARCH_MODE:-hybrid}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-soak-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testSoakSmokeStability
   assert_no_skips "$stability_log"
@@ -125,6 +165,7 @@ run_burn_smoke() {
     WAX_STABILITY_MAX_RSS_GROWTH_MB="${WAX_STABILITY_MAX_RSS_GROWTH_MB:-512}" \
     WAX_STABILITY_MAX_P50_DRIFT_PCT="${WAX_STABILITY_MAX_P50_DRIFT_PCT:-200}" \
     WAX_STABILITY_MAX_P95_DRIFT_PCT="${WAX_STABILITY_MAX_P95_DRIFT_PCT:-260}" \
+    WAX_STABILITY_SEARCH_MODE="${WAX_STABILITY_SEARCH_MODE:-hybrid}" \
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-burn-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testBurnSmokeStability
   assert_no_skips "$stability_log"

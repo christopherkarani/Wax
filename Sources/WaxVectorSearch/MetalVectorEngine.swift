@@ -3,7 +3,7 @@
 //  Wax
 //
 //  Metal-accelerated vector search engine using GPU compute shaders.
-//  Provides drop-in replacement for USearchVectorEngine with cosine similarity.
+//  Provides Metal-backed cosine similarity search.
 //
 //  Zero-Copy Optimization:
 //  - Stores vectors directly in MTLBuffer (Unified Memory) to avoid CPU-RAM duplication.
@@ -364,17 +364,8 @@ package actor MetalVectorEngine {
         }
 
         try await withWriteLock {
-            let expectedDims = dimensions
             for vector in vectors {
-                guard vector.count == expectedDims else {
-                    throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(expectedDims), got \(vector.count)")
-                }
-                guard vector.count <= Constants.maxEmbeddingDimensions else {
-                    throw WaxError.capacityExceeded(
-                        limit: UInt64(Constants.maxEmbeddingDimensions),
-                        requested: UInt64(vector.count)
-                    )
-                }
+                try validate(vector)
             }
 
             let maxNewCount = vectorCount + UInt64(frameIds.count)
@@ -446,8 +437,8 @@ package actor MetalVectorEngine {
 
     package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
         try await withReadLock {
-            guard vectorCount > 0 else { return [] }
             try validate(vector)
+            guard vectorCount > 0 else { return [] }
             let limit = Self.clampTopK(topK)
             let topKCount = min(limit, Int(vectorCount))
             let reductionThreadsPerThreadgroup = Self.reductionThreadgroupSize(
@@ -465,8 +456,9 @@ package actor MetalVectorEngine {
             let transientDistancesBuffer = transientBuffers.distances
             let transientCountBuffer = transientBuffers.count
 
+            let query = Self.normalizedCosineQuery(vector)
             let queryPtr = transientQueryBuffer.contents().assumingMemoryBound(to: Float.self)
-            queryPtr.update(from: vector, count: vector.count)
+            queryPtr.update(from: query, count: query.count)
 
             var currentVectorCount = UInt32(vectorCount)
             withUnsafeBytes(of: &currentVectorCount) { raw in
@@ -581,6 +573,7 @@ package actor MetalVectorEngine {
                 }
                 commandBuffer.commit()
             }
+            try Self.validateCommandBufferCompleted(commandBuffer)
 
             if useGpuTopK, let finalTopKBuffer {
                 guard let resultsBuffer = device.makeBuffer(
@@ -780,10 +773,18 @@ package actor MetalVectorEngine {
                 throw WaxError.invalidToc(reason: "Metal segment reserved bytes must be zero")
             }
 
-            guard vectorLength == savedVectorCount * UInt64(dimensions) * UInt64(MemoryLayout<Float>.stride) else {
+            let vectorElementCount = savedVectorCount.multipliedReportingOverflow(by: UInt64(dimensions))
+            let expectedVectorLength = vectorElementCount.partialValue.multipliedReportingOverflow(
+                by: UInt64(MemoryLayout<Float>.stride)
+            )
+            guard !vectorElementCount.overflow,
+                  !expectedVectorLength.overflow,
+                  vectorLength == expectedVectorLength.partialValue,
+                  vectorLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "Vector data length mismatch")
             }
-            guard data.count >= offset + Int(vectorLength) + MemoryLayout<UInt64>.stride else {
+            let vectorLengthInt = Int(vectorLength)
+            guard data.count - offset >= vectorLengthInt + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "Metal segment missing frameId length")
             }
             
@@ -797,25 +798,44 @@ package actor MetalVectorEngine {
             let destPtr = vectorsBuffer.contents()
             data.withUnsafeBytes { srcBuffer in
                  if let srcBase = srcBuffer.baseAddress {
-                     destPtr.copyMemory(from: srcBase.advanced(by: offset), byteCount: Int(vectorLength))
+                     destPtr.copyMemory(from: srcBase.advanced(by: offset), byteCount: vectorLengthInt)
                  }
             }
-            offset += Int(vectorLength)
-
-            // Set vectorCount AFTER data is copied into the resized buffer.
-            vectorCount = savedVectorCount
+            offset += vectorLengthInt
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
             })
             offset += 8
-            guard frameIdLength == savedVectorCount * UInt64(MemoryLayout<UInt64>.stride) else {
+            let expectedFrameIdLength = savedVectorCount.multipliedReportingOverflow(
+                by: UInt64(MemoryLayout<UInt64>.stride)
+            )
+            guard !expectedFrameIdLength.overflow,
+                  frameIdLength == expectedFrameIdLength.partialValue,
+                  frameIdLength <= UInt64(Int.max) else {
                 throw WaxError.invalidToc(reason: "FrameId data length mismatch")
             }
-            frameIds = Array(data[offset..<offset+Int(frameIdLength)].withUnsafeBytes {
-                Array($0.bindMemory(to: UInt64.self))
-            })
+            let frameIdLengthInt = Int(frameIdLength)
+            guard data.count - offset >= frameIdLengthInt else {
+                throw WaxError.invalidToc(reason: "Metal segment missing frameId data")
+            }
+            let decodedFrameIds = data.withUnsafeBytes { rawBuffer in
+                var decoded: [UInt64] = []
+                decoded.reserveCapacity(Int(savedVectorCount))
+                for byteOffset in stride(from: offset, to: offset + frameIdLengthInt, by: MemoryLayout<UInt64>.stride) {
+                    decoded.append(UInt64(littleEndian: rawBuffer.loadUnaligned(fromByteOffset: byteOffset, as: UInt64.self)))
+                }
+                return decoded
+            }
+            try VectorSerializer.validateUniqueFrameIds(decodedFrameIds)
+            offset += frameIdLengthInt
+            guard offset == data.count else {
+                throw WaxError.invalidToc(reason: "Metal segment has trailing bytes")
+            }
 
+            // Set vectorCount AFTER all structural validation succeeds.
+            vectorCount = savedVectorCount
+            frameIds = decodedFrameIds
             dirty = false
         }
     }
@@ -834,21 +854,35 @@ package actor MetalVectorEngine {
     }
 
     private func validate(_ vector: [Float]) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
-        guard vector.count <= Constants.maxEmbeddingDimensions else {
-            throw WaxError.capacityExceeded(
-                limit: UInt64(Constants.maxEmbeddingDimensions),
-                requested: UInt64(vector.count)
-            )
-        }
+        try VectorValidation.validate(vector, dimensions: dimensions)
     }
 
     private static func clampTopK(_ topK: Int) -> Int {
         if topK < 1 { return 1 }
         if topK > maxResults { return maxResults }
         return topK
+    }
+
+    private static func normalizedCosineQuery(_ vector: [Float]) -> [Float] {
+        var sumOfSquares: Float = 0
+        for value in vector {
+            sumOfSquares += value * value
+        }
+
+        guard sumOfSquares > 0 else { return vector }
+        let magnitude = sumOfSquares.squareRoot()
+        guard magnitude > 0 else { return vector }
+
+        return vector.map { $0 / magnitude }
+    }
+
+    private static func validateCommandBufferCompleted(_ commandBuffer: MTLCommandBuffer) throws {
+        guard commandBuffer.status == .completed else {
+            let detail = commandBuffer.error.map { ": \($0.localizedDescription)" } ?? ""
+            throw WaxError.invalidToc(
+                reason: "Metal command buffer failed with status \(commandBuffer.status)\(detail)"
+            )
+        }
     }
 
     private static func reductionThreadgroupSize(maxThreads: Int) -> Int {

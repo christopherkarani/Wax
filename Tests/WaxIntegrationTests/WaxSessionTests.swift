@@ -79,7 +79,7 @@ import Testing
         failingConfig.enableStructuredMemory = false
         failingConfig.enableVectorSearch = true
         failingConfig.vectorEnginePreference = .cpuOnly
-        failingConfig.vectorDimensions = 0 // Triggers USearchVectorEngine init failure.
+        failingConfig.vectorDimensions = 0 // Triggers vector engine init failure.
 
         do {
             _ = try await wax.openSession(.readWrite(.fail), config: failingConfig)

@@ -57,6 +57,16 @@ package actor WaxStructuredMemorySession {
         try await engine.facts(about: subject, predicate: predicate, asOf: asOf, limit: limit)
     }
 
+    package func edges(
+        for entity: EntityKey,
+        direction: StructuredEdgeDirection,
+        predicate: PredicateKey?,
+        asOf: StructuredMemoryAsOf,
+        limit: Int
+    ) async throws -> StructuredEdgesResult {
+        try await engine.edges(for: entity, direction: direction, predicate: predicate, asOf: asOf, limit: limit)
+    }
+
     package func stageForCommit(compact: Bool = false) async throws {
         try await engine.stageForCommit(into: wax, compact: compact)
     }

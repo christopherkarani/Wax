@@ -61,6 +61,28 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func textOnlyMinScoreUsesNormalizedTextScores() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let exact = try await wax.put(Data("Swift Swift Swift concurrency actors".utf8))
+        try await text.index(frameId: exact, text: "Swift Swift Swift concurrency actors")
+        let weaker = try await wax.put(Data("Swift concurrency".utf8))
+        try await text.index(frameId: weaker, text: "Swift concurrency")
+
+        try await text.commit()
+
+        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9)
+        let response = try await wax.search(request)
+
+        #expect(response.results.map(\.frameId) == [exact])
+        #expect(response.results.first?.score ?? 0 > 0.9)
+
+        try await wax.close()
+    }
+}
+
 @Test func vectorOnlySearch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -130,6 +152,144 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func structuredSearchTimeRangeBeforeDoesNotOverrideExplicitAsOf() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let frameTimestampMs: Int64 = 100
+        let factSystemFromMs: Int64 = 5_000
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the entity alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload"),
+            timestampMs: frameTimestampMs
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f027-alice"),
+            kind: "person",
+            aliases: ["F027 Alice"],
+            nowMs: factSystemFromMs
+        )
+
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f027-alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: factSystemFromMs),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: factSystemFromMs
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let latestResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                timeRange: SearchTimeRange(before: 200),
+                asOfMs: .max
+            )
+        )
+
+        #expect(latestResponse.results.map(\.frameId) == [evidenceFrame])
+        #expect(latestResponse.results.first?.sources == [.structuredMemory])
+
+        let outOfFrameRangeResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                timeRange: SearchTimeRange(before: 50),
+                asOfMs: .max
+            )
+        )
+
+        #expect(outOfFrameRangeResponse.results.isEmpty)
+
+        let historicalResponse = try await session.search(
+            SearchRequest(
+                query: "F027 Alice",
+                mode: .textOnly,
+                topK: 5,
+                asOfMs: 200
+            )
+        )
+
+        #expect(historicalResponse.results.isEmpty)
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
+@Test func structuredSearchFindsEvidenceWhenEntityCandidateIsFactObject() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the target alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload")
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f025-alice"),
+            kind: "person",
+            aliases: ["F025SubjectAlice"],
+            nowMs: 1_000
+        )
+        _ = try await session.upsertEntity(
+            key: EntityKey("place:f025-paris"),
+            kind: "place",
+            aliases: ["F025ObjectParis"],
+            nowMs: 1_000
+        )
+
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f025-alice"),
+            predicate: PredicateKey("located_in"),
+            object: .entity(EntityKey("place:f025-paris")),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: 1_000),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: 1_000
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let response = try await session.search(
+            SearchRequest(query: "F025ObjectParis", mode: .textOnly, topK: 5, asOfMs: .max)
+        )
+
+        #expect(response.results.map(\.frameId) == [evidenceFrame])
+        #expect(response.results.first?.sources == [.structuredMemory])
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
 @Test func filtersAllowResultsBeyondTopK() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
@@ -188,6 +348,162 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let response = try await wax.search(request)
 
         #expect(response.results.map(\.frameId) == [id0])
+
+        try await wax.close()
+    }
+}
+
+@Test func metadataFilterOverfetchesPastInitialTextCandidateWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let query = "f030starvation"
+
+        for index in 0..<12 {
+            let repeated = Array(repeating: query, count: 12).joined(separator: " ")
+            let payload = "blocked \(index) \(repeated)"
+            let frameID = try await wax.put(
+                Data(payload.utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "blocked"]))
+            )
+            try await text.index(frameId: frameID, text: payload)
+        }
+
+        let allowedFrame = try await wax.put(
+            Data("allowed \(query)".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+        )
+        try await text.index(frameId: allowedFrame, text: "allowed \(query)")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: query,
+                mode: .textOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [allowedFrame])
+
+        try await wax.close()
+    }
+}
+
+@Test func metadataFilterOverfetchesPastInitialVectorCandidateWindow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        var vectorResults: [(frameId: UInt64, score: Float)] = []
+        for index in 0..<12 {
+            let frameID = try await wax.put(
+                Data("blocked vector candidate \(index)".utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "blocked"]))
+            )
+            vectorResults.append((frameId: frameID, score: Float(100 - index)))
+        }
+
+        let allowedFrame = try await wax.put(
+            Data("allowed vector candidate".utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+        )
+        vectorResults.append((frameId: allowedFrame, score: 1))
+
+        let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [allowedFrame])
+
+        try await wax.close()
+    }
+}
+
+@Test func metadataFilterCandidateLimitNeverDropsBelowRequestedTopK() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let vectorResults = (0..<1_100).map { index in
+            (frameId: UInt64(index), score: Float(2_000 - index))
+        }
+        let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
+
+        for index in 0..<1_100 {
+            _ = try await wax.put(
+                Data("allowed large topK candidate \(index)".utf8),
+                options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
+            )
+        }
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1_100,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.count == 1_100)
+
+        try await wax.close()
+    }
+}
+
+@Test func pendingMetadataFilteredResultUsesPendingPayloadPreview() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        let pendingText = "pending preview f031 unique payload"
+        let frameID = try await wax.put(
+            Data(pendingText.utf8),
+            options: FrameMetaSubset(metadata: Metadata(["scope": "pending"]))
+        )
+        let vectorEngine = DeterministicVectorResultsEngine(
+            dimensions: 4,
+            results: [(frameId: frameID, score: 1)]
+        )
+
+        let response = try await wax.search(
+            SearchRequest(
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                mode: .vectorOnly,
+                topK: 1,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["scope": "pending"])
+                )
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: vectorEngine,
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.map(\.frameId) == [frameID])
+        #expect(response.results.first?.previewText == pendingText)
 
         try await wax.close()
     }

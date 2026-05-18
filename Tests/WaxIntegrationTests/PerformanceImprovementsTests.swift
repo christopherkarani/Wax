@@ -160,6 +160,22 @@ func framePreviewsBatchMatchesSinglePreview() async throws {
 }
 
 @Test
+func framePreviewsIncludesPendingFrames() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+
+        let pendingContent = "pending preview bytes"
+        let pendingId = try await wax.put(Data(pendingContent.utf8))
+
+        let previews = try await wax.framePreviews(frameIds: [pendingId], maxBytes: pendingContent.utf8.count)
+
+        #expect(previews[pendingId] == Data(pendingContent.utf8))
+
+        try await wax.close()
+    }
+}
+
+@Test
 func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

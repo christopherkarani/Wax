@@ -39,7 +39,7 @@ struct StatsCommand: AsyncParsableCommand {
         // Stats does not need the embedder; force noEmbedder to skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
         let compiled = StoreSession.miniLMCompiled
-        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+        try await StoreSession.withOpen(at: url, noEmbedder: true, requireVector: store.requireVector) { memory in
             let stats = await memory.runtimeStats()
             let sessionStats = try await memory.sessionRuntimeStats()
 
@@ -148,7 +148,7 @@ struct FlushCommand: AsyncParsableCommand {
 
         // Flush does not need the embedder; skip MiniLM loading.
         let url = try StoreSession.resolveURL(store.storePath)
-        try await StoreSession.withOpen(at: url, noEmbedder: true) { memory in
+        try await StoreSession.withOpen(at: url, noEmbedder: true, requireVector: store.requireVector) { memory in
             try await memory.flush()
             let stats = await memory.runtimeStats()
 

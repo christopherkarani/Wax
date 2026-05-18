@@ -22,6 +22,27 @@ import Wax
     }
 }
 
+@Test func rememberIdenticalContentTwiceBeforeFlushIsIdempotent() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = false
+
+        let content = "Pending duplicate content test"
+        let expectedChunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember(content)
+        try await orchestrator.remember(content)
+        try await orchestrator.flush()
+
+        let stats = await orchestrator.runtimeStats()
+        #expect(stats.frameCount == UInt64(expectedChunks.count + 1))
+
+        try await orchestrator.close()
+    }
+}
+
 @Test func rememberDifferentContentIncreasesFrameCount() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default

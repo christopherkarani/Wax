@@ -111,10 +111,7 @@ package enum BrokerCorpusStoreBuilder {
             throw error
         }
 
-        if fileManager.fileExists(atPath: standardizedTarget.path) {
-            try fileManager.removeItem(at: standardizedTarget)
-        }
-        try fileManager.moveItem(at: buildURL, to: standardizedTarget)
+        try replaceExistingCorpusStore(at: standardizedTarget, with: buildURL)
         if storesSkipped == 0 {
             try CorpusBuildManifestStore.save(
                 CorpusBuildManifest(
@@ -275,6 +272,42 @@ private extension BrokerCorpusStoreBuilder {
         let stem = targetURL.deletingPathExtension().lastPathComponent
         return directory
             .appendingPathComponent("\(stem)-building-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+    }
+
+    static func replaceExistingCorpusStore(at targetURL: URL, with buildURL: URL) throws {
+        let fileManager = FileManager.default
+        let backupURL = temporaryBackupURL(for: targetURL)
+        if fileManager.fileExists(atPath: backupURL.path) {
+            try fileManager.removeItem(at: backupURL)
+        }
+
+        var movedExistingStore = false
+
+        do {
+            if fileManager.fileExists(atPath: targetURL.path) {
+                try fileManager.moveItem(at: targetURL, to: backupURL)
+                movedExistingStore = true
+            }
+
+            try fileManager.moveItem(at: buildURL, to: targetURL)
+
+            if movedExistingStore {
+                try? fileManager.removeItem(at: backupURL)
+            }
+        } catch {
+            if movedExistingStore, !fileManager.fileExists(atPath: targetURL.path) {
+                try? fileManager.moveItem(at: backupURL, to: targetURL)
+            }
+            throw error
+        }
+    }
+
+    static func temporaryBackupURL(for targetURL: URL) -> URL {
+        let directory = targetURL.deletingLastPathComponent()
+        let stem = targetURL.deletingPathExtension().lastPathComponent
+        return directory
+            .appendingPathComponent("\(stem)-backup-\(UUID().uuidString)")
             .appendingPathExtension("wax")
     }
 

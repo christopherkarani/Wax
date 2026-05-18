@@ -8,11 +8,15 @@ package enum StructuredMemoryHasher {
         object: FactValue,
         qualifiersHash: Data?
     ) throws -> Data {
+        try StructuredMemoryValidation.validateEntityKey(subject, field: "fact subject")
+        try StructuredMemoryValidation.validatePredicateKey(predicate, field: "fact predicate")
+        try StructuredMemoryValidation.validateFactValue(object)
+
         var buffer = HashBuffer()
         buffer.appendTag(0xA1)
-        buffer.appendString(subject.rawValue)
+        buffer.appendKey(subject.rawValue)
         buffer.appendTag(0xA2)
-        buffer.appendString(predicate.rawValue)
+        buffer.appendKey(predicate.rawValue)
         buffer.appendTag(0xA3)
         try buffer.appendFactValue(object)
         if let qualifiersHash {
@@ -28,18 +32,22 @@ package enum StructuredMemoryHasher {
     package static func hashSpanKey(
         factId: FactRowID,
         valid: StructuredTimeRange,
-        systemFromMs: Int64
+        relation: VersionRelation,
+        system: StructuredTimeRange
     ) -> Data {
-        let validTo = valid.toMs ?? -1
         var buffer = HashBuffer()
         buffer.appendTag(0xB1)
         buffer.appendInt64(factId.rawValue)
         buffer.appendTag(0xB2)
         buffer.appendInt64(valid.fromMs)
         buffer.appendTag(0xB3)
-        buffer.appendInt64(validTo)
+        buffer.appendOptionalInt64(valid.toMs)
         buffer.appendTag(0xB4)
-        buffer.appendInt64(systemFromMs)
+        buffer.appendInt64(system.fromMs)
+        buffer.appendTag(0xB5)
+        buffer.appendOptionalInt64(system.toMs)
+        buffer.appendTag(0xB6)
+        buffer.appendInt64(Int64(relation.rawValue))
         return SHA256Checksum.digest(buffer.data)
     }
 }
@@ -54,6 +62,15 @@ private struct HashBuffer {
     mutating func appendInt64(_ value: Int64) {
         var v = value.littleEndian
         data.append(Data(bytes: &v, count: 8))
+    }
+
+    mutating func appendOptionalInt64(_ value: Int64?) {
+        guard let value else {
+            data.append(0x00)
+            return
+        }
+        data.append(0x01)
+        appendInt64(value)
     }
 
     mutating func appendUInt64(_ value: UInt64) {
@@ -88,7 +105,7 @@ private struct HashBuffer {
         switch value {
         case .string(let text):
             appendTag(0x01)
-            appendString(text)
+            appendRawString(text)
         case .int(let intValue):
             appendTag(0x02)
             appendInt64(intValue)
@@ -106,7 +123,15 @@ private struct HashBuffer {
             appendInt64(timeValue)
         case .entity(let entityKey):
             appendTag(0x07)
-            appendString(entityKey.rawValue)
+            appendKey(entityKey.rawValue)
         }
+    }
+
+    mutating func appendKey(_ value: String) {
+        appendBytes(Data(value.utf8))
+    }
+
+    mutating func appendRawString(_ value: String) {
+        appendBytes(Data(value.utf8))
     }
 }

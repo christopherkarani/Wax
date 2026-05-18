@@ -26,12 +26,15 @@
   "peerDependencies": {
     "openclaw": ">=2026.3.24-beta.2"
   },
+  "dependencies": {
+    "waxmcp": "0.1.21"
+  },
   "devDependencies": {
     "openclaw": ">=2026.3.24-beta.2"
   },
   "openclaw": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",
@@ -48,7 +51,7 @@
     }
   },
   "files": [
-    "src",
+    "dist",
     "openclaw.plugin.json",
     "README.md"
   ]

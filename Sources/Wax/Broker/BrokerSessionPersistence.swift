@@ -161,7 +161,10 @@ package enum BrokerSessionPersistence {
             options: [.skipsHiddenFiles]
         ).filter { $0.pathExtension == "json" }
 
-        return try urls.map(loadManifest(at:)).sorted { lhs, rhs in
+        let sessionManifestURLs = urls.filter { url in
+            UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil
+        }
+        return try sessionManifestURLs.map(loadManifest(at:)).sorted { lhs, rhs in
             if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
             return lhs.sessionID.uuidString < rhs.sessionID.uuidString
         }
@@ -170,7 +173,7 @@ package enum BrokerSessionPersistence {
     package static func appendEvent(_ event: BrokerSessionEvent, to url: URL) throws {
         let line = try encoder.encode(event) + Data([0x0A])
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: line)
+            try line.write(to: url, options: .withoutOverwriting)
             return
         }
         let handle = try FileHandle(forWritingTo: url)
@@ -186,7 +189,10 @@ package enum BrokerSessionPersistence {
 
         var events: [BrokerSessionEvent] = []
         for line in data.split(separator: 0x0A) where !line.isEmpty {
-            events.append(try decoder.decode(BrokerSessionEvent.self, from: Data(line)))
+            guard let event = try? decoder.decode(BrokerSessionEvent.self, from: Data(line)) else {
+                continue
+            }
+            events.append(event)
         }
         return events
     }

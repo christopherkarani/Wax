@@ -12,15 +12,11 @@ WaxCore defines the `.wax` file format and provides the low-level primitives tha
 - **Structured memory** through an entity-fact-predicate graph with temporal (bitemporal) queries
 - **Concurrency** with actor isolation, async reader-writer locks, file locks, and a blocking I/O executor
 
-The primary entry point is the ``Wax`` actor, which manages a single `.wax` file and exposes APIs for reading and writing frames, managing writer leases, and committing changes.
+WaxCore is an implementation module. The package-only ``Wax`` actor manages individual `.wax` files for other targets in this package, but it is not public API for downstream applications.
 
-```swift
-// Create a new memory store
-let store = try await Wax.create(at: storeURL)
+For app and package consumers, import the top-level `Wax` product and use the public orchestration APIs documented there. WaxCore documentation is most useful when you need to understand the file format, WAL behavior, structured-memory storage model, or concurrency primitives behind those public APIs.
 
-// Open an existing store
-let store = try await Wax.open(at: storeURL)
-```
+Package-only implementation symbols are intentionally omitted from the public topic list below.
 
 ## Topics
 
@@ -28,73 +24,16 @@ let store = try await Wax.open(at: storeURL)
 
 - <doc:GettingStarted>
 - <doc:FileFormat>
-
-### Persistence
-
-- ``Wax``
-- ``WaxOptions``
-- ``WaxStats``
-- ``WaxWALStats``
 - ``WaxError``
-
-### File Format
-
-- ``WaxHeaderPage``
-- ``WaxFooter``
-- ``WaxTOC``
-- ``FrameMeta``
-- ``FrameRole``
-- ``FrameStatus``
-- ``CanonicalEncoding``
 
 ### Write-Ahead Log
 
 - <doc:WALAndCrashRecovery>
-- ``WALRecord``
-- ``WALEntry``
-- ``WALFsyncPolicy``
-- ``WALRingWriter``
-- ``WALRingReader``
-
-### Binary Codec
-
-- ``BinaryEncoder``
-- ``BinaryDecoder``
-- ``BinaryEncodable``
-- ``BinaryDecodable``
 
 ### Structured Memory
 
 - <doc:StructuredMemory>
-- ``EntityKey``
-- ``PredicateKey``
-- ``FactValue``
-- ``StructuredFact``
-- ``StructuredFactHit``
-- ``StructuredFactsResult``
-- ``StructuredEvidence``
-- ``StructuredMemoryQueryContext``
-- ``StructuredMemoryAsOf``
-
-### Frame Operations
-
-- ``PutFrame``
-- ``DeleteFrame``
-- ``SupersedeFrame``
-- ``PutEmbedding``
-- ``PendingEmbeddingSnapshot``
 
 ### Concurrency
 
 - <doc:ConcurrencyModel>
-- ``AsyncReadWriteLock``
-- ``AsyncMutex``
-- ``ReadWriteLock``
-- ``UnfairLock``
-- ``FileLock``
-- ``BlockingIOExecutor``
-- ``WaxWriterPolicy``
-
-### I/O
-
-- ``FDFile``

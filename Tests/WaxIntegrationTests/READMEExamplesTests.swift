@@ -2,6 +2,50 @@ import Foundation
 import Testing
 import Wax
 
+@Test
+func readmeQuickStartImportsFoundationBeforeWax() throws {
+    let readmeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+
+    #expect(readme.contains("```swift\nimport Foundation\nimport Wax"))
+}
+
+@Test
+func readmePublicMemoryQuickStartDoesNotAdvertiseHybridWithoutEmbedding() throws {
+    let readmeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+
+    let quickStartMarker = try #require(readme.range(of: "### Swift\n\n```swift\n"))
+    let quickStartRemainder = readme[quickStartMarker.upperBound...]
+    let quickStartEnd = try #require(quickStartRemainder.range(of: "\n```\n\n<details>"))
+    let quickStart = quickStartRemainder[..<quickStartEnd.lowerBound]
+
+    #expect(quickStart.contains("let memory = try await Memory(at: url)"))
+    #expect(!quickStart.localizedCaseInsensitiveContains("hybrid"))
+    #expect(!quickStart.contains("text + vector"))
+}
+
+@Test
+func npmReadmeLocalDevelopmentUsesRepoRootPackagePath() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let readmeURL = repoRoot.appendingPathComponent("Resources/npm/waxmcp/README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+
+    #expect(!readme.contains("npx --yes ./npm/waxmcp mcp doctor"))
+    #expect(readme.contains("npx --yes ./Resources/npm/waxmcp mcp doctor"))
+}
+
 // MARK: - Test Embedder for README examples
 
 private actor TestReadmeEmbedder: EmbeddingProvider {
