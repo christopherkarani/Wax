@@ -44,6 +44,32 @@ import Testing
     }
 }
 
+@Test func waxRepoUIDependenciesAreMacOSScoped() throws {
+    let manifest = try PackageManifest.load()
+
+    #expect(manifest.source.contains(#"""
+let waxRepoPackageDependencies: [Package.Dependency]
+let waxRepoTargets: [Target]
+#if os(macOS)
+waxRepoPackageDependencies = [
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+]
+"""#))
+    #expect(manifest.source.contains(#"""
+#if os(macOS)
+waxRepoPackageDependencies = [
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+]
+waxRepoTargets = [
+    .executableTarget(
+        name: "WaxRepo"
+"""#))
+    #expect(manifest.source.contains(#"    ] + waxRepoPackageDependencies,"#))
+    #expect(manifest.source.contains(#"    ] + waxRepoTargets + ["#))
+}
+
 private let miniLMCompileDefine =
     #".define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"]))"#
 

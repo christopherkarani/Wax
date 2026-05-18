@@ -51,6 +51,40 @@ waxIntegrationLinuxExcludes = [
 waxIntegrationLinuxExcludes = []
 #endif
 
+let waxRepoPackageDependencies: [Package.Dependency]
+let waxRepoTargets: [Target]
+#if os(macOS)
+waxRepoPackageDependencies = [
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+]
+waxRepoTargets = [
+    .executableTarget(
+        name: "WaxRepo",
+        dependencies: [
+            "Wax",
+            .product(name: "SwiftTUI", package: "SwiftTUI"),
+            .product(name: "Noora", package: "Noora"),
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            .target(name: "WaxVectorSearchMiniLM",
+                    condition: .when(traits: ["MiniLMEmbeddings"])),
+            .target(name: "WaxVectorSearchArctic",
+                    condition: .when(traits: ["ArcticEmbeddings"])),
+        ],
+        path: "Sources/WaxRepo",
+        swiftSettings: [
+            .enableExperimentalFeature("StrictConcurrency"),
+            .define("WaxRepo", .when(traits: ["WaxRepo"])),
+            .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+            .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
+        ]
+    ),
+]
+#else
+waxRepoPackageDependencies = []
+waxRepoTargets = []
+#endif
+
 let package = Package(
     name: "Wax",
     platforms: [
@@ -102,9 +136,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3"),
-        .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
-        .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
-    ],
+    ] + waxRepoPackageDependencies,
     targets: [
         .target(
             name: "WaxCoreCompressionC",
@@ -271,26 +303,7 @@ let package = Package(
             path: "Sources/WaxCrashHarness",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
-        .executableTarget(
-            name: "WaxRepo",
-            dependencies: [
-                "Wax",
-                .product(name: "SwiftTUI", package: "SwiftTUI"),
-                .product(name: "Noora", package: "Noora"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .target(name: "WaxVectorSearchMiniLM",
-                        condition: .when(traits: ["MiniLMEmbeddings"])),
-                .target(name: "WaxVectorSearchArctic",
-                        condition: .when(traits: ["ArcticEmbeddings"])),
-            ],
-            path: "Sources/WaxRepo",
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
-                .define("WaxRepo", .when(traits: ["WaxRepo"])),
-                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
-                .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
-            ]
-        ),
+    ] + waxRepoTargets + [
         .testTarget(
             name: "WaxCoreTests",
             dependencies: [
