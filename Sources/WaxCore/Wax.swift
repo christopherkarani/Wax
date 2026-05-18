@@ -1312,6 +1312,7 @@ package actor Wax {
 
     package func delete(frameId: UInt64) async throws {
         try await withWriteLock {
+            try validateKnownFrameForMutationLocked(frameId)
             let entry = WALEntry.deleteFrame(DeleteFrame(frameId: frameId))
             let payload = try WALEntryCodec.encode(entry)
             try await ensureWalCapacityLocked(payloadSize: payload.count)
@@ -1326,6 +1327,12 @@ package actor Wax {
 
     package func supersede(supersededId: UInt64, supersedingId: UInt64) async throws {
         try await withWriteLock {
+            guard supersededId != supersedingId else {
+                throw WaxError.invalidToc(reason: "supersedeFrame requires distinct ids")
+            }
+            try validateKnownFrameForMutationLocked(supersededId)
+            try validateKnownFrameForMutationLocked(supersedingId)
+
             // Check committed state for reverse relationship
             if supersededId < UInt64(toc.frames.count) {
                 let supersededMeta = toc.frames[Int(supersededId)]
@@ -1358,6 +1365,19 @@ package actor Wax {
             }
             appendPendingMutation(sequence: seq, entry: entry)
             dirty = true
+        }
+    }
+
+    private func validateKnownFrameForMutationLocked(_ frameId: UInt64) throws {
+        let committedCount = UInt64(toc.frames.count)
+        let maxKnown = committedCount.addingReportingOverflow(pendingMutationSummary.putFrameCount)
+        guard !maxKnown.overflow else {
+            throw WaxError.invalidToc(reason: "known frame id range overflows")
+        }
+        guard frameId < maxKnown.partialValue else {
+            throw WaxError.invalidToc(
+                reason: "mutation references unknown frameId \(frameId) (known < \(maxKnown.partialValue))"
+            )
         }
     }
 

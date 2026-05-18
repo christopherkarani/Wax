@@ -34,6 +34,19 @@ import Testing
     try await wax.close()
 }
 
+@Test func deleteRejectsUnknownFrameBeforeAppendingWal() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+
+    await #expect(throws: WaxError.self) {
+        try await wax.delete(frameId: 0)
+    }
+
+    try await wax.close()
+}
+
 @Test func supersedeUpdatesBothSidesAfterCommit() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -67,6 +80,20 @@ import Testing
     let newMeta = try await wax.frameMeta(frameId: newId)
     #expect(oldMeta.supersededBy == newId)
     #expect(newMeta.supersedes == oldId)
+    try await wax.close()
+}
+
+@Test func supersedeRejectsSelfReferenceBeforeAppendingWal() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let frameId = try await wax.put(Data("self".utf8))
+
+    await #expect(throws: WaxError.self) {
+        try await wax.supersede(supersededId: frameId, supersedingId: frameId)
+    }
+
     try await wax.close()
 }
 
@@ -150,12 +177,10 @@ import Testing
 
     let wax = try await Wax.create(at: url)
     let a = try await wax.put(Data("a".utf8))
-    // Self-supersede is caught at commit time — distinct IDs are required
-    try await wax.supersede(supersededId: a, supersedingId: a)
     await #expect(throws: WaxError.self) {
-        try await wax.commit()
+        try await wax.supersede(supersededId: a, supersedingId: a)
     }
-    _ = try? await wax.close()
+    try await wax.close()
 }
 
 @Test func supersedeChainABCIsNotACycle() async throws {
