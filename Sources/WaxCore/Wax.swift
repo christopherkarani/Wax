@@ -1699,6 +1699,14 @@ package actor Wax {
             }
         }
 
+        let rollbackState = CommitRollbackState.capture(from: self)
+        var commitSucceeded = false
+        defer {
+            if !commitSucceeded {
+                rollbackState.restore(into: self)
+            }
+        }
+
         let applied = try applyPendingMutationsIntoTOC()
         let appliedWalSeq = applied.maxSequence
         let cachedFramesPayload = try encodedCommittedFramePayloadForCommit(
@@ -1850,6 +1858,66 @@ package actor Wax {
         dirty = false
         generation = footer.generation
         dataEnd = footerOffset + Constants.footerSize
+        commitSucceeded = true
+    }
+
+    private struct CommitRollbackState {
+        var header: WaxHeaderPage
+        var selectedHeaderPageIndex: Int
+        var toc: WaxTOC
+        var surrogateIndex: [UInt64: UInt64]?
+        var pendingMutations: [PendingMutation]
+        var pendingMutationSummary: PendingMutationSummary
+        var encodedCommittedFramePayloadCache: Data?
+        var stagedLexIndex: StagedLexIndex?
+        var stagedVecIndex: StagedVecIndex?
+        var stagedLexIndexStamp: UInt64?
+        var stagedVecIndexStamp: UInt64?
+        var stagedLexIndexStampCounter: UInt64
+        var stagedVecIndexStampCounter: UInt64
+        var dataEnd: UInt64
+        var generation: UInt64
+        var dirty: Bool
+
+        static func capture(from wax: isolated Wax) -> CommitRollbackState {
+            CommitRollbackState(
+                header: wax.header,
+                selectedHeaderPageIndex: wax.selectedHeaderPageIndex,
+                toc: wax.toc,
+                surrogateIndex: wax.surrogateIndex,
+                pendingMutations: wax.pendingMutations,
+                pendingMutationSummary: wax.pendingMutationSummary,
+                encodedCommittedFramePayloadCache: wax.encodedCommittedFramePayloadCache,
+                stagedLexIndex: wax.stagedLexIndex,
+                stagedVecIndex: wax.stagedVecIndex,
+                stagedLexIndexStamp: wax.stagedLexIndexStamp,
+                stagedVecIndexStamp: wax.stagedVecIndexStamp,
+                stagedLexIndexStampCounter: wax.stagedLexIndexStampCounter,
+                stagedVecIndexStampCounter: wax.stagedVecIndexStampCounter,
+                dataEnd: wax.dataEnd,
+                generation: wax.generation,
+                dirty: wax.dirty
+            )
+        }
+
+        func restore(into wax: isolated Wax) {
+            wax.header = header
+            wax.selectedHeaderPageIndex = selectedHeaderPageIndex
+            wax.toc = toc
+            wax.surrogateIndex = surrogateIndex
+            wax.pendingMutations = pendingMutations
+            wax.pendingMutationSummary = pendingMutationSummary
+            wax.encodedCommittedFramePayloadCache = encodedCommittedFramePayloadCache
+            wax.stagedLexIndex = stagedLexIndex
+            wax.stagedVecIndex = stagedVecIndex
+            wax.stagedLexIndexStamp = stagedLexIndexStamp
+            wax.stagedVecIndexStamp = stagedVecIndexStamp
+            wax.stagedLexIndexStampCounter = stagedLexIndexStampCounter
+            wax.stagedVecIndexStampCounter = stagedVecIndexStampCounter
+            wax.dataEnd = dataEnd
+            wax.generation = generation
+            wax.dirty = dirty
+        }
     }
 
     // MARK: - Reads

@@ -114,3 +114,23 @@ private func validFlatVecIndexSegment(
     }
     try await wax.close()
 }
+
+@Test func commitLockedRestoresActorStateWhenDurableCommitFails() throws {
+    let source = try String(
+        contentsOfFile: "Sources/WaxCore/Wax.swift",
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
+    let remainder = source[start.lowerBound...]
+    let end = try #require(remainder.range(of: "    // MARK: - Reads"))
+    let body = String(remainder[..<end.lowerBound])
+
+    let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))
+    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC()"))
+    let restoreDefer = try #require(body.range(of: "defer {\n            if !commitSucceeded {\n                rollbackState.restore(into: self)"))
+    let successMark = try #require(body.range(of: "commitSucceeded = true"))
+
+    #expect(rollbackCapture.lowerBound < applyPending.lowerBound)
+    #expect(rollbackCapture.lowerBound < restoreDefer.lowerBound)
+    #expect(applyPending.lowerBound < successMark.lowerBound)
+}
