@@ -30,7 +30,7 @@ enum WaxMCPServerMetadata {
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-mcp",
-        abstract: "MCP server exposing Wax memory and multimodal RAG tools over stdio or HTTP."
+        abstract: "MCP server exposing Wax memory tools over stdio or HTTP."
     )
 
     @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.wax)")

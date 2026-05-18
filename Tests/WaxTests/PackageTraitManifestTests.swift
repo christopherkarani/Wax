@@ -28,6 +28,12 @@ import Testing
     #expect(!source.contains("Darwin.exit"))
 }
 
+@Test func waxMCPEntrypointDoesNotAdvertiseUnpublishedMultimodalTools() throws {
+    let source = try PackageSource.load("Sources/WaxMCPServer/main.swift")
+
+    #expect(!source.contains("multimodal RAG tools"))
+}
+
 @Test func waxIntegrationLinuxExcludesDarwinOnlyBenchmarks() throws {
     let manifest = try PackageManifest.load()
     let requiredExcludes = [
