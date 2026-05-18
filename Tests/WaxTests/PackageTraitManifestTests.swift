@@ -34,6 +34,13 @@ import Testing
     #expect(!source.contains("multimodal RAG tools"))
 }
 
+@Test func brokerCorpusStoreBuildDoesNotDeleteExistingCorpusBeforeReplacement() throws {
+    let source = try PackageSource.load("Sources/Wax/Broker/BrokerCorpusStore.swift")
+
+    #expect(source.contains("try replaceExistingCorpusStore("))
+    #expect(!source.contains("try fileManager.removeItem(at: standardizedTarget)\n        try fileManager.moveItem(at: buildURL, to: standardizedTarget)"))
+}
+
 @Test func waxIntegrationLinuxExcludesDarwinOnlyBenchmarks() throws {
     let manifest = try PackageManifest.load()
     let requiredExcludes = [
