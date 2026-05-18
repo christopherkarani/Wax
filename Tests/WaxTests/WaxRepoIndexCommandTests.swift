@@ -70,6 +70,47 @@ func waxRepoFullReindexReplacesExistingStore() async throws {
     #expect(fullFrames < firstFrames)
 }
 
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoLimitedIndexDoesNotCheckpointPastUnindexedOlderHistory() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-limited-checkpoint")
+    try WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "old.txt",
+        contents: "old checkpoint searchable content\n",
+        message: "Old checkpoint searchable commit"
+    )
+    try WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "new.txt",
+        contents: "new checkpoint searchable content\n",
+        message: "New checkpoint searchable commit"
+    )
+
+    let limitedIndex = try WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only", "--max-commits", "1"],
+        timeout: 15
+    )
+    #expect(limitedIndex.status == 0, "limited index failed: \(limitedIndex.stderr)")
+
+    let fullIndex = try WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(fullIndex.status == 0, "follow-up index failed: \(fullIndex.stderr)")
+
+    let search = try WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["search", "old checkpoint searchable", "--repo-path", repo.path, "--text-only"],
+        timeout: 10
+    )
+    #expect(search.status == 0, "search failed: \(search.stderr)")
+    #expect(search.stdout.contains("Old checkpoint searchable commit"))
+}
+
 private func frameCount(from statsOutput: String) throws -> Int {
     for line in statsOutput.components(separatedBy: .newlines) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
