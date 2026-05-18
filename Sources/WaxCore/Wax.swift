@@ -794,6 +794,7 @@ package actor Wax {
             guard requiredEnd <= fileSize else {
                 throw WaxError.invalidToc(reason: "pending WAL references bytes beyond file size")
             }
+            try Self.validatePendingPayloadChecksums(pendingMutations, file: file)
             if repair, fileSize > requiredEnd {
                 try file.truncate(to: requiredEnd)
                 try file.fsync()
@@ -2416,6 +2417,30 @@ package actor Wax {
             throw WaxError.checksumMismatch("frame \(frame.id) stored_checksum mismatch")
         }
         return storedChecksum
+    }
+
+    private static func validatePendingPayloadChecksums(
+        _ mutations: [PendingMutation],
+        file: FDFile
+    ) throws {
+        for mutation in mutations {
+            guard case .putFrame(let put) = mutation.entry else { continue }
+            guard put.payloadLength <= UInt64(Int.max) else {
+                throw WaxError.io("pending frame \(put.frameId) payload too large: \(put.payloadLength)")
+            }
+
+            let payload: Data
+            if put.payloadLength == 0 {
+                payload = Data()
+            } else {
+                payload = try file.readExactly(length: Int(put.payloadLength), at: put.payloadOffset)
+            }
+
+            let storedChecksum = SHA256Checksum.digest(payload)
+            guard storedChecksum == put.storedChecksum else {
+                throw WaxError.checksumMismatch("pending frame \(put.frameId) stored_checksum mismatch")
+            }
+        }
     }
 
     private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
