@@ -2705,18 +2705,44 @@ package actor Wax {
             let header = selected.page
             let url = self.url
 
-            let footerSlice: FooterSlice
-            if let fastFooter = try await io.run({
+            let fastFooter = try await io.run({
                 try FooterScanner.findFooter(at: header.footerOffset, in: url)
-            }) {
-                footerSlice = fastFooter
-            } else {
-                guard let scanned = try await io.run({
-                    try FooterScanner.findLastValidFooter(in: url)
-                }) else {
-                    throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            })
+            let snapshotFooter: FooterSlice?
+            if let snapshot = header.walReplaySnapshot {
+                snapshotFooter = try await io.run {
+                    try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
                 }
-                footerSlice = scanned
+            } else {
+                snapshotFooter = nil
+            }
+            let scannedFooter = try await io.run {
+                try FooterScanner.findLastValidFooter(in: url)
+            }
+
+            var footerCandidates: [FooterSlice] = []
+            footerCandidates.reserveCapacity(3)
+            if let fastFooter {
+                footerCandidates.append(fastFooter)
+            }
+            if let snapshotFooter {
+                footerCandidates.append(snapshotFooter)
+            }
+            if let scannedFooter {
+                footerCandidates.append(scannedFooter)
+            }
+            guard let firstFooterCandidate = footerCandidates.first else {
+                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            }
+            let footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate) { current, candidate in
+                if candidate.footer.generation > current.footer.generation {
+                    return candidate
+                }
+                if candidate.footer.generation == current.footer.generation,
+                   candidate.footerOffset > current.footerOffset {
+                    return candidate
+                }
+                return current
             }
             let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
 

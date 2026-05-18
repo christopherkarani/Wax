@@ -90,3 +90,56 @@ import Testing
         try await wax.close()
     }
 }
+
+@Test func verifyUsesSameNewestFooterSelectionAsOpen() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let firstFooter: FooterSlice
+    do {
+        let wax = try await Wax.create(at: url)
+        _ = try await wax.put(Data("first".utf8))
+        try await wax.commit()
+        firstFooter = try #require(try FooterScanner.findLastValidFooter(in: url))
+
+        _ = try await wax.put(Data("second".utf8))
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    let latestFooter = try #require(try FooterScanner.findLastValidFooter(in: url))
+    let latestTOC = try WaxTOC.decode(from: latestFooter.tocBytes)
+    let secondFrame = try #require(latestTOC.frames.first { $0.id == 1 })
+
+    do {
+        let file = try FDFile.open(at: url)
+        defer { try? file.close() }
+
+        var payloadByte = try file.readExactly(length: 1, at: secondFrame.payloadOffset)
+        payloadByte[0] ^= 0xFF
+        try file.writeAll(payloadByte, at: secondFrame.payloadOffset)
+
+        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+        let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+        var stalePointerHeader = selected.page
+        stalePointerHeader.footerOffset = firstFooter.footerOffset
+        stalePointerHeader.tocChecksum = firstFooter.footer.tocHash
+
+        let selectedOffset = UInt64(selected.pageIndex) * Constants.headerPageSize
+        try file.writeAll(try stalePointerHeader.encodeWithChecksum(), at: selectedOffset)
+        try file.fsync()
+    }
+
+    let wax = try await Wax.open(at: url, repair: false)
+    do {
+        try await wax.verify(deep: true)
+        #expect(Bool(false))
+    } catch let error as WaxError {
+        guard case .checksumMismatch = error else {
+            #expect(Bool(false))
+            return
+        }
+    }
+    try await wax.close()
+}
