@@ -4552,6 +4552,34 @@ func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
 }
 
 @Test
+func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func knowledgeCapture(arguments: [String: AgentBrokerValue])"))
+    let end = try #require(source[start.upperBound...].range(of: "func stats() async throws -> AgentBrokerValue"))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    let remember = try #require(body.range(of: "try await longTermMemory.remember(content, metadata: metadata)"))
+    let upsert = try #require(body.range(of: "longTermMemory.upsertEntity("))
+    let assertFact = try #require(body.range(of: "longTermMemory.assertFact("))
+    let flush = try #require(body.range(of: "try await longTermMemory.flush()"))
+
+    #expect(remember.lowerBound < upsert.lowerBound)
+    #expect(remember.lowerBound < assertFact.lowerBound)
+    #expect(upsert.lowerBound < flush.lowerBound)
+    #expect(assertFact.lowerBound < flush.lowerBound)
+    #expect(body.contains("commit: false"))
+    #expect(!body.contains("commit: true"))
+}
+
+@Test
 func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

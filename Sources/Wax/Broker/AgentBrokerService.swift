@@ -709,6 +709,9 @@ extension AgentBrokerService {
         let objectValue = try args.optionalValue("object")
         let kind = try args.optionalString("kind")
         let aliases = try args.optionalStringArray("aliases") ?? []
+        let parsedObject = try objectValue.map { try parseFactValue($0) }
+
+        try await longTermMemory.remember(content, metadata: metadata)
 
         var entityID: Int64?
         if let subject, let kind {
@@ -716,23 +719,22 @@ extension AgentBrokerService {
                 key: EntityKey(subject),
                 kind: kind,
                 aliases: aliases,
-                commit: true
+                commit: false
             ).rawValue
         }
         var factID: Int64?
-        if let subject, let predicate, let objectValue {
+        if let subject, let predicate, let parsedObject {
             factID = try await longTermMemory.assertFact(
                 subject: EntityKey(subject),
                 predicate: PredicateKey(predicate),
-                object: try parseFactValue(objectValue),
+                object: parsedObject,
                 relation: .sets,
                 validFromMs: nil,
                 validToMs: nil,
-                commit: true
+                commit: false
             ).rawValue
         }
 
-        try await longTermMemory.remember(content, metadata: metadata)
         try await longTermMemory.flush()
 
         return .object([
