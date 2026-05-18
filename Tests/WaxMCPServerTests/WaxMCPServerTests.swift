@@ -4464,6 +4464,33 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
 }
 
 @Test
+func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let start = try #require(source.range(of: "func sessionEnd(arguments: [String: AgentBrokerValue])"))
+    let end = try #require(source[start.upperBound...].range(of: "func handoff(arguments: [String: AgentBrokerValue])"))
+    let body = source[start.lowerBound..<end.lowerBound]
+
+    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: state.manifestURL)"))
+    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
+    let flush = try #require(body.range(of: "try await state.memory.flush()"))
+    let close = try #require(body.range(of: "try await state.memory.close()"))
+    let remove = try #require(body.range(of: "activeSessions.removeValue(forKey: target)"))
+
+    #expect(saveManifest.lowerBound < remove.lowerBound)
+    #expect(appendEvent.lowerBound < remove.lowerBound)
+    #expect(flush.lowerBound < remove.lowerBound)
+    #expect(close.lowerBound < remove.lowerBound)
+}
+
+@Test
 func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

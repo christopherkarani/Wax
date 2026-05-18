@@ -977,7 +977,7 @@ extension AgentBrokerService {
         default:
             throw BrokerValidationError.invalid("session_id is required when more than one session is active")
         }
-        if let state = activeSessions.removeValue(forKey: target) {
+        if let state = activeSessions[target] {
             var manifest = state.manifest
             manifest.status = .ended
             manifest.updatedAtMs = Self.nowMs()
@@ -996,6 +996,7 @@ extension AgentBrokerService {
             )
             try await state.memory.flush()
             try await state.memory.close()
+            activeSessions.removeValue(forKey: target)
         }
         return .object([
             "status": .string("ok"),
