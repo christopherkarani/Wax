@@ -788,6 +788,7 @@ package actor Wax {
             }
             if repair, fileSize > requiredEnd {
                 try file.truncate(to: requiredEnd)
+                try file.fsync()
                 fileSize = requiredEnd
             }
             let dataEnd = max(fileSize, requiredEnd)

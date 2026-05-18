@@ -46,6 +46,26 @@ import Testing
     }
 }
 
+@Test func openRepairFsyncsAfterTruncatingTrailingBytes() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCore/Wax.swift"),
+        encoding: .utf8
+    )
+    let repairBlock = try #require(source.range(of: "if repair, fileSize > requiredEnd {"))
+    let remainder = source[repairBlock.lowerBound...]
+    let blockEnd = try #require(remainder.range(of: "let dataEnd = max(fileSize, requiredEnd)"))
+    let body = remainder[..<blockEnd.lowerBound]
+
+    let truncate = try #require(body.range(of: "try file.truncate(to: requiredEnd)"))
+    let fsync = try #require(body.range(of: "try file.fsync()"))
+    #expect(truncate.lowerBound < fsync.lowerBound)
+}
+
 @Test func deepVerifyDetectsPayloadCorruption() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
