@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStateStopsCollectingOnDecodeFailure() throws {
+@Test func walPendingScanWithStateSkipsDecodeFailureButKeepsLaterPendingMutations() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -143,10 +143,12 @@ import Testing
         let legacyState = try reader.scanState(from: 0)
         #expect(legacyState.lastSequence == 2)
 
-        // scanPendingMutationsWithState stops collecting pending mutations on decode
-        // failure but continues scanning for state positions (non-fatal).
+        // scanPendingMutationsWithState skips the corrupt pending entry but keeps
+        // collecting later valid mutations while continuing state-position tracking.
         let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(result.pendingMutations.isEmpty)
+        #expect(result.pendingMutations.count == 1)
+        #expect(result.pendingMutations.first?.sequence == 2)
+        #expect(result.pendingMutations.first?.entry == .deleteFrame(DeleteFrame(frameId: 42)))
         #expect(result.state.lastSequence == 2)
     }
 }
