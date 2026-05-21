@@ -189,6 +189,16 @@ jobs:
           fi
           echo "Version consistency check passed: $NPM_VERSION"
 
+      - name: Validate cross-channel version congruency
+        run: |
+          set -euo pipefail
+          ./scripts/validate-congruency.sh --quiet || {
+            echo "ERROR: Version surfaces are incongruent"
+            ./scripts/validate-congruency.sh
+            exit 1
+          }
+          echo "Cross-channel version congruency check passed"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
