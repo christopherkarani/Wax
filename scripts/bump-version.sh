@@ -14,6 +14,7 @@ set -euo pipefail
 #   5. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew URL)
 #   6. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew SHA256)
 #   7. .pi/extensions/wax-agents/package.json (OpenCode/pi extension)
+#   8. Resources/hermes/README.md (Hermes MCP config reference)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,6 +27,7 @@ OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
 HOMEBREW_REPO="$ROOT/Resources/npm/waxmcp/homebrew-wax"
 SYNC_SCRIPT="$ROOT/Resources/scripts/sync-waxmcp-version.sh"
+HERMES_README="$ROOT/Resources/hermes/README.md"
 
 DRY_RUN=false
 VERSION_ARG=""
@@ -250,6 +252,18 @@ if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
   info "Homebrew formula → $TARGET_VERSION (SHA: ${NEW_SHA:0:16}...)"
   echo "     ⚠️  SHA computed from local git archive — verify after pushing tag:"
   echo "        curl -sL https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v${TARGET_VERSION}.tar.gz | shasum -a 256"
+fi
+
+# Surface 8: Hermes README
+if [[ -f "$HERMES_README" ]]; then
+  # Update version references in Hermes README
+  sed -i '' \
+    "s|waxmcp-v[0-9]\+\.[0-9]\+\.[0-9]\+|waxmcp-v${TARGET_VERSION}|g" \
+    "$HERMES_README"
+  sed -i '' \
+    "s|waxmcp@[0-9]\+\.[0-9]\+\.[0-9]\+|waxmcp@${TARGET_VERSION}|g" \
+    "$HERMES_README"
+  info "Hermes README → $TARGET_VERSION"
 fi
 
 # ── Phase 6: Summary ────────────────────────────────────────────────────────

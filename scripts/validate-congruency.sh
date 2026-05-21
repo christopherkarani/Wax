@@ -19,6 +19,7 @@ SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
+HERMES_README="$ROOT/Resources/hermes/README.md"
 
 JSON=false
 QUIET=false
@@ -102,6 +103,15 @@ if [[ "$OPENCODE_VERSION" != "$CANONICAL" ]]; then
   MISMATCHES+=("opencode:$OPENCODE_VERSION")
 fi
 
+# Check Hermes README version references
+if [[ -f "$HERMES_README" ]]; then
+  HERMES_VERSION=$(grep -oE 'waxmcp@(v?[0-9]+\.[0-9]+\.[0-9]+)' "$HERMES_README" | sed 's/waxmcp@//' | sed 's/^v//' | head -n1 || echo "NOT_FOUND")
+  if [[ "$HERMES_VERSION" != "$CANONICAL" ]]; then
+    CONGRUENT=false
+    MISMATCHES+=("hermes:$HERMES_VERSION")
+  fi
+fi
+
 # ── Output ──────────────────────────────────────────────────────────────────
 if [[ "$JSON" == true ]]; then
   # Build JSON output
@@ -114,7 +124,8 @@ if [[ "$JSON" == true ]]; then
   echo "    \"openclaw\": \"$OPENCLAW_VERSION\","
   echo "    \"openclaw-dep\": \"$OPENCLAW_DEP\","
   echo "    \"homebrew\": \"$HOMEBREW_VERSION\","
-  echo "    \"opencode\": \"$OPENCODE_VERSION\""
+  echo "    \"opencode\": \"$OPENCODE_VERSION\","
+  echo "    \"hermes\": \"${HERMES_VERSION:-NOT_FOUND}\""
   echo "  },"
   if [[ ${#MISMATCHES[@]} -gt 0 ]]; then
     echo -n "  \"mismatches\": ["
@@ -145,7 +156,7 @@ else
       printf "  %-20s │ %-10s │ %s\n" "Surface" "Version" "Status"
       printf "  %-20s ├ %-10s ┼ %s\n" "$(printf '%*s' 20 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')" "$(printf '%*s' 8 '' | tr ' ' '-')"
 
-      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION"; do
+      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes:${HERMES_VERSION:-NOT_FOUND}"; do
         name="${surface%%:*}"
         version="${surface#*:}"
         if [[ "$version" == "$CANONICAL" ]]; then

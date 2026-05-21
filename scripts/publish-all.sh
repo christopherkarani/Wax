@@ -134,8 +134,19 @@ info "All version surfaces are congruent"
 RESOLVED_VERSION=$(node -p "require('$NPM_PKG/package.json').version")
 info "Publishing version: $RESOLVED_VERSION"
 
-# ── Phase 2: Publish npm packages ───────────────────────────────────────────
-phase "Phase 2: Publish npm packages"
+phase "Phase 2: Build binaries"
+
+info "Building darwin-arm64 binaries..."
+if [[ "$DRY_RUN" == true ]]; then
+  echo "  [DRY-RUN] Would build: ./Resources/scripts/build-waxmcp-binaries.sh darwin-arm64 arm64-apple-macosx14.0"
+else
+  ./Resources/scripts/build-waxmcp-binaries.sh darwin-arm64 arm64-apple-macosx14.0
+  info "darwin-arm64 binaries built"
+fi
+
+info "Skipping darwin-x64 build (MetalANNS Float16 requires Apple Silicon)"
+
+phase "Phase 3: Publish npm packages"
 
 # Publish waxmcp
 info "Publishing waxmcp@$RESOLVED_VERSION (tag: $TAG)..."
