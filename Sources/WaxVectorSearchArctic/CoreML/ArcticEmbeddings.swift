@@ -260,7 +260,11 @@ private extension ArcticEmbeddings {
     }
 
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
-        if let compiledURL = Bundle.module.url(forResource: "snowflake-arctic-embed-s", withExtension: "mlmodelc") {
+        let bundle = WaxBundleResolver.resolveModule(
+            named: "Wax_WaxVectorSearchArctic.bundle",
+            moduleFallback: .module
+        )
+        if let compiledURL = bundle.url(forResource: "snowflake-arctic-embed-s", withExtension: "mlmodelc") {
             let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
             return snowflake_arctic_embed_s(model: core)
         }

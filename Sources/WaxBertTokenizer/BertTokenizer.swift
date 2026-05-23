@@ -407,7 +407,11 @@ private extension BertTokenizer {
         }
         vocabCache.lock.unlock()
 
-        guard let url = Bundle.module.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
+        let bundle = WaxBertBundleResolver.resolveModule(
+            named: "Wax_WaxBertTokenizer.bundle",
+            moduleFallback: .module
+        )
+        guard let url = bundle.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw BertTokenizerError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
         }
         let vocabTxt = try String(contentsOf: url, encoding: .utf8)

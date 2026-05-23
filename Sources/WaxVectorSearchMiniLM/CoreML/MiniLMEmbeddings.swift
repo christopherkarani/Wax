@@ -273,7 +273,11 @@ private extension MiniLMEmbeddings {
     }
 
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-        if let compiledURL = Bundle.module.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
+        let bundle = WaxBundleResolver.resolveModule(
+            named: "Wax_WaxVectorSearchMiniLM.bundle",
+            moduleFallback: .module
+        )
+        if let compiledURL = bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
             let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
             return all_MiniLM_L6_v2(model: core)
         }
