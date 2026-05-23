@@ -20,6 +20,7 @@ OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
 HERMES_README="$ROOT/Resources/hermes/README.md"
+HERMES_PLUGIN="$ROOT/Resources/hermes/wax-memory-plugin"
 
 JSON=false
 QUIET=false
@@ -108,7 +109,16 @@ if [[ -f "$HERMES_README" ]]; then
   HERMES_VERSION=$(grep -oE 'waxmcp@(v?[0-9]+\.[0-9]+\.[0-9]+)' "$HERMES_README" | sed 's/waxmcp@//' | sed 's/^v//' | head -n1 || echo "NOT_FOUND")
   if [[ "$HERMES_VERSION" != "$CANONICAL" ]]; then
     CONGRUENT=false
-    MISMATCHES+=("hermes:$HERMES_VERSION")
+    MISMATCHES+=("hermes-readme:$HERMES_VERSION")
+  fi
+fi
+
+# Check Hermes plugin version
+if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]]; then
+  HERMES_PLUGIN_VERSION=$(grep -oE 'version: [0-9]+\.[0-9]+\.[0-9]+' "$HERMES_PLUGIN/plugin.yaml" | sed 's/version: //' | head -n1 || echo "NOT_FOUND")
+  if [[ "$HERMES_PLUGIN_VERSION" != "$CANONICAL" ]]; then
+    CONGRUENT=false
+    MISMATCHES+=("hermes-plugin:$HERMES_PLUGIN_VERSION")
   fi
 fi
 
@@ -156,7 +166,7 @@ else
       printf "  %-20s │ %-10s │ %s\n" "Surface" "Version" "Status"
       printf "  %-20s ├ %-10s ┼ %s\n" "$(printf '%*s' 20 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')" "$(printf '%*s' 8 '' | tr ' ' '-')"
 
-      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes:${HERMES_VERSION:-NOT_FOUND}"; do
+      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}"; do
         name="${surface%%:*}"
         version="${surface#*:}"
         if [[ "$version" == "$CANONICAL" ]]; then

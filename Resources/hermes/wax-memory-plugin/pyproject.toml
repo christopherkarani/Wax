@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-wax-memory"
+version = "0.1.22"
+description = "Native Hermes memory provider plugin backed by Wax MCP over HTTP."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+]
+keywords = ["hermes", "plugin", "memory", "mcp", "wax", "rag"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/christopherkarani/Wax"
+Repository = "https://github.com/christopherkarani/Wax.git"
+
+[project.entry-points."hermes_agent.plugins"]
+wax-memory = "hermes_wax_memory"
+
+[tool.setuptools]
+py-modules = ["hermes_wax_memory"]

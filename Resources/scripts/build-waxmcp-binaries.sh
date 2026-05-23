@@ -46,14 +46,14 @@ MCP_BIN_PATH="$DIST_DIR/wax-mcp"
 mkdir -p "$DIST_DIR"
 
 if [[ -n "$TRIPLE" ]]; then
-  # Build the CLI binary
-  swift build --product wax-cli --traits MCPServer --configuration release --triple "$TRIPLE"
-  LOCAL_BIN_PATH="$(swift build --product wax-cli --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
+  # Build the CLI binary (with both MiniLM and Arctic embedders)
+  swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings" --configuration release --triple "$TRIPLE"
+  LOCAL_BIN_PATH="$(swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings" --configuration release --triple "$TRIPLE" --show-bin-path)"
   cp "$LOCAL_BIN_PATH/wax-cli" "$CLI_BIN_PATH"
 
-  # Build the MCP server binary
-  swift build --product wax-mcp --traits MCPServer --configuration release --triple "$TRIPLE"
-  MCP_LOCAL_BIN_PATH="$(swift build --product wax-mcp --traits MCPServer --configuration release --triple "$TRIPLE" --show-bin-path)"
+  # Build the MCP server binary (with both MiniLM and Arctic embedders)
+  swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer" --configuration release --triple "$TRIPLE"
+  MCP_LOCAL_BIN_PATH="$(swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer" --configuration release --triple "$TRIPLE" --show-bin-path)"
   cp "$MCP_LOCAL_BIN_PATH/wax-mcp" "$MCP_BIN_PATH"
 
   # Copy resource bundles required for vector search and runtime.

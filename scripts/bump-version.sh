@@ -28,6 +28,7 @@ HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
 HOMEBREW_REPO="$ROOT/Resources/npm/waxmcp/homebrew-wax"
 SYNC_SCRIPT="$ROOT/Resources/scripts/sync-waxmcp-version.sh"
 HERMES_README="$ROOT/Resources/hermes/README.md"
+HERMES_PLUGIN="$ROOT/Resources/hermes/wax-memory-plugin"
 
 DRY_RUN=false
 VERSION_ARG=""
@@ -84,6 +85,15 @@ read_homebrew_version() {
   grep -oE 'waxmcp-v[0-9]+\.[0-9]+\.[0-9]+' "$HOMEBREW_FORMULA" | sed 's/waxmcp-v//' | head -n1 || echo "NOT_FOUND"
 }
 
+# Read current version from Hermes plugin
+read_hermes_version() {
+  if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]]; then
+    grep -oE 'version: [0-9]+\.[0-9]+\.[0-9]+' "$HERMES_PLUGIN/plugin.yaml" | sed 's/version: //' | head -n1 || echo "NOT_FOUND"
+  else
+    echo "NOT_FOUND"
+  fi
+}
+
 # Read current SHA from Homebrew formula
 read_homebrew_sha() {
   grep -oE 'sha256 "[a-f0-9]+"' "$HOMEBREW_FORMULA" | grep -oE '[a-f0-9]+' || echo "NOT_FOUND"
@@ -129,6 +139,7 @@ CURRENT_OPENCLAW_DEP=$(node -p "require('$OPENCLAW_PKG/package.json').dependenci
 CURRENT_HOMEBREW=$(read_homebrew_version)
 CURRENT_HOMEBREW_SHA=$(read_homebrew_sha)
 CURRENT_OPCODE=$(read_pkg_version "$OPENCODE_PKG")
+CURRENT_HERMES=$(read_hermes_version)
 
 # ── Phase 2: Resolve target version ─────────────────────────────────────────
 # Delegate to existing sync script to get the resolved version
@@ -166,7 +177,8 @@ if [[ "$CURRENT_NPM" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW_DEP" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_HOMEBREW" == "$TARGET_VERSION" ]] && \
-   [[ "$CURRENT_OPCODE" == "$TARGET_VERSION" ]]; then
+   [[ "$CURRENT_OPCODE" == "$TARGET_VERSION" ]] && \
+   [[ "$CURRENT_HERMES" == "$TARGET_VERSION" ]]; then
   echo "✅ All surfaces already at $TARGET_VERSION — nothing to do."
   exit 0
 fi
@@ -184,6 +196,7 @@ printf "  %-50s ├ %-10s ┼ %-10s\n" "$(printf '%*s' 50 '' | tr ' ' '-')" "$(p
 [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]] && print_row "homebrew formula (url)" "$CURRENT_HOMEBREW" "$TARGET_VERSION"
 print_row "homebrew formula (sha256)" "${CURRENT_HOMEBREW_SHA:0:16}..." "(recompute)"
 [[ "$CURRENT_OPCODE" != "$TARGET_VERSION" ]] && print_row ".pi/extensions/wax-agents" "$CURRENT_OPCODE" "$TARGET_VERSION"
+[[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]] && print_row "hermes plugin" "$CURRENT_HERMES" "$TARGET_VERSION"
 
 echo ""
 
@@ -264,6 +277,14 @@ if [[ -f "$HERMES_README" ]]; then
     "s|waxmcp@[0-9]\+\.[0-9]\+\.[0-9]\+|waxmcp@${TARGET_VERSION}|g" \
     "$HERMES_README"
   info "Hermes README → $TARGET_VERSION"
+fi
+
+# Surface 9: Hermes plugin
+if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]] && [[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]]; then
+  sed -i '' \
+    "s|^version: [0-9]\+\.[0-9]\+\.[0-9]\+|version: ${TARGET_VERSION}|" \
+    "$HERMES_PLUGIN/plugin.yaml"
+  info "Hermes plugin → $TARGET_VERSION"
 fi
 
 # ── Phase 6: Summary ────────────────────────────────────────────────────────
