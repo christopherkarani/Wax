@@ -143,7 +143,7 @@ class _WaxHTTPClient:
             "params": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "hermes-wax-memory", "version": "0.1.22"},
+                "clientInfo": {"name": "hermes-wax-memory", "version": "0.1.23"},
             },
         }
         if _HAS_REQUESTS:

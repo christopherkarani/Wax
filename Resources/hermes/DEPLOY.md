@@ -21,7 +21,7 @@ The `waxmcp` npm package bundles pre-built `wax-cli` and `wax-mcp` binaries for 
 ### Current Release Pipeline
 
 ```
-Git tag: waxmcp-v0.1.22
+Git tag: waxmcp-v0.1.23
   → GitHub Actions builds binaries (darwin-x64, darwin-arm64)
   → Validates + publishes to npm
 ```

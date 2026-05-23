@@ -1,6 +1,6 @@
 {
   "name": "@wax/openclaw-wax-memory",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "type": "module",
   "description": "OpenClaw memory plugin for Wax-backed agent memory.",
   "license": "Apache-2.0",
@@ -27,7 +27,7 @@
     "openclaw": ">=2026.3.24-beta.2"
   },
   "dependencies": {
-    "waxmcp": "0.1.22"
+    "waxmcp": "0.1.23"
   },
   "devDependencies": {
     "openclaw": ">=2026.3.24-beta.2"

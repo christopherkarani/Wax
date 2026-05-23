@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-wax-memory"
-version = "0.1.22"
+version = "0.1.23"
 description = "Native Hermes memory provider plugin backed by Wax MCP over HTTP."
 readme = "README.md"
 license = { text = "Apache-2.0" }
