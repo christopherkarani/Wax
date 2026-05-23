@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 package final class NativeBpeTokenizer: @unchecked Sendable {
     package enum Encoding: String, Sendable {
@@ -233,10 +234,15 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         return data
     }
 
+    private static let resourceBundle: Bundle = WaxBundleResolver.resolveModule(
+        named: "Wax_Wax.bundle",
+        moduleFallback: .module
+    )
+
     private static func loadEncoding(_ encoding: Encoding) throws -> ([Data: UInt32], [UInt32: Data]) {
         let url =
-            Bundle.module.url(forResource: encoding.rawValue, withExtension: "tiktoken")
-            ?? Bundle.module.url(forResource: encoding.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
+            resourceBundle.url(forResource: encoding.rawValue, withExtension: "tiktoken")
+            ?? resourceBundle.url(forResource: encoding.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
 
         guard let url else {
             throw NativeBpeError.missingResource(encoding: encoding.rawValue)
@@ -263,8 +269,8 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
     /// Returns the directory that contains Wax’s bundled `.tiktoken` encoding files.
     static func bundledEncodingDirectoryURL() -> URL? {
         let url =
-            Bundle.module.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken")
-            ?? Bundle.module.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
+            resourceBundle.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken")
+            ?? resourceBundle.url(forResource: Encoding.cl100kBase.rawValue, withExtension: "tiktoken", subdirectory: "RAG/Resources")
         return url?.deletingLastPathComponent()
     }
 }

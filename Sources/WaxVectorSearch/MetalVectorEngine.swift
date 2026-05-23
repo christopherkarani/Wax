@@ -277,7 +277,10 @@ package actor MetalVectorEngine {
 
     private static func loadMetalLibrary(device: MTLDevice) throws -> MTLLibrary {
         #if SWIFT_PACKAGE
-        let bundle = Bundle.module
+        let bundle = WaxBundleResolver.resolveModule(
+            named: "Wax_WaxVectorSearch.bundle",
+            moduleFallback: .module
+        )
         #else
         let bundle = Bundle(for: MetalVectorEngine.self)
         #endif
