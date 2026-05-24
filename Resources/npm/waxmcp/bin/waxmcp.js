@@ -206,6 +206,107 @@ if (forwardedArgs[0] === "vector-health") {
   process.exit(stats.vectorSearchEnabled ? 0 : 1);
 }
 
+// --- Subcommand: install-hermes-plugin ---
+if (forwardedArgs[0] === "install-hermes-plugin") {
+  const hermesPluginsDir = path.join(os.homedir(), ".hermes", "plugins", "wax-memory");
+  const pluginSrcDir = path.join(__dirname, "..", "plugins", "hermes");
+
+  if (!fs.existsSync(pluginSrcDir)) {
+    console.error("❌ Hermes plugin not found in package.");
+    console.error("   This is a packaging bug — please report it.");
+    process.exit(1);
+  }
+
+  console.log(`Installing Wax Hermes plugin to ${hermesPluginsDir}...`);
+
+  // Ensure parent directory exists
+  fs.mkdirSync(path.dirname(hermesPluginsDir), { recursive: true });
+
+  // Remove old installation if present
+  if (fs.existsSync(hermesPluginsDir)) {
+    fs.rmSync(hermesPluginsDir, { recursive: true });
+  }
+
+  // Copy plugin files
+  fs.mkdirSync(hermesPluginsDir, { recursive: true });
+  for (const file of fs.readdirSync(pluginSrcDir)) {
+    const src = path.join(pluginSrcDir, file);
+    const dest = path.join(hermesPluginsDir, file);
+    if (fs.statSync(src).isDirectory()) {
+      fs.cpSync(src, dest, { recursive: true });
+    } else {
+      fs.copyFileSync(src, dest);
+    }
+  }
+
+  console.log("✅ Hermes plugin installed.");
+  console.log("");
+  console.log("Next steps:");
+  console.log("  1. Start Wax MCP:  npx waxmcp --transport http");
+  console.log("  2. Enable plugin:   hermes config set memory.provider wax-memory");
+  console.log("  3. Run Hermes:      hermes");
+  process.exit(0);
+}
+
+// --- Subcommand: install-openclaw-plugin ---
+if (forwardedArgs[0] === "install-openclaw-plugin") {
+  const openclawDir = path.join(os.homedir(), ".openclaw");
+  const pluginSrcDir = path.join(__dirname, "..", "plugins", "openclaw");
+
+  if (!fs.existsSync(pluginSrcDir)) {
+    console.error("❌ OpenClaw plugin not found in package.");
+    console.error("   This is a packaging bug — please report it.");
+    process.exit(1);
+  }
+
+  console.log("OpenClaw plugin is distributed as an npm package.");
+  console.log("");
+  console.log("Install it with:");
+  console.log("  npm install -g @wax/openclaw-wax-memory");
+  console.log("");
+  console.log("Or, if you have the OpenClaw CLI:");
+  console.log("  openclaw plugin install @wax/openclaw-wax-memory");
+  console.log("");
+  console.log("The plugin source is also bundled at:");
+  console.log(`  ${pluginSrcDir}`);
+  process.exit(0);
+}
+
+// --- Subcommand: install-all-plugins ---
+if (forwardedArgs[0] === "install-all-plugins") {
+  console.log("Installing all Wax plugins...\n");
+
+  // Hermes
+  const hermesPluginsDir = path.join(os.homedir(), ".hermes", "plugins", "wax-memory");
+  const hermesSrcDir = path.join(__dirname, "..", "plugins", "hermes");
+  if (fs.existsSync(hermesSrcDir)) {
+    fs.mkdirSync(path.dirname(hermesPluginsDir), { recursive: true });
+    if (fs.existsSync(hermesPluginsDir)) {
+      fs.rmSync(hermesPluginsDir, { recursive: true });
+    }
+    fs.mkdirSync(hermesPluginsDir, { recursive: true });
+    for (const file of fs.readdirSync(hermesSrcDir)) {
+      const src = path.join(hermesSrcDir, file);
+      const dest = path.join(hermesPluginsDir, file);
+      if (fs.statSync(src).isDirectory()) {
+        fs.cpSync(src, dest, { recursive: true });
+      } else {
+        fs.copyFileSync(src, dest);
+      }
+    }
+    console.log("✅ Hermes plugin installed to ~/.hermes/plugins/wax-memory/");
+  }
+
+  console.log("\n🎉 All plugins installed!");
+  console.log("\nNext steps:");
+  console.log("  1. Start Wax MCP:     npx waxmcp --transport http");
+  console.log("  2. Enable in Hermes:  hermes config set memory.provider wax-memory");
+  console.log("  3. Run Hermes:        hermes");
+  console.log("\nFor OpenClaw:");
+  console.log("  npm install -g @wax/openclaw-wax-memory");
+  process.exit(0);
+}
+
 // --- Default: run MCP server ---
 // Translate 'mcp serve' to native wax-mcp flags
 const mcpFlags = [];

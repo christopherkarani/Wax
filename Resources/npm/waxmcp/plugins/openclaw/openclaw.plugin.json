@@ -1,0 +1,42 @@
+{
+  "id": "wax-memory",
+  "name": "Wax Memory",
+  "version": "0.1.21",
+  "kind": "memory",
+  "description": "Wax-backed memory plugin scaffold for OpenClaw using the verified Wax MCP adapter surface and managed Markdown projections.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "HTTP MCP endpoint for the Wax broker."
+      },
+      "command": {
+        "type": "string",
+        "description": "Command used when OpenClaw launches the Wax MCP process directly."
+      },
+      "args": {
+        "type": "array",
+        "description": "Arguments passed to the Wax MCP command when OpenClaw launches it directly.",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "endpoint": {
+      "label": "Wax MCP HTTP Endpoint",
+      "placeholder": "http://127.0.0.1:3000/mcp"
+    },
+    "command": {
+      "label": "Wax MCP Command",
+      "placeholder": "waxmcp"
+    },
+    "args": {
+      "label": "Wax MCP Arguments",
+      "help": "Used only when OpenClaw launches the Wax MCP process directly."
+    }
+  }
+}

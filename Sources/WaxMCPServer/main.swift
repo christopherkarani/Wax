@@ -23,7 +23,7 @@ import WaxVectorSearchArctic
 #endif
 
 enum WaxMCPServerMetadata {
-    static let version = "0.1.23"
+    static let version = "0.1.24"
 }
 
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)

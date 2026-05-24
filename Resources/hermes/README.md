@@ -108,7 +108,7 @@ Add to your Hermes `~/.hermes/config.yaml`:
 mcp_servers:
   wax-memory:
     command: "npx"
-    args: ["-y", "waxmcp@0.1.23", "mcp", "serve"]
+    args: ["-y", "waxmcp@0.1.24", "mcp", "serve"]
     env:
       WAX_MCP_FEATURE_LICENSE: "0"
       WAX_MCP_FEATURE_STRUCTURED_MEMORY: "1"
@@ -125,7 +125,7 @@ mcp_servers:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `command` | `npx` | Launcher for waxmcp |
-| `args` | `["-y", "waxmcp@0.1.23", "mcp", "serve"]` | Arguments passed to waxmcp |
+| `args` | `["-y", "waxmcp@0.1.24", "mcp", "serve"]` | Arguments passed to waxmcp |
 | `env.WAX_MCP_FEATURE_LICENSE` | `"0"` | Disable license checks |
 | `env.WAX_MCP_FEATURE_STRUCTURED_MEMORY` | `"1""` | Enable structured memory tools |
 | `timeout` | `120` | MCP call timeout in seconds |

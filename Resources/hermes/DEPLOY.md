@@ -21,7 +21,7 @@ The `waxmcp` npm package bundles pre-built `wax-cli` and `wax-mcp` binaries for 
 ### Current Release Pipeline
 
 ```
-Git tag: waxmcp-v0.1.23
+Git tag: waxmcp-v0.1.24
   → GitHub Actions builds binaries (darwin-x64, darwin-arm64)
   → Validates + publishes to npm
 ```
@@ -35,7 +35,7 @@ scripts/release-all.sh patch    # or minor, major, or exact semver
 # Follow the printed steps:
 #   1. git diff --stat          (review)
 #   2. git add -A && git commit -m "release: waxmcp v0.1.23"
-#   3. git tag waxmcp-v0.1.23
+#   3. git tag waxmcp-v0.1.24
 #   4. git push origin main --tags
 
 # Option B: Manual version bump
@@ -169,7 +169,7 @@ scripts/release-all.sh 0.1.23
 # 4. Commit and tag
 git add -A
 git commit -m "release: waxmcp v0.1.23"
-git tag waxmcp-v0.1.23
+git tag waxmcp-v0.1.24
 git push origin main --tags
 
 # 5. GitHub Actions publishes to npm automatically
