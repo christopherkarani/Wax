@@ -93,8 +93,6 @@ package final class WALRingReader {
         var pendingBytes: UInt64 = 0
         var wrapped = false
         var pendingMutations: [PendingMutation] = []
-        // Pending-entry decode errors are non-fatal for state-position tracking.
-        // Skip only the corrupt entry so later checksum-valid records are still replayed.
 
         while true {
             let remaining = walSize - cursor
@@ -159,13 +157,10 @@ package final class WALRingReader {
             }
 
             if header.sequence > committedSeq {
-                do {
-                    let entry = try WALEntryCodec.decode(payload, offset: cursor)
-                    pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
-                } catch {
-                    // Treat decode failure as corruption for this pending entry only.
-                    // The scan still advances below so writePos/pendingBytes remain accurate.
-                }
+                // Do not silently skip checksum-valid but undecodable payloads.
+                // Advancing replay state past them would permanently drop committed mutations.
+                let entry = try WALEntryCodec.decode(payload, offset: cursor)
+                pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
             }
 
             let advance = UInt64(WALRecord.headerSize) + payloadLen
