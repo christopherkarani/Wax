@@ -1,4 +1,12 @@
+
+
+
 <!-- HEADER:START -->
+
+<a href="https://trendshift.io/repositories/21759?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21759" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/21759/daily?language=Swift" alt="christopherkarani%2FWax | Trendshift" width="250" height="55"/></a>
+
+<a href="https://trendshift.io/repositories/21759?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21759" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/21759/daily" alt="christopherkarani%2FWax | Trendshift" width="250" height="55"/></a>
+
 <div align="center">
   <img src="Resources/docs/assets/wax-logo.png" width="500" alt="Wax — a single-file memory layer for AI agents">
 </div>
