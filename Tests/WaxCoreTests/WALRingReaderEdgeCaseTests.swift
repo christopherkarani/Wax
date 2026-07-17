@@ -387,19 +387,23 @@ private func deletePayload(frameId: UInt64) throws -> Data {
     }
 }
 
-@Test func walRingReaderScanPendingMutationsWithStateStopsCollectingOnDecodeFailure() throws {
+@Test func walRingReaderScanPendingMutationsWithStateSkipsCorruptEntryKeepsLaterMutations() throws {
     // A valid WAL envelope carrying an invalid WALEntry opcode:
-    // - Collection of pending mutations stops at the bad record.
-    // - The state scan continues to the end of the ring.
+    // - Skip only the corrupt pending entry (do not fail the whole scan).
+    // - Keep collecting later checksum-valid mutations.
+    // - State scan advances past all three records (writePos/pendingBytes stay accurate).
+    // Permanent regression for: fix keep scanning valid wal entries after decode failure.
     try withWritableWalFile(walSize: 2048) { _, writer, reader in
-        _ = try writer.append(payload: Data([0xFF])) // invalid opcode
+        _ = try writer.append(payload: Data([0xFF])) // invalid opcode → seq 1 skipped
         _ = try writer.append(payload: try deletePayload(frameId: 1))
         _ = try writer.append(payload: try deletePayload(frameId: 2))
 
         let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        // No pending mutations because decoding stops at the first invalid entry.
-        #expect(result.pendingMutations.isEmpty)
-        // But state scan advances past all three records.
+        #expect(result.pendingMutations.map(\.sequence) == [2, 3])
+        #expect(result.pendingMutations.map(\.entry) == [
+            .deleteFrame(DeleteFrame(frameId: 1)),
+            .deleteFrame(DeleteFrame(frameId: 2)),
+        ])
         #expect(result.state.lastSequence == 3)
     }
 }
