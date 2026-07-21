@@ -89,6 +89,11 @@ public actor Memory {
 
     private let orchestrator: MemoryOrchestrator
 
+    /// Package-visible wrap of an existing orchestrator for in-module adapters.
+    package init(orchestrator: MemoryOrchestrator) {
+        self.orchestrator = orchestrator
+    }
+
     public init(at url: URL, config: Config = .default) async throws {
         self.orchestrator = try await MemoryOrchestrator(
             at: url,
@@ -212,6 +217,14 @@ public actor Memory {
     ) async throws -> Results {
         let results = try await search(query, strategy: strategy, options: options)
         return try await reranker.rerank(query: query, results: results)
+    }
+
+    /// Soft-delete a memory frame and remove it from enabled search indexes.
+    ///
+    /// Used by forget tooling and callers that need to retract a specific frame ID
+    /// returned from ``search(_:options:)``.
+    public func delete(frameID: UInt64) async throws {
+        try await orchestrator.delete(frameId: frameID)
     }
 
     /// Force pending writes to durable storage.

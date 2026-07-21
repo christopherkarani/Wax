@@ -1481,6 +1481,26 @@ package actor MemoryOrchestrator {
         return try await session.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
+    // MARK: - Delete
+
+    /// Soft-deletes a frame and removes it from text/vector indexes when those features are enabled.
+    ///
+    /// Matches ``FrameStore/delete(frameID:)`` durability (delete + commit) while also cleaning
+    /// search indexes so forgotten content is not returned by subsequent recalls.
+    package func delete(frameId: UInt64) async throws {
+        lastWriteActivityAt = .now
+
+        if config.enableTextSearch {
+            try await session.removeText(frameId: frameId)
+        }
+        if config.enableVectorSearch {
+            try await session.removeVector(frameId: frameId)
+        }
+
+        try await wax.delete(frameId: frameId)
+        try await session.commit()
+    }
+
     // MARK: - Persistence lifecycle
 
     package func flush() async throws {

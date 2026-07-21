@@ -176,6 +176,21 @@ package actor WaxSession {
         try await textEngine.remove(frameId: frameId)
     }
 
+    /// Removes a frame from the in-memory vector index when vector search is enabled.
+    ///
+    /// No-ops when vector search is configured but no engine is loaded yet (e.g. dimensions unknown).
+    /// Throws when vector search is disabled so callers can gate on `config.enableVectorSearch`.
+    package func removeVector(frameId: UInt64) async throws {
+        try ensureWritable()
+        guard config.enableVectorSearch else {
+            throw WaxError.io("vector search is disabled")
+        }
+        guard let concreteVectorEngine else {
+            return
+        }
+        try await concreteVectorEngine.remove(frameId: frameId)
+    }
+
     // MARK: - Structured Memory
 
     package func upsertEntity(
