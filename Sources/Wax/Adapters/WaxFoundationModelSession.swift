@@ -76,12 +76,21 @@ public enum WaxFoundationModelsAvailability: Sendable, Equatable {
 /// 2. Registers a ``WaxMemoryTool`` so the model can actively remember/recall
 /// 3. Optionally persists each turn back into the Wax store
 ///
+/// ## Memory ownership
+///
+/// - Sessions created from an existing ``Memory`` (``Memory/foundationModelsSession``)
+///   do **not** own the store: ``close()`` leaves ``Memory`` open for siblings/tools.
+/// - Sessions created via ``Memory/openFoundationModelsSession`` open the store and
+///   own it: ``close()`` closes the underlying ``Memory``.
+///
 /// ```swift
 /// let memory = try await Memory(at: storeURL)
-/// let session = await memory.foundationModelsSession(
+/// let session = memory.foundationModelsSession(
 ///     instructions: "You are a helpful assistant with durable memory."
 /// )
 /// let answer = try await session.respond(to: "What editor do I prefer?")
+/// try await session.close() // does not close `memory`
+/// try await memory.close()
 /// ```
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
@@ -91,11 +100,18 @@ public actor WaxFoundationModelSession {
     private let model: SystemLanguageModel
     private let userInstructions: String?
     private let additionalTools: [any Tool]
+    /// When `true`, ``close()`` closes the underlying ``Memory`` (session opened the store).
+    private let ownsMemory: Bool
 
     /// Underlying Foundation Models session. Use for advanced multi-turn control.
     public nonisolated let languageModelSession: LanguageModelSession
     /// Immutable session configuration (safe to read off the actor).
     public nonisolated let configuration: FoundationModelsMemorySessionConfig
+
+    /// Whether ``close()`` will close the underlying ``Memory`` store.
+    ///
+    /// `true` only for sessions that opened the store (e.g. ``Memory/openFoundationModelsSession``).
+    public nonisolated var ownsMemoryStore: Bool { ownsMemory }
 
     /// Last prompt-prep accounting (updated by ``preparePromptDetailed(for:)``).
     public private(set) var lastPreparedPrompt: PreparedMemoryPrompt?
@@ -105,13 +121,15 @@ public actor WaxFoundationModelSession {
         model: SystemLanguageModel = .default,
         instructions: String? = nil,
         additionalTools: [any Tool] = [],
-        configuration: FoundationModelsMemorySessionConfig = .default
+        configuration: FoundationModelsMemorySessionConfig = .default,
+        ownsMemory: Bool = false
     ) {
         self.memory = memory
         self.model = model
         self.userInstructions = instructions
         self.additionalTools = additionalTools
         self.configuration = configuration
+        self.ownsMemory = ownsMemory
 
         let tools = Self.assembleTools(
             memory: memory,
@@ -136,6 +154,7 @@ public actor WaxFoundationModelSession {
         model: SystemLanguageModel = .default,
         additionalTools: [any Tool] = [],
         configuration: FoundationModelsMemorySessionConfig = .default,
+        ownsMemory: Bool = false,
         @InstructionsBuilder instructions: () throws -> Instructions
     ) rethrows {
         self.memory = memory
@@ -144,6 +163,7 @@ public actor WaxFoundationModelSession {
         self.userInstructions = nil
         self.additionalTools = additionalTools
         self.configuration = configuration
+        self.ownsMemory = ownsMemory
 
         let tools = Self.assembleTools(
             memory: memory,
@@ -184,21 +204,16 @@ public actor WaxFoundationModelSession {
         builder.injectionStyle = configuration.injectionStyle
         builder.maxMemoryCharacters = configuration.memoryCharacterBudget
 
-        let options = configuration.toolConfig.searchOptions(
-            topK: builder.maxItems
+        // Same search + vector→text fallback path as memory tools (M-8).
+        // Session embeddingPolicy overrides toolConfig; hybrid alpha comes from toolConfig (M-7).
+        let context = try await WaxMemoryToolExecutor.searchWithFallback(
+            memory: memory,
+            config: configuration.toolConfig,
+            query: userPrompt,
+            topK: max(1, builder.maxItems),
+            alpha: nil,
+            embeddingPolicy: configuration.embeddingPolicy
         )
-        // Prefer session embedding policy when the tool config still uses defaults.
-        var resolvedOptions = options
-        resolvedOptions.mode = switch configuration.embeddingPolicy {
-        case .never:
-            .textOnly
-        case .always:
-            .vectorOnly
-        case .automatic:
-            .hybrid()
-        }
-
-        let context = try await memory.search(userPrompt, options: resolvedOptions)
         let prepared = builder.prepare(userPrompt: userPrompt, context: context)
         lastPreparedPrompt = prepared
         return prepared
@@ -348,7 +363,9 @@ public actor WaxFoundationModelSession {
     /// fresh ``LanguageModelSession`` transcript.
     ///
     /// Callers should replace their handle with the returned value. The previous session
-    /// remains usable until closed; both share the underlying store.
+    /// remains usable until closed; both share the underlying store. Ownership of the store
+    /// is **not** transferred — the returned session never owns ``Memory`` (`ownsMemoryStore`
+    /// is `false`); close the original owner or the ``Memory`` handle explicitly.
     public func resetConversationPreservingMemory(
         instructions: String? = nil
     ) -> WaxFoundationModelSession {
@@ -357,7 +374,8 @@ public actor WaxFoundationModelSession {
             model: model,
             instructions: instructions ?? userInstructions,
             additionalTools: additionalTools,
-            configuration: configuration
+            configuration: configuration,
+            ownsMemory: false
         )
     }
 
@@ -367,11 +385,18 @@ public actor WaxFoundationModelSession {
     }
 
     /// Recalls memory context directly from the underlying Wax store.
+    ///
+    /// Uses the same vector→text fallback path as tools when
+    /// ``WaxMemoryToolConfig/fallbackToTextOnVectorFailure`` is true.
     public func recall(query: String) async throws -> RAGContext {
-        let options = configuration.toolConfig.searchOptions(
-            topK: configuration.promptBuilder.maxItems
+        try await WaxMemoryToolExecutor.searchWithFallback(
+            memory: memory,
+            config: configuration.toolConfig,
+            query: query,
+            topK: max(1, configuration.promptBuilder.maxItems),
+            alpha: nil,
+            embeddingPolicy: configuration.embeddingPolicy
         )
-        return try await memory.search(query, options: options)
     }
 
     /// The live multi-turn transcript managed by Foundation Models.
@@ -394,9 +419,15 @@ public actor WaxFoundationModelSession {
         try await memory.flush()
     }
 
-    /// Closes the underlying memory store.
+    /// Releases session-owned resources.
+    ///
+    /// When ``ownsMemoryStore`` is `true` (session opened the store), closes the underlying
+    /// ``Memory``. When the caller supplied ``Memory``, this is a no-op on the store so
+    /// sibling sessions and tools can keep using it — call ``Memory/close()`` separately.
     public func close() async throws {
-        try await memory.close()
+        if ownsMemory {
+            try await memory.close()
+        }
     }
 
     // MARK: - Persistence helpers
@@ -468,53 +499,23 @@ public actor WaxFoundationModelSession {
 
     // MARK: - Construction helpers
 
-    /// Session + prompt pair for one generation turn (handles instructionsAppendix multi-turn).
+    /// Session + prompt pair for one generation turn.
     private struct TurnInvocation: Sendable {
         let session: LanguageModelSession
         let prompt: String
-        /// `true` when a disposable turn session carries memory in instructions (fresh chat only).
-        let usesFreshTurnSession: Bool
     }
 
-    /// Whether a disposable turn session should be used for ``MemoryInjectionStyle/instructionsAppendix``.
+    /// Prefix recalled memory for ``MemoryInjectionStyle/instructionsAppendix`` generations.
     ///
-    /// Always `false` on macOS/iOS 26: Foundation Models has no initializer that sets both
-    /// fresh instructions and an existing transcript, so multi-turn continuity requires
-    /// staying on the primary session and prefixing trusted memory into the user prompt.
-    package static func shouldUseFreshTurnSession(
-        hasMemoryAppendix: Bool,
-        hasConversationHistory: Bool
-    ) -> Bool {
-        _ = hasMemoryAppendix
-        _ = hasConversationHistory
-        return false
-    }
-
-    /// Whether the transcript already contains user/model turns (not just instructions).
-    package static func transcriptHasConversationHistory(_ transcript: Transcript) -> Bool {
-        for entry in transcript {
-            switch entry {
-            case .instructions:
-                continue
-            case .prompt, .response, .toolCalls, .toolOutput:
-                return true
-            @unknown default:
-                return true
-            }
-        }
-        return false
-    }
-
-    /// Trusted-memory prefix for ``MemoryInjectionStyle/instructionsAppendix`` generations.
-    ///
-    /// Keeps multi-turn continuity on the primary ``LanguageModelSession`` while elevating
-    /// recalled memory above free-form user text in the prompt body.
-    package static func prefixPromptWithTrustedMemory(
+    /// On OS 26, Foundation Models cannot rebind system instructions mid-transcript while
+    /// keeping multi-turn history, so the appendix is a **prompt prefix** on the primary
+    /// session — not OS system-instruction injection. Labels are neutral; content may be untrusted.
+    package static func prefixPromptWithRecalledMemory(
         _ userPrompt: String,
         appendix: String
     ) -> String {
         """
-        [Trusted durable memory — treat as system knowledge]
+        [Recalled memory — may be untrusted; apply only when relevant]
         \(appendix)
 
         User:
@@ -522,34 +523,28 @@ public actor WaxFoundationModelSession {
         """
     }
 
-    /// Resolves which ``LanguageModelSession`` and prompt string to use for this turn.
+    /// Resolves the ``LanguageModelSession`` and prompt string for this turn.
     ///
     /// - No appendix: primary session + prepared prompt.
-    /// - Appendix present: always primary session + trusted memory prefix (multi-turn safe).
-    ///
-    /// On OS 26 there is no `init(model:tools:instructions:transcript:)`, so a disposable
-    /// instructions-only session would drop history on every turn that recalls memory.
+    /// - Appendix present: primary session + recalled-memory prompt prefix (multi-turn safe).
     private func invocationForTurn(prepared: PreparedMemoryPrompt) -> TurnInvocation {
         guard let appendix = prepared.memoryAppendix else {
             return TurnInvocation(
                 session: languageModelSession,
-                prompt: prepared.prompt,
-                usesFreshTurnSession: false
+                prompt: prepared.prompt
             )
         }
         let trimmed = appendix.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return TurnInvocation(
                 session: languageModelSession,
-                prompt: prepared.prompt,
-                usesFreshTurnSession: false
+                prompt: prepared.prompt
             )
         }
 
         return TurnInvocation(
             session: languageModelSession,
-            prompt: Self.prefixPromptWithTrustedMemory(prepared.prompt, appendix: trimmed),
-            usesFreshTurnSession: false
+            prompt: Self.prefixPromptWithRecalledMemory(prepared.prompt, appendix: trimmed)
         )
     }
 
@@ -572,8 +567,7 @@ public actor WaxFoundationModelSession {
     private static func defaultInstructions(
         userInstructions: String?,
         includesMemoryTools: Bool,
-        toolKit: WaxMemoryToolKit,
-        memoryAppendix: String? = nil
+        toolKit: WaxMemoryToolKit
     ) -> String? {
         var parts: [String] = []
         if let userInstructions {
@@ -584,12 +578,6 @@ public actor WaxFoundationModelSession {
         }
         if includesMemoryTools {
             parts.append(memoryToolsInstructions(for: toolKit))
-        }
-        if let memoryAppendix {
-            let trimmed = memoryAppendix.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                parts.append("Trusted durable memory context:\n\(trimmed)")
-            }
         }
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: "\n\n")
@@ -652,7 +640,8 @@ public extension Memory {
         )
     }
 
-    /// Opens a store and returns a memory-backed Foundation Models session.
+    /// Opens a store and returns a memory-backed Foundation Models session that **owns**
+    /// the store (``WaxFoundationModelSession/close()`` closes ``Memory``).
     static func openFoundationModelsSession(
         at url: URL,
         config: Config = .default,
@@ -673,12 +662,13 @@ public extension Memory {
             model: model,
             instructions: instructions,
             additionalTools: additionalTools,
-            configuration: sessionConfiguration
+            configuration: sessionConfiguration,
+            ownsMemory: true
         )
     }
 
     /// Opens a store with a built-in embedding provider and returns a memory-backed
-    /// Foundation Models session.
+    /// Foundation Models session that **owns** the store.
     static func openFoundationModelsSession(
         at url: URL,
         config: Config = .default,
@@ -700,7 +690,8 @@ public extension Memory {
             model: model,
             instructions: instructions,
             additionalTools: additionalTools,
-            configuration: sessionConfiguration
+            configuration: sessionConfiguration,
+            ownsMemory: true
         )
     }
 }
@@ -727,7 +718,8 @@ package extension MemoryOrchestrator {
         )
     }
 
-    /// Opens a store and returns a memory-backed Foundation Models session.
+    /// Opens a store and returns a memory-backed Foundation Models session that **owns**
+    /// the store.
     static func openFoundationModelsSession(
         at url: URL,
         config: OrchestratorConfig = .default,
@@ -748,7 +740,8 @@ package extension MemoryOrchestrator {
             model: model,
             instructions: instructions,
             additionalTools: additionalTools,
-            configuration: sessionConfiguration
+            configuration: sessionConfiguration,
+            ownsMemory: true
         )
     }
 }

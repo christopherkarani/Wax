@@ -17,7 +17,8 @@ package struct OrchestratorConfig: Sendable {
     package var enrichmentStopTimeout: Duration = .seconds(10)
     package var vectorEnginePreference: VectorEnginePreference = .auto
     package var queryEmbeddingTimeout: Duration? = .seconds(10)
-    package var ingestEmbeddingTimeout: Duration? = .seconds(30)
+    /// Cold MiniLM/Arctic CoreML loads can exceed 30s; keep headroom for first ingest.
+    package var ingestEmbeddingTimeout: Duration? = .seconds(120)
     package var vectorSearchTimeout: Duration? = .seconds(10)
 
     package var requireOnDeviceProviders: Bool = true

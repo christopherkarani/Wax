@@ -1487,8 +1487,14 @@ package actor MemoryOrchestrator {
     ///
     /// Matches ``FrameStore/delete(frameID:)`` durability (delete + commit) while also cleaning
     /// search indexes so forgotten content is not returned by subsequent recalls.
+    ///
+    /// Durable frame delete + commit run first so a failure during index cleanup cannot leave a
+    /// still-durable frame that was already removed from search indexes.
     package func delete(frameId: UInt64) async throws {
         lastWriteActivityAt = .now
+
+        try await wax.delete(frameId: frameId)
+        try await session.commit()
 
         if config.enableTextSearch {
             try await session.removeText(frameId: frameId)
@@ -1496,9 +1502,6 @@ package actor MemoryOrchestrator {
         if config.enableVectorSearch {
             try await session.removeVector(frameId: frameId)
         }
-
-        try await wax.delete(frameId: frameId)
-        try await session.commit()
     }
 
     // MARK: - Persistence lifecycle

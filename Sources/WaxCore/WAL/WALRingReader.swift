@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 package struct WALRecordLocation: Equatable, Sendable {
     package var offset: UInt64
@@ -25,10 +28,18 @@ package struct WALScanState: Equatable, Sendable {
 package struct WALPendingScanResult: Equatable, Sendable {
     package var pendingMutations: [PendingMutation]
     package var state: WALScanState
+    /// Sequences of checksum-valid pending records whose WAL entry payload could not be decoded.
+    /// Kept for observability: the scan still advances so later valid mutations can be recovered.
+    package var skippedUndecodableSequences: [UInt64]
 
-    package init(pendingMutations: [PendingMutation], state: WALScanState) {
+    package init(
+        pendingMutations: [PendingMutation],
+        state: WALScanState,
+        skippedUndecodableSequences: [UInt64] = []
+    ) {
         self.pendingMutations = pendingMutations
         self.state = state
+        self.skippedUndecodableSequences = skippedUndecodableSequences
     }
 }
 
@@ -83,7 +94,8 @@ package final class WALRingReader {
         guard walSize > 0 else {
             return WALPendingScanResult(
                 pendingMutations: [],
-                state: WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0)
+                state: WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0),
+                skippedUndecodableSequences: []
             )
         }
 
@@ -93,8 +105,10 @@ package final class WALRingReader {
         var pendingBytes: UInt64 = 0
         var wrapped = false
         var pendingMutations: [PendingMutation] = []
+        var skippedUndecodableSequences: [UInt64] = []
         // Pending-entry decode errors are non-fatal for state-position tracking.
-        // Skip only the corrupt entry so later checksum-valid records are still replayed.
+        // Skip only the corrupt entry so later checksum-valid records are still replayed,
+        // but record every skipped sequence so the drop is never silent.
 
         while true {
             let remaining = walSize - cursor
@@ -165,6 +179,7 @@ package final class WALRingReader {
                 } catch {
                     // Treat decode failure as corruption for this pending entry only.
                     // The scan still advances below so writePos/pendingBytes remain accurate.
+                    skippedUndecodableSequences.append(header.sequence)
                 }
             }
 
@@ -179,8 +194,32 @@ package final class WALRingReader {
             if cursor == start { break }
         }
 
+        if !skippedUndecodableSequences.isEmpty {
+            Self.logSkippedUndecodablePendingEntries(skippedUndecodableSequences)
+        }
+
         let state = WALScanState(lastSequence: lastSequence, writePos: cursor, pendingBytes: pendingBytes)
-        return WALPendingScanResult(pendingMutations: pendingMutations, state: state)
+        return WALPendingScanResult(
+            pendingMutations: pendingMutations,
+            state: state,
+            skippedUndecodableSequences: skippedUndecodableSequences
+        )
+    }
+
+    private static func logSkippedUndecodablePendingEntries(_ sequences: [UInt64]) {
+        #if canImport(os)
+        let logger = Logger(subsystem: "com.wax.framework", category: "wal")
+        let sequenceList = sequences.map(String.init).joined(separator: ",")
+        logger.error(
+            "WAL pending scan skipped \(sequences.count, privacy: .public) undecodable checksum-valid entries; sequences=[\(sequenceList, privacy: .public)]"
+        )
+        #else
+        let sequenceList = sequences.map(String.init).joined(separator: ",")
+        let msg = "WAL pending scan skipped \(sequences.count) undecodable checksum-valid entries; sequences=[\(sequenceList)]\n"
+        if let data = msg.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+        #endif
     }
 
     package func scanState(from checkpointPos: UInt64) throws -> WALScanState {
