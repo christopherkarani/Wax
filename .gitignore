@@ -61,3 +61,5 @@ Package.resolved
 .build-codex/
 .playwright-mcp/
 .qwen/
+.skynex/production-gate.json
+.skynex/audit.log

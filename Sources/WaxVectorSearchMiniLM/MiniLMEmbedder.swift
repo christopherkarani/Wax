@@ -226,12 +226,15 @@ extension MiniLMEmbedder {
             ? tuning.computeUnitsOrder.map(\.coreMLValue)
             : computeUnitsOrder
         for units in resolvedUnits {
-            let matchingUnit = tuning.computeUnitsOrder.first(where: { $0.coreMLValue == units }) ?? .cpuOnly
+            let matchingUnit = tuning.computeUnitsOrder.first(where: { $0.coreMLValue == units }) ?? .cpuAndNeuralEngine
             let modelConfiguration = tuning.modelConfiguration(for: matchingUnit)
             do {
                 let embedder = try MiniLMEmbedder(
                     config: Config(batchSize: tuning.batchSize, modelConfiguration: modelConfiguration)
                 )
+                // Probe immediately so non-finite / broken compute-unit paths fall through
+                // to the next candidate instead of failing later on the first real save/search.
+                _ = try await embedder.embed("wax")
                 if !skipPrewarm {
                     try await embedder.prewarm(batchSize: prewarmBatchSize)
                 }
