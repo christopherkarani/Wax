@@ -21,15 +21,15 @@ struct WaxDemoMultiFooter {
             kind: "demo",
             metadata: ["generation": "2"]
         )
-        await store.close()
+        try await store.close()
 
         let reopened = try await FrameStore.open(at: url)
-        let frames = await reopened.frames()
+        let frames = try await reopened.frames()
         let ids = Set(frames.map(\.id))
         guard ids.contains(first), ids.contains(second) else {
             throw WaxError.io("expected both demo frames after reopening")
         }
-        await reopened.close()
+        try await reopened.close()
 
         print("File:", url.path)
         print("Frames:", frames.count)

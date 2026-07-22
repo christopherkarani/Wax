@@ -16,7 +16,7 @@ struct WaxDemoCorruptTOC {
             kind: "demo",
             metadata: ["demo": "corrupt-open"]
         )
-        await store.close()
+        try await store.close()
 
         let handle = try FileHandle(forWritingTo: url)
         try handle.seek(toOffset: 0)

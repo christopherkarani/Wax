@@ -51,14 +51,21 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
         batchSize: Int = 1,
         prewarmBatchSize: Int = 1,
         allowLowPrecisionGPU: Bool = true,
-        timeoutSeconds: Double = 30.0,
-        computeUnitsOrder: [BuiltInEmbeddingComputeUnit] = [.cpuOnly]
+        timeoutSeconds: Double = 120.0,
+        computeUnitsOrder: [BuiltInEmbeddingComputeUnit] = [
+            .cpuAndNeuralEngine,
+            .cpuOnly,
+            .cpuAndGPU,
+            .all,
+        ]
     ) {
         self.batchSize = max(1, batchSize)
         self.prewarmBatchSize = max(1, prewarmBatchSize)
         self.allowLowPrecisionGPU = allowLowPrecisionGPU
-        self.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 30.0
-        self.computeUnitsOrder = computeUnitsOrder.isEmpty ? [.cpuOnly] : computeUnitsOrder
+        self.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 120.0
+        self.computeUnitsOrder = computeUnitsOrder.isEmpty
+            ? [.cpuAndNeuralEngine, .cpuOnly, .cpuAndGPU, .all]
+            : computeUnitsOrder
     }
 
     public static let `default` = BuiltInEmbeddingProviderOptions()
@@ -90,6 +97,10 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
 /// Factory for Wax's built-in embedding providers.
 public enum BuiltInEmbeddings {
     /// Construct a built-in embedding provider using Wax's on-device CoreML runtime.
+    ///
+    /// The returned provider is eagerly probed so cold CoreML compilation happens here
+    /// (under ``BuiltInEmbeddingProviderOptions/timeoutSeconds``) rather than under a
+    /// short ingest timeout on the first ``Memory/save`` call.
     public static func make(
         _ provider: BuiltInEmbeddingProvider,
         options: BuiltInEmbeddingProviderOptions = .default
@@ -101,6 +112,8 @@ public enum BuiltInEmbeddings {
         ) else {
             throw BuiltInEmbeddingProviderError.unavailable(provider)
         }
+        // Materialize deferred CLI embedders and verify finite output before handoff.
+        _ = try await embedder.embed("wax")
         return embedder
     }
 }

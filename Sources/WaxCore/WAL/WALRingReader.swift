@@ -1,5 +1,4 @@
 import Foundation
-
 package struct WALRecordLocation: Equatable, Sendable {
     package var offset: UInt64
     package var record: WALRecord

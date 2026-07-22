@@ -119,7 +119,7 @@ import Testing
     }
 }
 
-@Test func walPendingScanWithStateSkipsDecodeFailureButKeepsLaterPendingMutations() throws {
+@Test func walPendingScanWithStateThrowsOnChecksumValidUndecodableEntry() throws {
     try TempFiles.withTempFile { url in
         let file = try FDFile.create(at: url)
         defer { try? file.close() }
@@ -143,13 +143,11 @@ import Testing
         let legacyState = try reader.scanState(from: 0)
         #expect(legacyState.lastSequence == 2)
 
-        // scanPendingMutationsWithState skips the corrupt pending entry but keeps
-        // collecting later valid mutations while continuing state-position tracking.
-        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(result.pendingMutations.count == 1)
-        #expect(result.pendingMutations.first?.sequence == 2)
-        #expect(result.pendingMutations.first?.entry == .deleteFrame(DeleteFrame(frameId: 42)))
-        #expect(result.state.lastSequence == 2)
+        // scanPendingMutationsWithState must fail closed on checksum-valid but
+        // undecodable payloads so open cannot advance past dropped mutations.
+        #expect(throws: WaxError.self) {
+            _ = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
+        }
     }
 }
 
