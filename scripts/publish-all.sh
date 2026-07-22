@@ -24,7 +24,6 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VALIDATE_SCRIPT="$SCRIPT_DIR/validate-congruency.sh"
 NPM_PKG="$ROOT/Resources/npm/waxmcp"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
-HOMEBREW_REPO="$ROOT/Resources/npm/waxmcp/homebrew-wax"
 
 TAG="next"
 PROMOTE=false
@@ -171,28 +170,38 @@ else
 fi
 
 # ── Phase 3: Homebrew instructions ──────────────────────────────────────────
+# Formula is vendored in-tree (not a git submodule). Sync the external tap
+# repo separately so SwiftPM consumers never recurse into homebrew-wax.
 phase "Phase 3: Homebrew formula"
 
-if [[ -d "$HOMEBREW_REPO/.git" ]]; then
-  info "Homebrew tap repo found at $HOMEBREW_REPO"
+HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
+HOMEBREW_TAP_URL="https://github.com/christopherkarani/homebrew-wax.git"
 
+if [[ -n "${HOMEBREW_WAX_TAP:-}" && -d "${HOMEBREW_WAX_TAP}/.git" ]]; then
+  info "Syncing formula into HOMEBREW_WAX_TAP=$HOMEBREW_WAX_TAP"
   if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] Would push homebrew-wax formula update"
+    echo "  [DRY-RUN] Would copy $HOMEBREW_FORMULA → $HOMEBREW_WAX_TAP/Formula/wax.rb and push"
   else
-    cd "$HOMEBREW_REPO"
-    if git diff --quiet 2>/dev/null; then
-      info "No changes in homebrew-wax — nothing to push"
+    mkdir -p "$HOMEBREW_WAX_TAP/Formula"
+    cp "$HOMEBREW_FORMULA" "$HOMEBREW_WAX_TAP/Formula/wax.rb"
+    cd "$HOMEBREW_WAX_TAP"
+    if git diff --quiet -- Formula/wax.rb 2>/dev/null && git diff --cached --quiet -- Formula/wax.rb 2>/dev/null; then
+      info "External homebrew-wax tap already up to date"
     else
       git add Formula/wax.rb
       git commit -m "bump wax to v$RESOLVED_VERSION"
-      git push origin master
+      git push origin HEAD
       info "Homebrew formula pushed to christopherkarani/homebrew-wax"
     fi
     cd "$ROOT"
   fi
 else
-  echo "  ⚠️  Homebrew tap repo not found at $HOMEBREW_REPO"
-  echo "     Push manually: cd $HOMEBREW_REPO && git push"
+  echo "  ℹ️  Formula is vendored at Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
+  echo "     Sync external tap (not a submodule) after tagging:"
+  echo "       git clone $HOMEBREW_TAP_URL /tmp/homebrew-wax"
+  echo "       cp $HOMEBREW_FORMULA /tmp/homebrew-wax/Formula/wax.rb"
+  echo "       (cd /tmp/homebrew-wax && git commit -am 'bump wax to v$RESOLVED_VERSION' && git push)"
+  echo "     Or set HOMEBREW_WAX_TAP=/path/to/clone and re-run publish."
 fi
 
 # ── Phase 4: Summary ────────────────────────────────────────────────────────

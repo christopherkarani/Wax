@@ -25,7 +25,6 @@ SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
-HOMEBREW_REPO="$ROOT/Resources/npm/waxmcp/homebrew-wax"
 SYNC_SCRIPT="$ROOT/Resources/scripts/sync-waxmcp-version.sh"
 HERMES_README="$ROOT/Resources/hermes/README.md"
 HERMES_PLUGIN="$ROOT/Resources/hermes/wax-memory-plugin"
@@ -238,15 +237,15 @@ if [[ "$CURRENT_OPCODE" != "$TARGET_VERSION" ]]; then
 fi
 
 # Surfaces 5+6: Homebrew formula
+# Use sed -E (BSD/macOS + GNU) — basic sed \+ is not portable on macOS.
 if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
   # Update URL
-  sed -i '' \
-    "s|archive/refs/tags/waxmcp-v[0-9]\+\.[0-9]\+\.[0-9]\+|archive/refs/tags/waxmcp-v${TARGET_VERSION}|g" \
+  sed -i '' -E \
+    "s|archive/refs/tags/waxmcp-v[0-9]+\\.[0-9]+\\.[0-9]+|archive/refs/tags/waxmcp-v${TARGET_VERSION}|g" \
     "$HOMEBREW_FORMULA"
-  
-  # Compute SHA from local git archive
-  # GitHub uses: git archive --format=tar.gz --prefix=repo-tag/ tag
-  # We approximate this with the current HEAD
+
+  # Compute SHA from local git archive of the working tree index when possible.
+  # GitHub source archives use: git archive --format=tar.gz --prefix=Wax-<tag>/ <tag>
   TMP_ARCHIVE=$(mktemp -t wax-homebrew-sha.XXXXXX.tar.gz)
   git -C "$ROOT" archive --format=tar.gz \
     --prefix="Wax-waxmcp-v${TARGET_VERSION}/" \
@@ -254,14 +253,14 @@ if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
       rm -f "$TMP_ARCHIVE"
       fail "git archive failed — cannot compute Homebrew SHA"
     }
-  
+
   NEW_SHA=$(shasum -a 256 "$TMP_ARCHIVE" | awk '{print $1}')
   rm -f "$TMP_ARCHIVE"
-  
-  sed -i '' \
-    "s|sha256 \"[a-f0-9]\+\"|sha256 \"${NEW_SHA}\"|" \
+
+  sed -i '' -E \
+    "s|sha256 \"[a-f0-9]+\"|sha256 \"${NEW_SHA}\"|" \
     "$HOMEBREW_FORMULA"
-  
+
   info "Homebrew formula → $TARGET_VERSION (SHA: ${NEW_SHA:0:16}...)"
   echo "     ⚠️  SHA computed from local git archive — verify after pushing tag:"
   echo "        curl -sL https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v${TARGET_VERSION}.tar.gz | shasum -a 256"
@@ -270,19 +269,19 @@ fi
 # Surface 8: Hermes README
 if [[ -f "$HERMES_README" ]]; then
   # Update version references in Hermes README
-  sed -i '' \
-    "s|waxmcp-v[0-9]\+\.[0-9]\+\.[0-9]\+|waxmcp-v${TARGET_VERSION}|g" \
+  sed -i '' -E \
+    "s|waxmcp-v[0-9]+\\.[0-9]+\\.[0-9]+|waxmcp-v${TARGET_VERSION}|g" \
     "$HERMES_README"
-  sed -i '' \
-    "s|waxmcp@[0-9]\+\.[0-9]\+\.[0-9]\+|waxmcp@${TARGET_VERSION}|g" \
+  sed -i '' -E \
+    "s|waxmcp@[0-9]+\\.[0-9]+\\.[0-9]+|waxmcp@${TARGET_VERSION}|g" \
     "$HERMES_README"
   info "Hermes README → $TARGET_VERSION"
 fi
 
 # Surface 9: Hermes plugin
 if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]] && [[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]]; then
-  sed -i '' \
-    "s|^version: [0-9]\+\.[0-9]\+\.[0-9]\+|version: ${TARGET_VERSION}|" \
+  sed -i '' -E \
+    "s|^version: [0-9]+\\.[0-9]+\\.[0-9]+|version: ${TARGET_VERSION}|" \
     "$HERMES_PLUGIN/plugin.yaml"
   info "Hermes plugin → $TARGET_VERSION"
 fi
