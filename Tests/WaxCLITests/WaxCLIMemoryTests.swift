@@ -702,6 +702,93 @@ struct WaxCLIMemoryTests {
         #expect(runtime.serverPath == server.path)
     }
 
+    @Test func mcpSkillStagingCopiesFromSourceOverride() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-skill-stage-\(UUID().uuidString)", isDirectory: true)
+        let sourceSkill = tempRoot.appendingPathComponent("source-skill", isDirectory: true)
+        let installRoot = tempRoot.appendingPathComponent("install-root", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: sourceSkill, withIntermediateDirectories: true)
+        try "# Wax MCP skill fixture\n".write(
+            to: sourceSkill.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let cli = tempRoot.appendingPathComponent("wax-cli")
+        let server = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: cli)
+        try makeExecutableStub(at: server)
+
+        setenv("WAX_MCP_INSTALL_ROOT", installRoot.path, 1)
+        setenv("WAX_MCP_SKILL_SOURCE", sourceSkill.path, 1)
+        defer {
+            unsetenv("WAX_MCP_INSTALL_ROOT")
+            unsetenv("WAX_MCP_SKILL_SOURCE")
+        }
+
+        let skipped = try Pathing.prepareWaxMCPSkill(
+            cliPath: cli.path,
+            serverPath: server.path,
+            dryRun: false,
+            skip: true
+        )
+        #expect(skipped.skipped)
+        #expect(skipped.stagedPath == nil)
+
+        let staged = try Pathing.prepareWaxMCPSkill(
+            cliPath: cli.path,
+            serverPath: server.path,
+            dryRun: false,
+            skip: false
+        )
+        #expect(!staged.skipped)
+        #expect(staged.staged)
+        #expect(staged.sourcePath == sourceSkill.path)
+
+        let expected = installRoot
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("wax-mcp", isDirectory: true)
+        #expect(staged.stagedPath == expected.path)
+        #expect(Pathing.isValidSkillDirectory(expected))
+
+        let skillBody = try String(contentsOf: expected.appendingPathComponent("SKILL.md"), encoding: .utf8)
+        #expect(skillBody.contains("Wax MCP skill fixture"))
+    }
+
+    @Test func mcpSkillResolvesFromNpmPackageLayout() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-skill-npm-\(UUID().uuidString)", isDirectory: true)
+        let packageRoot = tempRoot.appendingPathComponent("waxmcp-package", isDirectory: true)
+        let runtimeDir = packageRoot.appendingPathComponent("dist/darwin-arm64", isDirectory: true)
+        let skillDir = packageRoot.appendingPathComponent("skills/wax-mcp", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try makeExecutableStub(at: runtimeDir.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: runtimeDir.appendingPathComponent("wax-mcp"))
+        try "# from npm package\n".write(
+            to: skillDir.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = Pathing.resolveWaxMCPSkillSource(
+            cliPath: runtimeDir.appendingPathComponent("wax-cli").path,
+            serverPath: runtimeDir.appendingPathComponent("wax-mcp").path
+        )
+        #expect(resolved?.path == skillDir.path)
+    }
+
+    @Test func projectRulesPlaybookMentionsLifecycle() {
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("handoff_latest"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_start"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
+        #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
+    }
+
     @Test func embedderRuntimeOptionsOverrideEnvironment() throws {
         setenv("WAX_EMBEDDER_BATCH_SIZE", "2", 1)
         setenv("WAX_EMBEDDER_PREWARM_BATCH_SIZE", "3", 1)
