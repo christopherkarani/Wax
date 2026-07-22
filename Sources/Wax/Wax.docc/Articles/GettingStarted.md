@@ -163,7 +163,19 @@ Wax ships with an MCP server that gives Claude Code persistent memory. Install a
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-Then add the memory prompt to your `CLAUDE.md` — see the [README](https://github.com/christopherkarani/Wax#ai-coding-assistants) for the recommended snippet.
+That command registers the MCP server, stages the `wax-mcp` operator skill, and
+prints a pasteable project-rules block. The server also embeds lifecycle
+instructions on every tools connection.
+
+Optional skill install if auto-registration did not run:
+
+```bash
+claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
+```
+
+Or add the memory prompt to your `CLAUDE.md` / `AGENTS.md` — see the
+[README](https://github.com/christopherkarani/Wax#agent-quick-start) and
+`Resources/docs/wax-mcp-setup.md` for the recommended snippet.
 
 ### MCP Tools
 

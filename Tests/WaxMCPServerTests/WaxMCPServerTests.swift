@@ -101,6 +101,29 @@ func toolsListContainsExpectedTools() {
 }
 
 @Test
+func agentInstructionsDescribeSessionLifecycle() {
+    let text = MCPAgentInstructions.text(version: "9.9.9")
+    #expect(text.contains("server v9.9.9"))
+    #expect(text.contains("handoff_latest"))
+    #expect(text.contains("session_start"))
+    #expect(text.contains("session_end"))
+    #expect(text.contains("session_id"))
+    #expect(text.contains("Do not manage SESSION_STORE"))
+}
+
+@Test
+func coreToolDescriptionsIncludeOperatorHints() {
+    let tools = Dictionary(
+        uniqueKeysWithValues: ToolSchemas.allTools.map { ($0.name, $0.description ?? "") }
+    )
+    #expect(tools["handoff_latest"]?.contains("session start") == true)
+    #expect(tools["session_start"]?.contains("handoff_latest") == true)
+    #expect(tools["remember"]?.contains("session_id") == true)
+    #expect(tools["recall"]?.contains("Preferred read path") == true)
+    #expect(tools["handoff"]?.contains("end-of-session") == true)
+}
+
+@Test
 func toolsListHonorsStructuredMemoryFlag() {
     let withStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: true).map(\.name))
     let withoutStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: false).map(\.name))
@@ -1529,6 +1552,52 @@ func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
         #expect(!execution.hits.isEmpty)
         #expect(execution.hits.contains { ($0.previewText ?? "").contains("telemetry") })
         #expect(!execution.hits.contains { ($0.previewText ?? "").contains("navigation") })
+    }
+}
+
+@Test
+func corpusSearchIncludesActiveSessionDocumentsWhileStoreIsLockedByBroker() async throws {
+    // Active session stores hold an exclusive flock, so disk rebuild skips them.
+    // corpus_search must still surface in-process active session notes.
+    try await withAgentBrokerService { service, _ in
+        let token = "ACTIVECORPUS\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Session-only preference note \(token)"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let corpus = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(String(token)),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "rebuild": .bool(true),
+            ]
+        ))
+        #expect(corpus.ok == true, "corpus_search failed: \(corpus.error ?? "nil")")
+        let payload = try #require(corpus.payload?.objectValue)
+        let results = payload["results"]?.arrayValue ?? []
+        #expect(!results.isEmpty, "expected active-session hit for \(token); display=\(payload["display_text"]?.stringValue ?? "")")
+        let previews = results.compactMap { $0.objectValue?["preview"]?.stringValue }
+        #expect(previews.contains { $0.contains(token) })
+
+        let synthesize = await service.handle(.init(
+            command: "session_synthesize",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(synthesize.ok == true)
+        let summary = try #require(synthesize.payload?.objectValue?["summary"]?.stringValue)
+        #expect(summary != "No session memories recorded.")
+        #expect(summary.contains(token) || summary.localizedCaseInsensitiveContains("preference") || summary.localizedCaseInsensitiveContains("session"))
     }
 }
 

@@ -223,27 +223,38 @@ Then send JSON-line commands:
 
 Give your AI coding assistant (Claude Code, Cursor, Windsurf) a persistent memory that survives across sessions.
 
-### 1. Install the MCP server
+### 1. Install the MCP server (and stage the operator skill)
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-This stages the Wax runtime locally and registers `wax-mcp` with your assistant. `npx` is only used for the one-time install.
+This stages the Wax runtime locally, registers `wax-mcp` with Claude Code, and stages the
+**wax-mcp operator skill** under `~/.local/share/waxmcp/skills/wax-mcp` (then attempts
+`claude install-skill` when available). `npx` is only used for the one-time install.
 
-### 2. Install the Wax skill (recommended)
+The MCP server also ships lifecycle instructions with every tools connection, so agents
+receive the remember/recall/handoff playbook even without a separate skill install.
+
+### 2. Install the wax-mcp skill (if install did not auto-register it)
 
 ```bash
-# From within your project directory
-claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
+# Preferred: staged local copy after mcp install
+claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
+
+# Or from GitHub
+claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
 ```
 
-This lets your assistant write correct Wax code without extra prompt scaffolding.
+This is the **agent operator** skill (session lifecycle, remember/recall, handoffs).
 
-### 3. Or paste this starter prompt
+> Writing Swift apps with the Wax framework? That is a different skill:
+> `claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax`
+
+### 3. Or paste project rules into CLAUDE.md / AGENTS.md
 
 <details>
-<summary><strong>Wax starter prompt (click to expand, then copy)</strong></summary>
+<summary><strong>Wax MCP project rules (click to expand, then copy)</strong></summary>
 
 ```text
 Use the Wax MCP server for persistent memory in this repo.

@@ -114,7 +114,7 @@ extension WaxCLI.MCP {
 extension WaxCLI.MCP {
     struct Install: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Build and register Wax MCP server in Claude Code"
+            abstract: "Build and register Wax MCP server in Claude Code, and stage the wax-mcp agent skill"
         )
 
         @Option(name: .shortAndLong, help: "MCP server name")
@@ -140,6 +140,9 @@ extension WaxCLI.MCP {
 
         @Flag(name: .customLong("skip-build"), help: "Skip building wax-mcp before install")
         var skipBuild = false
+
+        @Flag(name: .customLong("skip-skill"), help: "Skip staging/installing the wax-mcp operator skill")
+        var skipSkill = false
 
         @Flag(name: .customLong("dry-run"), help: "Print commands without executing")
         var dryRun = false
@@ -214,6 +217,12 @@ extension WaxCLI.MCP {
             }
 
             let removeArguments = ["mcp", "remove", "-s", scope.rawValue, name]
+            let skillInstall = try Pathing.prepareWaxMCPSkill(
+                cliPath: resolvedCLI,
+                serverPath: installRuntime.serverPath,
+                dryRun: dryRun,
+                skip: skipSkill
+            )
 
             if dryRun {
                 if bundledRuntime && !skipBuild {
@@ -224,6 +233,7 @@ extension WaxCLI.MCP {
                 }
                 print("claude \(removeArguments.joined(separator: " "))")
                 print("claude \(redactedArgumentsForDisplay(addArguments).joined(separator: " "))")
+                printWaxMCPSkillGuidance(skillInstall, dryRun: true)
                 return
             }
 
@@ -252,6 +262,11 @@ extension WaxCLI.MCP {
 
             print("Installed MCP server '\(name)' in scope '\(scope.rawValue)'.")
             print("Run: claude mcp get \(name)")
+            try installWaxMCPSkillWithClaudeIfPossible(
+                claudePath: claudePath,
+                skillInstall: skillInstall
+            )
+            printWaxMCPSkillGuidance(skillInstall, dryRun: false)
         }
     }
 }
@@ -712,9 +727,48 @@ struct MCPInstallRuntime: Equatable {
     let staged: Bool
 }
 
+struct MCPSkillInstall: Equatable {
+    let skipped: Bool
+    let sourcePath: String?
+    let stagedPath: String?
+    let staged: Bool
+
+    static let skippedResult = MCPSkillInstall(
+        skipped: true,
+        sourcePath: nil,
+        stagedPath: nil,
+        staged: false
+    )
+}
+
 struct MCPRuntimeValidation: Equatable {
     var failures: [String] = []
     var warnings: [String] = []
+}
+
+enum WaxMCPAgentPlaybook {
+    /// Pasteable project rules for CLAUDE.md / AGENTS.md hosts.
+    static let projectRules = """
+        Use the Wax MCP server for persistent memory in this repo.
+
+        Workflow rules:
+        - At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
+        - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
+        - Use `recall` for assembled context and `search` for raw ranked hits.
+        - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
+        - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
+        - Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
+        - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
+        - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
+
+        Behavior expectations:
+        - Read existing handoffs and recall results before asking me to restate prior context.
+        - Keep memory writes concise, factual, and scoped to the task.
+        - When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
+        """
+
+    static let githubSkillURL =
+        "https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp"
 }
 
 enum Pathing {
@@ -877,6 +931,190 @@ enum Pathing {
             .appendingPathComponent("runtime", isDirectory: true)
 
         return root.appendingPathComponent(platformDirectory, isDirectory: true)
+    }
+
+    /// Stable skill install path: `~/.local/share/waxmcp/skills/wax-mcp` by default,
+    /// or `$WAX_MCP_INSTALL_ROOT/skills/wax-mcp` when the install root is overridden.
+    static func stableSkillDirectory(skillName: String = "wax-mcp") -> URL {
+        if let raw = ProcessInfo.processInfo.environment["WAX_MCP_INSTALL_ROOT"] {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return URL(fileURLWithPath: expandPath(trimmed))
+                    .appendingPathComponent("skills", isDirectory: true)
+                    .appendingPathComponent(skillName, isDirectory: true)
+            }
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local", isDirectory: true)
+            .appendingPathComponent("share", isDirectory: true)
+            .appendingPathComponent("waxmcp", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent(skillName, isDirectory: true)
+    }
+
+    static func isValidSkillDirectory(_ url: URL) -> Bool {
+        let skillMarkdown = url.appendingPathComponent("SKILL.md")
+        return FileManager.default.fileExists(atPath: skillMarkdown.path)
+    }
+
+    /// Resolve the wax-mcp operator skill source directory.
+    /// Order: `WAX_MCP_SKILL_SOURCE`, npm package `skills/wax-mcp`, repo
+    /// `Resources/skills/public/wax-mcp`, already-staged skill path.
+    static func resolveWaxMCPSkillSource(
+        cliPath: String? = nil,
+        serverPath: String? = nil
+    ) -> URL? {
+        if let raw = ProcessInfo.processInfo.environment["WAX_MCP_SKILL_SOURCE"] {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                let candidate = URL(fileURLWithPath: expandPath(trimmed)).standardizedFileURL
+                if isValidSkillDirectory(candidate) {
+                    return candidate
+                }
+            }
+        }
+
+        var candidates: [URL] = []
+
+        let executableHints = [cliPath, serverPath].compactMap { $0 }
+        for path in executableHints {
+            if let packageRoot = npmPackageRoot(forExecutablePath: path) {
+                candidates.append(
+                    packageRoot
+                        .appendingPathComponent("skills", isDirectory: true)
+                        .appendingPathComponent("wax-mcp", isDirectory: true)
+                )
+            }
+        }
+
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
+        candidates.append(
+            cwd
+                .appendingPathComponent("Resources/skills/public/wax-mcp", isDirectory: true)
+        )
+        candidates.append(
+            cwd
+                .appendingPathComponent("skills/wax-mcp", isDirectory: true)
+        )
+
+        for path in executableHints {
+            candidates.append(contentsOf: skillCandidatesWalkingUp(from: URL(fileURLWithPath: normalizePath(path))))
+        }
+        candidates.append(contentsOf: skillCandidatesWalkingUp(from: cwd))
+
+        candidates.append(stableSkillDirectory())
+
+        var seen = Set<String>()
+        for candidate in candidates {
+            let path = candidate.standardizedFileURL.path
+            if seen.contains(path) { continue }
+            seen.insert(path)
+            if isValidSkillDirectory(candidate) {
+                return candidate.standardizedFileURL
+            }
+        }
+        return nil
+    }
+
+    private static func npmPackageRoot(forExecutablePath path: String) -> URL? {
+        guard let runtimeDir = bundledRuntimeDirectory(forExecutablePath: path) else {
+            return nil
+        }
+        // .../package/dist/darwin-arm64 -> package root
+        let distDir = runtimeDir.deletingLastPathComponent()
+        guard distDir.lastPathComponent == "dist" else { return nil }
+        return distDir.deletingLastPathComponent()
+    }
+
+    private static func skillCandidatesWalkingUp(from start: URL) -> [URL] {
+        var results: [URL] = []
+        var current = start.standardizedFileURL
+        if !current.hasDirectoryPath {
+            current = current.deletingLastPathComponent()
+        }
+        for _ in 0..<8 {
+            results.append(
+                current
+                    .appendingPathComponent("Resources/skills/public/wax-mcp", isDirectory: true)
+            )
+            results.append(
+                current
+                    .appendingPathComponent("skills/wax-mcp", isDirectory: true)
+            )
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return results
+    }
+
+    static func prepareWaxMCPSkill(
+        cliPath: String,
+        serverPath: String,
+        dryRun: Bool,
+        skip: Bool
+    ) throws -> MCPSkillInstall {
+        if skip {
+            return .skippedResult
+        }
+
+        let source = resolveWaxMCPSkillSource(cliPath: cliPath, serverPath: serverPath)
+        let target = stableSkillDirectory()
+
+        guard let source else {
+            return MCPSkillInstall(
+                skipped: false,
+                sourcePath: nil,
+                stagedPath: isValidSkillDirectory(target) ? target.path : nil,
+                staged: false
+            )
+        }
+
+        if source.standardizedFileURL.path == target.standardizedFileURL.path {
+            return MCPSkillInstall(
+                skipped: false,
+                sourcePath: source.path,
+                stagedPath: target.path,
+                staged: true
+            )
+        }
+
+        if !dryRun {
+            try stageSkillDirectory(from: source, to: target)
+        }
+
+        return MCPSkillInstall(
+            skipped: false,
+            sourcePath: source.path,
+            stagedPath: target.path,
+            staged: true
+        )
+    }
+
+    static func stageSkillDirectory(from sourceDir: URL, to targetDir: URL) throws {
+        let fm = FileManager.default
+        let standardizedSource = sourceDir.standardizedFileURL
+        let standardizedTarget = targetDir.standardizedFileURL
+        guard isValidSkillDirectory(standardizedSource) else {
+            throw CLIError("Skill source is missing SKILL.md: \(standardizedSource.path)")
+        }
+        guard standardizedSource.path != standardizedTarget.path else { return }
+
+        let parent = standardizedTarget.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        let staging = parent.appendingPathComponent(
+            ".\(standardizedTarget.lastPathComponent).staging-\(UUID().uuidString)"
+        )
+        if fm.fileExists(atPath: staging.path) {
+            try fm.removeItem(at: staging)
+        }
+        try fm.copyItem(at: standardizedSource, to: staging)
+
+        if fm.fileExists(atPath: standardizedTarget.path) {
+            try fm.removeItem(at: standardizedTarget)
+        }
+        try fm.moveItem(at: staging, to: standardizedTarget)
     }
 
     static func stageBundledRuntimeIfNeeded(from sourceDir: URL, to targetDir: URL) throws {
@@ -1056,6 +1294,84 @@ private func redactedArgumentsForDisplay(_ arguments: [String]) -> [String] {
             return "WAX_LICENSE_KEY=<redacted>"
         }
         return argument
+    }
+}
+
+private func printWaxMCPSkillGuidance(_ skillInstall: MCPSkillInstall, dryRun: Bool) {
+    print("")
+    print("## Wax agent skill (recommended)")
+    if skillInstall.skipped {
+        print("Skill staging skipped (--skip-skill).")
+        print("Install manually:")
+        print("  claude install-skill \(WaxMCPAgentPlaybook.githubSkillURL)")
+        printProjectRulesFallback()
+        return
+    }
+
+    if let source = skillInstall.sourcePath {
+        if dryRun {
+            print("# Would stage wax-mcp skill from:")
+            print("#   \(source)")
+        } else {
+            print("Skill source: \(source)")
+        }
+    } else {
+        print("Skill source not found locally. Use the GitHub skill URL below.")
+    }
+
+    if let staged = skillInstall.stagedPath {
+        if dryRun {
+            print("# Would stage skill to:")
+            print("#   \(staged)")
+            print("claude install-skill \(staged)")
+        } else if skillInstall.staged {
+            print("Staged skill at: \(staged)")
+            print("If Claude Code did not pick it up automatically:")
+            print("  claude install-skill \(staged)")
+        } else {
+            print("Existing skill path: \(staged)")
+            print("  claude install-skill \(staged)")
+        }
+    }
+
+    print("Or from GitHub:")
+    print("  claude install-skill \(WaxMCPAgentPlaybook.githubSkillURL)")
+    print("")
+    print("Note: the `wax` skill is for Swift framework integration.")
+    print("      the `wax-mcp` skill is the agent operator playbook for MCP tools.")
+    printProjectRulesFallback()
+}
+
+private func printProjectRulesFallback() {
+    print("")
+    print("## Project rules fallback (CLAUDE.md / AGENTS.md / Cursor rules)")
+    print("Paste this block if your host does not load skills automatically:")
+    print("")
+    print("```text")
+    print(WaxMCPAgentPlaybook.projectRules)
+    print("```")
+}
+
+private func installWaxMCPSkillWithClaudeIfPossible(
+    claudePath: String,
+    skillInstall: MCPSkillInstall
+) throws {
+    guard !skillInstall.skipped, skillInstall.staged, let stagedPath = skillInstall.stagedPath else {
+        return
+    }
+
+    let status = try ProcessRunner.run(
+        command: claudePath,
+        arguments: ["install-skill", stagedPath],
+        passthrough: false,
+        allowNonZeroExit: true
+    )
+    if status == EXIT_SUCCESS {
+        print("Installed wax-mcp skill into Claude Code from \(stagedPath).")
+    } else {
+        writeStderr(
+            "warning: 'claude install-skill \(stagedPath)' exited with code \(status); install the skill manually if needed."
+        )
     }
 }
 

@@ -3,19 +3,60 @@
 ## One-command install into Claude Code
 
 ```bash
-cd /Users/chriskarani/CodingProjects/AIStack/Wax
+npx -y waxmcp@latest mcp install --scope user
+```
+
+From a local checkout (development):
+
+```bash
 swift run --traits MCPServer wax-cli mcp install --scope user
 ```
 
 This will:
 
-1. Build `wax-mcp`
+1. Build or stage `wax-mcp` (bundled npm runtime is staged into a stable path)
 2. Register a `wax` MCP server entry in Claude Code against the resolved `wax-mcp` binary
 3. Configure default store paths under `~/.wax`
+4. Stage the **wax-mcp operator skill** under `~/.local/share/waxmcp/skills/wax-mcp`
+5. Attempt `claude install-skill` for that staged skill (best-effort)
+6. Print a pasteable `CLAUDE.md` / `AGENTS.md` project-rules block as fallback
 
-## Recommended `CLAUDE.md` prompt
+Skip skill staging with `--skip-skill` if you only want the MCP server.
 
-Paste this into your repo prompt or `CLAUDE.md` after installing Wax:
+## How agents learn the playbook
+
+Wax teaches agents at three layers:
+
+| Layer | When it applies | What it teaches |
+|-------|-----------------|-----------------|
+| MCP `instructions` + tool descriptions | Every connected host | Session lifecycle, anti-patterns |
+| `wax-mcp` skill | Hosts that load skills | Full operator playbook + install notes |
+| Project rules (`CLAUDE.md` / `AGENTS.md`) | Always-on project instructions | Same workflow rules as a paste block |
+
+You usually only need step 1. Use the skill or project rules when the host ignores MCP instructions or you want stronger always-on enforcement.
+
+### Skill: agent operator vs Swift framework
+
+| Skill | Path | Audience |
+|-------|------|----------|
+| `wax-mcp` | `Resources/skills/public/wax-mcp` | Agents *using* MCP memory tools |
+| `wax` | `Resources/skills/public/wax` | Developers writing Swift Wax code |
+
+```bash
+# Operator skill (MCP tools)
+claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
+# or
+claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
+
+# Swift framework skill (optional, separate)
+claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
+```
+
+The published `waxmcp` npm package also ships `skills/wax-mcp` so installs do not require cloning this monorepo.
+
+## Recommended project rules
+
+Paste this into your repo prompt, `CLAUDE.md`, or `AGENTS.md` after installing Wax:
 
 ```text
 Use the Wax MCP server for persistent memory in this repo.
@@ -36,9 +77,13 @@ Behavior expectations:
 - When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
 ```
 
+The same text ships in `Resources/skills/public/wax-mcp/references/project-rules.md`.
+
 ## Run doctor
 
 ```bash
+npx -y waxmcp@latest mcp doctor
+# or from a local build:
 swift run --traits MCPServer wax-cli mcp doctor
 ```
 
@@ -68,7 +113,7 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## npx launcher
 
-The npm launcher is at `npm/waxmcp`.
+The npm launcher is at `npm/waxmcp` (package name `waxmcp`).
 
 ```bash
 npx -y waxmcp@latest mcp serve
@@ -79,10 +124,14 @@ This package includes embedded binaries for:
 1. `dist/darwin-arm64/wax-cli` + `dist/darwin-arm64/wax-mcp`
 2. `dist/darwin-x64/wax-cli` + `dist/darwin-x64/wax-mcp`
 
+and the operator skill at:
+
+3. `skills/wax-mcp/`
+
 For users of the published package, no local Wax build is required.
 Running `npx -y waxmcp@latest mcp install --scope user` stages those bundled artifacts into a
 stable local runtime directory and registers the staged `wax-mcp` binary, so steady-state
-Claude/Codex sessions do not depend on raw `npx` startup.
+Claude/Codex sessions do not depend on raw `npx`.
 
 For local development:
 
