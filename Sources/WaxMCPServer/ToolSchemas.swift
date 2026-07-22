@@ -26,17 +26,17 @@ enum ToolSchemas {
         ),
         Tool(
             name: "remember",
-            description: "Store text in Wax memory with optional metadata.",
+            description: "Store concise durable text memory (decisions, preferences, facts). For session-scoped writes pass session_id as a top-level argument — never put session_id inside metadata.",
             inputSchema: waxRemember
         ),
         Tool(
             name: "recall",
-            description: "Recall context for a query using Wax RAG assembly.",
+            description: "Preferred read path: assemble RAG context for a query. Call after handoff_latest/session_start when answering from memory.",
             inputSchema: waxRecall
         ),
         Tool(
             name: "search",
-            description: "Run direct Wax search and return ranked raw hits.",
+            description: "Raw ranked search hits (not assembled RAG). Prefer mode hybrid for semantic retrieval; use mode text for lexical/deterministic lookup.",
             inputSchema: waxSearch
         ),
         Tool(
@@ -61,17 +61,17 @@ enum ToolSchemas {
         ),
         Tool(
             name: "corpus_search",
-            description: "Search broker-managed session history with provenance-rich results.",
+            description: "Search broker-managed session history with provenance. Use for cross-session retrieval; cite provenance when results matter.",
             inputSchema: waxCorpusSearch
         ),
         Tool(
             name: "stats",
-            description: "Return Wax runtime and storage stats.",
+            description: "Return Wax runtime and storage stats (health check, embedder identity, vector search status).",
             inputSchema: waxStats
         ),
         Tool(
             name: "session_start",
-            description: "Create a broker-managed virtual session and return its session_id.",
+            description: "Create a broker-managed virtual session and return session_id. Call after handoff_latest at session start; keep session_id for later tools.",
             inputSchema: waxSessionStart
         ),
         Tool(
@@ -81,17 +81,17 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_end",
-            description: "End an active broker-managed virtual session. Pass session_id when multiple sessions are active.",
+            description: "End an active broker-managed virtual session after handoff. Pass session_id when multiple sessions are active.",
             inputSchema: waxSessionEnd
         ),
         Tool(
             name: "handoff",
-            description: "Store a cross-session handoff note for later retrieval.",
+            description: "Store an end-of-session handoff note (content, optional project/pending_tasks/session_id) for the next session.",
             inputSchema: waxHandoff
         ),
         Tool(
             name: "handoff_latest",
-            description: "Fetch the latest handoff note, optionally scoped by project.",
+            description: "Call first at session start: fetch the latest handoff note (optional project) before session_start.",
             inputSchema: waxHandoffLatest
         ),
         Tool(
@@ -120,27 +120,27 @@ enum ToolSchemas {
                 ),
                 Tool(
                     name: "entity_upsert",
-                    description: "Upsert a structured-memory entity by key.",
+                    description: "Upsert a stable structured-memory entity by key. Use for durable graph nodes, not transient debug notes.",
                     inputSchema: waxEntityUpsert
                 ),
                 Tool(
                     name: "fact_assert",
-                    description: "Assert a structured-memory fact.",
+                    description: "Assert a structured-memory fact that can later be retracted. Prefer over free-text remember for stable true/false relations.",
                     inputSchema: waxFactAssert
                 ),
                 Tool(
                     name: "fact_retract",
-                    description: "Retract a structured-memory fact by id.",
+                    description: "Retract (soft-delete) a structured-memory fact by id when corrected or obsolete.",
                     inputSchema: waxFactRetract
                 ),
                 Tool(
                     name: "facts_query",
-                    description: "Query structured-memory facts.",
+                    description: "Query structured-memory facts for stable knowledge-graph answers.",
                     inputSchema: waxFactsQuery
                 ),
                 Tool(
                     name: "entity_resolve",
-                    description: "Resolve entities by alias.",
+                    description: "Resolve structured-memory entities by alias before asserting related facts.",
                     inputSchema: waxEntityResolve
                 ),
             ])

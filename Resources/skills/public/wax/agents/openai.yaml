@@ -1,4 +1,4 @@
 interface:
-  display_name: "Wax Framework"
+  display_name: "Wax Framework (Swift)"
   short_description: "On-device RAG memory in Swift"
-  default_prompt: "Use $wax to design correct on-device RAG flows with MemoryOrchestrator and VideoRAG."
+  default_prompt: "Use $wax to design correct on-device RAG flows with MemoryOrchestrator and VideoRAG. For MCP agent memory tools, use $wax-mcp instead."

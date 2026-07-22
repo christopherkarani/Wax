@@ -205,7 +205,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         let server = Server(
             name: "wax-mcp",
             version: version,
-            instructions: "Use these tools to store, search, and recall Wax memory. Server v\(version).",
+            instructions: MCPAgentInstructions.text(version: version),
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )

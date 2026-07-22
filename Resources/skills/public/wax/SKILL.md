@@ -1,12 +1,19 @@
 ---
 name: wax
-description: Comprehensive guidance for the Wax on-device memory/RAG framework. Use when integrating MemoryOrchestrator, VideoRAGOrchestrator, Wax/WaxSession, embedding providers, hybrid search, maintenance, or when evaluating Wax constraints like offline-only, single-file .wax persistence and deterministic retrieval.
+description: >
+  Swift framework guidance for Wax on-device memory/RAG. Use when writing Swift code
+  with MemoryOrchestrator, VideoRAGOrchestrator, Wax/WaxSession, embedding providers,
+  hybrid search, or maintenance. For agent operators using the Wax MCP server tools,
+  use the separate wax-mcp skill instead.
 ---
 
-# Wax
+# Wax (Swift Framework)
 
 ## Overview
 Use this skill to design and implement correct Wax-based on-device RAG flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
+
+If you need the agent memory operator playbook for MCP tools (`remember`, `recall`,
+`handoff`, `session_start`), use the `wax-mcp` skill instead of this one.
 
 ## Choose The API Surface
 1. Prefer `MemoryOrchestrator` for text memory and retrieval.

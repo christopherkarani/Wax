@@ -16,8 +16,23 @@ For Claude Code / Codex installs, prefer:
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-That install flow stages the bundled runtime into a stable local directory and registers the
-staged `wax-mcp` binary, so regular MCP sessions do not keep launching through raw `npx`.
+That install flow:
+
+1. Stages the bundled runtime into a stable local directory
+2. Registers the staged `wax-mcp` binary with Claude Code
+3. Stages the **wax-mcp operator skill** to `~/.local/share/waxmcp/skills/wax-mcp`
+4. Attempts `claude install-skill` when available and prints project-rules fallback text
+
+So regular MCP sessions do not keep launching through raw `npx`, and agents get a
+session lifecycle playbook (also embedded in MCP server instructions).
+
+```bash
+# If skill auto-install did not run:
+claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
+```
+
+> `wax-mcp` skill = agent operator playbook for MCP tools.
+> `wax` skill (separate, in the monorepo) = Swift framework integration guidance.
 
 > Note: the bundled npm runtime currently ships `darwin-arm64` and `darwin-x64` artifacts. The underlying
 > `wax-mcp` server itself now supports local Swift builds on macOS and Linux, including
