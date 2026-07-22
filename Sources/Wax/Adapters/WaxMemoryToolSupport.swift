@@ -104,13 +104,14 @@ public struct WaxMemoryToolResult: Sendable, Equatable {
 
     public static func error(
         action: String,
-        message: String
+        message: String,
+        itemCount: Int = 0
     ) -> WaxMemoryToolResult {
         WaxMemoryToolResult(
             status: .error,
             action: action,
             message: WaxMemoryToolRenderer.renderError(message),
-            itemCount: 0
+            itemCount: itemCount
         )
     }
 }
@@ -238,6 +239,19 @@ public struct WaxMemoryToolRenderer: Sendable {
         }
         let noun = count == 1 ? "frame" : "frames"
         return "Deleted \(count) memory \(noun) matching \"\(query)\"."
+    }
+
+    /// Partial forget failure after some frames were already deleted.
+    public static func renderForgetPartial(
+        query: String,
+        deletedCount: Int,
+        failure: String
+    ) -> String {
+        let count = max(0, deletedCount)
+        let noun = count == 1 ? "frame" : "frames"
+        let detail = failure.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = detail.isEmpty ? "unknown error" : detail
+        return "Partial forget for \"\(query)\": deleted \(count) memory \(noun), then failed: \(body)"
     }
 
     public static func renderRecall(
@@ -563,38 +577,85 @@ public enum WaxMemoryToolExecutor: Sendable {
             options: config.textOnlySearchOptions(topK: resolvedTopK)
         )
 
+        var frameIDs: [UInt64] = []
         var seen = Set<UInt64>()
-        var deleted = 0
         for item in context.items {
             guard seen.insert(item.frameId).inserted else { continue }
-            try await memory.delete(frameID: item.frameId)
-            deleted += 1
+            frameIDs.append(item.frameId)
+        }
+
+        let outcome = await deleteFramesReportingPartial(
+            frameIDs: frameIDs,
+            delete: { try await memory.delete(frameID: $0) }
+        )
+        if let failure = outcome.failure {
+            return .error(
+                action: "forget",
+                message: WaxMemoryToolRenderer.renderForgetPartial(
+                    query: query,
+                    deletedCount: outcome.deleted,
+                    failure: sanitizedErrorDescription(failure)
+                ),
+                itemCount: outcome.deleted
+            )
         }
 
         return .ok(
             action: .forget,
-            message: WaxMemoryToolRenderer.renderForget(query: query, deletedCount: deleted),
-            itemCount: deleted
+            message: WaxMemoryToolRenderer.renderForget(query: query, deletedCount: outcome.deleted),
+            itemCount: outcome.deleted
         )
     }
 
-    private static func searchWithFallback(
+    /// Deletes frames one-by-one, tracking successful deletes for accurate partial reporting.
+    ///
+    /// Package-visible so unit tests can inject a throwing `delete` without a live store.
+    package static func deleteFramesReportingPartial(
+        frameIDs: [UInt64],
+        delete: (UInt64) async throws -> Void
+    ) async -> (deleted: Int, failure: Error?) {
+        var deleted = 0
+        for frameID in frameIDs {
+            do {
+                try await delete(frameID)
+                deleted += 1
+            } catch {
+                return (deleted, error)
+            }
+        }
+        return (deleted, nil)
+    }
+
+    /// Search with optional vector→text fallback (shared by tools and session prepare/recall).
+    ///
+    /// When `fallbackToTextOnVectorFailure` is true and the primary mode uses vectors
+    /// (`.always` / `.automatic`), a vector failure retries as text-only. When fallback is
+    /// false, failures are thrown (fail closed).
+    ///
+    /// - Parameter embeddingPolicy: When non-`nil`, overrides ``WaxMemoryToolConfig/embeddingPolicy``
+    ///   for this search (used by session prepare to honor session-level policy).
+    public static func searchWithFallback(
         memory: Memory,
         config: WaxMemoryToolConfig,
         query: String,
         topK: Int,
-        alpha: Float?
+        alpha: Float? = nil,
+        embeddingPolicy: Memory.EmbeddingPolicy? = nil
     ) async throws -> RAGContext {
-        let primary = config.searchOptions(topK: topK, alpha: alpha)
+        var effective = config
+        if let embeddingPolicy {
+            effective.embeddingPolicy = embeddingPolicy
+        }
+        let primary = effective.searchOptions(topK: topK, alpha: alpha)
         do {
             return try await memory.search(query, options: primary)
         } catch {
-            guard config.fallbackToTextOnVectorFailure else { throw error }
-            switch config.embeddingPolicy {
+            guard effective.fallbackToTextOnVectorFailure else { throw error }
+            switch effective.embeddingPolicy {
             case .always, .automatic:
                 return try await memory.search(
                     query,
-                    options: config.textOnlySearchOptions(topK: topK)
+                    options: effective.textOnlySearchOptions(topK: topK)
                 )
             case .never:
                 throw error

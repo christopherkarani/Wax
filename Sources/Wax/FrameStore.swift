@@ -34,6 +34,7 @@ public actor FrameStore {
 
     private let session: WaxSession
     private let wax: Wax
+    private var isClosed = false
 
     private init(session: WaxSession) {
         self.session = session
@@ -71,8 +72,18 @@ public actor FrameStore {
         return FrameStore(session: session)
     }
 
-    public func close() async {
+    /// Close the store and release the exclusive file lock.
+    ///
+    /// Safe to call multiple times: a second close is a no-op.
+    /// Surfaces durability errors from the underlying close/commit; `isClosed` is only set
+    /// after a successful close so a failed attempt does not leave a sticky closed state that
+    /// swallows the failure.
+    public func close() async throws {
+        guard !isClosed else { return }
         await session.close()
+        // Must release the underlying exclusive flock; session.close only drops the writer lease.
+        try await wax.close()
+        isClosed = true
     }
 
     @discardableResult
@@ -81,6 +92,7 @@ public actor FrameStore {
         kind: String,
         metadata: [String: String] = [:]
     ) async throws -> UInt64 {
+        try ensureOpen()
         let frameID = try await session.put(
             content,
             options: FrameMetaSubset(
@@ -93,16 +105,25 @@ public actor FrameStore {
         return frameID
     }
 
-    public func frames() async -> [Frame] {
-        await wax.frameMetas().map(Frame.init(meta:))
+    public func frames() async throws -> [Frame] {
+        try ensureOpen()
+        return await wax.frameMetas().map(Frame.init(meta:))
     }
 
     public func content(frameID: UInt64) async throws -> Data {
-        try await wax.frameContent(frameId: frameID)
+        try ensureOpen()
+        return try await wax.frameContent(frameId: frameID)
     }
 
     public func delete(frameID: UInt64) async throws {
+        try ensureOpen()
         try await wax.delete(frameId: frameID)
         try await wax.commit()
+    }
+
+    private func ensureOpen() throws {
+        guard !isClosed else {
+            throw WaxError.io("FrameStore is closed")
+        }
     }
 }

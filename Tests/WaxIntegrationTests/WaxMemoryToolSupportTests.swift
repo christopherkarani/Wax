@@ -564,3 +564,62 @@ func waxMemoryToolKitCasesAreDistinct() {
     let kits: [WaxMemoryToolKit] = [.focused, .compact, .combined, .focusedWithForget]
     #expect(Set(kits.map { String(describing: $0) }).count == 4)
 }
+
+// MARK: - Forget partial delete reporting (M-9)
+
+@Test
+func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async {
+    enum Boom: Error { case stop }
+
+    // Succeed twice, then fail — itemCount must reflect the 2 successful deletes.
+    var call = 0
+    let outcome = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+        frameIDs: [10, 20, 30, 40]
+    ) { _ in
+        call += 1
+        if call > 2 { throw Boom.stop }
+    }
+    #expect(outcome.deleted == 2)
+    #expect(outcome.failure != nil)
+
+    let partialMessage = WaxMemoryToolRenderer.renderForgetPartial(
+        query: "secrets",
+        deletedCount: outcome.deleted,
+        failure: "injected delete failure"
+    )
+    #expect(partialMessage.contains("2"))
+    #expect(partialMessage.localizedCaseInsensitiveContains("partial"))
+    #expect(partialMessage.contains("secrets"))
+
+    let result = WaxMemoryToolResult.error(
+        action: "forget",
+        message: partialMessage,
+        itemCount: outcome.deleted
+    )
+    #expect(result.status == .error)
+    #expect(result.itemCount == 2)
+    #expect(result.message.contains("2"))
+    #expect(!result.isSuccess)
+
+    // Zero successes still report itemCount 0.
+    let zero = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+        frameIDs: [1]
+    ) { _ in throw Boom.stop }
+    #expect(zero.deleted == 0)
+    #expect(zero.failure != nil)
+
+    // All succeed → no failure.
+    let ok = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+        frameIDs: [1, 2]
+    ) { _ in }
+    #expect(ok.deleted == 2)
+    #expect(ok.failure == nil)
+}
+
+@Test
+func waxMemoryToolConfigHybridAlphaPreservedInSearchOptions() {
+    let config = WaxMemoryToolConfig(searchTopK: 6, searchAlpha: 0.25, embeddingPolicy: .automatic)
+    #expect(config.alpha(nil) == 0.25)
+    #expect(config.searchOptions(topK: 4).mode == .hybrid(alpha: 0.25))
+    #expect(config.searchOptions(topK: 4, alpha: 0.9).mode == .hybrid(alpha: 0.9))
+}

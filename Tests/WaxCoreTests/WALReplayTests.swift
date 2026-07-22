@@ -145,10 +145,12 @@ import Testing
 
         // scanPendingMutationsWithState skips the corrupt pending entry but keeps
         // collecting later valid mutations while continuing state-position tracking.
+        // Skipped sequences are reported so the drop is never silent.
         let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
         #expect(result.pendingMutations.count == 1)
         #expect(result.pendingMutations.first?.sequence == 2)
         #expect(result.pendingMutations.first?.entry == .deleteFrame(DeleteFrame(frameId: 42)))
+        #expect(result.skippedUndecodableSequences == [1])
         #expect(result.state.lastSequence == 2)
     }
 }

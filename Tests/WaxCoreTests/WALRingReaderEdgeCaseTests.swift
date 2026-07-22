@@ -366,6 +366,7 @@ private func deletePayload(frameId: UInt64) throws -> Data {
         let reader = WALRingReader(file: file, walOffset: 0, walSize: 0)
         let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
         #expect(result.pendingMutations.isEmpty)
+        #expect(result.skippedUndecodableSequences.isEmpty)
         #expect(result.state.lastSequence == 0)
         #expect(result.state.writePos == 0)
         #expect(result.state.pendingBytes == 0)
@@ -391,6 +392,7 @@ private func deletePayload(frameId: UInt64) throws -> Data {
     // A valid WAL envelope carrying an invalid WALEntry opcode:
     // - Skip only the corrupt pending entry (do not fail the whole scan).
     // - Keep collecting later checksum-valid mutations.
+    // - Surface skipped sequences so the drop is never silent.
     // - State scan advances past all three records (writePos/pendingBytes stay accurate).
     // Permanent regression for: fix keep scanning valid wal entries after decode failure.
     try withWritableWalFile(walSize: 2048) { _, writer, reader in
@@ -404,6 +406,7 @@ private func deletePayload(frameId: UInt64) throws -> Data {
             .deleteFrame(DeleteFrame(frameId: 1)),
             .deleteFrame(DeleteFrame(frameId: 2)),
         ])
+        #expect(result.skippedUndecodableSequences == [1])
         #expect(result.state.lastSequence == 3)
     }
 }

@@ -398,6 +398,14 @@ package struct FastRAGContextBuilder: Sendable {
         if preview.isEmpty { return false }
         let lower = preview.lowercased()
 
+        // FTS5 snippet() truncates with '...' and wraps matched tokens in brackets.
+        // Short durable memories (preferences, tokens, mission codes) often lose their
+        // trailing identifiers in secondary hits. Expand to full frame content whenever
+        // the preview shows truncation so Memory.search returns complete short texts.
+        if preview.contains("...") {
+            return true
+        }
+
         if intent.contains(.asksDate) {
             let hintsTemporal = lower.contains("launch")
                 || lower.contains("appointment")

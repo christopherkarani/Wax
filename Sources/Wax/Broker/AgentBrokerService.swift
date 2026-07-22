@@ -1324,13 +1324,80 @@ extension AgentBrokerService {
                 timeRange: nil
             )
         }
-        let results: [AgentBrokerValue] = execution.hits.enumerated().map { index, hit in
+
+        // Disk rebuild skips stores held under exclusive flock. Active sessions in this
+        // broker process are still part of "broker-managed session history" and must be
+        // searchable via the live MemoryOrchestrator already open for each session.
+        let corpusHits: [BrokerCorpusMergeHit] = execution.hits.map { hit in
+            let preview = hit.previewText ?? ""
+            let sourcePath = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath] ?? ""
+            return BrokerCorpusMergeHit(
+                frameId: hit.frameId,
+                score: hit.score,
+                sources: hit.sources.map(\.rawValue),
+                preview: preview,
+                metadata: hit.metadata,
+                dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
+                    sourcePath: sourcePath,
+                    frameId: hit.frameId,
+                    preview: preview
+                )
+            )
+        }
+
+        let orderedActiveSessions = activeSessions.values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        var activeSessionHitGroups: [[BrokerCorpusMergeHit]] = []
+        activeSessionHitGroups.reserveCapacity(orderedActiveSessions.count)
+        for state in orderedActiveSessions {
+            let sessionExecution = try await state.memory.searchExecution(
+                query: query,
+                mode: mode,
+                topK: topK,
+                frameFilter: nil,
+                timeRange: nil
+            )
+            let group: [BrokerCorpusMergeHit] = sessionExecution.hits.map { hit in
+                let preview = hit.previewText ?? ""
+                let storePath = state.storeURL.path
+                let metadata = BrokerCorpusHitMerge.annotateActiveSessionMetadata(
+                    base: hit.metadata,
+                    storePath: storePath,
+                    storeName: state.storeURL.lastPathComponent,
+                    frameId: hit.frameId,
+                    sessionID: state.id.uuidString
+                )
+                return BrokerCorpusMergeHit(
+                    frameId: hit.frameId,
+                    score: hit.score,
+                    sources: hit.sources.map(\.rawValue),
+                    preview: preview,
+                    metadata: metadata,
+                    dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
+                        sourcePath: storePath,
+                        frameId: hit.frameId,
+                        preview: preview
+                    )
+                )
+            }
+            activeSessionHitGroups.append(group)
+        }
+
+        let merged = BrokerCorpusHitMerge.merge(
+            corpusHits: corpusHits,
+            activeSessionHitGroups: activeSessionHitGroups,
+            topK: topK
+        )
+        let activeSessionsSearched = orderedActiveSessions.count
+
+        let results: [AgentBrokerValue] = merged.enumerated().map { index, hit in
             .object([
                 "rank": .from(index + 1),
                 "frameId": .from(hit.frameId),
                 "score": .double(Double(hit.score)),
-                "sources": .array(hit.sources.map { .string($0.rawValue) }),
-                "preview": .string(hit.previewText ?? ""),
+                "sources": .array(hit.sources.map { .string($0) }),
+                "preview": .string(hit.preview),
                 "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
             ])
         }
@@ -1343,11 +1410,13 @@ extension AgentBrokerService {
                 "documents_indexed": .from(buildSummary.documentsIndexed),
                 "documents_skipped": .from(buildSummary.documentsSkipped),
                 "corpus_store_path": .string(buildSummary.targetStorePath),
+                "active_sessions_searched": .from(activeSessionsSearched),
             ])
         } else {
             .object([
                 "performed": .bool(false),
                 "corpus_store_path": .string(corpusStoreURL.path),
+                "active_sessions_searched": .from(activeSessionsSearched),
             ])
         }
         let text = results.isEmpty ? "No results." : results.map(\.debugJSONString).joined(separator: "\n")
@@ -2849,6 +2918,8 @@ struct BrokerArguments {
 
     func optionalStringPreservingWhitespace(_ key: String) throws -> String? {
         guard let value = values[key] else { return nil }
+        // CLI/MCP often send explicit JSON null for omitted optional filters.
+        if value == .null { return nil }
         guard let stringValue = value.stringValue else {
             throw BrokerValidationError.invalid("\(key) must be a string")
         }
@@ -2857,6 +2928,7 @@ struct BrokerArguments {
 
     func optionalStringArray(_ key: String) throws -> [String]? {
         guard let value = values[key] else { return nil }
+        if value == .null { return nil }
         guard let array = value.arrayValue else {
             throw BrokerValidationError.invalid("\(key) must be an array of strings")
         }
@@ -2870,6 +2942,7 @@ struct BrokerArguments {
 
     func optionalObject(_ key: String) throws -> [String: AgentBrokerValue]? {
         guard let value = values[key] else { return nil }
+        if value == .null { return nil }
         guard let object = value.objectValue else {
             throw BrokerValidationError.invalid("\(key) must be an object")
         }

@@ -20,6 +20,105 @@ package struct BrokerCorpusBuildSummary: Equatable, Sendable {
     package var targetStorePath: String
 }
 
+/// Ranked hit from disk corpus search or a live active-session search, ready for merge.
+package struct BrokerCorpusMergeHit: Sendable, Equatable {
+    package var frameId: UInt64
+    package var score: Float
+    package var sources: [String]
+    package var preview: String
+    package var metadata: [String: String]
+    package var dedupeKey: String
+
+    package init(
+        frameId: UInt64,
+        score: Float,
+        sources: [String],
+        preview: String,
+        metadata: [String: String],
+        dedupeKey: String
+    ) {
+        self.frameId = frameId
+        self.score = score
+        self.sources = sources
+        self.preview = preview
+        self.metadata = metadata
+        self.dedupeKey = dedupeKey
+    }
+
+    /// Stable identity for cross-source corpus merge (path + frame + preview text).
+    package static func makeDedupeKey(sourcePath: String, frameId: UInt64, preview: String) -> String {
+        "\(sourcePath)#\(frameId)#\(preview)"
+    }
+}
+
+/// Pure merge of disk-corpus hits with active-session hit groups (dedupe + score sort + topK).
+package enum BrokerCorpusHitMerge {
+    /// Merge corpus disk hits with ordered active-session hit batches.
+    ///
+    /// - Parameters:
+    ///   - corpusHits: Hits from the built/on-disk corpus store (first, so they win ties on dedupe).
+    ///   - activeSessionHitGroups: One group per active session, in deterministic caller order.
+    ///   - topK: Maximum results after score sort (must be >= 0; 0 yields empty).
+    /// - Returns: Deduped, score-sorted (desc), frameId-asc tie-break, truncated hits.
+    ///
+    /// First occurrence of each `dedupeKey` wins (O(n) via `Set`). Active-session groups are
+    /// appended after corpus hits so a live hit already present from disk is dropped.
+    package static func merge(
+        corpusHits: [BrokerCorpusMergeHit],
+        activeSessionHitGroups: [[BrokerCorpusMergeHit]],
+        topK: Int
+    ) -> [BrokerCorpusMergeHit] {
+        guard topK > 0 else { return [] }
+
+        var merged: [BrokerCorpusMergeHit] = []
+        let estimated =
+            corpusHits.count + activeSessionHitGroups.reduce(0) { $0 + $1.count }
+        merged.reserveCapacity(min(estimated, max(topK, estimated)))
+        var seenKeys = Set<String>()
+        seenKeys.reserveCapacity(estimated)
+
+        func appendIfNew(_ hit: BrokerCorpusMergeHit) {
+            guard seenKeys.insert(hit.dedupeKey).inserted else { return }
+            merged.append(hit)
+        }
+
+        for hit in corpusHits {
+            appendIfNew(hit)
+        }
+        for group in activeSessionHitGroups {
+            for hit in group {
+                appendIfNew(hit)
+            }
+        }
+
+        merged.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
+        }
+        if merged.count > topK {
+            merged = Array(merged.prefix(topK))
+        }
+        return merged
+    }
+
+    /// Enrich raw search-hit metadata for a live active session before merge.
+    package static func annotateActiveSessionMetadata(
+        base: [String: String],
+        storePath: String,
+        storeName: String,
+        frameId: UInt64,
+        sessionID: String
+    ) -> [String: String] {
+        var metadata = base
+        metadata[BrokerCorpusMetadataKeys.origin] = "active_session"
+        metadata[BrokerCorpusMetadataKeys.sourceStorePath] = storePath
+        metadata[BrokerCorpusMetadataKeys.sourceStoreName] = storeName
+        metadata[BrokerCorpusMetadataKeys.sourceFrameID] = String(frameId)
+        metadata["session_id"] = sessionID
+        return metadata
+    }
+}
+
 package enum BrokerCorpusStoreBuilder {
     package static func build(
         sessionsDirectory: URL,
