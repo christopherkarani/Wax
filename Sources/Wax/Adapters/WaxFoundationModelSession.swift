@@ -1,6 +1,7 @@
 #if canImport(FoundationModels)
 import Foundation
 import FoundationModels
+import WaxCore
 
 /// Detailed result of a Foundation Models generation that also reports memory
 /// injection and turn-persistence accounting.
@@ -102,6 +103,8 @@ public actor WaxFoundationModelSession {
     private let additionalTools: [any Tool]
     /// When `true`, ``close()`` closes the underlying ``Memory`` (session opened the store).
     private let ownsMemory: Bool
+    private let generator: any WaxFoundationModelGenerating
+    private let generationGate = AsyncMutex()
 
     /// Underlying Foundation Models session. Use for advanced multi-turn control.
     public nonisolated let languageModelSession: LanguageModelSession
@@ -146,7 +149,43 @@ public actor WaxFoundationModelSession {
             tools: tools,
             instructions: resolvedInstructions
         )
+        self.generator = LiveLanguageModelGenerator(session: languageModelSession)
         self.languageModelSession.prewarm()
+    }
+
+    /// Test-only session that drives generation through `generator` instead of the live model.
+    /// Still constructs a ``LanguageModelSession`` for the public handle; it is not prewarmed.
+    package init(
+        memory: Memory,
+        instructions: String? = nil,
+        additionalTools: [any Tool] = [],
+        configuration: FoundationModelsMemorySessionConfig = .default,
+        ownsMemory: Bool = false,
+        generator: any WaxFoundationModelGenerating
+    ) {
+        self.memory = memory
+        self.model = .default
+        self.userInstructions = instructions
+        self.additionalTools = additionalTools
+        self.configuration = configuration
+        self.ownsMemory = ownsMemory
+        self.generator = generator
+
+        let tools = Self.assembleTools(
+            memory: memory,
+            additionalTools: additionalTools,
+            configuration: configuration
+        )
+        let resolvedInstructions = Self.defaultInstructions(
+            userInstructions: instructions,
+            includesMemoryTools: configuration.includeMemoryTools,
+            toolKit: configuration.toolKit
+        )
+        self.languageModelSession = LanguageModelSession(
+            model: .default,
+            tools: tools,
+            instructions: resolvedInstructions
+        )
     }
 
     public init(
@@ -176,6 +215,7 @@ public actor WaxFoundationModelSession {
             tools: tools,
             instructions: built
         )
+        self.generator = LiveLanguageModelGenerator(session: languageModelSession)
         self.languageModelSession.prewarm()
     }
 
@@ -234,24 +274,26 @@ public actor WaxFoundationModelSession {
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<String> {
-        let prepared = try await preparePromptDetailed(for: userPrompt)
-        let turn = invocationForTurn(prepared: prepared)
-        let response = try await turn.session.respond(
-            to: turn.prompt,
-            options: options
-        ).content
-        let persistence = try await persistTurnTracked(
-            userPrompt: userPrompt,
-            assistantResponse: response
-        )
-        return WaxFMResponse(
-            content: response,
-            recalledItemCount: prepared.recalledItemCount,
-            includedItemCount: prepared.includedItemCount,
-            truncatedByBudget: prepared.truncatedByBudget,
-            didPersistUser: persistence.didPersistUser,
-            didPersistAssistant: persistence.didPersistAssistant
-        )
+        try await withGenerationLease {
+            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let turn = self.invocationForTurn(prepared: prepared)
+            let response = try await self.generator.generateText(
+                prompt: turn.prompt,
+                options: options
+            )
+            let persistence = try await self.persistTurnTracked(
+                userPrompt: userPrompt,
+                assistantResponse: response
+            )
+            return WaxFMResponse(
+                content: response,
+                recalledItemCount: prepared.recalledItemCount,
+                includedItemCount: prepared.includedItemCount,
+                truncatedByBudget: prepared.truncatedByBudget,
+                didPersistUser: persistence.didPersistUser,
+                didPersistAssistant: persistence.didPersistAssistant
+            )
+        }
     }
 
     /// Generates a structured response and optionally persists the turn.
@@ -264,19 +306,21 @@ public actor WaxFoundationModelSession {
         generating type: T.Type,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> T {
-        let prepared = try await preparePromptDetailed(for: userPrompt)
-        let turn = invocationForTurn(prepared: prepared)
-        let response = try await turn.session.respond(
-            to: turn.prompt,
-            generating: type,
-            options: options
-        ).content
-        if let serialized = serializeStructured(response) {
-            try await persistTurn(userPrompt: userPrompt, assistantResponse: serialized)
-        } else if configuration.persistencePolicy.shouldPersistUser {
-            try await persistUser(userPrompt)
+        try await withGenerationLease {
+            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let turn = self.invocationForTurn(prepared: prepared)
+            let response = try await self.generator.generateStructured(
+                prompt: turn.prompt,
+                type: type,
+                options: options
+            )
+            if let serialized = self.serializeStructured(response) {
+                try await self.persistTurn(userPrompt: userPrompt, assistantResponse: serialized)
+            } else if self.configuration.persistencePolicy.shouldPersistUser {
+                try await self.persistUser(userPrompt)
+            }
+            return response
         }
-        return response
     }
 
     /// Generates a structured response and returns memory / persistence accounting.
@@ -288,35 +332,37 @@ public actor WaxFoundationModelSession {
         generating type: T.Type,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<T> {
-        let prepared = try await preparePromptDetailed(for: userPrompt)
-        let turn = invocationForTurn(prepared: prepared)
-        let response = try await turn.session.respond(
-            to: turn.prompt,
-            generating: type,
-            options: options
-        ).content
-        let serialized = serializeStructured(response)
-        let persistence: (didPersistUser: Bool, didPersistAssistant: Bool)
-        if let serialized {
-            persistence = try await persistTurnTracked(
-                userPrompt: userPrompt,
-                assistantResponse: serialized
+        try await withGenerationLease {
+            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let turn = self.invocationForTurn(prepared: prepared)
+            let response = try await self.generator.generateStructured(
+                prompt: turn.prompt,
+                type: type,
+                options: options
             )
-        } else {
-            var didPersistUser = false
-            if configuration.persistencePolicy.shouldPersistUser {
-                didPersistUser = try await persistUserTracked(userPrompt)
+            let serialized = self.serializeStructured(response)
+            let persistence: (didPersistUser: Bool, didPersistAssistant: Bool)
+            if let serialized {
+                persistence = try await self.persistTurnTracked(
+                    userPrompt: userPrompt,
+                    assistantResponse: serialized
+                )
+            } else {
+                var didPersistUser = false
+                if self.configuration.persistencePolicy.shouldPersistUser {
+                    didPersistUser = try await self.persistUserTracked(userPrompt)
+                }
+                persistence = (didPersistUser, false)
             }
-            persistence = (didPersistUser, false)
+            return WaxFMResponse(
+                content: response,
+                recalledItemCount: prepared.recalledItemCount,
+                includedItemCount: prepared.includedItemCount,
+                truncatedByBudget: prepared.truncatedByBudget,
+                didPersistUser: persistence.didPersistUser,
+                didPersistAssistant: persistence.didPersistAssistant
+            )
         }
-        return WaxFMResponse(
-            content: response,
-            recalledItemCount: prepared.recalledItemCount,
-            includedItemCount: prepared.includedItemCount,
-            truncatedByBudget: prepared.truncatedByBudget,
-            didPersistUser: persistence.didPersistUser,
-            didPersistAssistant: persistence.didPersistAssistant
-        )
     }
 
     /// Streams a text response. User turns are persisted when configured; assistant
@@ -324,13 +370,40 @@ public actor WaxFoundationModelSession {
     public func streamResponse(
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
-    ) async throws -> LanguageModelSession.ResponseStream<String> {
-        let prepared = try await preparePromptDetailed(for: userPrompt)
-        if configuration.persistencePolicy.shouldPersistUser {
-            _ = try await persistUserTracked(userPrompt)
+    ) async throws -> WaxGenerationLeaseStream {
+        await generationGate.lock()
+        let lease = GenerationLease(gate: generationGate)
+        do {
+            try Task.checkCancellation()
+            let prepared = try await preparePromptDetailed(for: userPrompt)
+            if configuration.persistencePolicy.shouldPersistUser {
+                _ = try await persistUserTracked(userPrompt)
+            }
+            let turn = invocationForTurn(prepared: prepared)
+            let inner = generator.streamText(prompt: turn.prompt, options: options)
+            return WaxGenerationLeaseStream(
+                stream: AsyncThrowingStream { continuation in
+                    let task = Task {
+                        defer { lease.release() }
+                        do {
+                            for try await element in inner {
+                                try Task.checkCancellation()
+                                continuation.yield(element)
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    continuation.onTermination = { _ in
+                        task.cancel()
+                    }
+                }
+            )
+        } catch {
+            lease.release()
+            throw error
         }
-        let turn = invocationForTurn(prepared: prepared)
-        return turn.session.streamResponse(to: turn.prompt, options: options)
     }
 
     /// Streams a text response, collects the full assistant text, and persists both sides
@@ -340,23 +413,25 @@ public actor WaxFoundationModelSession {
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<String> {
-        let prepared = try await preparePromptDetailed(for: userPrompt)
-        let turn = invocationForTurn(prepared: prepared)
-        let stream = turn.session.streamResponse(to: turn.prompt, options: options)
-        let response = try await stream.collect()
-        let content = response.content
-        let persistence = try await persistTurnTracked(
-            userPrompt: userPrompt,
-            assistantResponse: content
-        )
-        return WaxFMResponse(
-            content: content,
-            recalledItemCount: prepared.recalledItemCount,
-            includedItemCount: prepared.includedItemCount,
-            truncatedByBudget: prepared.truncatedByBudget,
-            didPersistUser: persistence.didPersistUser,
-            didPersistAssistant: persistence.didPersistAssistant
-        )
+        try await withGenerationLease {
+            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let turn = self.invocationForTurn(prepared: prepared)
+            let content = try await WaxGenerationLeaseStream(
+                stream: self.generator.streamText(prompt: turn.prompt, options: options)
+            ).collect()
+            let persistence = try await self.persistTurnTracked(
+                userPrompt: userPrompt,
+                assistantResponse: content
+            )
+            return WaxFMResponse(
+                content: content,
+                recalledItemCount: prepared.recalledItemCount,
+                includedItemCount: prepared.includedItemCount,
+                truncatedByBudget: prepared.truncatedByBudget,
+                didPersistUser: persistence.didPersistUser,
+                didPersistAssistant: persistence.didPersistAssistant
+            )
+        }
     }
 
     /// Returns a **new** session wrapping the same ``Memory`` and configuration, with a
@@ -432,6 +507,24 @@ public actor WaxFoundationModelSession {
 
     // MARK: - Persistence helpers
 
+    /// FIFO generation lease. Actor isolation is reentrant, so overlapping
+    /// `respond`/`streamResponse` calls must not rely on it to keep Apple's
+    /// ``LanguageModelSession`` single-flight.
+    private func withGenerationLease<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        await generationGate.lock()
+        do {
+            try Task.checkCancellation()
+            let value = try await operation()
+            await generationGate.unlock()
+            return value
+        } catch {
+            await generationGate.unlock()
+            throw error
+        }
+    }
+
     private func persistTurn(userPrompt: String, assistantResponse: String) async throws {
         _ = try await persistTurnTracked(
             userPrompt: userPrompt,
@@ -443,12 +536,15 @@ public actor WaxFoundationModelSession {
         userPrompt: String,
         assistantResponse: String
     ) async throws -> (didPersistUser: Bool, didPersistAssistant: Bool) {
+        try Task.checkCancellation()
         var didPersistUser = false
         var didPersistAssistant = false
 
         if configuration.persistencePolicy.shouldPersistUser {
             didPersistUser = try await persistUserTracked(userPrompt)
         }
+
+        try Task.checkCancellation()
 
         if configuration.persistencePolicy.shouldPersistAssistant {
             let trimmedResponse = assistantResponse.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,7 +597,6 @@ public actor WaxFoundationModelSession {
 
     /// Session + prompt pair for one generation turn.
     private struct TurnInvocation: Sendable {
-        let session: LanguageModelSession
         let prompt: String
     }
 
@@ -529,21 +624,14 @@ public actor WaxFoundationModelSession {
     /// - Appendix present: primary session + recalled-memory prompt prefix (multi-turn safe).
     private func invocationForTurn(prepared: PreparedMemoryPrompt) -> TurnInvocation {
         guard let appendix = prepared.memoryAppendix else {
-            return TurnInvocation(
-                session: languageModelSession,
-                prompt: prepared.prompt
-            )
+            return TurnInvocation(prompt: prepared.prompt)
         }
         let trimmed = appendix.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return TurnInvocation(
-                session: languageModelSession,
-                prompt: prepared.prompt
-            )
+            return TurnInvocation(prompt: prepared.prompt)
         }
 
         return TurnInvocation(
-            session: languageModelSession,
             prompt: Self.prefixPromptWithRecalledMemory(prepared.prompt, appendix: trimmed)
         )
     }

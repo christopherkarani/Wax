@@ -630,7 +630,8 @@ public enum WaxMemoryToolExecutor: Sendable {
     ///
     /// When `fallbackToTextOnVectorFailure` is true and the primary mode uses vectors
     /// (`.always` / `.automatic`), a vector failure retries as text-only. When fallback is
-    /// false, failures are thrown (fail closed).
+    /// false, failures are thrown (fail closed). ``CancellationError`` is never converted
+    /// into a text-fallback success.
     ///
     /// - Parameter embeddingPolicy: When non-`nil`, overrides ``WaxMemoryToolConfig/embeddingPolicy``
     ///   for this search (used by session prepare to honor session-level policy).
@@ -649,8 +650,11 @@ public enum WaxMemoryToolExecutor: Sendable {
         let primary = effective.searchOptions(topK: topK, alpha: alpha)
         do {
             return try await memory.search(query, options: primary)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             guard effective.fallbackToTextOnVectorFailure else { throw error }
+            try Task.checkCancellation()
             switch effective.embeddingPolicy {
             case .always, .automatic:
                 return try await memory.search(

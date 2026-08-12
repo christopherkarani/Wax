@@ -1850,6 +1850,8 @@ package actor MemoryOrchestrator {
                 )
                 queryEmbeddingCircuitOpenedAt = nil
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 if error is AsyncTimeout.TimeoutError {
                     queryEmbeddingCircuitOpenedAt = .now
