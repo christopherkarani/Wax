@@ -52,6 +52,9 @@ package actor WaxSession {
     private let vectorEngine: (any VectorSearchEngine)?
     private let concreteVectorEngine: ConcreteVectorEngine?
     private var lastPendingEmbeddingSequence: UInt64?
+    /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
+    /// Mirrors ``WaxVectorSearchSession`` so pending putEmbedding + remove does not re-stage ghosts.
+    private var pendingRemovedFrameIds: Set<UInt64> = []
     private var writerLeaseId: UUID?
     private var isClosed = false
 
@@ -178,13 +181,16 @@ package actor WaxSession {
 
     /// Removes a frame from the in-memory vector index when vector search is enabled.
     ///
-    /// No-ops when vector search is configured but no engine is loaded yet (e.g. dimensions unknown).
+    /// Records the id for re-application after pending-embedding sync on the next stage/commit
+    /// (pending putEmbedding may re-add the frame before stage). No-ops the live engine when
+    /// vector search is configured but no engine is loaded yet (e.g. dimensions unknown).
     /// Throws when vector search is disabled so callers can gate on `config.enableVectorSearch`.
     package func removeVector(frameId: UInt64) async throws {
         try ensureWritable()
         guard config.enableVectorSearch else {
             throw WaxError.io("vector search is disabled")
         }
+        pendingRemovedFrameIds.insert(frameId)
         guard let concreteVectorEngine else {
             return
         }
@@ -482,7 +488,16 @@ package actor WaxSession {
 
     private func stageVectorForCommit(using engine: ConcreteVectorEngine) async throws {
         try await syncPendingEmbeddings(into: engine)
+        // Re-apply removes after sync so pending embeddings cannot resurrect deleted frameIds.
+        // Clear only after a successful stage so a failed stage can re-apply on the next attempt
+        // (mirrors ``WaxVectorSearchSession.stageForCommit``).
+        if !pendingRemovedFrameIds.isEmpty {
+            for frameId in pendingRemovedFrameIds {
+                try await engine.remove(frameId: frameId)
+            }
+        }
         try await engine.stageForCommit(into: wax)
+        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
 
     private func vectorEngineForSearch(_ request: SearchRequest) async throws -> (any VectorSearchEngine)? {

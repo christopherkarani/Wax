@@ -84,6 +84,60 @@ func memorySearchReturnsFullShortTextForSecondaryHitsAfterReopen() async throws 
     }
 }
 
+@Test
+func memorySearchReportsTextFallbackDiagnostics() async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(
+            at: url,
+            config: .init(enableTextSearch: true, enableVectorSearch: false, requireOnDeviceProviders: false)
+        )
+
+        try await memory.save("Wax diagnostics should report the effective search mode.")
+
+        // Caller asked for hybrid; the store has no vector lane. Diagnostics must say so.
+        let results = try await memory.search("diagnostics", options: .init(mode: .hybrid()))
+
+        let diagnostics = try #require(results.diagnostics)
+        #expect(diagnostics.requestedMode.contains("hybrid"))
+        #expect(diagnostics.effectiveMode == "text")
+        #expect(diagnostics.queryEmbeddingState == .vectorDisabled)
+
+        let stats = await memory.stats()
+        #expect(!stats.vectorSearchEnabled)
+        #expect(!stats.queryEmbedderConfigured)
+
+        try await memory.close()
+    }
+}
+
+@Test
+func memorySearchReportsVectorDiagnosticsWithEmbedder() async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(
+            at: url,
+            config: .init(enableTextSearch: true, enableVectorSearch: true),
+            embedding: DeterministicEmbeddingProvider()
+        )
+
+        try await memory.save("Wax vector diagnostics should report the vector lane.")
+        try await memory.flush()
+
+        let results = try await memory.search("vector diagnostics", options: .init(mode: .vectorOnly))
+
+        let diagnostics = try #require(results.diagnostics)
+        #expect(diagnostics.requestedMode == "vector")
+        #expect(diagnostics.effectiveMode == "vector")
+        #expect(diagnostics.queryEmbeddingState == .available)
+
+        let stats = await memory.stats()
+        #expect(stats.vectorSearchEnabled)
+        #expect(stats.queryEmbedderConfigured)
+        #expect(stats.embedderIdentity?.model == "Deterministic")
+
+        try await memory.close()
+    }
+}
+
 private struct DeterministicEmbeddingProvider: EmbeddingProvider, Sendable {
     let dimensions: Int = 2
     let normalize: Bool = true

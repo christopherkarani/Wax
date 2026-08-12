@@ -23,7 +23,7 @@ func readmePublicMemoryQuickStartDoesNotAdvertiseHybridWithoutEmbedding() throws
         .appendingPathComponent("README.md")
     let readme = try String(contentsOf: readmeURL, encoding: .utf8)
 
-    let quickStartMarker = try #require(readme.range(of: "### Swift\n\n```swift\n"))
+    let quickStartMarker = try #require(readme.range(of: "### 2. Copy-paste this into your app\n\n```swift\n"))
     let quickStartRemainder = readme[quickStartMarker.upperBound...]
     let quickStartEnd = try #require(quickStartRemainder.range(of: "\n```\n\n<details>"))
     let quickStart = quickStartRemainder[..<quickStartEnd.lowerBound]

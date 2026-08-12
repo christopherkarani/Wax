@@ -4,7 +4,7 @@ Understand how Wax fuses BM25, vector, structured-memory, and timeline results.
 
 ## Overview
 
-Wax's unified search pipeline is a package-only implementation detail, not public API. Public callers should use orchestrator recall methods such as ``MemoryOrchestrator/recall(query:)`` and configure behavior through supported orchestrator entry points.
+Wax's unified search pipeline is a package-only implementation detail, not public API. Public callers should use ``Memory/search(_:options:)`` and configure behavior through ``Memory/SearchOptions``.
 
 Internally, the pipeline runs multiple retrieval lanes and combines their candidates with reciprocal rank fusion (RRF). This hybrid approach combines exact keyword matches with semantic and temporal recall while keeping the user-facing API focused on memory ingestion and recall.
 
@@ -66,13 +66,19 @@ Classification is fully offline. It does not call network services or external m
 
 ## Public Usage
 
-Use the memory orchestrator for supported recall:
+Use ``Memory`` for supported retrieval:
 
 ```swift
-let context = try await memory.recall(query: "quarterly roadmap")
-for item in context.items {
+let results = try await memory.search("quarterly roadmap")
+for item in results.items {
     print(item.text)
+}
+
+// Which lanes actually ran?
+if let diagnostics = results.diagnostics {
+    print(diagnostics.effectiveMode)          // "text", "vector", or "hybrid(alpha=…)"
+    print(diagnostics.queryEmbeddingState)    // e.g. .available or .noEmbedder
 }
 ```
 
-The package-only request, response, filtering, and diagnostics types are intentionally omitted from the public documentation because downstream apps cannot construct or name them directly.
+The package-only request, response, and filtering types are intentionally omitted from the public documentation because downstream apps cannot construct or name them directly. Retrieval diagnostics are public via ``RAGContext/diagnostics``.
