@@ -315,6 +315,14 @@ let package = Package(
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
             ]
         ),
+        .executableTarget(
+            name: "WaxRetiredVectorSweepHarness",
+            dependencies: [
+                "Wax",
+            ],
+            path: "Sources/WaxRetiredVectorSweepHarness",
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
     ] + waxRepoTargets + [
         .testTarget(
             name: "WaxCoreTests",
@@ -331,6 +339,7 @@ let package = Package(
                 "Wax",
                 "WaxVectorSearchMiniLM",
                 "WaxMiniLMReliabilityHarness",
+                "WaxRetiredVectorSweepHarness",
                 .product(name: "Testing", package: "swift-testing"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),

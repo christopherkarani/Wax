@@ -67,6 +67,8 @@ private func videoDeleteMakeOrchestrator(storeURL: URL) async throws -> VideoRAG
     )
 }
 
+@Suite("VideoRAGDeleteVectorDurabilityTests")
+struct VideoRAGDeleteVectorDurabilityTests {
 @Test
 func videoRAGDeleteRemovesSegmentVectorsFromCommittedVecBytes() async throws {
     try await TempFiles.withTempFile { storeURL in
@@ -192,8 +194,8 @@ func videoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         )
 
         // The next index rebuild sweeps retired-tree vectors out of the committed index.
+        // Do not flush after rebuild — durability must come from rebuildIndex itself.
         try await orchestrator.ingest(files: [VideoFile(id: "sweep-trigger", url: mp4URL, captureDate: nil)])
-        try await orchestrator.flush()
 
         let sweptBytes = try await wax.readCommittedVecIndexBytes()
         #expect(sweptBytes != nil)
@@ -202,7 +204,6 @@ func videoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         for segmentId in newSegmentIds {
             #expect(sweptIds.contains(segmentId), "current segment vectors must survive the sweep")
         }
-
-        try await orchestrator.flush()
     }
+}
 }

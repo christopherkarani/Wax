@@ -4,6 +4,8 @@ import Testing
 import WaxCore
 import WaxVectorSearch
 
+@Suite("MemoryDeleteVectorDurabilityTests")
+struct MemoryDeleteVectorDurabilityTests {
 // MARK: - Helpers
 
 private func durabilityOrchestratorConfig() -> OrchestratorConfig {
@@ -306,4 +308,5 @@ func memoryDeleteWorksWhenVectorSearchDisabled() async throws {
 
         try await orchestrator.close()
     }
+}
 }

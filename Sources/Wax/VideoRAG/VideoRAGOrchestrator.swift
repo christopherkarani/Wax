@@ -90,6 +90,7 @@ package actor VideoRAGOrchestrator {
     package let session: WaxSession
     /// Configuration controlling segment duration, pixel sizes, transcript budgets, and search parameters.
     package let config: VideoRAGConfig
+    private let storeURL: URL
 
     private let embedder: any MultimodalEmbeddingProvider
     private let transcriptProvider: (any VideoTranscriptProvider)?
@@ -103,6 +104,7 @@ package actor VideoRAGOrchestrator {
         embedder: any MultimodalEmbeddingProvider,
         transcriptProvider: (any VideoTranscriptProvider)? = nil
     ) async throws {
+        self.storeURL = storeURL
         self.config = config
         self.embedder = embedder
         self.transcriptProvider = transcriptProvider
@@ -812,27 +814,25 @@ package actor VideoRAGOrchestrator {
             }
         }
 
+        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
+        if removedCount > 0 {
+            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
+                throw injected
+            }
+            try await session.commit()
+        }
         index = next
-        await sweepRetiredVectors(retiredVectorIds)
     }
 
     /// Removes vectors for frames outside the live index (superseded trees, deleted
     /// frames). Stores written before vector cleanup existed can otherwise keep serving
-    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
-    /// opening or reindexing the store.
-    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
-        guard !frameIds.isEmpty else { return }
-        for frameId in frameIds {
-            do {
-                try await session.removeVector(frameId: frameId)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "VideoRAG retired-vector sweep",
-                    fallback: "stale vector may remain in the committed index"
-                )
-            }
+    /// ghost hits for retired frames. Failures are thrown so a successful rebuild
+    /// always means the sweep was durably committed.
+    private func sweepRetiredVectors(_ frameIDs: Set<UInt64>) async throws -> Int {
+        for frameID in frameIDs.sorted() {
+            try await session.removeVector(frameId: frameID)
         }
+        return frameIDs.count
     }
 
     private func isDegraded(videoID: VideoID) -> Bool {

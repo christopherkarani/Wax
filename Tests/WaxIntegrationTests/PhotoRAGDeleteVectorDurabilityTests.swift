@@ -43,6 +43,8 @@ private func photoDeleteRootId(wax: Wax, assetID: String, superseded: Bool) asyn
     }?.id)
 }
 
+@Suite("PhotoRAGDeleteVectorDurabilityTests")
+struct PhotoRAGDeleteVectorDurabilityTests {
 @Test
 func photoRAGDeleteRemovesRootVectorFromCommittedVecBytes() async throws {
     try await TempFiles.withTempFile { storeURL in
@@ -150,18 +152,17 @@ func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         )
 
         // The next index rebuild sweeps retired-tree vectors out of the committed index.
+        // Do not flush after rebuild — durability must come from rebuildIndex itself.
         try await orchestrator.ingest(files: [
             PhotoFile(id: "sweep-trigger", url: imageURL, captureDate: Date(timeIntervalSince1970: 1_700_000_100))
         ])
-        try await orchestrator.flush()
 
         let sweptBytes = try await wax.readCommittedVecIndexBytes()
         #expect(sweptBytes != nil)
         let sweptIds = try photoDeleteCommittedVecFrameIds(from: sweptBytes!)
         #expect(!sweptIds.contains(oldRootId), "legacy ghost vector survived the retired-tree sweep")
         #expect(sweptIds.contains(newRootId), "current root vector must survive the sweep")
-
-        try await orchestrator.flush()
     }
+}
 }
 #endif

@@ -14,6 +14,34 @@ import WaxVectorSearch
 import CoreLocation
 #endif
 
+/// Package-internal hook so tests can force the post-sweep durable commit to fail
+/// for a specific store. When a store path is registered, `rebuildIndex` throws
+/// instead of calling `session.commit()` after retired-vector removals.
+/// Not part of the public API.
+package enum RetiredVectorSweepFaultInjection: Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var failingStorePaths: Set<String> = []
+
+    package static func enableCommitFailure(for storeURL: URL) {
+        lock.lock()
+        failingStorePaths.insert(storeURL.path)
+        lock.unlock()
+    }
+
+    package static func disableCommitFailure(for storeURL: URL) {
+        lock.lock()
+        failingStorePaths.remove(storeURL.path)
+        lock.unlock()
+    }
+
+    static func injectedError(for storeURL: URL) -> (any Error)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard failingStorePaths.contains(storeURL.path) else { return nil }
+        return WaxError.io("injected retired-vector sweep commit failure")
+    }
+}
+
 /// On-device (no cloud) retrieval-augmented generation (RAG) over a user’s Photos library.
 ///
 /// `PhotoRAGOrchestrator` ingests `PHAsset`s (offline-only), extracts metadata/OCR, computes
@@ -96,6 +124,7 @@ package actor PhotoRAGOrchestrator {
     package let session: WaxSession
     /// Configuration controlling pixel sizes, OCR, regions, search parameters, and budgets.
     package let config: PhotoRAGConfig
+    private let storeURL: URL
 
     private let embedder: any MultimodalEmbeddingProvider
     private let ocr: (any OCRProvider)?
@@ -112,6 +141,7 @@ package actor PhotoRAGOrchestrator {
         ocr: (any OCRProvider)? = nil,
         captioner: (any CaptionProvider)? = nil
     ) async throws {
+        self.storeURL = storeURL
         self.config = config
         self.embedder = embedder
         self.captioner = captioner
@@ -1116,27 +1146,25 @@ package actor PhotoRAGOrchestrator {
             }
         }
 
+        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
+        if removedCount > 0 {
+            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
+                throw injected
+            }
+            try await session.commit()
+        }
         index = next
-        await sweepRetiredVectors(retiredVectorIds)
     }
 
     /// Removes vectors for frames outside the live index (superseded trees, deleted
     /// frames). Stores written before vector cleanup existed can otherwise keep serving
-    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
-    /// opening or reindexing the store.
-    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
-        guard !frameIds.isEmpty else { return }
-        for frameId in frameIds {
-            do {
-                try await session.removeVector(frameId: frameId)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "PhotoRAG retired-vector sweep",
-                    fallback: "stale vector may remain in the committed index"
-                )
-            }
+    /// ghost hits for retired frames. Failures are thrown so a successful rebuild
+    /// always means the sweep was durably committed.
+    private func sweepRetiredVectors(_ frameIDs: Set<UInt64>) async throws -> Int {
+        for frameID in frameIDs.sorted() {
+            try await session.removeVector(frameId: frameID)
         }
+        return frameIDs.count
     }
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {
