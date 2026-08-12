@@ -134,7 +134,7 @@ public actor Memory {
     ///
     /// The same embedder selection as ``init(at:config:)`` applies; set
     /// ``Config/embedding`` inside the closure to use a built-in or custom provider.
-    public init(at url: URL, configure: (inout Config) -> Void) async throws {
+    public init(at url: URL, configure: @Sendable (inout Config) -> Void) async throws {
         var config = Config.default
         configure(&config)
         try await self.init(at: url, config: config)
@@ -189,7 +189,7 @@ public actor Memory {
     }
 
     /// Search with inline option customization.
-    public func search(_ query: String, configure: (inout SearchOptions) -> Void) async throws -> Results {
+    public func search(_ query: String, configure: @Sendable (inout SearchOptions) -> Void) async throws -> Results {
         var options = SearchOptions.default
         configure(&options)
         return try await search(query, options: options)

@@ -5,15 +5,14 @@
 #   1. StrictConsumer compiles under Swift 6.2 strict concurrency (macOS + generic iOS)
 #   2. ConsumerContractTests pass against currently-shipping public API
 #   3. A traits-off fixture compiles Wax with default traits disabled and runs text-only
+#   4. StrictConsumer two-process reopen: process A creates+saves+searches+closes;
+#      process B reopens the same store path and searches again
 #
-# Task 1 leaves StrictConsumer RED (non-Sendable configure closures). Flip to required
-# green after Task 2 with a one-line change:
-#   WAX_CONSUMER_EXPECT_STRICT_RED=0
-# or by changing the default below from 1 to 0.
+# Task 2: StrictConsumer is required-green (Sendable configure closures).
+# Override with WAX_CONSUMER_EXPECT_STRICT_RED=1 only to re-check the old red path.
 set -euo pipefail
 
-# Default 1 for Task 1 (expected compile failure). Task 2: set to 0.
-WAX_CONSUMER_EXPECT_STRICT_RED="${WAX_CONSUMER_EXPECT_STRICT_RED:-1}"
+WAX_CONSUMER_EXPECT_STRICT_RED="${WAX_CONSUMER_EXPECT_STRICT_RED:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -212,11 +211,50 @@ run_strict_step "StrictConsumer iOS Simulator" "$fixture_root/logs/strict-ios.lo
       build
   "
 
+stage "strict-macos-two-process-reopen"
+if [[ "$WAX_CONSUMER_EXPECT_STRICT_RED" == "1" ]]; then
+  echo "SKIP: two-process reopen (StrictConsumer expected-red)"
+else
+  bin_path="$(
+    run_swift_isolated swift build \
+      --package-path "$CONSUMER_ROOT" \
+      --product StrictConsumer \
+      --show-bin-path \
+      "${SWIFT_COMMON[@]}"
+  )"
+  bin_path="$(printf '%s\n' "$bin_path" | tail -n 1)"
+  strict_exe="$bin_path/StrictConsumer"
+  if [[ ! -x "$strict_exe" ]]; then
+    fail "StrictConsumer executable not found at $strict_exe"
+  fi
+  process_a_log="$fixture_root/logs/strict-process-a.log"
+  process_b_log="$fixture_root/logs/strict-process-b.log"
+  if ! run_swift_isolated "$strict_exe" >"$process_a_log" 2>&1; then
+    echo "---- StrictConsumer process A ----" >&2
+    cat "$process_a_log" >&2
+    fail "StrictConsumer process A (create+save+search+close) failed"
+  fi
+  store_path="$(grep '^WAX_STRICT_STORE=' "$process_a_log" | tail -n 1 | cut -d= -f2-)"
+  if [[ -z "$store_path" ]]; then
+    echo "---- StrictConsumer process A ----" >&2
+    cat "$process_a_log" >&2
+    fail "process A did not print WAX_STRICT_STORE=<path>"
+  fi
+  if ! run_swift_isolated "$strict_exe" "$store_path" >"$process_b_log" 2>&1; then
+    echo "---- StrictConsumer process B ----" >&2
+    cat "$process_b_log" >&2
+    fail "StrictConsumer process B (reopen+search+close) failed"
+  fi
+  echo "GREEN: StrictConsumer two-process reopen"
+  echo "  store: $store_path"
+  echo "  process A: $process_a_log"
+  echo "  process B: $process_b_log"
+fi
+
 stage "consumer-tests (required green)"
-# Omit StrictConsumer so `swift test` does not typecheck the expected-red executable.
-# Separate scratch path avoids mixing the RED StrictConsumer graph with the test graph.
+# StrictConsumer is part of the same package graph and must typecheck with tests.
 test_log="$fixture_root/logs/consumer-tests.log"
-if ! WAX_OMIT_STRICT_CONSUMER=1 run_swift_isolated swift test \
+if ! run_swift_isolated swift test \
   --package-path "$CONSUMER_ROOT" \
   --scratch-path "$fixture_root/test-build" \
   --disable-build-manifest-caching \
