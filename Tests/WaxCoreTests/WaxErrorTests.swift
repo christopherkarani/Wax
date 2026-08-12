@@ -66,3 +66,26 @@ import Testing
     let error: WaxError = .writerTimeout
     #expect(error.errorDescription?.contains("Timed out") == true)
 }
+
+@Test func waxErrorDescriptionFeatureDisabled() {
+    let error: WaxError = .featureDisabled(feature: "vector search")
+    #expect(error.errorDescription?.contains("Feature disabled") == true)
+    #expect(error.errorDescription?.contains("vector search") == true)
+}
+
+@Test func waxErrorDescriptionInvalidEmbedding() {
+    let error: WaxError = .invalidEmbedding(reason: "dimension mismatch")
+    #expect(error.errorDescription?.contains("Invalid embedding") == true)
+    #expect(error.errorDescription?.contains("dimension mismatch") == true)
+}
+
+@Test func waxErrorDescriptionMissingEmbedder() {
+    let error: WaxError = .missingEmbedder
+    #expect(error.errorDescription?.contains("embedding provider") == true)
+}
+
+@Test func waxErrorDescriptionInvalidConfiguration() {
+    let error: WaxError = .invalidConfiguration(reason: "WAL size must be greater than zero")
+    #expect(error.errorDescription?.contains("Invalid configuration") == true)
+    #expect(error.errorDescription?.contains("WAL size must be greater than zero") == true)
+}

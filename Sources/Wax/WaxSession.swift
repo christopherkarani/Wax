@@ -305,6 +305,7 @@ package actor WaxSession {
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
         try ensureWritable()
+        try validateEmbedding(embedding, identity: identity)
         let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
@@ -320,6 +321,7 @@ package actor WaxSession {
         timestampMs: Int64
     ) async throws -> UInt64 {
         try ensureWritable()
+        try validateEmbedding(embedding, identity: identity)
         let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
         let frameId = try await wax.put(content, options: merged, compression: compression, timestampMs: timestampMs)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
@@ -359,6 +361,9 @@ package actor WaxSession {
         guard contents.count == options.count else {
             throw WaxError.encodingError(reason: "putBatch: contents.count != options.count")
         }
+        for embedding in embeddings {
+            try validateEmbedding(embedding, identity: identity)
+        }
         var mergedOptions = options
         if let identity {
             for (index, embedding) in embeddings.enumerated() {
@@ -394,6 +399,9 @@ package actor WaxSession {
         }
         guard contents.count == timestampsMs.count else {
             throw WaxError.encodingError(reason: "putBatch: contents.count != timestampsMs.count")
+        }
+        for embedding in embeddings {
+            try validateEmbedding(embedding, identity: identity)
         }
 
         var mergedOptions = options
@@ -570,6 +578,18 @@ package actor WaxSession {
         )
     }
 
+    private func validateEmbedding(_ embedding: [Float], identity: EmbeddingIdentity?) throws {
+        let expectedDimensions = identity?.dimensions
+            ?? config.vectorDimensions
+            ?? vectorEngine?.dimensions
+            ?? embedding.count
+        try EmbeddingValidation.validate(
+            embedding,
+            dimensions: expectedDimensions,
+            requireNonZero: identity?.normalized ?? false
+        )
+    }
+
     private func mergeOptions(
         _ options: FrameMetaSubset,
         identity: EmbeddingIdentity?,
@@ -578,7 +598,9 @@ package actor WaxSession {
         guard let identity else { return options }
 
         if let expectedDims = identity.dimensions, expectedDims != embeddingCount {
-            throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embeddingCount)")
+            throw WaxError.invalidEmbedding(
+                reason: "dimension mismatch: expected \(expectedDims), got \(embeddingCount)"
+            )
         }
 
         var merged = options

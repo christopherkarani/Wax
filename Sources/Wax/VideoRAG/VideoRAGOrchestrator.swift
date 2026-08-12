@@ -688,11 +688,7 @@ package actor VideoRAGOrchestrator {
 
         for (idx, segment) in segments.enumerated() {
             try Task.checkCancellation()
-            var vec = try await embedder.embed(image: keyframes[idx])
-            if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-            guard vec.count == embedder.dimensions else {
-                throw VideoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: vec.count)
-            }
+            let vec = try await validatedImageEmbedding(keyframes[idx])
             embeddings.append(vec)
 
             let text = transcriptByIndex[segment.index] ?? ""
@@ -859,13 +855,34 @@ package actor VideoRAGOrchestrator {
         if let cached = await queryEmbeddingCache?.get(key) {
             return cached
         }
-        var vec = try await embedder.embed(text: text)
-        if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-        guard vec.count == embedder.dimensions else {
-            throw VideoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: vec.count)
-        }
+        let vec = try await validatedTextEmbedding(text)
         await queryEmbeddingCache?.set(key, value: vec)
         return vec
+    }
+
+    private func validatedImageEmbedding(_ image: CGImage) async throws -> [Float] {
+        let vec = try await embedder.embed(image: image)
+        return try Self.validatedProviderEmbedding(vec, embedder: embedder)
+    }
+
+    private func validatedTextEmbedding(_ text: String) async throws -> [Float] {
+        let vec = try await embedder.embed(text: text)
+        return try Self.validatedProviderEmbedding(vec, embedder: embedder)
+    }
+
+    private static func validatedProviderEmbedding(
+        _ vector: [Float],
+        embedder: some MultimodalEmbeddingProvider
+    ) throws -> [Float] {
+        try EmbeddingValidation.validate(
+            vector,
+            dimensions: embedder.dimensions,
+            requireNonZero: embedder.normalize
+        )
+        if embedder.normalize {
+            return VectorMath.normalizeL2(vector)
+        }
+        return vector
     }
 
     // MARK: - Media helpers

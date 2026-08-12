@@ -615,13 +615,7 @@ package actor PhotoRAGOrchestrator {
         let ocrImage = try Self.decodeThumbnail(from: imageData, maxPixelSize: config.ocrMaxPixelSize)
 
         // Global embedding
-        var globalEmbedding = try await embedder.embed(image: embedImage)
-        if embedder.normalize, !globalEmbedding.isEmpty {
-            globalEmbedding = VectorMath.normalizeL2(globalEmbedding)
-        }
-        guard globalEmbedding.count == embedder.dimensions else {
-            throw WaxError.invalidEmbedding(reason: "embedder produced \(globalEmbedding.count) dims for image, expected \(embedder.dimensions)")
-        }
+        let globalEmbedding = try await validatedImageEmbedding(embedImage)
 
         // Root frame
         let rootOptions = FrameMetaSubset(
@@ -761,13 +755,7 @@ package actor PhotoRAGOrchestrator {
                         while activeCount < maxConcurrency, let item = cropIterator.next() {
                             let (index, crop, _) = item
                             group.addTask {
-                                var vec = try await self.embedder.embed(image: crop)
-                                if self.embedder.normalize, !vec.isEmpty {
-                                    vec = VectorMath.normalizeL2(vec)
-                                }
-                                guard vec.count == self.embedder.dimensions else {
-                                    throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
-                                }
+                                let vec = try await self.validatedImageEmbedding(crop)
                                 return (index, vec)
                             }
                             activeCount += 1
@@ -781,13 +769,7 @@ package actor PhotoRAGOrchestrator {
                             if let item = cropIterator.next() {
                                 let (index, crop, _) = item
                                 group.addTask {
-                                    var vec = try await self.embedder.embed(image: crop)
-                                    if self.embedder.normalize, !vec.isEmpty {
-                                        vec = VectorMath.normalizeL2(vec)
-                                    }
-                                    guard vec.count == self.embedder.dimensions else {
-                                        throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
-                                    }
+                                    let vec = try await self.validatedImageEmbedding(crop)
                                     return (index, vec)
                                 }
                             }
@@ -889,13 +871,7 @@ package actor PhotoRAGOrchestrator {
         )
         let previousRoot = index.rootByAssetID[assetID]
 
-        var globalEmbedding = try await embedder.embed(image: embedImage)
-        if embedder.normalize, !globalEmbedding.isEmpty {
-            globalEmbedding = VectorMath.normalizeL2(globalEmbedding)
-        }
-        guard globalEmbedding.count == embedder.dimensions else {
-            throw PhotoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: globalEmbedding.count)
-        }
+        let globalEmbedding = try await validatedImageEmbedding(embedImage)
 
         let rootId = try await session.put(
             Data(),
@@ -1032,16 +1008,7 @@ package actor PhotoRAGOrchestrator {
             while activeCount < maxConcurrency, let item = cropIterator.next() {
                 let (index, crop, _) = item
                 group.addTask {
-                    var vec = try await self.embedder.embed(image: crop)
-                    if self.embedder.normalize, !vec.isEmpty {
-                        vec = VectorMath.normalizeL2(vec)
-                    }
-                    guard vec.count == self.embedder.dimensions else {
-                        throw PhotoIngestError.embedderDimensionMismatch(
-                            expected: self.embedder.dimensions,
-                            got: vec.count
-                        )
-                    }
+                    let vec = try await self.validatedImageEmbedding(crop)
                     return (index, vec)
                 }
                 activeCount += 1
@@ -1054,16 +1021,7 @@ package actor PhotoRAGOrchestrator {
                 if let item = cropIterator.next() {
                     let (index, crop, _) = item
                     group.addTask {
-                        var vec = try await self.embedder.embed(image: crop)
-                        if self.embedder.normalize, !vec.isEmpty {
-                            vec = VectorMath.normalizeL2(vec)
-                        }
-                        guard vec.count == self.embedder.dimensions else {
-                            throw PhotoIngestError.embedderDimensionMismatch(
-                                expected: self.embedder.dimensions,
-                                got: vec.count
-                            )
-                        }
+                        let vec = try await self.validatedImageEmbedding(crop)
                         return (index, vec)
                     }
                 }
@@ -1340,11 +1298,7 @@ package actor PhotoRAGOrchestrator {
         let imageEmbedding: [Float]?
         if let image {
             let cg = try Self.decodeThumbnail(from: image.data, maxPixelSize: config.embedMaxPixelSize)
-            var vec = try await embedder.embed(image: cg)
-            if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-            guard vec.count == embedder.dimensions else {
-                throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for query image, expected \(embedder.dimensions)")
-            }
+            let vec = try await validatedImageEmbedding(cg)
             imageEmbedding = vec
         } else {
             imageEmbedding = nil
@@ -1362,7 +1316,9 @@ package actor PhotoRAGOrchestrator {
             let wt: Float = config.textEmbeddingWeight
             let wi: Float = 1.0 - config.textEmbeddingWeight
             guard t.count == i.count else {
-                throw WaxError.io("query embedding dimension mismatch (text=\(t.count), image=\(i.count))")
+                throw WaxError.invalidEmbedding(
+                    reason: "dimension mismatch: expected \(t.count), got \(i.count)"
+                )
             }
             var out = [Float](repeating: 0, count: t.count)
             for idx in 0..<t.count {
@@ -1384,13 +1340,34 @@ package actor PhotoRAGOrchestrator {
             return cached
         }
 
-        var vec = try await embedder.embed(text: text)
-        if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-        guard vec.count == embedder.dimensions else {
-            throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for query text, expected \(embedder.dimensions)")
-        }
+        let vec = try await validatedTextEmbedding(text)
         await queryEmbeddingCache?.set(key, value: vec)
         return vec
+    }
+
+    private func validatedImageEmbedding(_ image: CGImage) async throws -> [Float] {
+        let vec = try await embedder.embed(image: image)
+        return try Self.validatedProviderEmbedding(vec, embedder: embedder)
+    }
+
+    private func validatedTextEmbedding(_ text: String) async throws -> [Float] {
+        let vec = try await embedder.embed(text: text)
+        return try Self.validatedProviderEmbedding(vec, embedder: embedder)
+    }
+
+    private static func validatedProviderEmbedding(
+        _ vector: [Float],
+        embedder: some MultimodalEmbeddingProvider
+    ) throws -> [Float] {
+        try EmbeddingValidation.validate(
+            vector,
+            dimensions: embedder.dimensions,
+            requireNonZero: embedder.normalize
+        )
+        if embedder.normalize {
+            return VectorMath.normalizeL2(vector)
+        }
+        return vector
     }
 
     // MARK: - Pixels (thumbnails + crops)

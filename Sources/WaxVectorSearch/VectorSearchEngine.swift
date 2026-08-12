@@ -21,17 +21,12 @@ package protocol VectorSearchEngine: Sendable {
 
 package enum VectorValidation {
     package static func validate(_ vector: [Float], dimensions: Int) throws {
-        guard vector.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(vector.count)")
-        }
+        try EmbeddingValidation.validate(vector, dimensions: dimensions, requireNonZero: false)
         guard vector.count <= Constants.maxEmbeddingDimensions else {
             throw WaxError.capacityExceeded(
                 limit: UInt64(Constants.maxEmbeddingDimensions),
                 requested: UInt64(vector.count)
             )
-        }
-        guard vector.allSatisfy(\.isFinite) else {
-            throw WaxError.encodingError(reason: "vector contains non-finite values")
         }
     }
 }

@@ -61,9 +61,7 @@ package actor WaxVectorSearchSession {
         compression: CanonicalEncoding = .plain,
         identity: EmbeddingIdentity? = nil
     ) async throws -> UInt64 {
-        guard embedding.count == dimensions else {
-            throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(embedding.count)")
-        }
+        try EmbeddingValidation.validate(embedding, dimensions: dimensions, requireNonZero: false)
 
         var merged = options
         if let identity {
@@ -101,9 +99,7 @@ package actor WaxVectorSearchSession {
         }
 
         for embedding in embeddings {
-            guard embedding.count == dimensions else {
-                throw WaxError.encodingError(reason: "vector dimension mismatch: expected \(dimensions), got \(embedding.count)")
-            }
+            try EmbeddingValidation.validate(embedding, dimensions: dimensions, requireNonZero: false)
         }
 
         var mergedOptions = options

@@ -768,20 +768,16 @@ package actor MemoryOrchestrator {
             }
 
             guard vectors.count == missingIndices.count else {
-                throw WaxError.encodingError(
+                throw WaxError.invalidEmbedding(
                     reason: "batch embedding returned \(vectors.count) vectors for \(missingIndices.count) inputs"
                 )
             }
 
-            // Normalize (if needed) and cache results
-            let shouldNormalize = embedder.normalize
+            // Validate immediately after the provider call, then normalize and cache.
             var cacheItems: [(key: UInt64, value: [Float])] = []
             cacheItems.reserveCapacity(missingIndices.count)
             for (localIdx, globalIdx) in missingIndices.enumerated() {
-                var vec = vectors[localIdx]
-                if shouldNormalize && !vec.isEmpty {
-                    vec = normalizedL2(vec)
-                }
+                let vec = try Self.validatedProviderEmbedding(vectors[localIdx], embedder: embedder)
                 results[globalIdx] = vec
 
                 if let cacheKeys {
@@ -1868,10 +1864,10 @@ package actor MemoryOrchestrator {
             }
         case .always:
             guard config.enableVectorSearch else {
-                throw WaxError.io("query embedding requested but vector search is disabled")
+                throw WaxError.featureDisabled(feature: "vector search")
             }
             guard let embedder else {
-                throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
+                throw WaxError.missingEmbedder
             }
             guard !queryEmbeddingCircuitOpen else {
                 throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")
@@ -1930,10 +1926,23 @@ package actor MemoryOrchestrator {
                 vector = try await embedder.embed(text)
             }
         }
-        if embedder.normalize {
-            vector = normalizedL2(vector)
-        }
+        vector = try validatedProviderEmbedding(vector, embedder: embedder)
         await cache?.set(key, value: vector)
+        return vector
+    }
+
+    private static func validatedProviderEmbedding(
+        _ vector: [Float],
+        embedder: some EmbeddingProvider
+    ) throws -> [Float] {
+        try EmbeddingValidation.validate(
+            vector,
+            dimensions: embedder.dimensions,
+            requireNonZero: embedder.normalize
+        )
+        if embedder.normalize {
+            return normalizedL2(vector)
+        }
         return vector
     }
 
@@ -1972,13 +1981,12 @@ package actor MemoryOrchestrator {
         if let batch = embedder as? any BatchEmbeddingProvider {
             let vectors = try await batch.embed(batch: missingTexts)
             guard vectors.count == missingTexts.count else {
-                throw WaxError.io("batch embedding count mismatch: expected \(missingTexts.count), got \(vectors.count)")
+                throw WaxError.invalidEmbedding(
+                    reason: "batch embedding count mismatch: expected \(missingTexts.count), got \(vectors.count)"
+                )
             }
             for (position, idx) in missingIndices.enumerated() {
-                var vector = vectors[position]
-                if embedder.normalize {
-                    vector = normalizedL2(vector)
-                }
+                let vector = try validatedProviderEmbedding(vectors[position], embedder: embedder)
                 out[idx] = vector
                 let key = EmbeddingKey.make(
                     text: chunks[idx],

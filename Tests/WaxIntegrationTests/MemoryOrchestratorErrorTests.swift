@@ -3,7 +3,7 @@ import Testing
 import Wax
 
 @Test
-func memoryOrchestratorBatchEmbeddingCountMismatchThrowsEncodingError() async throws {
+func memoryOrchestratorBatchEmbeddingCountMismatchThrowsInvalidEmbedding() async throws {
     try await TempFiles.withTempFile { url in
         var config = TestHelpers.defaultMemoryConfig(vector: true)
         config.chunking = .tokenCount(targetTokens: 3, overlapTokens: 0)
@@ -19,10 +19,10 @@ func memoryOrchestratorBatchEmbeddingCountMismatchThrowsEncodingError() async th
             try await orchestrator.remember(text)
             #expect(Bool(false))
         } catch let error as WaxError {
-            if case .encodingError(let reason) = error {
+            if case .invalidEmbedding(let reason) = error {
                 #expect(reason.contains("batch embedding returned"))
             } else {
-                #expect(Bool(false))
+                #expect(Bool(false), "expected WaxError.invalidEmbedding, got \(error)")
             }
         } catch {
             #expect(Bool(false))

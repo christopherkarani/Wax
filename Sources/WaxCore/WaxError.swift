@@ -23,6 +23,8 @@ public enum WaxError: Error, LocalizedError, Sendable {
     case invalidEmbedding(reason: String)
     /// Vector search is enabled but no embedding provider is configured.
     case missingEmbedder
+    /// Store configuration is invalid (for example an unsupported WAL size).
+    case invalidConfiguration(reason: String)
 
     public var errorDescription: String? {
         switch self {
@@ -58,6 +60,8 @@ public enum WaxError: Error, LocalizedError, Sendable {
             return "Invalid embedding: \(reason)"
         case .missingEmbedder:
             return "Vector search requires an embedding provider; set Memory.Config.embedding or disable vector search."
+        case .invalidConfiguration(let reason):
+            return "Invalid configuration: \(reason)"
         }
     }
 }
