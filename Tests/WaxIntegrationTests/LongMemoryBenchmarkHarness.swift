@@ -2,6 +2,7 @@
 import Foundation
 import XCTest
 @testable import Wax
+import WaxCore
 
 private enum LongMemoryBenchmarkError: Error {
     case missingFixture(String)

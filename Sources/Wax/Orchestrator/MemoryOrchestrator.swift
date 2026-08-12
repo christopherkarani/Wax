@@ -398,7 +398,7 @@ package actor MemoryOrchestrator {
         }
 
         if useVectorSearch, localEmbedder == nil {
-            throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+            throw WaxError.missingEmbedder
         }
 
         if chunkCount == 1 {
@@ -413,7 +413,7 @@ package actor MemoryOrchestrator {
             let chunkEmbedding: [Float]?
             if useVectorSearch {
                 guard let localEmbedder else {
-                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                    throw WaxError.missingEmbedder
                 }
                 chunkEmbedding = try await Self.embedOne(
                     chunk,
@@ -443,7 +443,7 @@ package actor MemoryOrchestrator {
 
             if let chunkEmbedding {
                 guard let localEmbedder else {
-                    throw WaxError.io("enableVectorSearch=true requires an EmbeddingProvider for ingest-time embeddings")
+                    throw WaxError.missingEmbedder
                 }
                 let frameId = try await localSession.put(
                     chunkData,
@@ -2001,7 +2001,7 @@ package actor MemoryOrchestrator {
 
     private func ensureStructuredMemoryEnabled() throws {
         guard config.enableStructuredMemory else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
     }
 

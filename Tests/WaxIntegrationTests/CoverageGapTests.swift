@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 // MARK: - Shared test stubs
 

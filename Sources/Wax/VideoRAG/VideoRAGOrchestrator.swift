@@ -777,9 +777,13 @@ package actor VideoRAGOrchestrator {
         }
 
         var next = IndexState()
+        var retiredVectorIds: Set<UInt64> = []
 
         for meta in metas {
-            guard meta.status != .deleted else { continue }
+            guard meta.status != .deleted else {
+                retiredVectorIds.insert(meta.id)
+                continue
+            }
             guard let kind = meta.kind else { continue }
             if kind != FrameKind.root && kind != FrameKind.segment { continue }
             guard let entries = meta.metadata?.entries else { continue }
@@ -791,7 +795,10 @@ package actor VideoRAGOrchestrator {
             let vid = VideoID(source: src, id: sourceID)
 
             if kind == FrameKind.root {
-                guard meta.supersededBy == nil else { continue }
+                guard meta.supersededBy == nil else {
+                    retiredVectorIds.insert(meta.id)
+                    continue
+                }
                 next.rootByVideoID[vid] = meta.id
                 next.rootMetaByVideoID[vid] = meta
                 continue
@@ -799,7 +806,10 @@ package actor VideoRAGOrchestrator {
 
             // Segment: only if parent root is current.
             if let parentId = meta.parentId {
-                guard !supersededRoots.contains(parentId) else { continue }
+                guard !supersededRoots.contains(parentId) else {
+                    retiredVectorIds.insert(meta.id)
+                    continue
+                }
                 if next.rootByVideoID[vid] == parentId {
                     next.segmentIdsByVideoID[vid, default: []].insert(meta.id)
                 }
@@ -807,6 +817,26 @@ package actor VideoRAGOrchestrator {
         }
 
         index = next
+        await sweepRetiredVectors(retiredVectorIds)
+    }
+
+    /// Removes vectors for frames outside the live index (superseded trees, deleted
+    /// frames). Stores written before vector cleanup existed can otherwise keep serving
+    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
+    /// opening or reindexing the store.
+    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
+        guard !frameIds.isEmpty else { return }
+        for frameId in frameIds {
+            do {
+                try await session.removeVector(frameId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "VideoRAG retired-vector sweep",
+                    fallback: "stale vector may remain in the committed index"
+                )
+            }
+        }
     }
 
     private func isDegraded(videoID: VideoID) -> Bool {

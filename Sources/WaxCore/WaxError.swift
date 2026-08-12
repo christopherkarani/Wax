@@ -15,6 +15,14 @@ public enum WaxError: Error, LocalizedError, Sendable {
     case io(String)
     case writerBusy
     case writerTimeout
+    /// An API was called that requires a feature disabled in the store configuration
+    /// (for example text search, vector search, or structured memory).
+    case featureDisabled(feature: String)
+    /// An embedding provider returned a vector that failed validation
+    /// (wrong dimensions, non-finite values, or zero magnitude).
+    case invalidEmbedding(reason: String)
+    /// Vector search is enabled but no embedding provider is configured.
+    case missingEmbedder
 
     public var errorDescription: String? {
         switch self {
@@ -44,6 +52,12 @@ public enum WaxError: Error, LocalizedError, Sendable {
             return "Writer session already active"
         case .writerTimeout:
             return "Timed out waiting for writer session"
+        case .featureDisabled(let feature):
+            return "Feature disabled: \(feature). Enable it in the store configuration to use this API."
+        case .invalidEmbedding(let reason):
+            return "Invalid embedding: \(reason)"
+        case .missingEmbedder:
+            return "Vector search requires an embedding provider; set Memory.Config.embedding or disable vector search."
         }
     }
 }

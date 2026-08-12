@@ -4,6 +4,9 @@ import CoreText
 import PDFKit
 import Testing
 import Wax
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private enum PDFFixtures {
     static let pageOnePhrase = "crimson"

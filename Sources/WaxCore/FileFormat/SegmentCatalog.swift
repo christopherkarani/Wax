@@ -26,7 +26,7 @@ private enum SegmentCatalogValidation {
     }
 }
 
-package struct SegmentCatalogEntry: Equatable, Sendable {
+struct SegmentCatalogEntry: Equatable, Sendable {
     package var segmentId: UInt64
     package var bytesOffset: UInt64
     package var bytesLength: UInt64
@@ -51,7 +51,7 @@ package struct SegmentCatalogEntry: Equatable, Sendable {
     }
 }
 
-package struct SegmentCatalog: Equatable, Sendable {
+struct SegmentCatalog: Equatable, Sendable {
     package var entries: [SegmentCatalogEntry]
 
     package init(entries: [SegmentCatalogEntry] = []) {

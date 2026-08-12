@@ -36,7 +36,8 @@ struct <EMBEDDER_TYPE>: EmbeddingProvider {
 }
 
 let storeURL = <STORE_URL>
-let memory = try await Memory(at: storeURL, embedding: <EMBEDDER_TYPE>()) { config in
+let memory = try await Memory(at: storeURL) { config in
+    config.embedding = .custom(<EMBEDDER_TYPE>())
     <CONFIG_OVERRIDES>
 }
 ```
@@ -46,7 +47,7 @@ Alternative (built-in MiniLM, throws when unavailable):
 import Wax
 
 let storeURL = <STORE_URL>
-let memory = try await Memory(at: storeURL, builtInEmbedding: .miniLM)
+let memory = try await Memory(at: storeURL) { $0.embedding = .builtIn(.miniLM) }
 ```
 
 Alternative (automatic: built-in MiniLM when the platform supports it, text-only otherwise):

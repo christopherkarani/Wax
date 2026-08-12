@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import XCTest
 @testable import Wax
+import WaxCore
 
 final class ProductionReadinessStabilityTests: XCTestCase {
     private enum Profile: String {

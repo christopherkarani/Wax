@@ -1,7 +1,7 @@
 import Foundation
 
-package enum WALEntryCodec {
-    package enum OpCode: UInt8 {
+enum WALEntryCodec {
+    enum OpCode: UInt8 {
         case putFrame = 0x01
         case deleteFrame = 0x02
         case supersedeFrame = 0x03

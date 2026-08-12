@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Wax
+import WaxCore
 
 struct EntityUpsertCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

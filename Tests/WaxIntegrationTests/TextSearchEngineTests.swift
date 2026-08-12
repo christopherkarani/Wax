@@ -7,6 +7,9 @@ import Wax
 // are excluded at compile time; the CI only runs WaxCoreTests on Linux.
 #if canImport(SQLite3)
 import SQLite3
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private enum SQLiteBlobInspector {
     static func int32Pragma(_ pragma: String, fromSerialized data: Data) throws -> Int32 {

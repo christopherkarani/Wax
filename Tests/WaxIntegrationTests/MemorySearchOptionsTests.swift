@@ -20,8 +20,11 @@ func memoryFacadeRunsVectorOnlySearch() async throws {
     try await TempFiles.withTempFile { url in
         let memory = try await Memory(
             at: url,
-            config: .init(enableTextSearch: false, enableVectorSearch: true),
-            embedding: DeterministicEmbeddingProvider()
+            config: .init(
+                enableTextSearch: false,
+                enableVectorSearch: true,
+                embedding: .custom(DeterministicEmbeddingProvider())
+            )
         )
 
         try await memory.save("Wax vector search should find this frame.", metadata: ["id": "needle"])
@@ -115,8 +118,11 @@ func memorySearchReportsVectorDiagnosticsWithEmbedder() async throws {
     try await TempFiles.withTempFile { url in
         let memory = try await Memory(
             at: url,
-            config: .init(enableTextSearch: true, enableVectorSearch: true),
-            embedding: DeterministicEmbeddingProvider()
+            config: .init(
+                enableTextSearch: true,
+                enableVectorSearch: true,
+                embedding: .custom(DeterministicEmbeddingProvider())
+            )
         )
 
         try await memory.save("Wax vector diagnostics should report the vector lane.")

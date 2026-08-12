@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Wax
+import WaxCore
 
 struct FactAssertCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

@@ -68,7 +68,7 @@ package actor WaxVectorSearchSession {
         var merged = options
         if let identity {
             if let expectedDims = identity.dimensions, expectedDims != embedding.count {
-                throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embedding.count)")
+                throw WaxError.invalidEmbedding(reason: "dimension mismatch: expected \(expectedDims), got \(embedding.count)")
             }
             var metadata = merged.metadata ?? Metadata()
             if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
@@ -110,7 +110,7 @@ package actor WaxVectorSearchSession {
         if let identity {
             for (index, _) in options.enumerated() {
                 if let expectedDims = identity.dimensions, expectedDims != embeddings[index].count {
-                    throw WaxError.io("embedding identity dimension mismatch: expected \(expectedDims), got \(embeddings[index].count)")
+                    throw WaxError.invalidEmbedding(reason: "dimension mismatch: expected \(expectedDims), got \(embeddings[index].count)")
                 }
                 var metadata = mergedOptions[index].metadata ?? Metadata()
                 if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }

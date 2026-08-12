@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 actor CountingEmbedder: EmbeddingProvider {
     nonisolated let dimensions: Int

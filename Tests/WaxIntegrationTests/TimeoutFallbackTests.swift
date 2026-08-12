@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private actor HangingVectorEngine: VectorSearchEngine {
     let dimensions: Int

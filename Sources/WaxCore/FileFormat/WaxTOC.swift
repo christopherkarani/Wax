@@ -1,6 +1,6 @@
 import Foundation
 
-package struct TimeIndexManifest: Equatable, Sendable {
+struct TimeIndexManifest: Equatable, Sendable {
     package var bytesOffset: UInt64
     package var bytesLength: UInt64
     package var entryCount: UInt64
@@ -42,15 +42,15 @@ extension TimeIndexManifest: BinaryCodable {
 package struct WaxTOC: Equatable, Sendable {
     package var tocVersion: UInt64
     package var frames: [FrameMeta]
-    package var indexes: IndexManifests
-    package var timeIndex: TimeIndexManifest?
-    package var segmentCatalog: SegmentCatalog
-    package var ticketRef: TicketRef
+    var indexes: IndexManifests
+    var timeIndex: TimeIndexManifest?
+    var segmentCatalog: SegmentCatalog
+    var ticketRef: TicketRef
     package var memoryBinding: MemoryBinding?
     package var merkleRoot: Data
     package var tocChecksum: Data
 
-    package init(
+    init(
         tocVersion: UInt64,
         frames: [FrameMeta],
         indexes: IndexManifests,
