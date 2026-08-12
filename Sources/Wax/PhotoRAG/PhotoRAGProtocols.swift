@@ -24,7 +24,7 @@ package struct RecognizedTextBlock: Sendable, Equatable {
 /// Provider for on-device optical character recognition.
 ///
 /// Conforming types must be `Sendable`.
-package protocol OCRProvider: Sendable {
+package protocol CGImageOCRProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
     /// Recognize text blocks within an image.
@@ -34,7 +34,7 @@ package protocol OCRProvider: Sendable {
 /// Provider for on-device image captioning.
 ///
 /// Conforming types must be `Sendable`.
-package protocol CaptionProvider: Sendable {
+package protocol CGImageCaptionProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
     /// Produce a short, human-readable caption for an image.
@@ -43,17 +43,17 @@ package protocol CaptionProvider: Sendable {
 
 // MARK: - Deprecated Defaults (migration aid)
 
-extension OCRProvider {
+extension CGImageOCRProvider {
     /// Default removed to enforce explicit execution mode declaration.
     /// Provide an explicit `executionMode` property on your conformance.
-    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your OCRProvider conformance.")
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CGImageOCRProvider conformance.")
     package var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
 
-extension CaptionProvider {
+extension CGImageCaptionProvider {
     /// Default removed to enforce explicit execution mode declaration.
     /// Provide an explicit `executionMode` property on your conformance.
-    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CaptionProvider conformance.")
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your CGImageCaptionProvider conformance.")
     package var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
 

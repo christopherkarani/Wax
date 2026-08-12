@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import Wax
 
-struct StubOCRProvider: OCRProvider, Sendable {
+struct StubOCRProvider: CGImageOCRProvider, Sendable {
     let blocks: [RecognizedTextBlock]
     let executionMode: ProviderExecutionMode
 
@@ -20,7 +20,7 @@ struct StubOCRProvider: OCRProvider, Sendable {
     }
 }
 
-struct StubCaptionProvider: CaptionProvider, Sendable {
+struct StubCaptionProvider: CGImageCaptionProvider, Sendable {
     let captionText: String
     let shouldThrow: Bool
     let executionMode: ProviderExecutionMode
@@ -44,7 +44,7 @@ struct StubCaptionProvider: CaptionProvider, Sendable {
     }
 }
 
-struct StubTranscriptProvider: VideoTranscriptProvider, Sendable {
+struct StubTranscriptProvider: VideoTranscriptPipelineProvider, Sendable {
     let chunks: [VideoTranscriptChunk]
     let executionMode: ProviderExecutionMode
 

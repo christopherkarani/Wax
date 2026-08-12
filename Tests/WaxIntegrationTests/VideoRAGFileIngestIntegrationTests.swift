@@ -1,9 +1,10 @@
+import CoreGraphics
 import Foundation
 import Testing
 import Wax
 import WaxCore
 
-private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
+private struct TestVideoEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 8
     let normalize: Bool = true
@@ -22,7 +23,7 @@ private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
     }
 }
 
-private struct TestTranscriptProvider: VideoTranscriptProvider {
+private struct TestTranscriptProvider: VideoTranscriptPipelineProvider {
     static let token = "INGEST_TOKEN"
     let executionMode: ProviderExecutionMode = .onDeviceOnly
 
@@ -126,7 +127,7 @@ func videoRAGFileIngestRecallWithThumbsIsDeterministic() async throws {
     }
 }
 
-private struct SegmentScopedTranscriptProvider: VideoTranscriptProvider {
+private struct SegmentScopedTranscriptProvider: VideoTranscriptPipelineProvider {
     static let token = "SEGMENT_TOKEN"
     let executionMode: ProviderExecutionMode = .onDeviceOnly
 
@@ -139,7 +140,7 @@ private struct SegmentScopedTranscriptProvider: VideoTranscriptProvider {
     }
 }
 
-private struct NetworkTranscriptProvider: VideoTranscriptProvider {
+private struct NetworkTranscriptProvider: VideoTranscriptPipelineProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
 
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
@@ -148,7 +149,7 @@ private struct NetworkTranscriptProvider: VideoTranscriptProvider {
     }
 }
 
-private struct OpposingLaneEmbedder: MultimodalEmbeddingProvider {
+private struct OpposingLaneEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -569,7 +570,7 @@ func videoRAGThumbnailBudgetDoesNotConsumeOnUnavailableBeforeFileBackedItems() a
             try await wax.close()
         }
 
-        struct FixedTokenTranscriptProvider: VideoTranscriptProvider {
+        struct FixedTokenTranscriptProvider: VideoTranscriptPipelineProvider {
             let executionMode: ProviderExecutionMode = .onDeviceOnly
             let token: String
 

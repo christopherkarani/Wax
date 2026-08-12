@@ -39,7 +39,7 @@ func photoRAGDocsNameMultimodalEmbeddingProviderRequirement() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
         encoding: .utf8
     )
-    #expect(source.contains("embedder: any MultimodalEmbeddingProvider"))
+    #expect(source.contains("embedder: any CGImageEmbeddingProvider"))
 
     for relativePath in photoRAGDocPaths {
         let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)

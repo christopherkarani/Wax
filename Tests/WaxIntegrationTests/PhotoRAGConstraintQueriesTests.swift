@@ -4,7 +4,7 @@ import Testing
 import Wax
 import WaxCore
 
-private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
+private struct StubMultimodalEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true

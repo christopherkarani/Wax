@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
@@ -9,7 +10,7 @@ import WaxTextSearch
 // vectors from the committed vector index. Before the fix, VideoRAGOrchestrator only
 // deleted frames and left ghost keyframe vectors searchable.
 
-private struct DeleteDurabilityVideoEmbedder: MultimodalEmbeddingProvider {
+private struct DeleteDurabilityVideoEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 8
     let normalize: Bool = true

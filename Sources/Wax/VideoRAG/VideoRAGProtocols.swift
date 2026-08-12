@@ -1,6 +1,10 @@
 import Foundation
 
-/// Transcript request passed to a `VideoTranscriptProvider`.
+#if canImport(ImageIO)
+import CoreGraphics
+#endif
+
+/// Transcript request passed to a `VideoTranscriptPipelineProvider`.
 package struct VideoTranscriptRequest: Sendable, Equatable {
     /// Stable identifier for the video being transcribed.
     package var videoID: VideoID
@@ -34,7 +38,7 @@ package struct VideoTranscriptChunk: Sendable, Equatable {
 /// Notes:
 /// - Wax does not perform transcription in v1.
 /// - The host app controls transcript generation and may choose to run it fully on-device.
-package protocol VideoTranscriptProvider: Sendable {
+package protocol VideoTranscriptPipelineProvider: Sendable {
     /// Declares whether this provider may call network services.
     var executionMode: ProviderExecutionMode { get }
     /// Generate timed transcript chunks for a video.
@@ -46,9 +50,19 @@ package protocol VideoTranscriptProvider: Sendable {
 
 // MARK: - Deprecated Default (migration aid)
 
-extension VideoTranscriptProvider {
+extension VideoTranscriptPipelineProvider {
     /// Default removed to enforce explicit execution mode declaration.
     /// Provide an explicit `executionMode` property on your conformance.
-    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your VideoTranscriptProvider conformance.")
+    @available(*, deprecated, message: "Provide an explicit 'executionMode' on your VideoTranscriptPipelineProvider conformance.")
     package var executionMode: ProviderExecutionMode { .onDeviceOnly }
 }
+
+#if canImport(ImageIO)
+/// Package-only keyframe extractor used by Video RAG ingest.
+package protocol VideoKeyframePipelineProvider: Sendable {
+    func buildKeyframes(
+        url: URL,
+        config: VideoRAGConfig
+    ) async throws -> (durationMs: Int64, keyframes: [CGImage])
+}
+#endif

@@ -4,7 +4,7 @@ import Testing
 import Wax
 import WaxCore
 
-private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
+private struct StubMultimodalEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -14,7 +14,7 @@ private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
     func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
 }
 
-private struct NetworkOCRProvider: OCRProvider {
+private struct NetworkOCRProvider: CGImageOCRProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
 
     func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {

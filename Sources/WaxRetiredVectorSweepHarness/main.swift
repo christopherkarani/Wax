@@ -81,7 +81,7 @@ struct WaxRetiredVectorSweepHarness {
 }
 
 #if canImport(ImageIO)
-private struct PhotoHarnessEmbedder: MultimodalEmbeddingProvider {
+private struct PhotoHarnessEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -103,7 +103,7 @@ private struct PhotoHarnessEmbedder: MultimodalEmbeddingProvider {
     }
 }
 
-private struct VideoHarnessEmbedder: MultimodalEmbeddingProvider {
+private struct VideoHarnessEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 8
     let normalize: Bool = true

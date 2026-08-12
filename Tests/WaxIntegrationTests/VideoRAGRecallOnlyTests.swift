@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
@@ -5,7 +6,7 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-private struct StubVideoEmbedder: MultimodalEmbeddingProvider {
+private struct StubVideoEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true

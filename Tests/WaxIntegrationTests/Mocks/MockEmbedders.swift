@@ -74,7 +74,7 @@ struct WrongDimensionTextEmbedder: EmbeddingProvider, Sendable {
 #if canImport(CoreGraphics)
 import CoreGraphics
 
-struct DeterministicMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
+struct DeterministicMultimodalEmbedder: CGImageEmbeddingProvider, Sendable {
     let dimensions: Int = 4
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(

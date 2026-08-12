@@ -220,7 +220,7 @@ private func seedPhotoLegacyGhost(storeURL: URL, imageURL: URL, assetID: String)
 }
 
 #if canImport(AVFoundation)
-private struct SweepDurabilityVideoEmbedder: MultimodalEmbeddingProvider {
+private struct SweepDurabilityVideoEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 8
     let normalize: Bool = true

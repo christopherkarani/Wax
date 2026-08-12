@@ -7,7 +7,7 @@ import WaxCore
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 private let tinyPhotoQueryImage = PhotoQueryImage(data: tinyPNGData, format: .png)
 
-private struct BlendAwareEmbedder: MultimodalEmbeddingProvider {
+private struct BlendAwareEmbedder: CGImageEmbeddingProvider {
     let dimensions: Int = 4
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "BlendAware", dimensions: 4, normalized: true)

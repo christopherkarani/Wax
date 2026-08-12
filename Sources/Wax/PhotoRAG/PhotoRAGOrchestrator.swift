@@ -126,10 +126,11 @@ package actor PhotoRAGOrchestrator {
     package let config: PhotoRAGConfig
     private let storeURL: URL
 
-    private let embedder: any MultimodalEmbeddingProvider
-    private let ocr: (any OCRProvider)?
-    private let captioner: (any CaptionProvider)?
+    private let embedder: any CGImageEmbeddingProvider
+    private let ocr: (any CGImageOCRProvider)?
+    private let captioner: (any CGImageCaptionProvider)?
     private let queryEmbeddingCache: EmbeddingMemoizer?
+    private var isClosed = false
 
     private var index = IndexState()
     private var inFlightAssetIDs: Set<String> = []
@@ -137,9 +138,11 @@ package actor PhotoRAGOrchestrator {
     package init(
         storeURL: URL,
         config: PhotoRAGConfig = .default,
-        embedder: any MultimodalEmbeddingProvider,
-        ocr: (any OCRProvider)? = nil,
-        captioner: (any CaptionProvider)? = nil
+        embedder: any CGImageEmbeddingProvider,
+        ocr: (any CGImageOCRProvider)? = nil,
+        captioner: (any CGImageCaptionProvider)? = nil,
+        waxOptions: WaxOptions = .init(),
+        walSizeBytes: UInt64? = nil
     ) async throws {
         self.storeURL = storeURL
         self.config = config
@@ -161,9 +164,13 @@ package actor PhotoRAGOrchestrator {
         }
 
         if FileManager.default.fileExists(atPath: storeURL.path(percentEncoded: false)) {
-            self.wax = try await Wax.open(at: storeURL)
+            self.wax = try await Wax.open(at: storeURL, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: storeURL)
+            self.wax = try await Wax.create(
+                at: storeURL,
+                walSize: walSizeBytes ?? Constants.defaultWalSize,
+                options: waxOptions
+            )
         }
 
         if config.vectorEnginePreference != .cpuOnly, embedder.normalize == false {
@@ -549,6 +556,15 @@ package actor PhotoRAGOrchestrator {
     /// Flush pending writes to disk.
     package func flush() async throws {
         try await session.commit()
+    }
+
+    /// Commit, drop the writer lease, and release the exclusive store lock.
+    package func close() async throws {
+        guard !isClosed else { return }
+        try await flush()
+        await session.close()
+        try await wax.close()
+        isClosed = true
     }
 
     // MARK: - Ingest internals
@@ -1385,7 +1401,7 @@ package actor PhotoRAGOrchestrator {
 
     private static func validatedProviderEmbedding(
         _ vector: [Float],
-        embedder: some MultimodalEmbeddingProvider
+        embedder: some CGImageEmbeddingProvider
     ) throws -> [Float] {
         try EmbeddingValidation.validate(
             vector,
@@ -1945,7 +1961,7 @@ package actor PhotoRAGOrchestrator {
         return data as Data
     }
 
-    private static func defaultOCRProvider() -> (any OCRProvider)? {
+    private static func defaultOCRProvider() -> (any CGImageOCRProvider)? {
         #if canImport(Vision)
         return VisionOCRProvider()
         #else

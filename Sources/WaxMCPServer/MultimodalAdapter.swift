@@ -13,7 +13,7 @@ import WaxVectorSearch
 /// This is intentionally not a CLIP-style joint vision-language encoder. Instead, it derives
 /// lightweight labels and OCR text from an image, then embeds that synthesized description
 /// with the base text embedding provider. This is sufficient for caption-style retrieval.
-struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
+struct MultimodalAdapter: CGImageEmbeddingProvider, Sendable {
     /// Minimum Vision classification confidence to include a label in the image description.
     private static let minimumLabelConfidence: Float = 0.3
 

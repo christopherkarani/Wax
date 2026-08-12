@@ -92,22 +92,28 @@ package actor VideoRAGOrchestrator {
     package let config: VideoRAGConfig
     private let storeURL: URL
 
-    private let embedder: any MultimodalEmbeddingProvider
-    private let transcriptProvider: (any VideoTranscriptProvider)?
+    private let embedder: any CGImageEmbeddingProvider
+    private let transcriptProvider: (any VideoTranscriptPipelineProvider)?
+    private let keyframeProvider: (any VideoKeyframePipelineProvider)?
     private let queryEmbeddingCache: EmbeddingMemoizer?
+    private var isClosed = false
 
     private var index = IndexState()
 
     package init(
         storeURL: URL,
         config: VideoRAGConfig = .default,
-        embedder: any MultimodalEmbeddingProvider,
-        transcriptProvider: (any VideoTranscriptProvider)? = nil
+        embedder: any CGImageEmbeddingProvider,
+        transcriptProvider: (any VideoTranscriptPipelineProvider)? = nil,
+        keyframeProvider: (any VideoKeyframePipelineProvider)? = nil,
+        waxOptions: WaxOptions = .init(),
+        walSizeBytes: UInt64? = nil
     ) async throws {
         self.storeURL = storeURL
         self.config = config
         self.embedder = embedder
         self.transcriptProvider = transcriptProvider
+        self.keyframeProvider = keyframeProvider
 
         if config.requireOnDeviceProviders {
             var checks: [ProviderValidation.ProviderCheck] = [
@@ -124,9 +130,13 @@ package actor VideoRAGOrchestrator {
         }
 
         if FileManager.default.fileExists(atPath: storeURL.path(percentEncoded: false)) {
-            self.wax = try await Wax.open(at: storeURL)
+            self.wax = try await Wax.open(at: storeURL, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: storeURL)
+            self.wax = try await Wax.create(
+                at: storeURL,
+                walSize: walSizeBytes ?? Constants.defaultWalSize,
+                options: waxOptions
+            )
         }
 
         let sessionConfig = WaxSession.Config(
@@ -532,6 +542,15 @@ package actor VideoRAGOrchestrator {
         try await session.commit()
     }
 
+    /// Commit, drop the writer lease, and release the exclusive store lock.
+    package func close() async throws {
+        guard !isClosed else { return }
+        try await flush()
+        await session.close()
+        try await wax.close()
+        isClosed = true
+    }
+
     /// Removes vector-index entries for a superseded root and its segment frames.
     /// Without this, superseded keyframe vectors stay searchable as ghost hits.
     private func removeVectorsForRetiredTree(_ rootId: UInt64, videoID: VideoID) async throws {
@@ -872,7 +891,7 @@ package actor VideoRAGOrchestrator {
 
     private static func validatedProviderEmbedding(
         _ vector: [Float],
-        embedder: some MultimodalEmbeddingProvider
+        embedder: some CGImageEmbeddingProvider
     ) throws -> [Float] {
         try EmbeddingValidation.validate(
             vector,
@@ -887,8 +906,15 @@ package actor VideoRAGOrchestrator {
 
     // MARK: - Media helpers
 
-    #if canImport(AVFoundation)
     private func buildKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {
+        if let keyframeProvider {
+            return try await keyframeProvider.buildKeyframes(url: url, config: config)
+        }
+        return try await extractMediaKeyframes(url: url)
+    }
+
+    #if canImport(AVFoundation)
+    private func extractMediaKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration)
         let durationMs = Int64(duration.seconds * 1000)
@@ -921,7 +947,7 @@ package actor VideoRAGOrchestrator {
         return (durationMs: durationMs, keyframes: images)
     }
     #else
-    private func buildKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {
+    private func extractMediaKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {
         _ = url
         throw VideoIngestError.unsupportedPlatform(reason: "AVFoundation is unavailable on this platform")
     }

@@ -6,7 +6,7 @@ import WaxCore
 
 // MARK: - Shared test stubs
 
-private struct StubEmbedder: MultimodalEmbeddingProvider {
+private struct StubEmbedder: CGImageEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -16,7 +16,7 @@ private struct StubEmbedder: MultimodalEmbeddingProvider {
     func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
 }
 
-private struct NetworkEmbedder: MultimodalEmbeddingProvider {
+private struct NetworkEmbedder: CGImageEmbeddingProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
     let dimensions: Int = 4
     let normalize: Bool = true
@@ -26,7 +26,7 @@ private struct NetworkEmbedder: MultimodalEmbeddingProvider {
     func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
 }
 
-private struct NetworkCaptionProvider: CaptionProvider {
+private struct NetworkCaptionProvider: CGImageCaptionProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
 
     func caption(for image: CGImage) async throws -> String { "caption" }

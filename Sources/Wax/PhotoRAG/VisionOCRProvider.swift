@@ -5,7 +5,7 @@ import CoreGraphics
 import Foundation
 
 /// Default on-device OCR provider using Apple Vision framework for text recognition.
-package struct VisionOCRProvider: OCRProvider, Sendable {
+package struct VisionOCRProvider: CGImageOCRProvider, Sendable {
     /// Accuracy level for OCR recognition.
     package enum Accuracy: Sendable {
         case fast
