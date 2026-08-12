@@ -172,15 +172,17 @@ func foundationModelsOpenMemoryToolFactory() async throws {
         var config = Memory.Config.default
         config.enableVectorSearch = false
 
-        let tool = try await Memory.openFoundationModelsMemoryTool(
+        let toolSession = try await Memory.openFoundationModelsTools(
             at: url,
             config: config,
-            toolConfig: .default
+            kit: .combined
         )
+        let tool = try #require(toolSession.tools.first as? WaxMemoryTool)
         let result = try await tool.call(
             arguments: .init(action: "remember", content: "Opened via factory.")
         )
         #expect(result.isSuccess)
+        try await toolSession.close()
     }
 }
 
@@ -226,7 +228,6 @@ func foundationModelsSessionToolsOnlyStrategySkipsPromptAugmentation() async thr
 
         var configuration = FoundationModelsMemorySessionConfig.default
         configuration.contextStrategy = .tools
-        configuration.includeMemoryTools = true
         configuration.persistencePolicy = .none
 
         let session = memory.foundationModelsSession(configuration: configuration)
@@ -373,7 +374,6 @@ func foundationModelsPreparePromptDetailedReportsRecallCountsAfterSave() async t
         configuration.persistencePolicy = .none
         configuration.embeddingPolicy = .never
         configuration.contextStrategy = .promptAugmentation
-        configuration.includeMemoryTools = false
 
         let session = memory.foundationModelsSession(configuration: configuration)
         let prepared = try await session.preparePromptDetailed(
@@ -413,7 +413,6 @@ func foundationModelsSessionPreparePreservesHybridAlphaFromToolConfig() async th
         configuration.persistencePolicy = .none
         configuration.embeddingPolicy = .automatic
         configuration.contextStrategy = .promptAugmentation
-        configuration.includeMemoryTools = false
         configuration.toolConfig = toolConfig
 
         // Tool-config search options must keep the non-default alpha (M-7 regression guard).
@@ -444,7 +443,6 @@ func foundationModelsInstructionsAppendixSplitsMemoryIntoAppendixNotPrompt() asy
         configuration.persistencePolicy = .none
         configuration.embeddingPolicy = .never
         configuration.contextStrategy = .promptAugmentation
-        configuration.includeMemoryTools = false
         configuration.injectionStyle = .instructionsAppendix
         configuration.promptBuilder = FoundationModelsMemoryPromptBuilder(
             maxItems: 4,
@@ -490,7 +488,6 @@ func foundationModelsConfigInjectionStyleMutationAffectsPrepareWithoutReplacingB
         configuration.persistencePolicy = .none
         configuration.embeddingPolicy = .never
         configuration.contextStrategy = .promptAugmentation
-        configuration.includeMemoryTools = false
         // Mutate only the top-level field — leave default promptBuilder (xmlTags) in place.
         #expect(configuration.promptBuilder.injectionStyle == .xmlTags)
         configuration.injectionStyle = .instructionsAppendix
@@ -529,7 +526,6 @@ func foundationModelsConfigMemoryBudgetMutationAffectsPrepareWithoutReplacingBui
         configuration.persistencePolicy = .none
         configuration.embeddingPolicy = .never
         configuration.contextStrategy = .promptAugmentation
-        configuration.includeMemoryTools = false
         // Tiny budget only on the top-level field (default builder still has 1200).
         configuration.memoryCharacterBudget = 48
 
@@ -573,7 +569,10 @@ func foundationModelsAvailabilityCurrentDoesNotCrash() {
     case .available:
         break
     case .unavailable(let reason):
-        #expect(!reason.isEmpty)
+        switch reason {
+        case .deviceNotEligible, .appleIntelligenceNotEnabled, .modelNotReady, .unknown:
+            break
+        }
     }
 }
 
@@ -682,7 +681,6 @@ func foundationModelsRespondDetailedWhenModelAvailable() async throws {
         var configuration = FoundationModelsMemorySessionConfig.default
         configuration.embeddingPolicy = .never
         configuration.persistencePolicy = .userAndAssistant
-        configuration.includeMemoryTools = false
         configuration.contextStrategy = .promptAugmentation
 
         let session = memory.foundationModelsSession(
@@ -719,7 +717,6 @@ func foundationModelsStreamResponseAndCollectWhenModelAvailable() async throws {
         var configuration = FoundationModelsMemorySessionConfig.default
         configuration.embeddingPolicy = .never
         configuration.persistencePolicy = .userAndAssistant
-        configuration.includeMemoryTools = false
         configuration.contextStrategy = .promptAugmentation
 
         let session = memory.foundationModelsSession(
@@ -754,7 +751,6 @@ func foundationModelsDurableFactsOnlyDoesNotPersistChatTurnsWhenModelAvailable()
         var configuration = FoundationModelsMemorySessionConfig.default
         configuration.persistencePolicy = .durableFactsOnly
         configuration.embeddingPolicy = .never
-        configuration.includeMemoryTools = false
         configuration.contextStrategy = .promptAugmentation
 
         let session = memory.foundationModelsSession(configuration: configuration)

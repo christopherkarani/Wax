@@ -219,20 +219,20 @@ public struct WaxMemoryToolConfig: Sendable, Equatable {
 }
 
 /// Renders tool results into concise model-readable text.
-public struct WaxMemoryToolRenderer: Sendable {
-    public init() {}
+package struct WaxMemoryToolRenderer: Sendable {
+    package init() {}
 
-    public static func renderError(_ message: String) -> String {
+    package static func renderError(_ message: String) -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = trimmed.isEmpty ? "unknown error" : trimmed
         return "Wax memory tool error: \(body)"
     }
 
-    public static func renderRemember(contentLength: Int) -> String {
+    package static func renderRemember(contentLength: Int) -> String {
         "Stored memory (\(max(0, contentLength)) characters)."
     }
 
-    public static func renderForget(query: String, deletedCount: Int) -> String {
+    package static func renderForget(query: String, deletedCount: Int) -> String {
         let count = max(0, deletedCount)
         if count == 0 {
             return "No matching memory frames deleted for \"\(query)\"."
@@ -242,7 +242,7 @@ public struct WaxMemoryToolRenderer: Sendable {
     }
 
     /// Partial forget failure after some frames were already deleted.
-    public static func renderForgetPartial(
+    package static func renderForgetPartial(
         query: String,
         deletedCount: Int,
         failure: String
@@ -254,7 +254,7 @@ public struct WaxMemoryToolRenderer: Sendable {
         return "Partial forget for \"\(query)\": deleted \(count) memory \(noun), then failed: \(body)"
     }
 
-    public static func renderRecall(
+    package static func renderRecall(
         query: String,
         context: RAGContext,
         maxItems: Int,
@@ -312,7 +312,7 @@ public struct WaxMemoryToolRenderer: Sendable {
         }
     }
 
-    public static func renderSearch(
+    package static func renderSearch(
         query: String,
         items: [RAGContext.Item],
         includeScores: Bool,
@@ -364,14 +364,14 @@ public struct WaxMemoryToolRenderer: Sendable {
         }
     }
 
-    public static func truncate(_ text: String, maxCharacters: Int) -> String {
+    package static func truncate(_ text: String, maxCharacters: Int) -> String {
         guard maxCharacters > 0 else { return "" }
         guard text.count > maxCharacters else { return text }
         let truncated = text.prefix(maxCharacters)
         return "\(truncated)…"
     }
 
-    public static func kindLabel(_ kind: RAGContext.ItemKind) -> String {
+    package static func kindLabel(_ kind: RAGContext.ItemKind) -> String {
         switch kind {
         case .snippet:
             return "snippet"
@@ -410,14 +410,14 @@ public struct WaxMemoryToolRenderer: Sendable {
 }
 
 /// Shared execution path for combined and focused Foundation Models memory tools.
-public enum WaxMemoryToolExecutor: Sendable {
-    public static func normalizedText(_ value: String?) -> String? {
+package enum WaxMemoryToolExecutor: Sendable {
+    package static func normalizedText(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    public static func execute(
+    package static func execute(
         memory: Memory,
         config: WaxMemoryToolConfig,
         action rawAction: String,
@@ -443,7 +443,7 @@ public enum WaxMemoryToolExecutor: Sendable {
         )
     }
 
-    public static func execute(
+    package static func execute(
         memory: Memory,
         config: WaxMemoryToolConfig,
         action: WaxMemoryToolAction,
@@ -635,7 +635,7 @@ public enum WaxMemoryToolExecutor: Sendable {
     ///
     /// - Parameter embeddingPolicy: When non-`nil`, overrides ``WaxMemoryToolConfig/embeddingPolicy``
     ///   for this search (used by session prepare to honor session-level policy).
-    public static func searchWithFallback(
+    package static func searchWithFallback(
         memory: Memory,
         config: WaxMemoryToolConfig,
         query: String,
@@ -657,13 +657,36 @@ public enum WaxMemoryToolExecutor: Sendable {
             try Task.checkCancellation()
             switch effective.embeddingPolicy {
             case .always, .automatic:
-                return try await memory.search(
+                var fallback = try await memory.search(
                     query,
                     options: effective.textOnlySearchOptions(topK: topK)
                 )
+                fallback.diagnostics = RAGContext.Diagnostics(
+                    requestedMode: requestedModeSummary(
+                        embeddingPolicy: effective.embeddingPolicy,
+                        searchAlpha: effective.alpha(alpha)
+                    ),
+                    effectiveMode: "text",
+                    queryEmbeddingState: .failed
+                )
+                return fallback
             case .never:
                 throw error
             }
+        }
+    }
+
+    package static func requestedModeSummary(
+        embeddingPolicy: Memory.EmbeddingPolicy,
+        searchAlpha: Float
+    ) -> String {
+        switch embeddingPolicy {
+        case .never:
+            return "text"
+        case .always:
+            return "vector"
+        case .automatic:
+            return "hybrid(alpha=\(String(format: "%.3f", Double(searchAlpha))))"
         }
     }
 

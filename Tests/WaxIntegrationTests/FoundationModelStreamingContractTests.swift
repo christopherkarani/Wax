@@ -186,8 +186,15 @@ struct FoundationModelStreamingContractTests {
                 }
                 Issue.record("guardrail failure must throw")
             } catch is ControllableFoundationModelGuardrailError {
+            } catch let error as WaxFoundationModelsError {
+                guard case .generationFailed(let didPersistUser, let didPersistAssistant, _) = error else {
+                    Issue.record("expected generationFailed, got \(error)")
+                    return
+                }
+                #expect(didPersistUser)
+                #expect(!didPersistAssistant)
             } catch {
-                Issue.record("expected ControllableFoundationModelGuardrailError, got \(error)")
+                Issue.record("expected generationFailed, got \(error)")
             }
             #expect(sawContent)
 
@@ -222,13 +229,13 @@ struct FoundationModelStreamingContractTests {
             do {
                 _ = try await session.streamResponse(to: "stream-B")
                 Issue.record("second stream must fail while the first is active")
-            } catch let error as WaxError {
-                guard case .writerBusy = error else {
-                    Issue.record("expected WaxError.writerBusy, got \(error)")
+            } catch let error as WaxFoundationModelsError {
+                guard case .generationInProgress = error else {
+                    Issue.record("expected WaxFoundationModelsError.generationInProgress, got \(error)")
                     return
                 }
             } catch {
-                Issue.record("expected WaxError.writerBusy, got \(error)")
+                Issue.record("expected WaxFoundationModelsError.generationInProgress, got \(error)")
             }
 
             var events = 0
@@ -272,13 +279,13 @@ struct FoundationModelStreamingContractTests {
             do {
                 _ = try await second.next()
                 Issue.record("second iterator must be invalidated")
-            } catch let error as WaxError {
-                guard case .invalidConfiguration = error else {
-                    Issue.record("expected invalidConfiguration, got \(error)")
+            } catch let error as WaxFoundationModelsError {
+                guard case .iteratorAlreadyCreated = error else {
+                    Issue.record("expected iteratorAlreadyCreated, got \(error)")
                     return
                 }
             } catch {
-                Issue.record("expected WaxError.invalidConfiguration, got \(error)")
+                Issue.record("expected WaxFoundationModelsError.iteratorAlreadyCreated, got \(error)")
             }
 
             while try await first.next() != nil {}
@@ -334,7 +341,6 @@ private func makeStreamingSession(
     var configuration = FoundationModelsMemorySessionConfig.default
     configuration.embeddingPolicy = .never
     configuration.persistencePolicy = persistence
-    configuration.includeMemoryTools = false
     configuration.contextStrategy = .promptAugmentation
     return WaxFoundationModelSession(
         memory: memory,

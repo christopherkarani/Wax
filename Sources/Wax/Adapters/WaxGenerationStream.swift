@@ -50,8 +50,8 @@ public struct WaxGenerationStream: AsyncSequence, Sendable {
             }
         }
         guard let completed else {
-            throw WaxError.invalidConfiguration(
-                reason: "WaxGenerationStream ended without a completed event"
+            throw WaxFoundationModelsError.invalidConfiguration(
+                "WaxGenerationStream ended without a completed event"
             )
         }
         return completed
@@ -76,9 +76,7 @@ public struct WaxGenerationStream: AsyncSequence, Sendable {
 
         public mutating func next() async throws -> Event? {
             if invalidated {
-                throw WaxError.invalidConfiguration(
-                    reason: "WaxGenerationStream supports a single iterator"
-                )
+                throw WaxFoundationModelsError.iteratorAlreadyCreated
             }
             // Retain `lifetime` for the pull so dropping other stream copies
             // cannot cancel the producer while this iterator is in flight.

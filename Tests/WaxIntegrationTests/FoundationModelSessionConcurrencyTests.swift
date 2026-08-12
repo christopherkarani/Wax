@@ -16,7 +16,6 @@ struct FoundationModelSessionConcurrencyTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .none
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(
@@ -49,7 +48,6 @@ struct FoundationModelSessionConcurrencyTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .none
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(
@@ -91,7 +89,6 @@ struct FoundationModelSessionConcurrencyTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .none
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(

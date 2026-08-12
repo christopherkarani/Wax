@@ -15,6 +15,14 @@ public struct WaxFMResponse<Content: Sendable>: Sendable {
     public var truncatedByBudget: Bool
     public var didPersistUser: Bool
     public var didPersistAssistant: Bool
+    public var retrievalDiagnostics: RAGContext.Diagnostics?
+    public var estimatedPreparedCharacters: Int
+    public var resetTranscriptForContext: Bool
+    public var preparedPromptTokenCount: Int
+    public var contextWindowTokens: Int?
+    public var estimatedContextTokens: Int
+    public var remainingContextTokens: Int?
+    public var truncationStrategy: String
 
     public init(
         content: Content,
@@ -22,7 +30,15 @@ public struct WaxFMResponse<Content: Sendable>: Sendable {
         includedItemCount: Int,
         truncatedByBudget: Bool,
         didPersistUser: Bool,
-        didPersistAssistant: Bool
+        didPersistAssistant: Bool,
+        retrievalDiagnostics: RAGContext.Diagnostics? = nil,
+        estimatedPreparedCharacters: Int = 0,
+        resetTranscriptForContext: Bool = false,
+        preparedPromptTokenCount: Int = 0,
+        contextWindowTokens: Int? = nil,
+        estimatedContextTokens: Int = 0,
+        remainingContextTokens: Int? = nil,
+        truncationStrategy: String = "none"
     ) {
         self.content = content
         self.recalledItemCount = recalledItemCount
@@ -30,6 +46,14 @@ public struct WaxFMResponse<Content: Sendable>: Sendable {
         self.truncatedByBudget = truncatedByBudget
         self.didPersistUser = didPersistUser
         self.didPersistAssistant = didPersistAssistant
+        self.retrievalDiagnostics = retrievalDiagnostics
+        self.estimatedPreparedCharacters = estimatedPreparedCharacters
+        self.resetTranscriptForContext = resetTranscriptForContext
+        self.preparedPromptTokenCount = preparedPromptTokenCount
+        self.contextWindowTokens = contextWindowTokens
+        self.estimatedContextTokens = estimatedContextTokens
+        self.remainingContextTokens = remainingContextTokens
+        self.truncationStrategy = truncationStrategy
     }
 }
 
@@ -37,42 +61,6 @@ public struct WaxFMResponse<Content: Sendable>: Sendable {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 extension WaxFMResponse: Equatable where Content: Equatable {}
-
-/// High-level availability of Apple's on-device Foundation Models runtime.
-@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
-@available(tvOS, unavailable)
-@available(watchOS, unavailable)
-public enum WaxFoundationModelsAvailability: Sendable, Equatable {
-    case available
-    case unavailable(reason: String)
-
-    /// Maps ``SystemLanguageModel/availability`` into a string-backed summary.
-    public static func current(model: SystemLanguageModel = .default) -> Self {
-        switch model.availability {
-        case .available:
-            return .available
-        case .unavailable(let reason):
-            return .unavailable(reason: reasonDescription(reason))
-        @unknown default:
-            return .unavailable(reason: "unknown")
-        }
-    }
-
-    private static func reasonDescription(
-        _ reason: SystemLanguageModel.Availability.UnavailableReason
-    ) -> String {
-        switch reason {
-        case .deviceNotEligible:
-            return "deviceNotEligible"
-        case .appleIntelligenceNotEnabled:
-            return "appleIntelligenceNotEnabled"
-        case .modelNotReady:
-            return "modelNotReady"
-        @unknown default:
-            return String(describing: reason)
-        }
-    }
-}
 
 /// A memory-backed Foundation Models chat session.
 ///
@@ -108,15 +96,21 @@ public actor WaxFoundationModelSession {
     private let additionalTools: [any Tool]
     /// When `true`, ``close()`` closes the underlying ``Memory`` (session opened the store).
     private let ownsMemory: Bool
-    private let generator: any WaxFoundationModelGenerating
+    private var generator: any WaxFoundationModelGenerating
     private let generationGate = AsyncMutex()
     /// True while an owning ``WaxGenerationStream`` holds the generation lease.
-    /// Concurrent ``streamResponse`` callers fail with ``WaxError/writerBusy``
-    /// instead of queueing; non-streaming ``respond`` calls still FIFO-wait.
+    /// Concurrent ``streamResponse`` callers fail with
+    /// ``WaxFoundationModelsError/generationInProgress`` instead of queueing;
+    /// non-streaming ``respond`` calls still FIFO-wait.
     private var isStreaming = false
+    private var completedTurns = 0
+    private var resetTranscriptForContext = false
+    private let sessionBox: LanguageModelSessionBox
 
     /// Underlying Foundation Models session. Use for advanced multi-turn control.
-    public nonisolated let languageModelSession: LanguageModelSession
+    public nonisolated var languageModelSession: LanguageModelSession {
+        sessionBox.session
+    }
     /// Immutable session configuration (safe to read off the actor).
     public nonisolated let configuration: FoundationModelsMemorySessionConfig
 
@@ -153,13 +147,13 @@ public actor WaxFoundationModelSession {
             includesMemoryTools: configuration.includeMemoryTools,
             toolKit: configuration.toolKit
         )
-        self.languageModelSession = LanguageModelSession(
+        let appleSession = LanguageModelSession(
             model: model,
             tools: tools,
             instructions: resolvedInstructions
         )
-        self.generator = LiveLanguageModelGenerator(session: languageModelSession)
-        self.languageModelSession.prewarm()
+        self.sessionBox = LanguageModelSessionBox(appleSession)
+        self.generator = LiveLanguageModelGenerator(session: appleSession)
     }
 
     /// Test-only session that drives generation through `generator` instead of the live model.
@@ -190,11 +184,12 @@ public actor WaxFoundationModelSession {
             includesMemoryTools: configuration.includeMemoryTools,
             toolKit: configuration.toolKit
         )
-        self.languageModelSession = LanguageModelSession(
+        let appleSession = LanguageModelSession(
             model: .default,
             tools: tools,
             instructions: resolvedInstructions
         )
+        self.sessionBox = LanguageModelSessionBox(appleSession)
     }
 
     public init(
@@ -219,13 +214,13 @@ public actor WaxFoundationModelSession {
             configuration: configuration
         )
         let built = try instructions()
-        self.languageModelSession = LanguageModelSession(
+        let appleSession = LanguageModelSession(
             model: model,
             tools: tools,
             instructions: built
         )
-        self.generator = LiveLanguageModelGenerator(session: languageModelSession)
-        self.languageModelSession.prewarm()
+        self.sessionBox = LanguageModelSessionBox(appleSession)
+        self.generator = LiveLanguageModelGenerator(session: appleSession)
     }
 
     /// Builds the memory-augmented prompt sent to Foundation Models (when prompt augmentation is enabled).
@@ -236,25 +231,25 @@ public actor WaxFoundationModelSession {
     /// Builds a memory-augmented prompt and returns budget / recall accounting.
     public func preparePromptDetailed(for userPrompt: String) async throws -> PreparedMemoryPrompt {
         guard configuration.shouldAugmentPrompt else {
-            let prepared = PreparedMemoryPrompt(
+            var prepared = PreparedMemoryPrompt(
                 prompt: userPrompt,
                 includedItemCount: 0,
                 recalledItemCount: 0,
                 truncatedByBudget: false,
-                memoryAppendix: nil
+                memoryAppendix: nil,
+                estimatedPreparedCharacters: userPrompt.count
             )
+            prepared = try await Self.annotatePreparedPrompt(
+                prepared,
+                context: nil,
+                finalPrompt: userPrompt
+            )
+            try throwIfPreparedPromptOverflows(prepared)
             lastPreparedPrompt = prepared
             return prepared
         }
 
-        // Top-level config fields are authoritative after mutation; keep promptBuilder's
-        // maxItems/includeScores but always apply injectionStyle + memoryCharacterBudget.
-        var builder = configuration.promptBuilder
-        builder.injectionStyle = configuration.injectionStyle
-        builder.maxMemoryCharacters = configuration.memoryCharacterBudget
-
-        // Same search + vector→text fallback path as memory tools (M-8).
-        // Session embeddingPolicy overrides toolConfig; hybrid alpha comes from toolConfig (M-7).
+        let builder = configuration.promptBuilder
         let context = try await WaxMemoryToolExecutor.searchWithFallback(
             memory: memory,
             config: configuration.toolConfig,
@@ -263,7 +258,14 @@ public actor WaxFoundationModelSession {
             alpha: nil,
             embeddingPolicy: configuration.embeddingPolicy
         )
-        let prepared = builder.prepare(userPrompt: userPrompt, context: context)
+        var prepared = builder.prepare(userPrompt: userPrompt, context: context)
+        let turn = invocationForTurn(prepared: prepared)
+        prepared = try await Self.annotatePreparedPrompt(
+            prepared,
+            context: context,
+            finalPrompt: turn.prompt
+        )
+        try throwIfPreparedPromptOverflows(prepared)
         lastPreparedPrompt = prepared
         return prepared
     }
@@ -286,19 +288,30 @@ public actor WaxFoundationModelSession {
         try await withGenerationLease {
             let prepared = try await self.preparePromptDetailed(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
-            let response = try await self.generator.generateText(
-                prompt: turn.prompt,
-                options: options
-            )
-            let persistence = try await self.persistTurnTracked(
-                userPrompt: userPrompt,
-                assistantResponse: response
-            )
-            return WaxFMResponse(
+            try self.checkConversationTurnLimit()
+            let response: String
+            do {
+                response = try await self.generateTextHonoringOverflowPolicy(
+                    prompt: turn.prompt,
+                    options: options,
+                    prepared: prepared
+                )
+            } catch {
+                throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
+            }
+            let persistence: (didPersistUser: Bool, didPersistAssistant: Bool)
+            do {
+                persistence = try await self.persistTurnTracked(
+                    userPrompt: userPrompt,
+                    assistantResponse: response
+                )
+            } catch {
+                throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
+            }
+            self.completedTurns += 1
+            return self.makeResponse(
                 content: response,
-                recalledItemCount: prepared.recalledItemCount,
-                includedItemCount: prepared.includedItemCount,
-                truncatedByBudget: prepared.truncatedByBudget,
+                prepared: prepared,
                 didPersistUser: persistence.didPersistUser,
                 didPersistAssistant: persistence.didPersistAssistant
             )
@@ -318,16 +331,23 @@ public actor WaxFoundationModelSession {
         try await withGenerationLease {
             let prepared = try await self.preparePromptDetailed(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
-            let response = try await self.generator.generateStructured(
-                prompt: turn.prompt,
-                type: type,
-                options: options
-            )
+            try self.checkConversationTurnLimit()
+            let response: T
+            do {
+                response = try await self.generator.generateStructured(
+                    prompt: turn.prompt,
+                    type: type,
+                    options: options
+                )
+            } catch {
+                throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
+            }
             if let serialized = self.serializeStructured(response) {
                 try await self.persistTurn(userPrompt: userPrompt, assistantResponse: serialized)
             } else if self.configuration.persistencePolicy.shouldPersistUser {
                 try await self.persistUser(userPrompt)
             }
+            self.completedTurns += 1
             return response
         }
     }
@@ -344,11 +364,17 @@ public actor WaxFoundationModelSession {
         try await withGenerationLease {
             let prepared = try await self.preparePromptDetailed(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
-            let response = try await self.generator.generateStructured(
-                prompt: turn.prompt,
-                type: type,
-                options: options
-            )
+            try self.checkConversationTurnLimit()
+            let response: T
+            do {
+                response = try await self.generator.generateStructured(
+                    prompt: turn.prompt,
+                    type: type,
+                    options: options
+                )
+            } catch {
+                throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
+            }
             let serialized = self.serializeStructured(response)
             let persistence: (didPersistUser: Bool, didPersistAssistant: Bool)
             if let serialized {
@@ -363,11 +389,10 @@ public actor WaxFoundationModelSession {
                 }
                 persistence = (didPersistUser, false)
             }
-            return WaxFMResponse(
+            self.completedTurns += 1
+            return self.makeResponse(
                 content: response,
-                recalledItemCount: prepared.recalledItemCount,
-                includedItemCount: prepared.includedItemCount,
-                truncatedByBudget: prepared.truncatedByBudget,
+                prepared: prepared,
                 didPersistUser: persistence.didPersistUser,
                 didPersistAssistant: persistence.didPersistAssistant
             )
@@ -379,13 +404,14 @@ public actor WaxFoundationModelSession {
     /// The generation lease is held until the stream completes, fails, is cancelled,
     /// or is dropped. Persistence: nothing before the first ``WaxGenerationStream/Event/content``;
     /// user on first content (if policy requires it); assistant only on normal completion.
-    /// A second concurrent ``streamResponse`` fails with ``WaxError/writerBusy``.
+    /// A second concurrent ``streamResponse`` fails with
+    /// ``WaxFoundationModelsError/generationInProgress``.
     public func streamResponse(
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxGenerationStream {
         if isStreaming {
-            throw WaxError.writerBusy
+            throw WaxFoundationModelsError.generationInProgress
         }
         isStreaming = true
         await generationGate.lock()
@@ -393,6 +419,7 @@ public actor WaxFoundationModelSession {
         do {
             try Task.checkCancellation()
             let prepared = try await preparePromptDetailed(for: userPrompt)
+            try checkConversationTurnLimit()
             let turn = invocationForTurn(prepared: prepared)
             let inner = generator.streamText(prompt: turn.prompt, options: options)
             let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
@@ -560,19 +587,24 @@ public actor WaxFoundationModelSession {
 
             continuation.yield(
                 .completed(
-                    WaxFMResponse(
+                    self.makeResponse(
                         content: lastContent,
-                        recalledItemCount: prepared.recalledItemCount,
-                        includedItemCount: prepared.includedItemCount,
-                        truncatedByBudget: prepared.truncatedByBudget,
+                        prepared: prepared,
                         didPersistUser: didPersistUser,
                         didPersistAssistant: didPersistAssistant
                     )
                 )
             )
             continuation.finish()
+            self.completedTurns += 1
         } catch {
-            continuation.finish(throwing: error)
+            continuation.finish(
+                throwing: self.mapTerminalError(
+                    error,
+                    prepared: prepared,
+                    didPersistUser: didPersistUser
+                )
+            )
         }
     }
 
@@ -589,22 +621,31 @@ public actor WaxFoundationModelSession {
     ) async throws -> (didPersistUser: Bool, didPersistAssistant: Bool) {
         // Test seam: the fake can pause here so cancellation lands after the model
         // completed and before either side of the turn is written.
-        try await generator.holdBeforePersistence()
-        try Task.checkCancellation()
         var didPersistUser = false
         var didPersistAssistant = false
+        do {
+            try await generator.holdBeforePersistence()
+            try Task.checkCancellation()
 
-        if configuration.persistencePolicy.shouldPersistUser {
-            didPersistUser = try await persistUserTracked(userPrompt)
+            if configuration.persistencePolicy.shouldPersistUser {
+                didPersistUser = try await persistUserTracked(userPrompt)
+            }
+
+            try Task.checkCancellation()
+
+            if configuration.persistencePolicy.shouldPersistAssistant {
+                didPersistAssistant = try await persistAssistantTracked(assistantResponse)
+            }
+
+            return (didPersistUser, didPersistAssistant)
+        } catch {
+            throw mapTerminalError(
+                error,
+                prepared: lastPreparedPrompt,
+                didPersistUser: didPersistUser,
+                didPersistAssistant: didPersistAssistant
+            )
         }
-
-        try Task.checkCancellation()
-
-        if configuration.persistencePolicy.shouldPersistAssistant {
-            didPersistAssistant = try await persistAssistantTracked(assistantResponse)
-        }
-
-        return (didPersistUser, didPersistAssistant)
     }
 
     private func persistUser(_ userPrompt: String) async throws {
@@ -625,6 +666,132 @@ public actor WaxFoundationModelSession {
         guard !trimmedResponse.isEmpty else { return false }
         try await memory.save(trimmedResponse, metadata: configuration.assistantMetadata)
         return true
+    }
+
+    private func makeResponse<Content: Sendable>(
+        content: Content,
+        prepared: PreparedMemoryPrompt,
+        didPersistUser: Bool,
+        didPersistAssistant: Bool
+    ) -> WaxFMResponse<Content> {
+        WaxFMResponse(
+            content: content,
+            recalledItemCount: prepared.recalledItemCount,
+            includedItemCount: prepared.includedItemCount,
+            truncatedByBudget: prepared.truncatedByBudget,
+            didPersistUser: didPersistUser,
+            didPersistAssistant: didPersistAssistant,
+            retrievalDiagnostics: prepared.retrievalDiagnostics,
+            estimatedPreparedCharacters: prepared.estimatedPreparedCharacters,
+            resetTranscriptForContext: resetTranscriptForContext,
+            preparedPromptTokenCount: prepared.preparedPromptTokenCount,
+            contextWindowTokens: prepared.contextWindowTokens,
+            estimatedContextTokens: prepared.estimatedContextTokens,
+            remainingContextTokens: prepared.remainingContextTokens,
+            truncationStrategy: prepared.truncationStrategy
+        )
+    }
+
+    private func mapTerminalError(
+        _ error: Error,
+        prepared: PreparedMemoryPrompt?,
+        didPersistUser: Bool,
+        didPersistAssistant: Bool = false
+    ) -> Error {
+        WaxFoundationModelsError.mapTerminal(
+            error,
+            estimatedPreparedCharacters: prepared?.estimatedPreparedCharacters ?? 0,
+            maxPreparedCharacters: configuration.contextPolicy.maxPreparedCharacters,
+            estimatedContextTokens: prepared?.estimatedContextTokens ?? 0,
+            recalledItemCount: prepared?.recalledItemCount ?? 0,
+            didPersistUser: didPersistUser,
+            didPersistAssistant: didPersistAssistant
+        )
+    }
+
+    private func throwIfPreparedPromptOverflows(_ prepared: PreparedMemoryPrompt) throws {
+        let maxCharacters = configuration.contextPolicy.maxPreparedCharacters
+        guard prepared.estimatedPreparedCharacters > maxCharacters else { return }
+        throw WaxFoundationModelsError.contextWindowExceeded(
+            estimatedPreparedCharacters: prepared.estimatedPreparedCharacters,
+            maxPreparedCharacters: maxCharacters,
+            estimatedContextTokens: prepared.estimatedContextTokens,
+            recalledItemCount: prepared.recalledItemCount
+        )
+    }
+
+    private func checkConversationTurnLimit() throws {
+        let maxTurns = configuration.contextPolicy.maxConversationTurns
+        guard completedTurns >= maxTurns else { return }
+        if configuration.contextPolicy.overflowPolicy == .resetTranscriptAndRetryOnce {
+            resetUnderlyingSessionForContextRetry()
+            return
+        }
+        throw WaxFoundationModelsError.conversationLimitExceeded(
+            completedTurns: completedTurns,
+            maxConversationTurns: maxTurns
+        )
+    }
+
+    private func generateTextHonoringOverflowPolicy(
+        prompt: String,
+        options: GenerationOptions,
+        prepared: PreparedMemoryPrompt
+    ) async throws -> String {
+        do {
+            return try await generator.generateText(prompt: prompt, options: options)
+        } catch {
+            try Task.checkCancellation()
+            let canRetry = configuration.contextPolicy.overflowPolicy == .resetTranscriptAndRetryOnce
+                && WaxFoundationModelsError.isExceededContextWindow(error)
+                && !resetTranscriptForContext
+            guard canRetry else { throw error }
+            resetUnderlyingSessionForContextRetry()
+            return try await generator.generateText(prompt: prompt, options: options)
+        }
+    }
+
+    private func resetUnderlyingSessionForContextRetry() {
+        let tools = Self.assembleTools(
+            memory: memory,
+            additionalTools: additionalTools,
+            configuration: configuration
+        )
+        let resolvedInstructions = Self.defaultInstructions(
+            userInstructions: userInstructions,
+            includesMemoryTools: configuration.includeMemoryTools,
+            toolKit: configuration.toolKit
+        )
+        let fresh = LanguageModelSession(
+            model: model,
+            tools: tools,
+            instructions: resolvedInstructions
+        )
+        sessionBox.replace(fresh)
+        if generator is LiveLanguageModelGenerator {
+            generator = LiveLanguageModelGenerator(session: fresh)
+        }
+        completedTurns = 0
+        resetTranscriptForContext = true
+    }
+
+    private static func annotatePreparedPrompt(
+        _ prepared: PreparedMemoryPrompt,
+        context: RAGContext?,
+        finalPrompt: String
+    ) async throws -> PreparedMemoryPrompt {
+        var annotated = prepared
+        annotated.retrievalDiagnostics = context?.diagnostics
+        annotated.estimatedPreparedCharacters = finalPrompt.count
+        annotated.estimatedContextTokens = context?.totalTokens ?? 0
+        annotated.resetTranscriptForContext = false
+        annotated.truncationStrategy = prepared.truncatedByBudget ? "characterBudget" : "none"
+        annotated.contextWindowTokens = nil
+        annotated.remainingContextTokens = nil
+        if let counter = try? await TokenCounter.shared() {
+            annotated.preparedPromptTokenCount = await counter.count(finalPrompt)
+        }
+        return annotated
     }
 
     private func serializeStructured<T>(_ value: T) -> String? {
@@ -771,6 +938,8 @@ public extension Memory {
     /// Creates a memory-backed Foundation Models session from this store.
     ///
     /// Nonisolated: only captures the `Memory` handle; no actor state is read.
+    /// This constructor does **not** preflight availability or prewarm the model.
+    /// Prefer ``makeFoundationModelsSession(model:instructions:additionalTools:configuration:)``.
     nonisolated func foundationModelsSession(
         model: SystemLanguageModel = .default,
         instructions: String? = nil,
@@ -786,6 +955,26 @@ public extension Memory {
         )
     }
 
+    /// Preflights Foundation Models availability, then returns a session and prewarms
+    /// the underlying ``LanguageModelSession``.
+    nonisolated func makeFoundationModelsSession(
+        model: SystemLanguageModel = .default,
+        instructions: String? = nil,
+        additionalTools: [any Tool] = [],
+        configuration: FoundationModelsMemorySessionConfig = .default
+    ) async throws -> WaxFoundationModelSession {
+        try WaxFoundationModelsAvailability.preflight(.current(model: model))
+        let session = WaxFoundationModelSession(
+            memory: self,
+            model: model,
+            instructions: instructions,
+            additionalTools: additionalTools,
+            configuration: configuration
+        )
+        session.languageModelSession.prewarm()
+        return session
+    }
+
     /// Opens a store and returns a memory-backed Foundation Models session that **owns**
     /// the store (``WaxFoundationModelSession/close()`` closes ``Memory``).
     static func openFoundationModelsSession(
@@ -797,12 +986,13 @@ public extension Memory {
         additionalTools: [any Tool] = [],
         sessionConfiguration: FoundationModelsMemorySessionConfig = .default
     ) async throws -> WaxFoundationModelSession {
+        try WaxFoundationModelsAvailability.preflight(.current(model: model))
         var config = config
         if let embedding {
             config.embedding = .custom(embedding)
         }
         let memory = try await Memory(at: url, config: config)
-        return WaxFoundationModelSession(
+        let session = WaxFoundationModelSession(
             memory: memory,
             model: model,
             instructions: instructions,
@@ -810,6 +1000,8 @@ public extension Memory {
             configuration: sessionConfiguration,
             ownsMemory: true
         )
+        session.languageModelSession.prewarm()
+        return session
     }
 
     /// Opens a store with a built-in embedding provider and returns a memory-backed
@@ -824,10 +1016,11 @@ public extension Memory {
         additionalTools: [any Tool] = [],
         sessionConfiguration: FoundationModelsMemorySessionConfig = .default
     ) async throws -> WaxFoundationModelSession {
+        try WaxFoundationModelsAvailability.preflight(.current(model: model))
         var config = config
         config.embedding = .builtIn(builtInEmbedding, embeddingOptions)
         let memory = try await Memory(at: url, config: config)
-        return WaxFoundationModelSession(
+        let session = WaxFoundationModelSession(
             memory: memory,
             model: model,
             instructions: instructions,
@@ -835,6 +1028,8 @@ public extension Memory {
             configuration: sessionConfiguration,
             ownsMemory: true
         )
+        session.languageModelSession.prewarm()
+        return session
     }
 }
 

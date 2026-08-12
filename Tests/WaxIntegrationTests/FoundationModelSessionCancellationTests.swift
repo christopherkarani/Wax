@@ -76,7 +76,6 @@ struct FoundationModelSessionCancellationTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .automatic
             configuration.persistencePolicy = .userAndAssistant
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
             configuration.toolConfig.fallbackToTextOnVectorFailure = true
 
@@ -118,7 +117,6 @@ struct FoundationModelSessionCancellationTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .userAndAssistant
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(
@@ -135,7 +133,19 @@ struct FoundationModelSessionCancellationTests {
             try await generator.waitUntilGenerating()
             #expect(await generator.isGenerating())
             task.cancel()
-            await #expect(throws: CancellationError.self) { try await task.value }
+            do {
+                _ = try await task.value
+                Issue.record("cancelled respond must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(!didPersistUser)
+                #expect(!didPersistAssistant)
+            } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
+            }
             #expect(await generator.didObserveCancellation())
 
             let hits = try await memory.search(
@@ -164,7 +174,6 @@ struct FoundationModelSessionCancellationTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .automatic
             configuration.persistencePolicy = .userAndAssistant
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
             configuration.toolConfig.fallbackToTextOnVectorFailure = true
 
@@ -201,7 +210,6 @@ struct FoundationModelSessionCancellationTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .userAndAssistant
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(
@@ -218,7 +226,19 @@ struct FoundationModelSessionCancellationTests {
             try await generator.waitUntilPersistenceHold()
             #expect(await generator.generateCallCount() == 1)
             task.cancel()
-            await #expect(throws: CancellationError.self) { try await task.value }
+            do {
+                _ = try await task.value
+                Issue.record("persist-window cancel must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(!didPersistUser)
+                #expect(!didPersistAssistant)
+            } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
+            }
 
             let cancelledHits = try await memory.search(
                 marker,
@@ -265,7 +285,6 @@ struct FoundationModelSessionCancellationTests {
             var configuration = FoundationModelsMemorySessionConfig.default
             configuration.embeddingPolicy = .never
             configuration.persistencePolicy = .none
-            configuration.includeMemoryTools = false
             configuration.contextStrategy = .promptAugmentation
 
             let session = WaxFoundationModelSession(

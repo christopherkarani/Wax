@@ -98,8 +98,27 @@ package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
     }
 }
 
-/// Releases an ``AsyncMutex`` at most once. Used so stream `onTermination` and the
-/// producer `defer` cannot double-unlock the generation gate.
+/// Holds a replaceable ``LanguageModelSession`` so context-overflow retry can
+/// install a fresh transcript without changing the public nonisolated handle type.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+package final class LanguageModelSessionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _session: LanguageModelSession
+
+    package init(_ session: LanguageModelSession) {
+        self._session = session
+    }
+
+    package var session: LanguageModelSession {
+        lock.withLock { _session }
+    }
+
+    package func replace(_ session: LanguageModelSession) {
+        lock.withLock { _session = session }
+    }
+}
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)

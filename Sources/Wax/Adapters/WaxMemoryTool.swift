@@ -362,19 +362,41 @@ public extension Memory {
         foundationModelsTools(kit: .combined, config: config)
     }
 
-    /// Opens a store and returns a Foundation Models memory tool bound to that store.
-    static func openFoundationModelsMemoryTool(
+    /// Opens a store and returns an owning Foundation Models tool session.
+    ///
+    /// ``WaxFoundationModelsToolSession/close()`` closes the underlying ``Memory``.
+    /// Prefer this over returning a tool with no close handle.
+    static func openFoundationModelsTools(
         at url: URL,
         config: Config = .default,
-        embedding: (any EmbeddingProvider)? = nil,
+        kit: WaxMemoryToolKit = .focused,
         toolConfig: WaxMemoryToolConfig = .default
-    ) async throws -> WaxMemoryTool {
-        var config = config
-        if let embedding {
-            config.embedding = .custom(embedding)
-        }
+    ) async throws -> WaxFoundationModelsToolSession {
         let memory = try await Memory(at: url, config: config)
-        return WaxMemoryTool(memory: memory, config: toolConfig)
+        let tools = memory.foundationModelsTools(kit: kit, config: toolConfig)
+        return WaxFoundationModelsToolSession(memory: memory, tools: tools)
+    }
+}
+
+/// Owns a ``Memory`` store and the Foundation Models tools bound to it.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+public actor WaxFoundationModelsToolSession {
+    public nonisolated let tools: [any Tool]
+    private let memory: Memory
+
+    package init(memory: Memory, tools: [any Tool]) {
+        self.memory = memory
+        self.tools = tools
+    }
+
+    public func flush() async throws {
+        try await memory.flush()
+    }
+
+    public func close() async throws {
+        try await memory.close()
     }
 }
 
@@ -385,16 +407,6 @@ public extension Memory {
 package extension MemoryOrchestrator {
     func foundationModelsMemoryTool(config: WaxMemoryToolConfig = .default) async -> WaxMemoryTool {
         WaxMemoryTool(memory: Memory(orchestrator: self), config: config)
-    }
-
-    static func openFoundationModelsMemoryTool(
-        at url: URL,
-        config: OrchestratorConfig = .default,
-        embedder: (any EmbeddingProvider)? = nil,
-        toolConfig: WaxMemoryToolConfig = .default
-    ) async throws -> WaxMemoryTool {
-        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
-        return WaxMemoryTool(memory: Memory(orchestrator: orchestrator), config: toolConfig)
     }
 }
 #endif

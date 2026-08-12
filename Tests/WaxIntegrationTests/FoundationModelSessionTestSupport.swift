@@ -26,6 +26,8 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private let delay: Duration
     private let blockUntilCancelled: Bool
     private let streamFailure: StreamFailurePoint
+    private let generateError: Error?
+    private var remainingGenerateErrors: Int
     private var remainingPersistenceHolds: Int
     private var remainingFirstChunkHolds: Int
     private var inFlight = 0
@@ -37,17 +39,22 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private var persistenceHoldContinuation: CheckedContinuation<Void, Never>?
     private var holdingBeforeFirstChunk = false
     private var firstChunkHoldContinuation: CheckedContinuation<Void, Never>?
+    private var forceCancel = false
 
     init(
         delay: Duration = .milliseconds(20),
         blockUntilCancelled: Bool = false,
         pauseBeforePersistence: Bool = false,
         pauseBeforeFirstChunk: Bool = false,
-        streamFailure: StreamFailurePoint = .none
+        streamFailure: StreamFailurePoint = .none,
+        generateError: Error? = nil,
+        generateErrorCount: Int = 1
     ) {
         self.delay = delay
         self.blockUntilCancelled = blockUntilCancelled
         self.streamFailure = streamFailure
+        self.generateError = generateError
+        self.remainingGenerateErrors = generateError == nil ? 0 : max(0, generateErrorCount)
         self.remainingPersistenceHolds = pauseBeforePersistence ? 1 : 0
         self.remainingFirstChunkHolds = pauseBeforeFirstChunk ? 1 : 0
     }
@@ -80,6 +87,10 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         lock.withLock { holdingBeforeFirstChunk }
     }
 
+    func requestCancellation() {
+        lock.withLock { forceCancel = true }
+    }
+
     func waitUntilGenerating(timeout: Duration = .seconds(5)) async throws {
         try await pollFlag(timeout: timeout, description: "isGenerating") { isGenerating() }
     }
@@ -101,21 +112,30 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         options: GenerationOptions
     ) async throws -> String {
         _ = options
-        let shouldBlockUntilCancelled: Bool = lock.withLock {
+        let planned: (shouldBlockUntilCancelled: Bool, error: Error?) = lock.withLock {
             generateCalls += 1
             inFlight += 1
             peakInFlight = max(peakInFlight, inFlight)
-            // Only the in-flight stream/respond under test parks; a follow-up
-            // `respond` after lease release must complete normally.
-            return blockUntilCancelled && generateCalls == 1
+            let error: Error?
+            if remainingGenerateErrors > 0, let generateError {
+                remainingGenerateErrors -= 1
+                error = generateError
+            } else {
+                error = nil
+            }
+            return (blockUntilCancelled && generateCalls == 1 && error == nil, error)
         }
         defer {
             lock.withLock { inFlight -= 1 }
         }
+        if let error = planned.error {
+            throw error
+        }
+        let shouldBlockUntilCancelled = planned.shouldBlockUntilCancelled
 
         if shouldBlockUntilCancelled {
             do {
-                while !Task.isCancelled {
+                while !Task.isCancelled && !lock.withLock({ forceCancel }) {
                     try await Task.sleep(for: .milliseconds(15))
                 }
             } catch is CancellationError {

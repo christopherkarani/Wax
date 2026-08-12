@@ -1,5 +1,5 @@
 import Testing
-import Wax
+@testable import Wax
 
 // MARK: - Action parsing
 

@@ -11,11 +11,13 @@ Wax fills that gap with a single-file local store and a first-class Foundation M
 On Apple platforms that ship Foundation Models (macOS 26+, iOS 26+, visionOS 26+), Wax exposes:
 
 - ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)``
-- ``Memory/foundationModelsMemoryTool(config:)``
+- ``Memory/makeFoundationModelsSession(model:instructions:additionalTools:configuration:)``
 - ``Memory/foundationModelsTools(kit:config:)``
+- ``Memory/openFoundationModelsTools(at:config:kit:toolConfig:)``
 - ``WaxFoundationModelSession``
+- ``WaxFoundationModelsToolSession``
 - ``WaxMemoryTool`` / ``WaxRememberTool`` / ``WaxRecallTool`` / ``WaxSearchTool`` / ``WaxForgetTool``
-- ``WaxFMResponse`` and ``WaxFoundationModelsAvailability``
+- ``WaxFMResponse``, ``WaxFoundationModelsAvailability``, and ``WaxFoundationModelsError``
 
 ## Quick start
 
@@ -27,8 +29,8 @@ import Wax
 let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
 let memory = try await Memory(at: storeURL)
 
-// One-liner: prompt augmentation + focused memory tools + turn persistence
-let session = await memory.foundationModelsSession(
+// Prefer the throwing factory: it preflights availability before prewarming.
+let session = try await memory.makeFoundationModelsSession(
     instructions: "You are a helpful assistant with durable memory."
 )
 
@@ -56,9 +58,11 @@ configuration.contextStrategy = .hybrid          // .promptAugmentation | .tools
 configuration.persistencePolicy = .userAndAssistant
 configuration.embeddingPolicy = .automatic
 configuration.toolKit = .focused                 // .compact | .combined | .focusedWithForget
-// Top-level fields apply at prepare time even if you don't replace promptBuilder:
-// configuration.injectionStyle = .instructionsAppendix
-// configuration.memoryCharacterBudget = 800
+// Injection style and memory budget live on promptBuilder (single source):
+// configuration.promptBuilder.injectionStyle = .instructionsAppendix
+// configuration.promptBuilder.maxMemoryCharacters = 800
+// configuration.contextPolicy.maxPreparedCharacters = 16_000
+// configuration.contextPolicy.overflowPolicy = .fail
 
 let session = await memory.foundationModelsSession(
     instructions: "Be concise.",
@@ -114,6 +118,7 @@ let detailed = try await session.respondDetailed(to: "What theme do I prefer?")
 print(detailed.content)
 print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
 print(detailed.didPersistUser, detailed.didPersistAssistant)
+print(detailed.estimatedPreparedCharacters, detailed.retrievalDiagnostics?.effectiveMode)
 ```
 
 ``preparePromptDetailed(for:)`` returns a ``PreparedMemoryPrompt`` with the same budget fields
@@ -129,8 +134,8 @@ let collected = try await session.streamResponseAndCollect(to: "Summarize my pre
 ``streamResponse(to:options:)`` returns an owning ``WaxGenerationStream`` of
 ``WaxGenerationStream/Event`` values (``.content`` snapshots, then ``.completed`` with
 accounting). The generation lease is held until the stream finishes, fails, is cancelled,
-or is dropped. A second concurrent stream fails with ``WaxError/writerBusy``; non-streaming
-``respond`` calls still wait in FIFO order.
+or is dropped. A second concurrent stream fails with ``WaxFoundationModelsError/generationInProgress``;
+non-streaming ``respond`` calls still wait in FIFO order.
 
 Persistence follows the stream lifecycle: nothing is stored before the first ``.content``;
 the user turn is stored on that first token when policy requires it; the assistant turn is
@@ -144,9 +149,19 @@ Check Apple Intelligence / model readiness before generating:
 switch WaxFoundationModelsAvailability.current() {
 case .available:
     break
-case .unavailable(let reason):
-    print("Foundation Models unavailable: \(reason)")
+case .unavailable(.deviceNotEligible):
+    print("This device cannot run Apple Intelligence.")
+case .unavailable(.appleIntelligenceNotEnabled):
+    print("Turn on Apple Intelligence in Settings.")
+case .unavailable(.modelNotReady):
+    print("The on-device model is still downloading.")
+case .unavailable(.unknown(let detail)):
+    print("Foundation Models unavailable: \(detail)")
 }
+
+let session = try await memory.makeFoundationModelsSession(
+    instructions: "Be concise."
+)
 ```
 
 To clear the in-model transcript while keeping the Wax store:
@@ -161,14 +176,15 @@ let fresh = await session.resetConversationPreservingMemory()
 If you already own a `LanguageModelSession`, attach Wax as tools:
 
 ```swift
-let memory = try await Memory(at: storeURL)
-let tools = memory.foundationModelsTools(kit: .focused)
-
-let session = LanguageModelSession(tools: tools) {
+let toolSession = try await Memory.openFoundationModelsTools(
+    at: storeURL,
+    kit: .focused
+)
+let session = LanguageModelSession(tools: toolSession.tools) {
     "You have long-term memory via the waxRemember / waxRecall / waxSearch tools."
 }
-
 let response = try await session.respond(to: "Remember that I use Swift 6.2.")
+try await toolSession.close()
 ```
 
 ## Structured generation
@@ -206,5 +222,10 @@ let session = try await Memory.openFoundationModelsSession(
   ``WaxGenerationStream``, which owns the generation lease and persists the user turn
   only after the first token. Assistant text is persisted on normal completion; use
   ``streamResponseAndCollect(to:options:)`` to consume that same stream to a
-  ``WaxFMResponse``. Concurrent streams fail with ``WaxError/writerBusy``.
+  ``WaxFMResponse``. Concurrent streams fail with ``WaxFoundationModelsError/generationInProgress``.
+  Cancellation and generation failures are ``WaxFoundationModelsError`` values that report
+  ``WaxFoundationModelsError/cancelled(didPersistUser:didPersistAssistant:)`` /
+  ``WaxFoundationModelsError/generationFailed(didPersistUser:didPersistAssistant:reason:)``
+  persistence accounting. Prepared-prompt overflow is a measured character bound
+  (``WaxFoundationModelsContextPolicy``), not an Apple tokenizer guarantee.
 - Keep secrets out of memory; Wax stores durable text, not credentials.

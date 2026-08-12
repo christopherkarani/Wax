@@ -23,20 +23,86 @@ public struct PreparedMemoryPrompt: Sendable, Equatable {
     /// Memory section for session-instructions injection (``MemoryInjectionStyle/instructionsAppendix``).
     /// `nil` for prompt-combined styles or when no memory items were included.
     public var memoryAppendix: String?
+    /// Retrieval lane diagnostics from the search that built this prompt, when available.
+    public var retrievalDiagnostics: RAGContext.Diagnostics?
+    /// Character count of the prompt that will be sent, including memory wrappers.
+    /// This is not an Apple tokenizer guarantee.
+    public var estimatedPreparedCharacters: Int
+    /// `true` when the session reset the underlying transcript to recover from overflow.
+    public var resetTranscriptForContext: Bool
+    /// Wax cl100k estimate of the final prepared prompt. Not Apple's tokenizer.
+    public var preparedPromptTokenCount: Int
+    /// Apple does not expose a context-window size; this is `nil` unless a caller
+    /// supplies a known bound.
+    public var contextWindowTokens: Int?
+    /// Recalled-item token estimate from Wax retrieval (`RAGContext.totalTokens`).
+    public var estimatedContextTokens: Int
+    /// Remaining tokens under a known window. `nil` when Apple's window is unknown.
+    public var remainingContextTokens: Int?
+    /// `"none"` or `"characterBudget"` — how memory text was truncated, if at all.
+    public var truncationStrategy: String
 
     public init(
         prompt: String,
         includedItemCount: Int,
         recalledItemCount: Int,
         truncatedByBudget: Bool,
-        memoryAppendix: String? = nil
+        memoryAppendix: String? = nil,
+        retrievalDiagnostics: RAGContext.Diagnostics? = nil,
+        estimatedPreparedCharacters: Int? = nil,
+        resetTranscriptForContext: Bool = false,
+        preparedPromptTokenCount: Int = 0,
+        contextWindowTokens: Int? = nil,
+        estimatedContextTokens: Int = 0,
+        remainingContextTokens: Int? = nil,
+        truncationStrategy: String? = nil
     ) {
         self.prompt = prompt
         self.includedItemCount = includedItemCount
         self.recalledItemCount = recalledItemCount
         self.truncatedByBudget = truncatedByBudget
         self.memoryAppendix = memoryAppendix
+        self.retrievalDiagnostics = retrievalDiagnostics
+        self.estimatedPreparedCharacters = estimatedPreparedCharacters ?? prompt.count
+        self.resetTranscriptForContext = resetTranscriptForContext
+        self.preparedPromptTokenCount = preparedPromptTokenCount
+        self.contextWindowTokens = contextWindowTokens
+        self.estimatedContextTokens = estimatedContextTokens
+        self.remainingContextTokens = remainingContextTokens
+        self.truncationStrategy = truncationStrategy
+            ?? (truncatedByBudget ? "characterBudget" : "none")
     }
+}
+
+/// Honest total prepared-request policy for Foundation Models sessions.
+///
+/// Bounds are character- and turn-based. Apple does not expose an exact
+/// tokenizer or tool-schema token count; do not treat these as a token guarantee.
+public struct WaxFoundationModelsContextPolicy: Sendable, Equatable {
+    public enum OverflowPolicy: Sendable, Equatable {
+        /// Throw ``WaxFoundationModelsError/contextWindowExceeded`` (or the turn-limit
+        /// equivalent) without retrying.
+        case fail
+        /// Create a fresh underlying ``LanguageModelSession`` and retry generation
+        /// exactly once. Never retries tool side effects or persistence.
+        case resetTranscriptAndRetryOnce
+    }
+
+    public var maxPreparedCharacters: Int
+    public var maxConversationTurns: Int
+    public var overflowPolicy: OverflowPolicy
+
+    public init(
+        maxPreparedCharacters: Int = 24_000,
+        maxConversationTurns: Int = 64,
+        overflowPolicy: OverflowPolicy = .fail
+    ) {
+        self.maxPreparedCharacters = max(1, maxPreparedCharacters)
+        self.maxConversationTurns = max(1, maxConversationTurns)
+        self.overflowPolicy = overflowPolicy
+    }
+
+    public static let `default` = WaxFoundationModelsContextPolicy()
 }
 
 /// Formats recalled Wax context into a prompt block suitable for Foundation Models requests.
@@ -378,20 +444,30 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
     public var embeddingPolicy: Memory.EmbeddingPolicy
     public var promptBuilder: FoundationModelsMemoryPromptBuilder
     public var toolConfig: WaxMemoryToolConfig
-    public var includeMemoryTools: Bool
     public var userMetadata: [String: String]
     public var assistantMetadata: [String: String]
-    /// Injection style applied at prepare time (overrides ``promptBuilder``'s style).
-    ///
-    /// Mutating this after init — without replacing ``promptBuilder`` — still affects
-    /// ``WaxFoundationModelSession/preparePromptDetailed(for:)``.
-    public var injectionStyle: MemoryInjectionStyle
-    /// Character budget applied at prepare time via ``promptBuilder``'s
-    /// `maxMemoryCharacters` (`nil` = unlimited). Overrides the builder's budget field.
-    public var memoryCharacterBudget: Int?
     public var structuredPersistence: StructuredPersistence
-    /// Which Foundation Models tool kit to register when `includeMemoryTools` is true.
+    /// Which Foundation Models tool kit to register when memory tools are included.
     public var toolKit: WaxMemoryToolKit
+    /// Total prepared-request character/turn policy. Authoritative overflow bound.
+    public var contextPolicy: WaxFoundationModelsContextPolicy
+
+    /// Derived from ``contextStrategy``: tools are registered for `.tools` and `.hybrid`.
+    public var includeMemoryTools: Bool {
+        contextStrategy != .promptAugmentation
+    }
+
+    /// Injection style stored on ``promptBuilder`` (single source of truth).
+    public var injectionStyle: MemoryInjectionStyle {
+        get { promptBuilder.injectionStyle }
+        set { promptBuilder.injectionStyle = newValue }
+    }
+
+    /// Character budget stored on ``promptBuilder/maxMemoryCharacters``.
+    public var memoryCharacterBudget: Int? {
+        get { promptBuilder.maxMemoryCharacters }
+        set { promptBuilder.maxMemoryCharacters = newValue }
+    }
 
     public init(
         persistencePolicy: PersistencePolicy = .userAndAssistant,
@@ -399,7 +475,6 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
         embeddingPolicy: Memory.EmbeddingPolicy = .automatic,
         promptBuilder: FoundationModelsMemoryPromptBuilder? = nil,
         toolConfig: WaxMemoryToolConfig = .default,
-        includeMemoryTools: Bool? = nil,
         userMetadata: [String: String] = [
             "wax.channel": "foundation_models",
             "wax.role": "user",
@@ -411,25 +486,22 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
         injectionStyle: MemoryInjectionStyle = .xmlTags,
         memoryCharacterBudget: Int? = 1_200,
         structuredPersistence: StructuredPersistence = .stringDescribing,
-        toolKit: WaxMemoryToolKit = .focused
+        toolKit: WaxMemoryToolKit = .focused,
+        contextPolicy: WaxFoundationModelsContextPolicy = .default
     ) {
         self.persistencePolicy = persistencePolicy
         self.contextStrategy = contextStrategy
         self.embeddingPolicy = embeddingPolicy
         self.toolConfig = toolConfig
-        // Default tool registration follows the chosen context strategy.
-        self.includeMemoryTools = includeMemoryTools ?? (contextStrategy != .promptAugmentation)
         self.userMetadata = userMetadata
         self.assistantMetadata = assistantMetadata
-        self.injectionStyle = injectionStyle
-        self.memoryCharacterBudget = memoryCharacterBudget
         self.structuredPersistence = structuredPersistence
         self.toolKit = toolKit
+        self.contextPolicy = contextPolicy
 
         if let promptBuilder {
             self.promptBuilder = promptBuilder
         } else {
-            // Production-safer hybrid defaults: fewer items + character budget.
             self.promptBuilder = FoundationModelsMemoryPromptBuilder(
                 maxItems: 4,
                 maxMemoryCharacters: memoryCharacterBudget,
@@ -450,8 +522,6 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
             maxMemoryCharacters: 800,
             injectionStyle: .xmlTags
         ),
-        includeMemoryTools: true,
-        memoryCharacterBudget: 800,
         toolKit: .compact
     )
 
@@ -462,9 +532,7 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
             maxItems: 3,
             maxMemoryCharacters: 800,
             injectionStyle: .xmlTags
-        ),
-        includeMemoryTools: false,
-        memoryCharacterBudget: 800
+        )
     )
 
     /// Balanced hybrid: inject up to 4 items (~1200 chars) and register focused memory tools.
@@ -475,8 +543,6 @@ public struct FoundationModelsMemorySessionConfig: Sendable, Equatable {
             maxMemoryCharacters: 1_200,
             injectionStyle: .xmlTags
         ),
-        includeMemoryTools: true,
-        memoryCharacterBudget: 1_200,
         toolKit: .focused
     )
 
