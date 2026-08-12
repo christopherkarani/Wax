@@ -69,9 +69,18 @@ struct FoundationModelStreamingContractTests {
             consume.cancel()
             do {
                 try await consume.value
+                Issue.record("cancelled stream must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(!didPersistUser)
+                #expect(!didPersistAssistant)
             } catch is CancellationError {
+                Issue.record("consumer cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
             } catch {
-                // Stream termination may surface as a wrapped cancellation.
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
             }
 
             #expect(try await countFrames(memory, query: marker, role: "user") == 0)
@@ -122,8 +131,18 @@ struct FoundationModelStreamingContractTests {
             consume.cancel()
             do {
                 try await consume.value
+                Issue.record("cancelled stream must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(didPersistUser)
+                #expect(!didPersistAssistant)
             } catch is CancellationError {
+                Issue.record("consumer cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
             } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
             }
 
             try await memory.flush()
@@ -313,8 +332,18 @@ struct FoundationModelStreamingContractTests {
             task.cancel()
             do {
                 _ = try await task.value
+                Issue.record("cancelled collect must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(didPersistUser)
+                #expect(!didPersistAssistant)
             } catch is CancellationError {
+                Issue.record("collect cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
             } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
             }
 
             try await memory.flush()

@@ -323,9 +323,18 @@ struct FoundationModelSessionCancellationTests {
             consume.cancel()
             do {
                 _ = try await consume.value
+                Issue.record("cancelling the consuming task must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(!didPersistUser)
+                #expect(!didPersistAssistant)
             } catch is CancellationError {
+                Issue.record("consumer cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
             } catch {
-                // Stream termination may surface as a wrapped cancellation.
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
             }
 
             let reply = try await withBoundedTimeout(description: "respond after stream cancel") {

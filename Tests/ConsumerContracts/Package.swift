@@ -15,6 +15,11 @@ let package = Package(
             dependencies: [.product(name: "Wax", package: "Wax")],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
+        .executableTarget(
+            name: "FoundationModelsConsumer",
+            dependencies: [.product(name: "Wax", package: "Wax")],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
         .testTarget(
             name: "ConsumerContractTests",
             dependencies: [.product(name: "Wax", package: "Wax")],

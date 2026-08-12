@@ -228,4 +228,9 @@ let session = try await Memory.openFoundationModelsSession(
   ``WaxFoundationModelsError/generationFailed(didPersistUser:didPersistAssistant:reason:)``
   persistence accounting. Prepared-prompt overflow is a measured character bound
   (``WaxFoundationModelsContextPolicy``), not an Apple tokenizer guarantee.
+  ``WaxFoundationModelsError/contextWindowExceeded(estimatedPreparedCharacters:maxPreparedCharacters:estimatedContextTokens:measuredPreparedPromptTokenCount:recalledItemCount:)``
+  reports measured characters, a retrieval token estimate, and the Wax cl100k count
+  of the prepared prompt as distinct fields. Cancelling the task that iterates
+  ``WaxGenerationStream`` surfaces the same typed ``cancelled`` error as cancelling
+  generation, including persist flags.
 - Keep secrets out of memory; Wax stores durable text, not credentials.

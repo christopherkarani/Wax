@@ -293,8 +293,7 @@ public actor WaxFoundationModelSession {
             do {
                 response = try await self.generateTextHonoringOverflowPolicy(
                     prompt: turn.prompt,
-                    options: options,
-                    prepared: prepared
+                    options: options
                 )
             } catch {
                 throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
@@ -334,7 +333,7 @@ public actor WaxFoundationModelSession {
             try self.checkConversationTurnLimit()
             let response: T
             do {
-                response = try await self.generator.generateStructured(
+                response = try await self.generateStructuredHonoringOverflowPolicy(
                     prompt: turn.prompt,
                     type: type,
                     options: options
@@ -367,7 +366,7 @@ public actor WaxFoundationModelSession {
             try self.checkConversationTurnLimit()
             let response: T
             do {
-                response = try await self.generator.generateStructured(
+                response = try await self.generateStructuredHonoringOverflowPolicy(
                     prompt: turn.prompt,
                     type: type,
                     options: options
@@ -423,10 +422,13 @@ public actor WaxFoundationModelSession {
             let turn = invocationForTurn(prepared: prepared)
             let inner = generator.streamText(prompt: turn.prompt, options: options)
             let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
+            let generationPrompt = turn.prompt
             let producer = Task {
                 await self.runStreamingProducer(
                     userPrompt: userPrompt,
                     prepared: prepared,
+                    prompt: generationPrompt,
+                    options: options,
                     inner: inner,
                     continuation: continuation,
                     lease: lease
@@ -548,10 +550,16 @@ public actor WaxFoundationModelSession {
     }
 
     /// Produces ``WaxGenerationStream/Event`` values, persists on the stream lifecycle,
-    /// and releases the generation lease in `defer`.
+    /// and releases the generation lease in `defer`. Overflow retry (when configured)
+    /// resets the transcript and consumes a fresh inner stream once. User persistence
+    /// still happens only after the first yielded token of the overall attempt, so a
+    /// retry after a pre-token overflow persists on the retry's first token, and a
+    /// retry after a post-token overflow does not persist the user turn again.
     private func runStreamingProducer(
         userPrompt: String,
         prepared: PreparedMemoryPrompt,
+        prompt: String,
+        options: GenerationOptions,
         inner: AsyncThrowingStream<String, Error>,
         continuation: AsyncThrowingStream<WaxGenerationStream.Event, Error>.Continuation,
         lease: GenerationLease
@@ -564,18 +572,35 @@ public actor WaxFoundationModelSession {
         var lastContent = ""
         var sawContent = false
         var didPersistUser = false
+        var currentInner = inner
+        var allowOverflowRetry = true
 
         do {
-            for try await chunk in inner {
-                try Task.checkCancellation()
-                if !sawContent {
-                    sawContent = true
-                    if configuration.persistencePolicy.shouldPersistUser {
-                        didPersistUser = try await persistUserTracked(userPrompt)
+            streamAttempt: while true {
+                do {
+                    for try await chunk in currentInner {
+                        try Task.checkCancellation()
+                        if !sawContent {
+                            sawContent = true
+                            if configuration.persistencePolicy.shouldPersistUser {
+                                didPersistUser = try await persistUserTracked(userPrompt)
+                            }
+                        }
+                        lastContent = chunk
+                        continuation.yield(.content(chunk))
                     }
+                    break streamAttempt
+                } catch {
+                    try Task.checkCancellation()
+                    let canRetry = allowOverflowRetry
+                        && configuration.contextPolicy.overflowPolicy == .resetTranscriptAndRetryOnce
+                        && WaxFoundationModelsError.isExceededContextWindow(error)
+                        && !resetTranscriptForContext
+                    guard canRetry else { throw error }
+                    allowOverflowRetry = false
+                    resetUnderlyingSessionForContextRetry()
+                    currentInner = generator.streamText(prompt: prompt, options: options)
                 }
-                lastContent = chunk
-                continuation.yield(.content(chunk))
             }
 
             try Task.checkCancellation()
@@ -683,7 +708,7 @@ public actor WaxFoundationModelSession {
             didPersistAssistant: didPersistAssistant,
             retrievalDiagnostics: prepared.retrievalDiagnostics,
             estimatedPreparedCharacters: prepared.estimatedPreparedCharacters,
-            resetTranscriptForContext: resetTranscriptForContext,
+            resetTranscriptForContext: consumeResetTranscriptForContext(),
             preparedPromptTokenCount: prepared.preparedPromptTokenCount,
             contextWindowTokens: prepared.contextWindowTokens,
             estimatedContextTokens: prepared.estimatedContextTokens,
@@ -692,17 +717,25 @@ public actor WaxFoundationModelSession {
         )
     }
 
+    private func consumeResetTranscriptForContext() -> Bool {
+        let value = resetTranscriptForContext
+        resetTranscriptForContext = false
+        return value
+    }
+
     private func mapTerminalError(
         _ error: Error,
         prepared: PreparedMemoryPrompt?,
         didPersistUser: Bool,
         didPersistAssistant: Bool = false
     ) -> Error {
-        WaxFoundationModelsError.mapTerminal(
+        resetTranscriptForContext = false
+        return WaxFoundationModelsError.mapTerminal(
             error,
             estimatedPreparedCharacters: prepared?.estimatedPreparedCharacters ?? 0,
             maxPreparedCharacters: configuration.contextPolicy.maxPreparedCharacters,
             estimatedContextTokens: prepared?.estimatedContextTokens ?? 0,
+            measuredPreparedPromptTokenCount: prepared?.preparedPromptTokenCount ?? 0,
             recalledItemCount: prepared?.recalledItemCount ?? 0,
             didPersistUser: didPersistUser,
             didPersistAssistant: didPersistAssistant
@@ -716,6 +749,7 @@ public actor WaxFoundationModelSession {
             estimatedPreparedCharacters: prepared.estimatedPreparedCharacters,
             maxPreparedCharacters: maxCharacters,
             estimatedContextTokens: prepared.estimatedContextTokens,
+            measuredPreparedPromptTokenCount: prepared.preparedPromptTokenCount,
             recalledItemCount: prepared.recalledItemCount
         )
     }
@@ -735,11 +769,32 @@ public actor WaxFoundationModelSession {
 
     private func generateTextHonoringOverflowPolicy(
         prompt: String,
-        options: GenerationOptions,
-        prepared: PreparedMemoryPrompt
+        options: GenerationOptions
     ) async throws -> String {
+        try await withOverflowRetry {
+            try await self.generator.generateText(prompt: prompt, options: options)
+        }
+    }
+
+    private func generateStructuredHonoringOverflowPolicy<T: Generable>(
+        prompt: String,
+        type: T.Type,
+        options: GenerationOptions
+    ) async throws -> T {
+        try await withOverflowRetry {
+            try await self.generator.generateStructured(
+                prompt: prompt,
+                type: type,
+                options: options
+            )
+        }
+    }
+
+    private func withOverflowRetry<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
         do {
-            return try await generator.generateText(prompt: prompt, options: options)
+            return try await operation()
         } catch {
             try Task.checkCancellation()
             let canRetry = configuration.contextPolicy.overflowPolicy == .resetTranscriptAndRetryOnce
@@ -747,7 +802,7 @@ public actor WaxFoundationModelSession {
                 && !resetTranscriptForContext
             guard canRetry else { throw error }
             resetUnderlyingSessionForContextRetry()
-            return try await generator.generateText(prompt: prompt, options: options)
+            return try await operation()
         }
     }
 

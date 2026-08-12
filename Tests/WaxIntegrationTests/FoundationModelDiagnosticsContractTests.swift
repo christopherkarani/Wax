@@ -43,8 +43,11 @@ struct FoundationModelDiagnosticsContractTests {
             #expect(prepared.estimatedPreparedCharacters > 0)
             #expect(prepared.resetTranscriptForContext == false)
             #expect(prepared.truncationStrategy == "none" || prepared.truncationStrategy == "characterBudget")
-            #expect(prepared.estimatedContextTokens >= 0)
-            #expect(prepared.preparedPromptTokenCount >= 0)
+            let counter = try await TokenCounter.shared()
+            let measuredPromptTokens = await counter.count(prepared.prompt)
+            #expect(prepared.preparedPromptTokenCount == measuredPromptTokens)
+            #expect(prepared.preparedPromptTokenCount > 0)
+            #expect(prepared.estimatedContextTokens > 0)
 
             let response = try await session.respondDetailed(
                 to: "What is my favorite onboard color code?"

@@ -72,12 +72,15 @@ public enum WaxFoundationModelsError: Error, Sendable, Equatable, LocalizedError
     /// ``WaxGenerationStream`` allows a single iterator.
     case iteratorAlreadyCreated
     /// Prepared prompt exceeded the character policy, or Apple reported an
-    /// exceeded context window. Character counts are measured; token counts are
-    /// Wax retrieval/tokenizer estimates, not Apple's hidden tokenizer.
+    /// exceeded context window. Character counts are measured.
+    /// `estimatedContextTokens` is the Wax retrieval estimate (`RAGContext.totalTokens`);
+    /// `measuredPreparedPromptTokenCount` is the Wax cl100k `TokenCounter` count of the
+    /// final prepared prompt. Neither is Apple's hidden tokenizer.
     case contextWindowExceeded(
         estimatedPreparedCharacters: Int,
         maxPreparedCharacters: Int,
         estimatedContextTokens: Int,
+        measuredPreparedPromptTokenCount: Int,
         recalledItemCount: Int
     )
     /// Caller cancellation after generation started. Persistence flags record
@@ -103,9 +106,10 @@ public enum WaxFoundationModelsError: Error, Sendable, Equatable, LocalizedError
             let estimatedPreparedCharacters,
             let maxPreparedCharacters,
             let estimatedContextTokens,
+            let measuredPreparedPromptTokenCount,
             let recalledItemCount
         ):
-            return "Foundation Models context window exceeded: preparedCharacters=\(estimatedPreparedCharacters) maxPreparedCharacters=\(maxPreparedCharacters) estimatedContextTokens=\(estimatedContextTokens) recalledItemCount=\(recalledItemCount). Character counts are measured; token counts are Wax estimates, not Apple's tokenizer."
+            return "Foundation Models context window exceeded: preparedCharacters=\(estimatedPreparedCharacters) maxPreparedCharacters=\(maxPreparedCharacters) estimatedContextTokens=\(estimatedContextTokens) measuredPreparedPromptTokenCount=\(measuredPreparedPromptTokenCount) recalledItemCount=\(recalledItemCount). Character counts are measured; estimatedContextTokens is a retrieval estimate; measuredPreparedPromptTokenCount is Wax cl100k, not Apple's tokenizer."
         case .cancelled(let didPersistUser, let didPersistAssistant):
             return "Foundation Models generation cancelled (didPersistUser=\(didPersistUser), didPersistAssistant=\(didPersistAssistant))."
         case .generationFailed(let didPersistUser, let didPersistAssistant, let reason):
@@ -139,6 +143,7 @@ public enum WaxFoundationModelsError: Error, Sendable, Equatable, LocalizedError
         estimatedPreparedCharacters: Int,
         maxPreparedCharacters: Int,
         estimatedContextTokens: Int,
+        measuredPreparedPromptTokenCount: Int,
         recalledItemCount: Int,
         didPersistUser: Bool,
         didPersistAssistant: Bool
@@ -158,6 +163,7 @@ public enum WaxFoundationModelsError: Error, Sendable, Equatable, LocalizedError
                 estimatedPreparedCharacters: estimatedPreparedCharacters,
                 maxPreparedCharacters: maxPreparedCharacters,
                 estimatedContextTokens: estimatedContextTokens,
+                measuredPreparedPromptTokenCount: measuredPreparedPromptTokenCount,
                 recalledItemCount: recalledItemCount
             )
         }

@@ -127,6 +127,19 @@ struct FoundationModelContextAndErrorTests {
             )
             let userPrompt = "Summarize the mission dossier in one sentence."
 
+            var wideConfig = configuration
+            wideConfig.contextPolicy.maxPreparedCharacters = 80_000
+            let wideSession = WaxFoundationModelSession(
+                memory: memory,
+                configuration: wideConfig,
+                generator: ControllableFoundationModelGenerator()
+            )
+            let prepared = try await wideSession.preparePromptDetailed(for: userPrompt)
+            let counter = try await TokenCounter.shared()
+            let measuredPromptTokens = await counter.count(prepared.prompt)
+            #expect(prepared.preparedPromptTokenCount == measuredPromptTokens)
+            #expect(measuredPromptTokens > 0)
+
             do {
                 _ = try await session.preparePromptDetailed(for: userPrompt)
                 Issue.record("preparePromptDetailed must throw when the prepared prompt exceeds the character bound")
@@ -135,19 +148,25 @@ struct FoundationModelContextAndErrorTests {
                     let estimatedPreparedCharacters,
                     let maxPreparedCharacters,
                     let estimatedContextTokens,
+                    let measuredPreparedPromptTokenCount,
                     let recalledItemCount
                 ) = error else {
                     Issue.record("expected .contextWindowExceeded, got \(error)")
                     return
                 }
                 #expect(maxPreparedCharacters == 80)
+                #expect(estimatedPreparedCharacters == prepared.estimatedPreparedCharacters)
                 #expect(estimatedPreparedCharacters > 80)
-                #expect(estimatedContextTokens >= 0)
+                #expect(estimatedContextTokens == prepared.estimatedContextTokens)
+                #expect(measuredPreparedPromptTokenCount == measuredPromptTokens)
+                #expect(measuredPreparedPromptTokenCount > 0)
                 #expect(recalledItemCount >= 1)
                 #expect(await generator.generateCallCount() == 0)
             } catch {
                 Issue.record("expected WaxFoundationModelsError.contextWindowExceeded, got \(error)")
             }
+
+            try await wideSession.close()
 
             try await session.close()
             try await memory.close()
@@ -207,6 +226,10 @@ struct FoundationModelContextAndErrorTests {
             #expect(response.didPersistAssistant)
             #expect(await retryGenerator.generateCallCount() == 2)
             #expect(try await countRoleFrames(memory, query: retryMarker, role: "user") == 1)
+
+            let followUp = try await retrySession.respondDetailed(to: "follow-up-after-overflow-retry")
+            #expect(followUp.resetTranscriptForContext == false)
+            #expect(await retryGenerator.generateCallCount() == 3)
 
             try await failingSession.close()
             try await retrySession.close()
@@ -382,6 +405,155 @@ struct FoundationModelContextAndErrorTests {
             try await memory.flush()
             #expect(try await countRoleFrames(memory, query: marker, role: "user") == 1)
             #expect(try await countRoleFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func cancellingConsumingTaskSurfacesTypedCancelledWithPersistFlags() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(blockUntilCancelled: true)
+            let session = makePromptOnlySession(memory: memory, generator: generator)
+            let marker = "unique-consumer-cancel-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            let (chunkSignal, chunkContinuation) = AsyncStream.makeStream(of: String.self)
+            let consume = Task {
+                for try await event in stream {
+                    if case .content(let text) = event {
+                        chunkContinuation.yield(text)
+                        chunkContinuation.finish()
+                    }
+                }
+            }
+
+            let firstChunk = try await withBoundedTimeout(description: "first stream content") {
+                var received: String?
+                for await chunk in chunkSignal {
+                    received = chunk
+                    break
+                }
+                return received
+            }
+            #expect(firstChunk != nil)
+            try await generator.waitUntilGenerating()
+
+            consume.cancel()
+            do {
+                try await consume.value
+                Issue.record("cancelling the consuming task must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled(let didPersistUser, let didPersistAssistant) = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+                #expect(didPersistUser)
+                #expect(!didPersistAssistant)
+            } catch is CancellationError {
+                Issue.record("consumer cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
+            } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
+            }
+
+            try await memory.flush()
+            #expect(try await countRoleFrames(memory, query: marker, role: "user") == 1)
+            #expect(try await countRoleFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func streamOverflowRetriesOnceWithoutDoublePersistingUser() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let appleOverflow = LanguageModelSession.GenerationError.exceededContextWindowSize(
+                .init(debugDescription: "synthetic stream overflow")
+            )
+            var configuration = FoundationModelsMemorySessionConfig.promptOnlyLight
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .userAndAssistant
+            configuration.contextPolicy.overflowPolicy = .resetTranscriptAndRetryOnce
+            let generator = ControllableFoundationModelGenerator(
+                streamError: appleOverflow,
+                streamErrorCount: 1
+            )
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+            let marker = "unique-stream-overflow-retry-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            var completed: WaxFMResponse<String>?
+            for try await event in stream {
+                if case .completed(let response) = event {
+                    completed = response
+                }
+            }
+            let response = try #require(completed)
+            #expect(response.resetTranscriptForContext)
+            #expect(response.didPersistUser)
+            #expect(response.didPersistAssistant)
+            #expect(await generator.streamCallCount() == 2)
+            #expect(try await countRoleFrames(memory, query: marker, role: "user") == 1)
+
+            let followUp = try await session.respondDetailed(to: "follow-up-after-stream-overflow")
+            #expect(followUp.resetTranscriptForContext == false)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func structuredOverflowRetriesOnceWithoutDoublePersistingUser() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let appleOverflow = LanguageModelSession.GenerationError.exceededContextWindowSize(
+                .init(debugDescription: "synthetic structured overflow")
+            )
+            let reply = FoundationModelTestReply(text: "structured-ok")
+            var configuration = FoundationModelsMemorySessionConfig.promptOnlyLight
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .userAndAssistant
+            configuration.contextPolicy.overflowPolicy = .resetTranscriptAndRetryOnce
+            let generator = ControllableFoundationModelGenerator(
+                generateError: appleOverflow,
+                generateErrorCount: 1,
+                structuredResult: reply
+            )
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+            let marker = "unique-structured-overflow-retry-\(UUID().uuidString)"
+
+            let response = try await session.respondDetailed(
+                to: marker,
+                generating: FoundationModelTestReply.self
+            )
+            #expect(response.content == reply)
+            #expect(response.resetTranscriptForContext)
+            #expect(response.didPersistUser)
+            #expect(response.didPersistAssistant)
+            #expect(await generator.generateCallCount() == 2)
+            #expect(try await countRoleFrames(memory, query: marker, role: "user") == 1)
+
+            let followUp = try await session.respondDetailed(to: "follow-up-after-structured-overflow")
+            #expect(followUp.resetTranscriptForContext == false)
 
             try await session.close()
             try await memory.close()

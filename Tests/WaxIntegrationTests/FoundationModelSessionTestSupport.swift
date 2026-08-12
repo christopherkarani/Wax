@@ -15,6 +15,16 @@ struct FoundationModelGeneratorWaitTimeout: Error, CustomStringConvertible {
 struct ControllableFoundationModelGuardrailError: Error, Equatable {}
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@Generable
+struct FoundationModelTestReply: Equatable, Sendable {
+    var text: String
+
+    init(text: String) {
+        self.text = text
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, @unchecked Sendable {
     enum StreamFailurePoint: Sendable {
         case none
@@ -28,18 +38,22 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private let streamFailure: StreamFailurePoint
     private let generateError: Error?
     private var remainingGenerateErrors: Int
+    private let streamError: Error?
+    private var remainingStreamErrors: Int
     private var remainingPersistenceHolds: Int
     private var remainingFirstChunkHolds: Int
     private var inFlight = 0
     private var peakInFlight = 0
     private var completed: [String] = []
     private var generateCalls = 0
+    private var streamCalls = 0
     private var observedCancellation = false
     private var holdingBeforePersistence = false
     private var persistenceHoldContinuation: CheckedContinuation<Void, Never>?
     private var holdingBeforeFirstChunk = false
     private var firstChunkHoldContinuation: CheckedContinuation<Void, Never>?
     private var forceCancel = false
+    private let structuredResult: (any Sendable)?
 
     init(
         delay: Duration = .milliseconds(20),
@@ -48,15 +62,21 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         pauseBeforeFirstChunk: Bool = false,
         streamFailure: StreamFailurePoint = .none,
         generateError: Error? = nil,
-        generateErrorCount: Int = 1
+        generateErrorCount: Int = 1,
+        streamError: Error? = nil,
+        streamErrorCount: Int = 1,
+        structuredResult: (any Sendable)? = nil
     ) {
         self.delay = delay
         self.blockUntilCancelled = blockUntilCancelled
         self.streamFailure = streamFailure
         self.generateError = generateError
         self.remainingGenerateErrors = generateError == nil ? 0 : max(0, generateErrorCount)
+        self.streamError = streamError
+        self.remainingStreamErrors = streamError == nil ? 0 : max(0, streamErrorCount)
         self.remainingPersistenceHolds = pauseBeforePersistence ? 1 : 0
         self.remainingFirstChunkHolds = pauseBeforeFirstChunk ? 1 : 0
+        self.structuredResult = structuredResult
     }
 
     func maxInFlight() -> Int {
@@ -69,6 +89,10 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
 
     func generateCallCount() -> Int {
         lock.withLock { generateCalls }
+    }
+
+    func streamCallCount() -> Int {
+        lock.withLock { streamCalls }
     }
 
     func didObserveCancellation() -> Bool {
@@ -157,8 +181,12 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         type: T.Type,
         options: GenerationOptions
     ) async throws -> T {
+        _ = type
         _ = try await generateText(prompt: prompt, options: options)
-        throw CancellationError()
+        if let structuredResult, let value = structuredResult as? T {
+            return value
+        }
+        throw ControllableFoundationModelGuardrailError()
     }
 
     func streamText(
@@ -168,8 +196,19 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    self.lock.withLock { self.streamCalls += 1 }
                     try await self.holdBeforeFirstChunkIfNeeded()
                     try Task.checkCancellation()
+                    let plannedStreamError: Error? = self.lock.withLock {
+                        if remainingStreamErrors > 0, let streamError {
+                            remainingStreamErrors -= 1
+                            return streamError
+                        }
+                        return nil
+                    }
+                    if let plannedStreamError {
+                        throw plannedStreamError
+                    }
                     if self.streamFailure == .beforeFirstChunk {
                         throw ControllableFoundationModelGuardrailError()
                     }
