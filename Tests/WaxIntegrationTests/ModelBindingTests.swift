@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int

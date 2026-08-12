@@ -19,7 +19,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
     private static let replaySnapshotValidFlag: UInt64 = 0x1
     private static let replaySnapshotMagic = Data([0x57, 0x41, 0x4C, 0x53, 0x4E, 0x41, 0x50, 0x31]) // WALSNAP1
 
-    package struct WALReplaySnapshot: Equatable, Sendable {
+    struct WALReplaySnapshot: Equatable, Sendable {
         package var fileGeneration: UInt64
         package var walCommittedSeq: UInt64
         package var footerOffset: UInt64
@@ -61,12 +61,12 @@ package struct WaxHeaderPage: Equatable, Sendable {
     package var walCheckpointPos: UInt64
     package var walCommittedSeq: UInt64
 
-    package var walReplaySnapshot: WALReplaySnapshot?
+    var walReplaySnapshot: WALReplaySnapshot?
 
     package var tocChecksum: Data
     package var headerChecksum: Data
 
-    package init(
+    init(
         formatVersion: UInt16 = Constants.specVersion,
         specMajor: UInt8 = Constants.specMajor,
         specMinor: UInt8 = Constants.specMinor,

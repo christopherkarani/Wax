@@ -85,3 +85,56 @@ func memoryOrchestratorWriteReadEmbeddingsEmptyRoundTrip() async throws {
         #expect(decoded.isEmpty)
     }
 }
+
+@Test
+func memoryOrchestratorStructuredMemoryDisabledThrowsFeatureDisabled() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableStructuredMemory = false
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+
+        do {
+            _ = try await orchestrator.resolveEntities(matchingAlias: "alice")
+            #expect(Bool(false), "structured memory lookup with the feature disabled must throw")
+        } catch let error as WaxError {
+            guard case .featureDisabled(let feature) = error else {
+                #expect(Bool(false), "expected WaxError.featureDisabled, got \(error)")
+                return
+            }
+            #expect(feature == "structured memory")
+        } catch {
+            #expect(Bool(false))
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func memoryOrchestratorVectorStoreWithoutEmbedderThrowsMissingEmbedder() async throws {
+    try await TempFiles.withTempFile { url in
+        let config = TestHelpers.defaultMemoryConfig(vector: true)
+        let seeded = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: DeterministicTextEmbedder(dimensions: 2)
+        )
+        try await seeded.remember("Seeded vector store phrase.")
+        try await seeded.close()
+
+        // Reopening a store that already has a committed vector index keeps vector
+        // search enabled; writing without an embedder must fail with a typed error.
+        let reopened = try await MemoryOrchestrator(at: url, config: config)
+        do {
+            try await reopened.remember("This write needs an embedder but none is configured.")
+            #expect(Bool(false), "remember without embedder on a vector store must throw")
+        } catch let error as WaxError {
+            guard case .missingEmbedder = error else {
+                #expect(Bool(false), "expected WaxError.missingEmbedder, got \(error)")
+                return
+            }
+        } catch {
+            #expect(Bool(false))
+        }
+        try await reopened.close()
+    }
+}

@@ -131,7 +131,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
             throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
-            throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
+            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
         return try Self.validatedNormalizedVector(vector, dimensions: dimensions)
     }
@@ -180,7 +180,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         }
         for vector in vectors {
             if vector.count != dimensions {
-                throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
+                throw WaxError.invalidEmbedding(reason: "MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
             }
         }
         return try vectors.map { try Self.validatedNormalizedVector($0, dimensions: dimensions) }
@@ -259,17 +259,17 @@ extension MiniLMEmbedder {
 private extension MiniLMEmbedder {
     static func validatedNormalizedVector(_ vector: [Float], dimensions: Int) throws -> [Float] {
         guard vector.count == dimensions else {
-            throw WaxError.io("MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
+            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
         }
         guard vector.allSatisfy(\.isFinite) else {
-            throw WaxError.io("MiniLMAll produced a non-finite embedding value.")
+            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a non-finite embedding value.")
         }
         let sumOfSquares = vector.reduce(Float(0)) { $0 + $1 * $1 }
         guard sumOfSquares.isFinite else {
-            throw WaxError.io("MiniLMAll produced a non-finite embedding magnitude.")
+            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a non-finite embedding magnitude.")
         }
         guard sumOfSquares > 0 else {
-            throw WaxError.io("MiniLMAll produced a zero-magnitude embedding.")
+            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a zero-magnitude embedding.")
         }
         let inverseMagnitude = 1 / sqrt(sumOfSquares)
         return vector.map { $0 * inverseMagnitude }

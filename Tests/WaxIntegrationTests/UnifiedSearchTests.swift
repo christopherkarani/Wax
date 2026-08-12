@@ -4,6 +4,9 @@ import Metal
 #endif
 import Testing
 @testable import Wax
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     let dimensions: Int

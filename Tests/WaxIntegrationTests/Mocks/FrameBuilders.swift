@@ -1,5 +1,8 @@
 import Foundation
 import Wax
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 enum FrameBuilders {
     static func photoRootMetadata(

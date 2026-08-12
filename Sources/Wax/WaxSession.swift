@@ -148,7 +148,7 @@ package actor WaxSession {
 
     package func searchText(query: String, topK: Int) async throws -> [TextSearchResult] {
         guard config.enableTextSearch, let textEngine else {
-            throw WaxError.io("text search is disabled")
+            throw WaxError.featureDisabled(feature: "text search")
         }
         return try await textEngine.search(query: query, topK: topK)
     }
@@ -158,7 +158,7 @@ package actor WaxSession {
     package func indexText(frameId: UInt64, text: String) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
-            throw WaxError.io("text search is disabled")
+            throw WaxError.featureDisabled(feature: "text search")
         }
         try await textEngine.index(frameId: frameId, text: text)
     }
@@ -166,7 +166,7 @@ package actor WaxSession {
     package func indexTextBatch(frameIds: [UInt64], texts: [String]) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
-            throw WaxError.io("text search is disabled")
+            throw WaxError.featureDisabled(feature: "text search")
         }
         try await textEngine.indexBatch(frameIds: frameIds, texts: texts)
     }
@@ -174,7 +174,7 @@ package actor WaxSession {
     package func removeText(frameId: UInt64) async throws {
         try ensureWritable()
         guard config.enableTextSearch, let textEngine else {
-            throw WaxError.io("text search is disabled")
+            throw WaxError.featureDisabled(feature: "text search")
         }
         try await textEngine.remove(frameId: frameId)
     }
@@ -188,7 +188,7 @@ package actor WaxSession {
     package func removeVector(frameId: UInt64) async throws {
         try ensureWritable()
         guard config.enableVectorSearch else {
-            throw WaxError.io("vector search is disabled")
+            throw WaxError.featureDisabled(feature: "vector search")
         }
         pendingRemovedFrameIds.insert(frameId)
         guard let concreteVectorEngine else {
@@ -207,14 +207,14 @@ package actor WaxSession {
     ) async throws -> EntityRowID {
         try ensureWritable()
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         return try await textEngine.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs)
     }
 
     package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         return try await textEngine.resolveEntities(matchingAlias: alias, limit: limit)
     }
@@ -230,7 +230,7 @@ package actor WaxSession {
     ) async throws -> FactRowID {
         try ensureWritable()
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         return try await textEngine.assertFact(
             subject: subject,
@@ -246,7 +246,7 @@ package actor WaxSession {
     package func retractFact(factId: FactRowID, atMs: Int64) async throws {
         try ensureWritable()
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         try await textEngine.retractFact(factId: factId, atMs: atMs)
     }
@@ -258,7 +258,7 @@ package actor WaxSession {
         limit: Int
     ) async throws -> StructuredFactsResult {
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         return try await textEngine.facts(about: subject, predicate: predicate, asOf: asOf, limit: limit)
     }
@@ -271,7 +271,7 @@ package actor WaxSession {
         limit: Int
     ) async throws -> StructuredEdgesResult {
         guard config.enableStructuredMemory, let textEngine else {
-            throw WaxError.io("structured memory is disabled")
+            throw WaxError.featureDisabled(feature: "structured memory")
         }
         return try await textEngine.edges(for: entity, direction: direction, predicate: predicate, asOf: asOf, limit: limit)
     }

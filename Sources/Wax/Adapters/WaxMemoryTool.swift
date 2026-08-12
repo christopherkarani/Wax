@@ -369,12 +369,11 @@ public extension Memory {
         embedding: (any EmbeddingProvider)? = nil,
         toolConfig: WaxMemoryToolConfig = .default
     ) async throws -> WaxMemoryTool {
-        let memory: Memory
+        var config = config
         if let embedding {
-            memory = try await Memory(at: url, config: config, embedding: embedding)
-        } else {
-            memory = try await Memory(at: url, config: config)
+            config.embedding = .custom(embedding)
         }
+        let memory = try await Memory(at: url, config: config)
         return WaxMemoryTool(memory: memory, config: toolConfig)
     }
 }

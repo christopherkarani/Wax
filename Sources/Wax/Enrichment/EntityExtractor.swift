@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 /// Deterministic offline entity extraction for async enrichment.
 package enum EntityExtractor {

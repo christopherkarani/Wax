@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import Wax
 import WaxVectorSearch
+import WaxCore
+import WaxTextSearch
 
 // Byte-level proof that VideoRAG delete and re-ingest (supersede) remove segment
 // vectors from the committed vector index. Before the fix, VideoRAGOrchestrator only
@@ -147,6 +149,58 @@ func videoRAGReingestRemovesSupersededSegmentVectorsFromCommittedVecBytes() asyn
         }
         for segmentId in newSegmentIds {
             #expect(afterIds.contains(segmentId))
+        }
+
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func videoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let mp4URL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4URL) }
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4URL, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        let orchestrator = try await videoDeleteMakeOrchestrator(storeURL: storeURL)
+        let file = VideoFile(id: "legacy-ghost", url: mp4URL, captureDate: nil)
+
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+
+        let wax = await orchestrator.wax
+        let oldRootId = try await videoDeleteRootId(wax: wax, superseded: false)
+        let oldSegmentIds = try await videoDeleteSegmentIds(wax: wax, underRoot: oldRootId)
+        let ghostSegmentId = try #require(oldSegmentIds.first, "setup: ingest must produce segment frames")
+
+        // Re-ingest supersedes the tree; current cleanup removes its vectors.
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+        let newRootId = try await videoDeleteRootId(wax: wax, superseded: false)
+        let newSegmentIds = try await videoDeleteSegmentIds(wax: wax, underRoot: newRootId)
+
+        // Simulate a store written before vector cleanup existed: a superseded
+        // segment vector is still present in the committed index.
+        try await wax.putEmbedding(frameId: ghostSegmentId, vector: [1, 0, 0, 0, 0, 0, 0, 0])
+        try await orchestrator.flush()
+        let legacyBytes = try await wax.readCommittedVecIndexBytes()
+        #expect(
+            try videoDeleteCommittedVecFrameIds(from: legacyBytes!).contains(ghostSegmentId),
+            "setup: injected legacy ghost must be committed"
+        )
+
+        // The next index rebuild sweeps retired-tree vectors out of the committed index.
+        try await orchestrator.ingest(files: [VideoFile(id: "sweep-trigger", url: mp4URL, captureDate: nil)])
+        try await orchestrator.flush()
+
+        let sweptBytes = try await wax.readCommittedVecIndexBytes()
+        #expect(sweptBytes != nil)
+        let sweptIds = try videoDeleteCommittedVecFrameIds(from: sweptBytes!)
+        #expect(!sweptIds.contains(ghostSegmentId), "legacy ghost vector survived the retired-tree sweep")
+        for segmentId in newSegmentIds {
+            #expect(sweptIds.contains(segmentId), "current segment vectors must survive the sweep")
         }
 
         try await orchestrator.flush()

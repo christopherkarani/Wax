@@ -620,7 +620,7 @@ package actor PhotoRAGOrchestrator {
             globalEmbedding = VectorMath.normalizeL2(globalEmbedding)
         }
         guard globalEmbedding.count == embedder.dimensions else {
-            throw WaxError.io("embedder produced \(globalEmbedding.count) dims for image, expected \(embedder.dimensions)")
+            throw WaxError.invalidEmbedding(reason: "embedder produced \(globalEmbedding.count) dims for image, expected \(embedder.dimensions)")
         }
 
         // Root frame
@@ -766,7 +766,7 @@ package actor PhotoRAGOrchestrator {
                                     vec = VectorMath.normalizeL2(vec)
                                 }
                                 guard vec.count == self.embedder.dimensions else {
-                                    throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                                    throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
                                 }
                                 return (index, vec)
                             }
@@ -786,7 +786,7 @@ package actor PhotoRAGOrchestrator {
                                         vec = VectorMath.normalizeL2(vec)
                                     }
                                     guard vec.count == self.embedder.dimensions else {
-                                        throw WaxError.io("embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
+                                        throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for region image, expected \(self.embedder.dimensions)")
                                     }
                                     return (index, vec)
                                 }
@@ -1106,9 +1106,13 @@ package actor PhotoRAGOrchestrator {
         }
 
         var next = IndexState()
+        var retiredVectorIds: Set<UInt64> = []
 
         for meta in metas {
-            guard meta.status != .deleted else { continue }
+            guard meta.status != .deleted else {
+                retiredVectorIds.insert(meta.id)
+                continue
+            }
             guard let kind = meta.kind else { continue }
             if !kind.hasPrefix("photo.") && kind != FrameKind.syncState { continue }
             guard let entries = meta.metadata?.entries,
@@ -1116,13 +1120,19 @@ package actor PhotoRAGOrchestrator {
             else { continue }
 
             if kind == FrameKind.root {
-                guard meta.supersededBy == nil else { continue }
+                guard meta.supersededBy == nil else {
+                    retiredVectorIds.insert(meta.id)
+                    continue
+                }
                 next.rootByAssetID[assetID] = meta.id
                 next.assetIDByRoot[meta.id] = assetID
             }
 
             if let parentId = meta.parentId {
-                guard !supersededRoots.contains(parentId) else { continue }
+                guard !supersededRoots.contains(parentId) else {
+                    retiredVectorIds.insert(meta.id)
+                    continue
+                }
                 var refs = next.derivedByRoot[parentId] ?? DerivedRefs()
                 switch kind {
                 case FrameKind.ocrSummary:
@@ -1149,6 +1159,26 @@ package actor PhotoRAGOrchestrator {
         }
 
         index = next
+        await sweepRetiredVectors(retiredVectorIds)
+    }
+
+    /// Removes vectors for frames outside the live index (superseded trees, deleted
+    /// frames). Stores written before vector cleanup existed can otherwise keep serving
+    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
+    /// opening or reindexing the store.
+    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
+        guard !frameIds.isEmpty else { return }
+        for frameId in frameIds {
+            do {
+                try await session.removeVector(frameId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "PhotoRAG retired-vector sweep",
+                    fallback: "stale vector may remain in the committed index"
+                )
+            }
+        }
     }
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {
@@ -1313,7 +1343,7 @@ package actor PhotoRAGOrchestrator {
             var vec = try await embedder.embed(image: cg)
             if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
             guard vec.count == embedder.dimensions else {
-                throw WaxError.io("embedder produced \(vec.count) dims for query image, expected \(embedder.dimensions)")
+                throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for query image, expected \(embedder.dimensions)")
             }
             imageEmbedding = vec
         } else {
@@ -1357,7 +1387,7 @@ package actor PhotoRAGOrchestrator {
         var vec = try await embedder.embed(text: text)
         if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
         guard vec.count == embedder.dimensions else {
-            throw WaxError.io("embedder produced \(vec.count) dims for query text, expected \(embedder.dimensions)")
+            throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for query text, expected \(embedder.dimensions)")
         }
         await queryEmbeddingCache?.set(key, value: vec)
         return vec

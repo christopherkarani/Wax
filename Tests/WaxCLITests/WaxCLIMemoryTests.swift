@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import Testing
 import Wax
+import WaxCore
 @testable import wax_cli
 #if canImport(Darwin)
 import Darwin

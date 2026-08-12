@@ -1,5 +1,5 @@
 /// Supported compression algorithms for frame payload bytes (v1).
-package enum CompressionKind: Sendable, Equatable {
+enum CompressionKind: Sendable, Equatable {
     case none
     case lzfse
     case lz4

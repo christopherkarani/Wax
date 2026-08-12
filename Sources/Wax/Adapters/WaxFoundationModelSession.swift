@@ -651,12 +651,11 @@ public extension Memory {
         additionalTools: [any Tool] = [],
         sessionConfiguration: FoundationModelsMemorySessionConfig = .default
     ) async throws -> WaxFoundationModelSession {
-        let memory: Memory
+        var config = config
         if let embedding {
-            memory = try await Memory(at: url, config: config, embedding: embedding)
-        } else {
-            memory = try await Memory(at: url, config: config)
+            config.embedding = .custom(embedding)
         }
+        let memory = try await Memory(at: url, config: config)
         return WaxFoundationModelSession(
             memory: memory,
             model: model,
@@ -679,12 +678,9 @@ public extension Memory {
         additionalTools: [any Tool] = [],
         sessionConfiguration: FoundationModelsMemorySessionConfig = .default
     ) async throws -> WaxFoundationModelSession {
-        let memory = try await Memory(
-            at: url,
-            config: config,
-            builtInEmbedding: builtInEmbedding,
-            embeddingOptions: embeddingOptions
-        )
+        var config = config
+        config.embedding = .builtIn(builtInEmbedding, embeddingOptions)
+        let memory = try await Memory(at: url, config: config)
         return WaxFoundationModelSession(
             memory: memory,
             model: model,

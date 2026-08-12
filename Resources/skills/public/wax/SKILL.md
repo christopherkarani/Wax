@@ -23,7 +23,7 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 ## Core Workflow
 1. Choose a `.wax` store URL.
 2. Open `Memory(at:)` — on iOS 18/macOS 15+ with the default `MiniLMEmbeddings` trait, the built-in MiniLM embedder is wired automatically.
-3. Or pass a custom `EmbeddingProvider` via `Memory(at:embedding:)`, or force a built-in via `Memory(at:builtInEmbedding: .miniLM)` (throws when unavailable).
+3. Or select the embedder in config: `Memory(at: url) { $0.embedding = .custom(MyEmbedder()) }`, or force a built-in via `$0.embedding = .builtIn(.miniLM)` (throws when unavailable).
 4. Call `save(...)` to ingest and `search(...)` to retrieve `RAGContext`.
 5. Call `flush()` or `close()` to persist.
 
@@ -112,7 +112,7 @@ func demoCustomEmbedder() async throws {
         .appendingPathComponent("wax-vector")
         .appendingPathExtension("wax")
 
-    let memory = try await Memory(at: url, embedding: MyEmbedder())
+    let memory = try await Memory(at: url) { $0.embedding = .custom(MyEmbedder()) }
     try await memory.save("Vector search enabled.")
 
     let results = try await memory.search("vector", options: .init(mode: .vectorOnly))

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Stable row identifier for a stored predicate.
-package struct PredicateRowID: RawRepresentable, Hashable, Codable, Sendable, Comparable {
+struct PredicateRowID: RawRepresentable, Hashable, Codable, Sendable, Comparable {
     package var rawValue: Int64
 
     package init(rawValue: Int64) {
