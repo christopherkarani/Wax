@@ -40,8 +40,12 @@ package enum Constants {
     /// WAL starts immediately after the header region.
     package static let walOffset: UInt64 = headerRegionSize
 
-    /// Default WAL size used by tests/examples (256 MiB).
+    /// Default WAL size used by low-level `Wax.create` (256 MiB).
+    /// The public `Memory` facade uses `publicFacadeWalSize` (4 MiB) instead.
     package static let defaultWalSize: UInt64 = 256 * 1024 * 1024
+
+    /// iOS-appropriate WAL size for public `Memory` stores (4 MiB).
+    package static let publicFacadeWalSize: UInt64 = 4 * 1024 * 1024
 
     // MARK: - Decoder Limits (recommended defaults)
 

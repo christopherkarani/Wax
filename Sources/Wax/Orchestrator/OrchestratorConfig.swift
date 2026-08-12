@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 import WaxVectorSearch
 
 package struct OrchestratorConfig: Sendable {
@@ -27,6 +28,9 @@ package struct OrchestratorConfig: Sendable {
     package var requireOnDeviceProviders: Bool = true
     package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
     package var defaultScopeContext: MemoryScopeContext? = nil
+    /// WAL region size used when creating a missing store file. Existing files
+    /// keep the size recorded in their header.
+    package var walSizeBytes: UInt64 = Constants.publicFacadeWalSize
 
     @available(*, deprecated, message: "Use vectorEnginePreference instead")
     package var useMetalVectorSearch: Bool {

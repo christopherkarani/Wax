@@ -258,7 +258,7 @@ package actor MemoryOrchestrator {
         if FileManager.default.fileExists(atPath: url.path) {
             self.wax = try await Wax.open(at: url, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: url, options: waxOptions)
+            self.wax = try await Wax.create(at: url, walSize: config.walSizeBytes, options: waxOptions)
         }
 
         // Auto-disable vector search when no embedder is provided and no pre-existing

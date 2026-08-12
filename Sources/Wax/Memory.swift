@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 /// Intuitive high-level facade for Wax memory operations.
 public actor Memory {
@@ -13,6 +14,10 @@ public actor Memory {
         public var requireOnDeviceProviders: Bool
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
+        /// WAL region size used when creating a new store. Existing files keep the
+        /// size recorded in their header.
+        public static let defaultWalSizeBytes: UInt64 = 4 * 1024 * 1024
+        public var walSizeBytes: UInt64
 
         public init(
             enableTextSearch: Bool = true,
@@ -23,7 +28,8 @@ public actor Memory {
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
-            embedding: EmbeddingSource = .automatic
+            embedding: EmbeddingSource = .automatic,
+            walSizeBytes: UInt64 = Config.defaultWalSizeBytes
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -34,6 +40,7 @@ public actor Memory {
             self.ingestBatchSize = ingestBatchSize
             self.requireOnDeviceProviders = requireOnDeviceProviders
             self.embedding = embedding
+            self.walSizeBytes = walSizeBytes
         }
 
         public static let `default` = Config()
@@ -125,6 +132,7 @@ public actor Memory {
     /// text-only search; inspect ``RAGContext/diagnostics`` on search results or
     /// ``stats()`` to see which mode is actually in effect.
     public init(at url: URL, config: Config = .default) async throws {
+        try Self.validate(config)
         let setup = try await Self.resolveEmbedder(for: config)
         self.embeddingStatusOverride = setup.status
         self.orchestrator = try await MemoryOrchestrator(
@@ -363,6 +371,14 @@ public actor Memory {
         return .unavailable(reason: "embedding provider is not configured")
     }
 
+    private static func validate(_ config: Config) throws {
+        guard config.walSizeBytes >= Constants.walRecordHeaderSize else {
+            throw WaxError.invalidConfiguration(
+                reason: "WAL size must be at least \(Constants.walRecordHeaderSize) bytes (WAL record header); got \(config.walSizeBytes)"
+            )
+        }
+    }
+
     private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {
         var resolved = OrchestratorConfig.default
         resolved.enableTextSearch = config.enableTextSearch
@@ -373,6 +389,7 @@ public actor Memory {
         resolved.ingestConcurrency = config.ingestConcurrency
         resolved.ingestBatchSize = config.ingestBatchSize
         resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
+        resolved.walSizeBytes = config.walSizeBytes
         return resolved
     }
 }
