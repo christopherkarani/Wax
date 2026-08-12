@@ -536,6 +536,9 @@ public actor WaxFoundationModelSession {
         userPrompt: String,
         assistantResponse: String
     ) async throws -> (didPersistUser: Bool, didPersistAssistant: Bool) {
+        // Test seam: the fake can pause here so cancellation lands after the model
+        // completed and before either side of the turn is written.
+        try await generator.holdBeforePersistence()
         try Task.checkCancellation()
         var didPersistUser = false
         var didPersistAssistant = false

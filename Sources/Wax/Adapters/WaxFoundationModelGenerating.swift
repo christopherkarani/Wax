@@ -28,6 +28,18 @@ package protocol WaxFoundationModelGenerating: Sendable {
         prompt: String,
         options: GenerationOptions
     ) -> AsyncThrowingStream<String, Error>
+
+    /// Test seam invoked after generation succeeds and immediately before turn persistence.
+    /// Production generators no-op; the controllable fake can park here so tests cancel
+    /// in the post-generation persistence window.
+    func holdBeforePersistence() async throws
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+extension WaxFoundationModelGenerating {
+    package func holdBeforePersistence() async throws {}
 }
 
 /// Thin stream that forwards text snapshots. Task 7 holds the session generation

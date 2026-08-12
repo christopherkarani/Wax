@@ -131,7 +131,8 @@ struct FoundationModelSessionCancellationTests {
             let task = Task {
                 try await session.respondDetailed(to: marker)
             }
-            try await Task.sleep(for: .milliseconds(40))
+            defer { task.cancel() }
+            try await generator.waitUntilGenerating()
             #expect(await generator.isGenerating())
             task.cancel()
             await #expect(throws: CancellationError.self) { try await task.value }
@@ -184,6 +185,132 @@ struct FoundationModelSessionCancellationTests {
                 options: .init(topK: 5, mode: .textOnly)
             )
             #expect(!hits.items.contains(where: { $0.text.contains(marker) }))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func cancellingAfterGenerationBeforePersistenceWritesNeitherSideAndRetryIsNotDuplicate() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(pauseBeforePersistence: true)
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .userAndAssistant
+            configuration.includeMemoryTools = false
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+
+            let marker = "unique-persist-cancel-\(UUID().uuidString)"
+            let task = Task {
+                try await session.respondDetailed(to: marker)
+            }
+            defer { task.cancel() }
+            try await generator.waitUntilPersistenceHold()
+            #expect(await generator.generateCallCount() == 1)
+            task.cancel()
+            await #expect(throws: CancellationError.self) { try await task.value }
+
+            let cancelledHits = try await memory.search(
+                marker,
+                options: .init(topK: 10, mode: .textOnly)
+            )
+            #expect(cancelledHits.items.filter { $0.text.contains(marker) }.isEmpty)
+
+            let retry = try await session.respondDetailed(to: marker)
+            #expect(retry.didPersistUser)
+            #expect(retry.didPersistAssistant)
+            #expect(await generator.generateCallCount() == 2)
+
+            try await memory.flush()
+            let retriedHits = try await memory.search(
+                marker,
+                options: .init(topK: 10, mode: .textOnly)
+            )
+            let userFrames = retriedHits.items.filter {
+                $0.metadata["wax.role"] == "user" && $0.text.contains(marker)
+            }
+            #expect(userFrames.count == 1)
+
+            let assistantHits = try await memory.search(
+                "reply",
+                options: .init(topK: 10, mode: .textOnly)
+            )
+            let assistantFrames = assistantHits.items.filter {
+                $0.metadata["wax.role"] == "assistant" && $0.text.hasPrefix("reply:")
+            }
+            #expect(assistantFrames.count == 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func cancellingStreamConsumptionReleasesGenerationLease() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(blockUntilCancelled: true)
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .none
+            configuration.includeMemoryTools = false
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+
+            let stream = try await session.streamResponse(to: "stream-cancel")
+            let (chunkSignal, chunkContinuation) = AsyncStream.makeStream(of: String.self)
+            let consume = Task {
+                var chunks: [String] = []
+                for try await chunk in stream {
+                    chunks.append(chunk)
+                    if chunks.count == 1 {
+                        chunkContinuation.yield(chunk)
+                        chunkContinuation.finish()
+                    }
+                }
+                return chunks
+            }
+
+            let firstChunk = try await withBoundedTimeout(description: "first stream chunk") {
+                var received: String?
+                for await chunk in chunkSignal {
+                    received = chunk
+                    break
+                }
+                return received
+            }
+            #expect(firstChunk != nil)
+            try await generator.waitUntilGenerating()
+
+            consume.cancel()
+            do {
+                _ = try await consume.value
+            } catch is CancellationError {
+            } catch {
+                // Stream termination may surface as a wrapped cancellation.
+            }
+
+            let reply = try await withBoundedTimeout(description: "respond after stream cancel") {
+                try await session.respond(to: "after-stream-cancel")
+            }
+            #expect(reply.contains("after-stream-cancel"))
 
             try await session.close()
             try await memory.close()

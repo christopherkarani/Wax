@@ -60,7 +60,7 @@ struct FoundationModelSessionConcurrencyTests {
 
             let stream = try await session.streamResponse(to: "stream-A")
             let second = Task { try await session.respond(to: "respond-B") }
-            try await Task.sleep(for: .milliseconds(40))
+            try await generator.waitUntilGenerating()
             #expect(await generator.maxInFlight() == 1)
             #expect(await generator.completedPrompts().isEmpty)
 
