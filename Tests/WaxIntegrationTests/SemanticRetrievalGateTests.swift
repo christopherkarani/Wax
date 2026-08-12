@@ -15,6 +15,8 @@ private let semanticGateDistractors = [
     "The capital of France is Paris.",
 ]
 
+@Suite("SemanticRetrievalGateTests")
+struct SemanticRetrievalGateTests {
 @Test
 func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async throws {
     try await TempFiles.withTempFile { url in
@@ -83,4 +85,5 @@ func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
 
         try await memory.close()
     }
+}
 }

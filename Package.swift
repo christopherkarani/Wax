@@ -23,6 +23,7 @@ waxIntegrationLinuxExcludes = [
     "MiniLMEmbedderTests.swift",
     "MiniLMEmbeddingQualityTests.swift",
     "MiniLMFloat16DecodingTests.swift",
+    "MiniLMExternalReliabilityTests.swift",
     "MiniLMResourceFailureTests.swift",
     "Mocks/MockProviders.swift",
     "OptimizationComparisonBenchmark.swift",
@@ -303,6 +304,17 @@ let package = Package(
             path: "Sources/WaxCrashHarness",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
+        .executableTarget(
+            name: "WaxMiniLMReliabilityHarness",
+            dependencies: [
+                "Wax",
+            ],
+            path: "Sources/WaxMiniLMReliabilityHarness",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+                .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+            ]
+        ),
     ] + waxRepoTargets + [
         .testTarget(
             name: "WaxCoreTests",
@@ -318,6 +330,7 @@ let package = Package(
             dependencies: [
                 "Wax",
                 "WaxVectorSearchMiniLM",
+                "WaxMiniLMReliabilityHarness",
                 .product(name: "Testing", package: "swift-testing"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),

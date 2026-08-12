@@ -70,6 +70,17 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
 
     public static let `default` = BuiltInEmbeddingProviderOptions()
 
+    /// Bounded options for ``Memory.EmbeddingSource/automatic`` setup.
+    ///
+    /// Forced ``Memory.EmbeddingSource/builtIn`` construction keeps ``default``
+    /// (120s) unless the caller supplies its own options.
+    public static let automatic = BuiltInEmbeddingProviderOptions(
+        batchSize: 1,
+        prewarmBatchSize: 1,
+        timeoutSeconds: 15,
+        computeUnitsOrder: [.cpuAndNeuralEngine, .cpuOnly, .cpuAndGPU, .all]
+    )
+
     package var tuning: CommandLineEmbedderRuntimeTuning {
         CommandLineEmbedderRuntimeTuning(
             batchSize: batchSize,
@@ -104,22 +115,16 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
 public enum BuiltInEmbeddings {
     /// Construct a built-in embedding provider using Wax's on-device CoreML runtime.
     ///
-    /// The returned provider is eagerly probed so cold CoreML compilation happens here
-    /// (under ``BuiltInEmbeddingProviderOptions/timeoutSeconds``) rather than under a
-    /// short ingest timeout on the first ``Memory/save`` call.
+    /// Construction is eager: the provider is loaded and probed once under
+    /// ``BuiltInEmbeddingProviderOptions/timeoutSeconds``. Failures throw the
+    /// underlying typed error rather than returning `nil`.
     public static func make(
         _ provider: BuiltInEmbeddingProvider,
         options: BuiltInEmbeddingProviderOptions = .default
     ) async throws -> any EmbeddingProvider {
-        guard let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: false,
-            embedderChoice: provider.commandLineChoice,
+        try await CommandLineEmbedderFactory.makeEagerEmbedder(
+            provider: provider,
             tuning: options.tuning
-        ) else {
-            throw BuiltInEmbeddingProviderError.unavailable(provider)
-        }
-        // Materialize deferred CLI embedders and verify finite output before handoff.
-        _ = try await embedder.embed("wax")
-        return embedder
+        )
     }
 }

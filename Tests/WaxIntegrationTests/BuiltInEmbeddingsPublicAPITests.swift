@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import Wax
 
+@Suite("BuiltInEmbeddingsPublicAPITests")
+struct BuiltInEmbeddingsPublicAPITests {
 @Test
 func builtInEmbeddingsMiniLMProducesFiniteVectorAndHybridSearch() async throws {
     try await TempFiles.withTempFile { url in
@@ -48,4 +50,5 @@ func builtInEmbeddingsMiniLMDefaultsSkipBrokenCpuOnlyPath() async throws {
     let vector = try await embedder.embed("prefer neural engine over broken cpuOnly")
     #expect(vector.count == 384)
     #expect(vector.allSatisfy { $0.isFinite })
+}
 }

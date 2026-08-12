@@ -127,11 +127,14 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     }
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = try await model.encode(sentence: text) else {
-            throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
-        }
-        if vector.count != dimensions {
-            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
+        let vector: [Float]
+        do {
+            guard let encoded = try await model.encode(sentence: text) else {
+                throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
+            }
+            vector = encoded
+        } catch let error as MiniLMEmbeddings.DecodeError {
+            throw WaxError.invalidEmbedding(reason: error.localizedDescription)
         }
         return try Self.validatedNormalizedVector(vector, dimensions: dimensions)
     }
@@ -170,11 +173,16 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         // Copy buffer out, call async encode, copy back — required because
         // actor-isolated inout properties can't be passed to async functions.
         var buffers = batchInputBuffers
-        let vectors = try await model.encode(batch: texts, reuseBuffers: &buffers)
-        batchInputBuffers = buffers
-        guard let vectors else {
-            throw WaxError.io("MiniLMAll batch embedding failed.")
+        let vectors: [[Float]]
+        do {
+            guard let encoded = try await model.encode(batch: texts, reuseBuffers: &buffers) else {
+                throw WaxError.io("MiniLMAll batch embedding failed.")
+            }
+            vectors = encoded
+        } catch let error as MiniLMEmbeddings.DecodeError {
+            throw WaxError.invalidEmbedding(reason: error.localizedDescription)
         }
+        batchInputBuffers = buffers
         guard vectors.count == texts.count else {
             throw WaxError.io("MiniLMAll batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
         }
@@ -258,19 +266,8 @@ extension MiniLMEmbedder {
 @available(macOS 15.0, iOS 18.0, *)
 private extension MiniLMEmbedder {
     static func validatedNormalizedVector(_ vector: [Float], dimensions: Int) throws -> [Float] {
-        guard vector.count == dimensions else {
-            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced \(vector.count) dims, expected \(dimensions).")
-        }
-        guard vector.allSatisfy(\.isFinite) else {
-            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a non-finite embedding value.")
-        }
+        try EmbeddingValidation.validate(vector, dimensions: dimensions, requireNonZero: true)
         let sumOfSquares = vector.reduce(Float(0)) { $0 + $1 * $1 }
-        guard sumOfSquares.isFinite else {
-            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a non-finite embedding magnitude.")
-        }
-        guard sumOfSquares > 0 else {
-            throw WaxError.invalidEmbedding(reason: "MiniLMAll produced a zero-magnitude embedding.")
-        }
         let inverseMagnitude = 1 / sqrt(sumOfSquares)
         return vector.map { $0 * inverseMagnitude }
     }

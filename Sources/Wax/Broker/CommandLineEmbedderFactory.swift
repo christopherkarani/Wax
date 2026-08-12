@@ -51,6 +51,55 @@ package enum CommandLineEmbedderFactory {
         #endif
     }
 
+    /// Eager throwing constructor for the public framework factory.
+    ///
+    /// Unlike ``buildEmbedder(noEmbedder:embedderChoice:tuning:)``, this path does not
+    /// defer load, print to stderr, or return `nil` on failure. A single probe happens
+    /// inside the underlying MiniLM/Arctic command-line constructors.
+    package static func makeEagerEmbedder(
+        provider: BuiltInEmbeddingProvider,
+        tuning: CommandLineEmbedderRuntimeTuning
+    ) async throws -> any EmbeddingProvider {
+        try await AsyncTimeout.run(
+            timeout: tuning.timeoutDuration,
+            operation: "built-in embedder init"
+        ) {
+            try await makeEagerEmbedderUnbound(provider: provider, tuning: tuning)
+        }
+    }
+
+    private static func makeEagerEmbedderUnbound(
+        provider: BuiltInEmbeddingProvider,
+        tuning: CommandLineEmbedderRuntimeTuning
+    ) async throws -> any EmbeddingProvider {
+        switch provider {
+        case .arctic:
+            #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+            if #available(macOS 15.0, iOS 18.0, *) {
+                let embedder = try await ArcticEmbedder.makeCommandLineEmbedder(
+                    prewarmBatchSize: tuning.prewarmBatchSize,
+                    skipPrewarm: true,
+                    tuning: tuning
+                )
+                _ = try await embedder.embed("wax")
+                return embedder
+            }
+            #endif
+            throw BuiltInEmbeddingProviderError.unavailable(.arctic)
+        case .miniLM:
+            #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+            if #available(macOS 15.0, iOS 18.0, *) {
+                return try await MiniLMEmbedder.makeCommandLineEmbedder(
+                    prewarmBatchSize: tuning.prewarmBatchSize,
+                    skipPrewarm: true,
+                    tuning: tuning
+                )
+            }
+            #endif
+            throw BuiltInEmbeddingProviderError.unavailable(.miniLM)
+        }
+    }
+
     package static func waxOptions() -> WaxOptions {
         var options = WaxOptions()
         options.lockWaitTimeout = lockWaitTimeout()
