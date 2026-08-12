@@ -199,7 +199,15 @@ package actor MemoryOrchestrator {
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
     private var hasEnsuredMemoryBinding = false
-    private var queryEmbeddingCircuitOpen = false
+    private var queryEmbeddingCircuitOpenedAt: ContinuousClock.Instant?
+
+    /// Stays open for `config.queryEmbeddingCircuitCooldown` after a query-embedding
+    /// timeout, then allows one half-open probe; probe success closes the circuit,
+    /// another timeout re-opens it for a fresh cooldown window.
+    private var queryEmbeddingCircuitOpen: Bool {
+        guard let openedAt = queryEmbeddingCircuitOpenedAt else { return false }
+        return ContinuousClock.now - openedAt < config.queryEmbeddingCircuitCooldown
+    }
     private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
     private var lastStructuredSystemMs: Int64?
 
@@ -260,6 +268,11 @@ package actor MemoryOrchestrator {
         let existingMemoryBinding = await wax.memoryBinding()
         if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             resolvedConfig.enableVectorSearch = false
+            WaxDiagnostics.logSwallowed(
+                WaxError.io("vector search requested but no EmbeddingProvider configured"),
+                context: "MemoryOrchestrator init",
+                fallback: "text-only search; Memory(at:) auto-wires the built-in MiniLM embedder on iOS 18/macOS 15+"
+            )
         }
         if let identity = embedder?.identity,
            let binding = existingMemoryBinding,
@@ -1488,13 +1501,13 @@ package actor MemoryOrchestrator {
     /// Matches ``FrameStore/delete(frameID:)`` durability (delete + commit) while also cleaning
     /// search indexes so forgotten content is not returned by subsequent recalls.
     ///
-    /// Durable frame delete + commit run first so a failure during index cleanup cannot leave a
-    /// still-durable frame that was already removed from search indexes.
+    /// Soft-delete is pending until a single commit after index removes, so the committed vector
+    /// (and text) indexes exclude the deleted frame without a second commit or close-time flush.
+    /// If index remove throws, the soft-delete is not committed in this call.
     package func delete(frameId: UInt64) async throws {
         lastWriteActivityAt = .now
 
         try await wax.delete(frameId: frameId)
-        try await session.commit()
 
         if config.enableTextSearch {
             try await session.removeText(frameId: frameId)
@@ -1502,6 +1515,7 @@ package actor MemoryOrchestrator {
         if config.enableVectorSearch {
             try await session.removeVector(frameId: frameId)
         }
+        try await session.commit()
     }
 
     // MARK: - Persistence lifecycle
@@ -1838,10 +1852,11 @@ package actor MemoryOrchestrator {
                     timeout: config.queryEmbeddingTimeout,
                     isQuery: true
                 )
+                queryEmbeddingCircuitOpenedAt = nil
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpen = true
+                    queryEmbeddingCircuitOpenedAt = .now
                     return QueryEmbeddingResult(embedding: nil, state: .timeout)
                 }
                 WaxDiagnostics.logSwallowed(
@@ -1859,7 +1874,7 @@ package actor MemoryOrchestrator {
                 throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
             }
             guard !queryEmbeddingCircuitOpen else {
-                throw WaxError.io("query embedding disabled after timeout; restart to retry")
+                throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")
             }
             do {
                 let embedding = try await Self.embedOne(
@@ -1869,10 +1884,11 @@ package actor MemoryOrchestrator {
                     timeout: config.queryEmbeddingTimeout,
                     isQuery: true
                 )
+                queryEmbeddingCircuitOpenedAt = nil
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpen = true
+                    queryEmbeddingCircuitOpenedAt = .now
                 }
                 throw error
             }

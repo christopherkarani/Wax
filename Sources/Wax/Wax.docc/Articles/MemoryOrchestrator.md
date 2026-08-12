@@ -1,10 +1,16 @@
 # Memory Orchestrator
 
-Configure and use the primary text RAG orchestrator for ingestion and retrieval.
+Understand the package-only text RAG orchestrator for contributor work.
+
+## Status
+
+`MemoryOrchestrator` is a package-only implementation detail. It uses Swift `package` access, so it is **not public API** for application or downstream package consumers — external apps should use ``Memory`` instead (see <doc:GettingStarted>).
+
+Use this article as internal implementation documentation for Wax contributors. Public integration docs should wait for a stable public facade or an explicit access-level change.
 
 ## Overview
 
-``MemoryOrchestrator`` is the main entry point for text-based memory applications. It coordinates chunking, embedding, indexing, search, and RAG context assembly into a single actor with a high-level API.
+``MemoryOrchestrator`` is the internal engine behind ``Memory``. It coordinates chunking, embedding, indexing, search, and RAG context assembly into a single actor with a high-level API.
 
 ## Initialization
 
@@ -18,16 +24,19 @@ let orchestrator = try await MemoryOrchestrator(
 
 The orchestrator creates a new `.wax` file if one doesn't exist at the URL, or opens an existing one with automatic crash recovery.
 
+> Note: On a fresh store, `enableVectorSearch` is automatically disabled when no embedder is configured and no committed vector index exists yet. The store runs text-only in that case; `runtimeStats().vectorSearchEnabled` reports the effective state.
+
 ## Ingestion Pipeline
 
-When you call ``MemoryOrchestrator/remember(_:metadata:)``, the orchestrator:
+When you call `remember(_:metadata:)`, the orchestrator:
 
 1. **Chunks** the text using the configured chunking strategy (default: token-count with 400 tokens and 40-token overlap)
 2. **Embeds** each chunk using the embedding provider (if provided), batching through `BatchEmbeddingProvider` when available
-3. **Writes** each chunk as a frame to the `.wax` file
+3. **Writes** each chunk as a frame to the `.wax` file's write-ahead log (WAL)
 4. **Indexes** each chunk's text in the FTS5 full-text search engine
-5. **Adds** each chunk's embedding to the vector search engine
-6. **Commits** all changes atomically
+5. **Adds** each chunk's embedding to the live vector search engine and the pending vector set
+
+Writes are **not** committed to the durable indexes on every `remember` call. Call `flush()` (or `close()`, which flushes) to commit the WAL, FTS index, and vector index atomically. In-process searches see pending vectors immediately; durability requires a commit.
 
 ### Batching
 
@@ -44,7 +53,7 @@ A bounded LRU cache (default capacity: 2,048) avoids re-embedding identical text
 
 ## Recall
 
-``MemoryOrchestrator/recall(query:)`` returns a ``RAGContext`` assembled within the configured token budget:
+`recall(query:)` returns a ``RAGContext`` assembled within the configured token budget:
 
 ```swift
 let context = try await orchestrator.recall(query: "project timeline")
@@ -57,7 +66,7 @@ Control when query embeddings are computed:
 | Policy | Behavior |
 |--------|----------|
 | `.never` | Text-only search (no vector lane) |
-| `.ifAvailable` | Use vector search if an embedder is configured |
+| `.ifAvailable` | Use vector search if an embedder is configured; otherwise fall back to text |
 | `.always` | Require vector search; throw if no embedder |
 
 ```swift
@@ -67,6 +76,10 @@ let context = try await orchestrator.recall(
 )
 ```
 
+When the vector lane is unavailable under `.ifAvailable`, the search falls back to the text lane. `recallExecution(...)` reports the requested vs. effective mode and the query-embedding state; the public ``Memory/search(_:options:)`` surfaces the same information via ``RAGContext/diagnostics``.
+
+If query embedding times out, a circuit breaker pauses query embedding for `queryEmbeddingCircuitCooldown` (default 60s), then half-opens and retries — a single success closes it again.
+
 ### Frame Filtering
 
 Restrict recall to specific frames:
@@ -74,16 +87,19 @@ Restrict recall to specific frames:
 ```swift
 let context = try await orchestrator.recall(
     query: "meeting notes",
+    embeddingPolicy: .ifAvailable,
     frameFilter: FrameFilter(
-        requiredTags: ["meetings"],
-        timeRange: TimeRange(after: weekAgoMs)
-    )
+        metadataFilter: MetadataFilter(requiredEntries: ["kind": "meeting"])
+    ),
+    timeRange: SearchTimeRange(after: weekAgoMs, before: nil),
+    topK: nil,
+    mode: nil
 )
 ```
 
 ## Direct Search
 
-For raw search results without RAG assembly, use ``MemoryOrchestrator/search(query:mode:topK:frameFilter:)``:
+For raw search results without RAG assembly, use `search(query:mode:topK:frameFilter:)`:
 
 ```swift
 let hits = try await orchestrator.search(
@@ -154,21 +170,23 @@ if let handoff = try await orchestrator.latestHandoff(project: "my-app") {
 ## Runtime Statistics
 
 ```swift
-let stats = try await orchestrator.runtimeStats()
+let stats = await orchestrator.runtimeStats()
 print("Frames: \(stats.frameCount)")
 print("Vector search: \(stats.vectorSearchEnabled)")
 print("Embedder: \(stats.embedderIdentity?.model ?? "none")")
 ```
 
+The public equivalent is ``Memory/stats()``.
+
 ## Configuration Reference
 
-See ``OrchestratorConfig`` for the full configuration surface:
+See `OrchestratorConfig` for the full configuration surface:
 
 | Category | Key Options |
 |----------|-------------|
 | Search | `enableTextSearch`, `enableVectorSearch`, `enableStructuredMemory` |
-| RAG | `ragConfig` (``FastRAGConfig``) |
-| Chunking | `chunking` (``ChunkingStrategy``) |
-| Embedding | `embeddingCacheCapacity`, `requireOnDeviceProviders` |
-| Vector | Vector search enablement and embedding provider availability |
+| RAG | `rag` (`FastRAGConfig`) |
+| Chunking | `chunking` (`ChunkingStrategy`) |
+| Embedding | `embeddingCacheCapacity`, `requireOnDeviceProviders`, `queryEmbeddingTimeout`, `queryEmbeddingCircuitCooldown` |
+| Vector | Engine selection is internal — Metal HNSW activates at 10,000+ vectors; smaller indexes use an exact CPU flat index |
 | Maintenance | `liveSetRewriteSchedule` |

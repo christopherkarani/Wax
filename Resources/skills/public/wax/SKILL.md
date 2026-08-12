@@ -2,44 +2,42 @@
 name: wax
 description: >
   Swift framework guidance for Wax on-device memory/RAG. Use when writing Swift code
-  with MemoryOrchestrator, VideoRAGOrchestrator, Wax/WaxSession, embedding providers,
-  hybrid search, or maintenance. For agent operators using the Wax MCP server tools,
-  use the separate wax-mcp skill instead.
+  with the public Memory facade, embedding providers, retrieval modes, or hybrid search.
+  For agent operators using the Wax MCP server tools, use the separate wax-mcp skill instead.
 ---
 
 # Wax (Swift Framework)
 
 ## Overview
-Use this skill to design and implement correct Wax-based on-device RAG flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
+Use this skill to design and implement correct Wax-based on-device memory flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
 
 If you need the agent memory operator playbook for MCP tools (`remember`, `recall`,
 `handoff`, `session_start`), use the `wax-mcp` skill instead of this one.
 
 ## Choose The API Surface
-1. Prefer `MemoryOrchestrator` for text memory and retrieval.
-2. Use `VideoRAGOrchestrator` for on-device video RAG (keyframes + transcripts).
-3. Use `Wax` and `WaxSession` for lower-level indexing, unified search, or structured memory.
-4. Import `Wax` to get re-exported core/search/vector APIs.
+1. Use `Memory` (public actor) for all text memory and retrieval. It is the only supported entry point for apps.
+2. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, and `WaxSession` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
+3. Photo/video memory and structured memory (entities/facts) are exposed to agents through the Wax MCP server tools, not through `import Wax`.
+4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
-2. Configure `OrchestratorConfig` (disable vector search if no embedder).
-3. Provide an `EmbeddingProvider` when vector search is enabled.
-4. Call `remember(...)` to ingest and `recall(...)` to build `RAGContext`.
+2. Open `Memory(at:)` — on iOS 18/macOS 15+ with the default `MiniLMEmbeddings` trait, the built-in MiniLM embedder is wired automatically.
+3. Or pass a custom `EmbeddingProvider` via `Memory(at:embedding:)`, or force a built-in via `Memory(at:builtInEmbedding: .miniLM)` (throws when unavailable).
+4. Call `save(...)` to ingest and `search(...)` to retrieve `RAGContext`.
 5. Call `flush()` or `close()` to persist.
 
 ## Safety & Constraints
 - Keep Wax offline-only; no network calls are made. See `references/constraints.md`.
 - Treat the `.wax` file as the single source of truth (data + indexes + WAL).
-- Provide an embedder when vector search is enabled and no vector index exists.
-- Use `QueryEmbeddingPolicy` deliberately; `.always` throws if vector search is disabled or no embedder is configured.
-- For Video RAG, supply transcripts; Wax does not transcribe in v1.
-- Ensure multimodal embeddings are normalized when using Metal-backed vector search in Video RAG.
+- `RetrievalMode.hybrid` (the default) degrades to the text lane when no embedder is available; `RetrievalMode.vectorOnly` throws instead. Always check `results.diagnostics` (requested vs. effective mode) or `memory.stats()` when the mode matters.
+- On iOS 17/macOS 14 there is no built-in embedder: provide a custom `EmbeddingProvider` or use text-only search.
+- Video RAG does not transcribe by itself, and the video pipeline is package-only in v1.
 
 ## Performance & Determinism Tips
-- Use `WaxPrewarm.tokenizer()` to reduce first-query latency.
-- If MiniLM is available, use `MemoryOrchestrator.openMiniLM(...)` or `WaxPrewarm.miniLM(...)` to warm embeddings.
-- Prefer `.ifAvailable` query embeddings unless you require hard failures.
+- The first-ever built-in embedder load pays a one-time CoreML compile; later launches reuse the cached compiled model.
+- Use `.textOnly` mode for fast deterministic lexical lookups.
+- The Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller stores use an exact CPU flat index.
 
 ## Examples
 
@@ -47,19 +45,44 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 import Foundation
 import Wax
 
-func demoTextOnly() async throws {
+func demoDefault() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-memory")
         .appendingPathExtension("wax")
 
-    var config = OrchestratorConfig.default
-    config.enableVectorSearch = false
+    // Semantic search out of the box on iOS 18/macOS 15+ (built-in MiniLM).
+    let memory = try await Memory(at: url)
+    try await memory.save("User: prefers Swift over Java.")
 
-    let memory = try await MemoryOrchestrator(at: url, config: config)
-    try await memory.remember("User: prefers Swift over Java.")
+    let results = try await memory.search("language preferences")
+    _ = results.items
 
-    let ctx = try await memory.recall(query: "preferences")
-    _ = ctx.items
+    // Verify which retrieval mode actually ran.
+    if let diagnostics = results.diagnostics {
+        print(diagnostics.effectiveMode)  // "hybrid(alpha=0.500)" or "text"
+    }
+
+    try await memory.close()
+}
+```
+
+```swift
+import Foundation
+import Wax
+
+func demoTextOnly() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-text")
+        .appendingPathExtension("wax")
+
+    // Explicit text-only mode: no embedder is loaded.
+    let memory = try await Memory(at: url) { config in
+        config.enableVectorSearch = false
+    }
+    try await memory.save("User: prefers Swift over Java.")
+
+    let results = try await memory.search("preferences", options: .init(mode: .textOnly))
+    _ = results.items
 
     try await memory.close()
 }
@@ -84,77 +107,27 @@ actor MyEmbedder: EmbeddingProvider {
     }
 }
 
-func demoVector() async throws {
+func demoCustomEmbedder() async throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-vector")
         .appendingPathExtension("wax")
 
-    var config = OrchestratorConfig.default
-    config.enableVectorSearch = true
+    let memory = try await Memory(at: url, embedding: MyEmbedder())
+    try await memory.save("Vector search enabled.")
 
-    let memory = try await MemoryOrchestrator(at: url, config: config, embedder: MyEmbedder())
-    try await memory.remember("Vector search enabled.")
-
-    let ctx = try await memory.recall(query: "vector")
-    _ = ctx.totalTokens
+    let results = try await memory.search("vector", options: .init(mode: .vectorOnly))
+    _ = results.totalTokens
 
     try await memory.flush()
     try await memory.close()
 }
 ```
 
-```swift
-import Foundation
-import Wax
-import CoreGraphics
-
-struct MyVideoEmbedder: MultimodalEmbeddingProvider {
-    let dimensions = 768
-    let normalize = true
-    let identity: EmbeddingIdentity? = .init(
-        provider: "Local",
-        model: "clip-v1",
-        dimensions: 768,
-        normalized: true
-    )
-
-    func embed(text: String) async throws -> [Float] { [Float](repeating: 0.0, count: dimensions) }
-    func embed(image: CGImage) async throws -> [Float] { [Float](repeating: 0.0, count: dimensions) }
-}
-
-struct MyTranscriptProvider: VideoTranscriptProvider {
-    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
-        []
-    }
-}
-
-func demoVideo() async throws {
-    let storeURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-video")
-        .appendingPathExtension("wax")
-
-    let rag = try await VideoRAGOrchestrator(
-        storeURL: storeURL,
-        embedder: MyVideoEmbedder(),
-        transcriptProvider: MyTranscriptProvider()
-    )
-
-    try await rag.ingest(files: [
-        VideoFile(id: "clip-1", url: URL(fileURLWithPath: "/path/to/clip.mp4"))
-    ])
-
-    let ctx = try await rag.recall(.init(text: "find the opening scene"))
-    _ = ctx.items
-    try await rag.flush()
-}
-```
-
 ## Glossary
-- `MemoryOrchestrator`: High-level API for ingesting text and building `RAGContext`.
-- `RAGContext`: Deterministic retrieval output with items and total token count.
+- `Memory`: Public facade for ingesting text and searching `RAGContext`.
+- `RAGContext`: Retrieval output with items, total token count, and `diagnostics` (requested vs. effective mode).
 - `EmbeddingProvider`: Supplies text embeddings for vector search.
-- `VideoRAGOrchestrator`: On-device video ingestion and recall over keyframes and transcripts.
-- `VideoQuery`: Video recall parameters (text, time range, IDs, budgets).
+- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` on-device CoreML embedders (iOS 18/macOS 15+).
 
 ## References
 - `references/public-api.md`
@@ -165,4 +138,3 @@ func demoVideo() async throws {
 - `templates/remember-recall-lifecycle.md`
 - `templates/hybrid-search.md`
 - `templates/maintenance.md`
-- `templates/video-rag-transcripts.md`

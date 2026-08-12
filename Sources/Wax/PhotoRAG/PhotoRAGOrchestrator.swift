@@ -71,6 +71,7 @@ package actor PhotoRAGOrchestrator {
         var caption: UInt64?
         var tags: UInt64?
         var regions: [UInt64] = []
+        var ocrBlocks: [UInt64] = []
     }
 
     private struct RootCandidate: Sendable {
@@ -486,13 +487,33 @@ package actor PhotoRAGOrchestrator {
             if let id = refs.caption { toDelete.append(id) }
             if let id = refs.tags { toDelete.append(id) }
             toDelete.append(contentsOf: refs.regions)
+            toDelete.append(contentsOf: refs.ocrBlocks)
         }
 
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
+            try await session.removeVector(frameId: frameId)
         }
         try await session.commit()
         try await rebuildIndex()
+    }
+
+    /// Removes vector-index entries for a superseded root and its derived frames.
+    /// Superseded frames are retained for audit/debug but must not stay searchable as
+    /// ghost hits. Must run before `rebuildIndex()` while the retired tree is still
+    /// present in `index`.
+    private func removeVectorsForRetiredTree(_ rootId: UInt64) async throws {
+        var ids: [UInt64] = [rootId]
+        if let refs = index.derivedByRoot[rootId] {
+            if let id = refs.ocrSummary { ids.append(id) }
+            if let id = refs.caption { ids.append(id) }
+            if let id = refs.tags { ids.append(id) }
+            ids.append(contentsOf: refs.regions)
+            ids.append(contentsOf: refs.ocrBlocks)
+        }
+        for frameId in ids {
+            try await session.removeVector(frameId: frameId)
+        }
     }
 
     /// Flush pending writes to disk.
@@ -563,6 +584,7 @@ package actor PhotoRAGOrchestrator {
             let rootId = try await session.put(Data(), options: options, compression: .plain, timestampMs: frameTimestampMs)
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                try await removeVectorsForRetiredTree(previousRoot)
             }
             return
         }
@@ -583,6 +605,7 @@ package actor PhotoRAGOrchestrator {
             )
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                try await removeVectorsForRetiredTree(previousRoot)
             }
             return
         }
@@ -801,6 +824,7 @@ package actor PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            try await removeVectorsForRetiredTree(previousRoot)
         }
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
@@ -970,6 +994,7 @@ package actor PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            try await removeVectorsForRetiredTree(previousRoot)
         }
     }
 
@@ -1108,6 +1133,8 @@ package actor PhotoRAGOrchestrator {
                     refs.tags = meta.id
                 case FrameKind.region:
                     refs.regions.append(meta.id)
+                case FrameKind.ocrBlock:
+                    refs.ocrBlocks.append(meta.id)
                 default:
                     break
                 }

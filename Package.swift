@@ -41,6 +41,7 @@ waxIntegrationLinuxExcludes = [
     "SurrogateSourceBenchmarks.swift",
     "UnifiedSearchTests.swift",
     "VectorSearchEngineTests.swift",
+    "VideoRAGDeleteVectorDurabilityTests.swift",
     "VideoRAGFileIngestIntegrationTests.swift",
     "VideoRAGRecallOnlyTests.swift",
     "VideoRAGSegmentationMathTests.swift",
@@ -55,7 +56,9 @@ let waxRepoPackageDependencies: [Package.Dependency]
 let waxRepoTargets: [Target]
 #if os(macOS)
 waxRepoPackageDependencies = [
-    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
+    // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
     .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
 ]
 waxRepoTargets = [
@@ -98,10 +101,7 @@ let package = Package(
         ),
         .library(name: "WaxCore", targets: ["WaxCore"]),
         .library(name: "WaxBertTokenizer", targets: ["WaxBertTokenizer"]),
-        .library(name: "WaxTextSearch", targets: ["WaxTextSearch"]),
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
-        .library(name: "WaxVectorSearchMiniLM", targets: ["WaxVectorSearchMiniLM"]),
-        .library(name: "WaxVectorSearchArctic", targets: ["WaxVectorSearchArctic"]),
     ],
     traits: [
         .default(enabledTraits: ["MiniLMEmbeddings"]),
@@ -129,7 +129,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.1.3"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
-        .package(url: "https://github.com/swiftlang/swift-testing", exact: "0.12.0"),
+        .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),

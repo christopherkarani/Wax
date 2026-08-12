@@ -86,6 +86,9 @@ dependencies: [
 
 Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
 
+> [!NOTE]
+> **Requirements:** Wax builds for iOS 17/macOS 14 and later. Built-in semantic embeddings (MiniLM) auto-configure on iOS 18/macOS 15+ when the default `MiniLMEmbeddings` package trait is enabled; on older OS versions, `Memory` runs text-only unless you pass a custom `EmbeddingProvider`. Foundation Models tools require iOS 26/macOS 26.
+
 ### 2. Copy-paste this into your app
 
 ```swift
@@ -169,7 +172,7 @@ struct AgentMemory {
 
 </details>
 
-Looking to store persistent facts and long-term reasoning? See [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md).
+Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is available today through the MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) described in the [Agent Quick Start](#agent-quick-start). The Swift-level structured memory API is package-internal for now; see [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md) (contributor documentation).
 
 ---
 
@@ -288,8 +291,10 @@ For the full Claude Code setup flow, see [Resources/docs/wax-mcp-setup.md](Resou
 | **Search**       | Hybrid (Text + Vector) | Text Only*             | Vector Only*           |
 | **Latency**      | **~6ms (p95)**         | ~10ms (p95)            | 150ms - 500ms+         |
 | **Privacy**      | 100% Local             | 100% Local             | Cloud-hosted           |
-| **Setup**        | Zero Config            | Low                    | Complex (API Keys)     |
+| **Setup**        | Zero Config¹           | Low                    | Complex (API Keys)     |
 | **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
+
+¹ Text search works out of the box everywhere. Semantic (vector) search auto-configures the on-device MiniLM embedder on iOS 18/macOS 15+; on older OS versions, pass a custom `EmbeddingProvider` or search text-only. `results.diagnostics` and `memory.stats()` always report which retrieval mode actually ran — Wax never silently pretends a text-only result is semantic.
 
 ### Why a single `.wax` file?
 
@@ -322,6 +327,8 @@ Wax           |███ 9.2ms
 Traditional   |██████████████████████████████████████ 120ms+
 ```
 
+> Cold open measures store open only. The built-in embedder's first-ever CoreML compile is a separate one-time cost; later launches reuse the cached compiled model.
+
 > [!TIP]
 > **Ingest Throughput:** Wax handles **85.9 docs/s** with full hybrid indexing on an M3 Max.
 > Full benchmark report: [Resources/docs/benchmarks/2026-03-06-performance-results.md](Resources/docs/benchmarks/2026-03-06-performance-results.md)
@@ -333,7 +340,7 @@ Traditional   |█████████████████████�
 <details>
 <summary><strong>How Wax works under the hood (click to expand)</strong></summary>
 
-Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors.
+Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors. The Metal HNSW engine activates automatically once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with identical recall.
 
 ### Internal File Layout
 
@@ -364,7 +371,7 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 
 1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
 2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
-3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning.
+3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning. (Exposed today via the MCP server tools; the Swift-level API is package-internal.)
 
 </details>
 
@@ -420,7 +427,7 @@ A: Wax uses a write-ahead log (WAL) and dual headers. The store recovers automat
 A: Wax is optimized for Apple Silicon (M-series). It may run on Intel via Rosetta but vector acceleration requires Metal performance shaders best supported on Apple Silicon.
 
 **Q: I get "embedder unavailable" when using hybrid search.**  
-A: Hybrid and vector search require the local embedding model. Make sure the `WaxEmbedder` target is linked, or fall back to `--mode text` for pure text search.
+A: Hybrid and vector search require a local embedding model. In Swift, `Memory(at:)` auto-configures the built-in MiniLM embedder on iOS 18/macOS 15+ (default `MiniLMEmbeddings` trait), or you can pass any custom `EmbeddingProvider` via `Memory(at:embedding:)`. On older OS versions, use text-only search or provide a custom embedder. The CLI/MCP server fail loudly when the embedder is unavailable; the Swift SDK reports the effective retrieval mode via `results.diagnostics` and `memory.stats()`.
 
 ---
 
