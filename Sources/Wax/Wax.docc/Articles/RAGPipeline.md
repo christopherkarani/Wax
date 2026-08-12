@@ -2,9 +2,13 @@
 
 Understand the token-budget-aware context assembly with surrogate tiers and intent-aware reranking.
 
+## Status
+
+`FastRAGContextBuilder` and `FastRAGConfig` are package-only implementation details, not public API. Application code assembles context through ``Memory/search(_:options:)``, which runs this pipeline internally and returns a public ``RAGContext``. Use this article as internal implementation documentation for Wax contributors.
+
 ## Overview
 
-The ``FastRAGContextBuilder`` assembles a ``RAGContext`` from search results within a configurable token budget. It uses a multi-stage pipeline: unified search, intent-aware reranking, expansion, surrogates, and snippets.
+The `FastRAGContextBuilder` assembles a ``RAGContext`` from search results within a configurable token budget. It uses a multi-stage pipeline: unified search, intent-aware reranking, expansion, surrogates, and snippets.
 
 ## Pipeline Stages
 
@@ -85,7 +89,7 @@ For certain query intents (location, date, ownership), snippets may be expanded 
 
 ## Configuration
 
-``FastRAGConfig`` controls all pipeline parameters:
+`FastRAGConfig` (package-only) controls all pipeline parameters:
 
 ```swift
 var config = FastRAGConfig()
@@ -130,10 +134,11 @@ The pipeline returns a ``RAGContext``:
 
 ```swift
 public struct RAGContext {
-    public let query: String
-    public let items: [Item]
-    public let totalTokens: Int
+    public var query: String
+    public var items: [Item]
+    public var totalTokens: Int
+    public var diagnostics: Diagnostics?  // requested vs. effective retrieval mode
 }
 ```
 
-Each item has a `kind` (`.snippet`, `.expanded`, or `.surrogate`), the source `frameId`, a relevance `score`, and the assembled `text`.
+Each item has a `kind` (`.snippet`, `.expanded`, or `.surrogate`), the source `frameId`, a relevance `score`, and the assembled `text`. ``RAGContext/diagnostics`` reports the requested mode, the effective mode (which degrades to `text` when the vector lane is unavailable), and the query-embedding state.

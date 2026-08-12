@@ -1,34 +1,29 @@
-Template: Maintenance (Optimize / Compact / Flush / Close)
-Goal: Run maintenance tasks and safely persist the store.
+Template: Persistence Lifecycle (Flush / Close)
+Goal: Safely persist the store.
 
 Placeholders:
 - <STORE_URL>
-- <EMBEDDER_TYPE>
-- <MAINTENANCE_OPTIONS>
+
+Note: Surrogate optimization and index compaction (`optimizeSurrogates`, `compactIndexes`)
+are package-only maintenance APIs and are not available to downstream apps. The public
+lifecycle is `flush()` and `close()`; Wax rewrites indexes automatically during commits
+when needed.
 
 Steps:
-1. Open MemoryOrchestrator (read-write).
-2. Run surrogate optimization.
-3. Compact indexes.
-4. Flush and close.
+1. Open Memory.
+2. Save/search as needed.
+3. Flush to force pending writes to durable storage.
+4. Close (flushes automatically) when done.
 
 Swift Skeleton:
 ```swift
 import Foundation
 import Wax
 
-let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>()
-)
+let memory = try await Memory(at: <STORE_URL>)
 
-let options = <MAINTENANCE_OPTIONS>
-let surrogateReport = try await orchestrator.optimizeSurrogates(options: options)
-let compactReport = try await orchestrator.compactIndexes(options: options)
-_ = (surrogateReport, compactReport)
+// ... save/search ...
 
-try await orchestrator.flush()
-try await orchestrator.close()
+try await memory.flush()   // commit pending WAL + indexes now
+try await memory.close()   // flush + close
 ```

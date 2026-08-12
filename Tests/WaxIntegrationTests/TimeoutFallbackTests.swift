@@ -140,3 +140,62 @@ func memoryOrchestratorQueryEmbeddingTimeoutFallsBackAndOpensCircuit() async thr
         try await orchestrator.close()
     }
 }
+
+@Test
+func memoryOrchestratorQueryEmbeddingCircuitHalfOpensAfterCooldown() async throws {
+    try await TempFiles.withTempFile { url in
+        // Seed a store with text-only ingest to avoid calling the hanging embedder during `remember`.
+        do {
+            let ingestConfig = TestHelpers.defaultMemoryConfig(vector: false)
+            let ingest = try await MemoryOrchestrator(at: url, config: ingestConfig)
+            try await ingest.remember("Swift concurrency actors and tasks.")
+            try await ingest.flush()
+            try await ingest.close()
+        }
+
+        let embedder = HangingCountingEmbedder()
+
+        var config = TestHelpers.defaultMemoryConfig(vector: true)
+        config.queryEmbeddingTimeout = .milliseconds(25)
+        config.queryEmbeddingCircuitCooldown = .milliseconds(150)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+
+        // First query times out and trips the circuit.
+        let exec1 = try await orchestrator.searchExecution(
+            query: "Swift concurrency",
+            mode: .hybrid(alpha: 0.5),
+            topK: 5,
+            frameFilter: nil,
+            timeRange: nil
+        )
+        #expect(exec1.queryEmbeddingState == .timeout)
+        #expect(await embedder.callCount() == 1)
+
+        // Within the cooldown window the circuit stays open: no new embed attempt.
+        let exec2 = try await orchestrator.searchExecution(
+            query: "Swift concurrency",
+            mode: .hybrid(alpha: 0.5),
+            topK: 5,
+            frameFilter: nil,
+            timeRange: nil
+        )
+        #expect(exec2.queryEmbeddingState == .circuitOpen)
+        #expect(await embedder.callCount() == 1)
+
+        // After the cooldown the breaker half-opens and retries instead of latching
+        // permanently. (The hanging embedder times out again and re-opens the circuit.)
+        try await Task.sleep(for: .milliseconds(300))
+        let exec3 = try await orchestrator.searchExecution(
+            query: "Swift concurrency",
+            mode: .hybrid(alpha: 0.5),
+            topK: 5,
+            frameFilter: nil,
+            timeRange: nil
+        )
+        #expect(exec3.queryEmbeddingState == .timeout)
+        #expect(await embedder.callCount() == 2)
+
+        try await orchestrator.close()
+    }
+}

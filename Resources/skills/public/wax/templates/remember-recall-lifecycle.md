@@ -1,5 +1,5 @@
-Template: Remember / Recall Lifecycle
-Goal: Ingest content, retrieve RAG context, then persist and close.
+Template: Save / Search Lifecycle
+Goal: Ingest content, retrieve context, then persist and close.
 
 Placeholders:
 - <STORE_URL>
@@ -9,11 +9,10 @@ Placeholders:
 - <METADATA>
 
 Steps:
-1. Open MemoryOrchestrator.
-2. Optionally start a session.
-3. Remember content with metadata.
-4. Recall with a query.
-5. Flush and close when done.
+1. Open Memory.
+2. Save content with metadata.
+3. Search with a query.
+4. Flush and close when done.
 
 Swift Skeleton:
 ```swift
@@ -21,24 +20,20 @@ import Foundation
 import Wax
 
 let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator(
+let memory = try await Memory(
     at: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>()
+    embedding: <EMBEDDER_TYPE>()
 )
 
-let sessionId = await orchestrator.startSession()
-_ = sessionId
-
-try await orchestrator.remember(
+try await memory.save(
     <CONTENT>,
     metadata: <METADATA>
 )
 
-let context = try await orchestrator.recall(query: <QUERY>)
-_ = context.items
+let results = try await memory.search(<QUERY>)
+_ = results.items
+_ = results.diagnostics  // requested vs. effective retrieval mode
 
-await orchestrator.endSession()
-try await orchestrator.flush()
-try await orchestrator.close()
+try await memory.flush()
+try await memory.close()
 ```

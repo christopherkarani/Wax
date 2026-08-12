@@ -1,10 +1,10 @@
 # Getting Started
 
-Create a memory orchestrator, remember text, and recall context in minutes.
+Create a memory store, save text, and search it in minutes.
 
 ## Overview
 
-Wax provides persistent, on-device memory with semantic search. The fastest way to get started is with ``MemoryOrchestrator``, which handles ingestion, chunking, embedding, indexing, and retrieval automatically.
+Wax provides persistent, on-device memory with semantic search. The public entry point is ``Memory``, an actor that handles ingestion, chunking, embedding, indexing, and retrieval automatically.
 
 ## Add the Dependency
 
@@ -12,7 +12,7 @@ Add Wax to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/user/Wax.git", from: "1.0.0"),
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8"),
 ]
 ```
 
@@ -21,138 +21,137 @@ Then add it to your target:
 ```swift
 .target(
     name: "MyApp",
-    dependencies: ["Wax", "WaxVectorSearchMiniLM"]
+    dependencies: ["Wax"]
 )
 ```
 
-## Create an Orchestrator
+Wax builds for iOS 17/macOS 14 and later. The built-in MiniLM embedder requires iOS 18/macOS 15 and the default `MiniLMEmbeddings` package trait; Foundation Models tools require iOS 26/macOS 26.
+
+## Create a Memory Store
 
 ```swift
+import Foundation
 import Wax
-import WaxVectorSearchMiniLM
 
-// Create the on-device embedding provider
-let embedder = try MiniLMEmbedder()
-
-// Initialize the orchestrator (creates or opens the .wax file)
-let orchestrator = try await MemoryOrchestrator(
-    at: URL(filePath: "memory.wax"),
-    config: .init(),
-    embedder: embedder
-)
+// Creates or opens the .wax file. On iOS 18/macOS 15+ the built-in MiniLM
+// embedder is wired automatically, so semantic search works out of the box.
+let memory = try await Memory(at: URL(filePath: "memory.wax"))
 ```
 
-You can also use the convenience initializer:
+To configure the built-in embedder explicitly (and fail loudly when it is unavailable):
 
 ```swift
-let orchestrator = try await MemoryOrchestrator.openMiniLM(
-    at: URL(filePath: "memory.wax")
-)
+let memory = try await Memory(at: URL(filePath: "memory.wax"), builtInEmbedding: .miniLM)
 ```
 
-The orchestrator creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.
-
-## Remember Content
-
-Ingest text content with ``MemoryOrchestrator/remember(_:metadata:)``:
+To bring your own embedding model, conform to `EmbeddingProvider` and pass it in:
 
 ```swift
-try await orchestrator.remember("Had coffee with Alice. She mentioned the Q4 roadmap.")
-try await orchestrator.remember("Team standup: discussed sprint velocity and blockers.")
+let memory = try await Memory(at: URL(filePath: "memory.wax"), embedding: MyEmbedder())
+```
+
+The store creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.
+
+## Save Content
+
+```swift
+try await memory.save("Had coffee with Alice. She mentioned the Q4 roadmap.")
+try await memory.save("Team standup: discussed sprint velocity and blockers.")
 ```
 
 Behind the scenes, Wax:
-1. Chunks the text according to the configured ``ChunkingStrategy``
-2. Embeds each chunk using the provided embedding provider
+1. Chunks the text according to the configured chunking strategy
+2. Embeds each chunk when an embedding provider is configured
 3. Indexes the text for BM25 full-text search
-4. Writes frames and embeddings to the `.wax` file
-5. Commits the changes
+4. Writes frames and embeddings to the `.wax` file's write-ahead log
 
-## Recall Context
+Call ``Memory/flush()`` to force pending writes to durable storage; ``Memory/close()`` flushes automatically.
 
-Retrieve relevant context for a query with ``MemoryOrchestrator/recall(query:)``:
+## Search
 
 ```swift
-let context = try await orchestrator.recall(query: "What did Alice say about the roadmap?")
+let results = try await memory.search("What did Alice say about the roadmap?")
 
-for item in context.items {
+for item in results.items {
     print("[\(item.kind)] \(item.text)")
 }
-print("Total tokens: \(context.totalTokens)")
+print("Total tokens: \(results.totalTokens)")
 ```
 
-The RAG pipeline:
+The retrieval pipeline:
 1. Classifies the query type (factual, semantic, temporal, exploratory)
 2. Searches across BM25, vector, and structured memory lanes
 3. Fuses results with reciprocal rank fusion (RRF)
 4. Assembles context within the configured token budget
 
-## Search Directly
+### Know which mode actually ran
 
-For lower-level access, use ``MemoryOrchestrator/search(query:mode:topK:frameFilter:)``:
+Wax degrades to the text lane when the vector lane is unavailable (no embedder, unsupported OS, embedding timeout). Every search reports what actually happened via ``RAGContext/diagnostics``:
 
 ```swift
-let hits = try await orchestrator.search(
-    query: "sprint velocity",
-    mode: .hybrid(alpha: 0.5),
-    topK: 10
-)
-
-for hit in hits {
-    print("\(hit.frameId): \(hit.score) — \(hit.previewText ?? "")")
+let results = try await memory.search("roadmap")
+if let diagnostics = results.diagnostics {
+    print("requested: \(diagnostics.requestedMode)")
+    print("effective: \(diagnostics.effectiveMode)")       // "text" when the vector lane was unavailable
+    print("embedding: \(diagnostics.queryEmbeddingState)") // e.g. .available, .noEmbedder, .circuitOpen
 }
 ```
 
-If you store a structured payload alongside your content, the returned hit also
-includes `metadata`. That lets you recover app-specific identifiers such as an
-`id` field without re-parsing the original content.
+For a store-level health snapshot, use ``Memory/stats()``:
+
+```swift
+let stats = await memory.stats()
+print(stats.vectorSearchEnabled)      // is the vector index active?
+print(stats.queryEmbedderConfigured)  // can queries be embedded?
+```
+
+## Retrieval Modes
+
+Control the retrieval lanes per query via ``Memory/SearchOptions``:
+
+```swift
+// BM25 only — deterministic and fastest
+let textOnly = try await memory.search("sprint velocity", options: .init(mode: .textOnly))
+
+// Vector only — semantic similarity
+let semantic = try await memory.search("roadmap discussion", options: .init(mode: .vectorOnly))
+
+// Hybrid (default) — RRF fusion of both lanes; alpha weights the vector lane
+let hybrid = try await memory.search("Alice roadmap", options: .init(mode: .hybrid(alpha: 0.7)))
+```
 
 ## Configuration
 
-Customize behavior via ``OrchestratorConfig``:
+Customize behavior via ``Memory/Config``:
 
 ```swift
-var config = OrchestratorConfig()
-
-// Search features
-config.enableTextSearch = true
-config.enableVectorSearch = true
-config.enableStructuredMemory = false
-
-// Chunking
-config.chunking = .tokenCount(400, overlap: 40)
-
-// RAG token budget
-config.ragConfig.maxContextTokens = 2000
-config.ragConfig.searchTopK = 32
-
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: config,
-    embedder: embedder
-)
+let memory = try await Memory(at: storeURL) { config in
+    config.enableTextSearch = true
+    config.enableVectorSearch = true
+    config.enableStructuredMemory = false
+    config.ingestConcurrency = 2
+    config.ingestBatchSize = 32
+}
 ```
 
 ## Text-Only Mode
 
-If you don't need vector search, pass `nil` for the embedder:
+If you don't need vector search, disable it explicitly — no embedder is loaded:
 
 ```swift
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: .init(),
-    embedder: nil
-)
+let memory = try await Memory(at: storeURL) { config in
+    config.enableVectorSearch = false
+}
 ```
 
 This gives you BM25 full-text search without the embedding overhead.
 
 ## Clean Up
 
-Always close the orchestrator when done:
+Always close the store when done:
 
 ```swift
-try await orchestrator.close()
+try await memory.close()
 ```
 
 ## Using Wax with Claude Code

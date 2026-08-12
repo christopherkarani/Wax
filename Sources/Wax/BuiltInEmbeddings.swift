@@ -89,7 +89,13 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unavailable(let provider):
-            return "\(provider.rawValue) embeddings are unavailable in this Wax build or platform."
+            let requirement: String = switch provider {
+            case .miniLM:
+                "requires iOS 18/macOS 15 or later and the default `MiniLMEmbeddings` package trait"
+            case .arctic:
+                "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
+            }
+            return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
         }
     }
 }

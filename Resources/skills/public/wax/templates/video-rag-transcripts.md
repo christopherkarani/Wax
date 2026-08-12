@@ -1,61 +1,15 @@
-Template: VideoRAG Ingest / Recall (With Transcripts)
-Goal: Ingest local videos with host-supplied transcripts and recall by text.
+Template: Video RAG (package-only in v1)
+Goal: Explain the status of video RAG and the supported integration path.
 
-Placeholders:
-- <STORE_URL>
-- <EMBEDDER_TYPE>
-- <DIMENSIONS>
-- <NORMALIZE>
-- <IDENTITY_PROVIDER>
-- <IDENTITY_MODEL>
-- <TRANSCRIPT_PROVIDER>
-- <VIDEO_FILES>
-- <QUERY>
+The video RAG pipeline (`VideoRAGOrchestrator`, `VideoFile`, `VideoQuery`,
+`VideoTranscriptProvider`) is **package-only** in the current release: downstream Swift
+apps cannot import or construct it. Do not generate client code against it.
 
-Steps:
-1. Implement a multimodal embedder and transcript provider.
-2. Initialize VideoRAGOrchestrator.
-3. Ingest local files with stable IDs.
-4. Recall with a text query and flush.
+Supported paths today:
+1. Agent workflows: use the Wax MCP server video tools (`video_*`), which run the
+   pipeline inside the Wax process. Host apps supply transcripts — Wax does not
+   transcribe in v1.
+2. Swift apps: store transcript text and metadata in `Memory` and search it with the
+   standard text/vector lanes.
 
-Swift Skeleton:
-```swift
-import Foundation
-import Wax
-import CoreGraphics
-
-struct <EMBEDDER_TYPE>: MultimodalEmbeddingProvider {
-    let dimensions: Int = <DIMENSIONS>
-    let normalize: Bool = <NORMALIZE>
-    let identity: EmbeddingIdentity? = .init(
-        provider: "<IDENTITY_PROVIDER>",
-        model: "<IDENTITY_MODEL>",
-        dimensions: <DIMENSIONS>,
-        normalized: <NORMALIZE>
-    )
-
-    func embed(text: String) async throws -> [Float] { <#embed text#> }
-    func embed(image: CGImage) async throws -> [Float] { <#embed image#> }
-}
-
-struct <TRANSCRIPT_PROVIDER>: VideoTranscriptProvider {
-    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
-        [
-            VideoTranscriptChunk(startMs: <START_MS>, endMs: <END_MS>, text: <TEXT>)
-        ]
-    }
-}
-
-let storeURL = <STORE_URL>
-let rag = try await VideoRAGOrchestrator(
-    storeURL: storeURL,
-    config: .default,
-    embedder: <EMBEDDER_TYPE>(),
-    transcriptProvider: <TRANSCRIPT_PROVIDER>()
-)
-
-try await rag.ingest(files: <VIDEO_FILES>)
-let context = try await rag.recall(.init(text: <QUERY>))
-_ = context.items
-try await rag.flush()
-```
+A stable public video facade will be documented here when it ships.
