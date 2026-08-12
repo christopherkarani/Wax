@@ -1,5 +1,5 @@
 import Foundation
-package struct WALRecordLocation: Equatable, Sendable {
+struct WALRecordLocation: Equatable, Sendable {
     package var offset: UInt64
     package var record: WALRecord
 
@@ -9,7 +9,7 @@ package struct WALRecordLocation: Equatable, Sendable {
     }
 }
 
-package struct WALScanState: Equatable, Sendable {
+struct WALScanState: Equatable, Sendable {
     package var lastSequence: UInt64
     package var writePos: UInt64
     package var pendingBytes: UInt64
@@ -21,7 +21,7 @@ package struct WALScanState: Equatable, Sendable {
     }
 }
 
-package struct WALPendingScanResult: Equatable, Sendable {
+struct WALPendingScanResult: Equatable, Sendable {
     package var pendingMutations: [PendingMutation]
     package var state: WALScanState
 
@@ -64,7 +64,7 @@ package final class WALRingReader {
         return header.isSentinel || header.sequence == 0
     }
 
-    package func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
+    func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
         return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
             let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
             return WALRecordLocation(offset: offset, record: record)
@@ -78,7 +78,7 @@ package final class WALRingReader {
         }
     }
 
-    package func scanPendingMutationsWithState(from checkpointPos: UInt64, committedSeq: UInt64) throws -> WALPendingScanResult {
+    func scanPendingMutationsWithState(from checkpointPos: UInt64, committedSeq: UInt64) throws -> WALPendingScanResult {
         guard walSize > 0 else {
             return WALPendingScanResult(
                 pendingMutations: [],
@@ -177,7 +177,7 @@ package final class WALRingReader {
         return WALPendingScanResult(pendingMutations: pendingMutations, state: state)
     }
 
-    package func scanState(from checkpointPos: UInt64) throws -> WALScanState {
+    func scanState(from checkpointPos: UInt64) throws -> WALScanState {
         guard walSize > 0 else { return WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0) }
 
         let start = checkpointPos % walSize

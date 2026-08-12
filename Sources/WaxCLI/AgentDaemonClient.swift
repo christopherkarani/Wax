@@ -1,5 +1,6 @@
 import Foundation
 import Wax
+import WaxCore
 
 enum AgentBrokerPolicy {
     static func shouldUseBroker(store: StoreOptions, commit: Bool = true) -> Bool {

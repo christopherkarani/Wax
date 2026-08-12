@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 #if canImport(Glibc)
 import Glibc

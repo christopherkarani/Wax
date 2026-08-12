@@ -1,5 +1,6 @@
 import Foundation
 import Wax
+import WaxCore
 
 private enum HarnessError: Error, CustomStringConvertible {
     case invalidArgument(String)
@@ -107,7 +108,7 @@ struct WaxCrashHarness {
             throw HarnessError.childDidNotCrash(status: child.status, reason: child.reason)
         }
 
-        let recovered = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let recovered = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         let stats = await recovered.stats()
         guard stats.frameCount == scenario.expectedCommittedFramesAfterRecovery else {
             throw HarnessError.invariantFailed(
@@ -133,7 +134,7 @@ struct WaxCrashHarness {
     /// Seeds the store with a single "seed" frame and returns its allocated frame ID.
     @discardableResult
     private static func seedStore(at url: URL) async throws -> UInt64 {
-        let wax = try await Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let wax = try await WaxCore.Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         let seedFrameId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
         try await wax.commit()
         try await wax.close()
@@ -164,7 +165,7 @@ struct WaxCrashHarness {
         }
 
         let url = URL(fileURLWithPath: storePath)
-        let wax = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let wax = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         _ = try await wax.put(
             Data("payload-\(scenario.rawValue)".utf8),
             options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")

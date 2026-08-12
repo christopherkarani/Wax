@@ -4,6 +4,8 @@ import Foundation
 import Testing
 @testable import Wax
 import WaxVectorSearch
+import WaxCore
+import WaxTextSearch
 
 // Byte-level proof that PhotoRAG delete and re-ingest (supersede) remove vectors from
 // the committed vector index, mirroring MemoryDeleteVectorDurabilityTests. Before the
@@ -110,6 +112,54 @@ func photoRAGReingestRemovesSupersededRootVectorFromCommittedVecBytes() async th
             "superseded photo root vector still present in committed vec after re-ingest"
         )
         #expect(afterIds.contains(newRootId))
+
+        try await orchestrator.flush()
+    }
+}
+
+@Test
+func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-ghost-sweep-photo-\(UUID().uuidString).png")
+        try photoDeleteTinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let orchestrator = try await photoDeleteMakeOrchestrator(storeURL: storeURL)
+        let file = PhotoFile(id: "legacy-ghost", url: imageURL, captureDate: Date(timeIntervalSince1970: 1_700_000_000))
+
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+
+        let wax = await orchestrator.wax
+        let oldRootId = try await photoDeleteRootId(wax: wax, assetID: "legacy-ghost", superseded: false)
+
+        // Re-ingest supersedes the tree; current cleanup removes its vectors.
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+        let newRootId = try await photoDeleteRootId(wax: wax, assetID: "legacy-ghost", superseded: false)
+
+        // Simulate a store written before vector cleanup existed: the superseded
+        // root's vector is still present in the committed index.
+        try await wax.putEmbedding(frameId: oldRootId, vector: [1, 0, 0, 0])
+        try await orchestrator.flush()
+        let legacyBytes = try await wax.readCommittedVecIndexBytes()
+        #expect(
+            try photoDeleteCommittedVecFrameIds(from: legacyBytes!).contains(oldRootId),
+            "setup: injected legacy ghost must be committed"
+        )
+
+        // The next index rebuild sweeps retired-tree vectors out of the committed index.
+        try await orchestrator.ingest(files: [
+            PhotoFile(id: "sweep-trigger", url: imageURL, captureDate: Date(timeIntervalSince1970: 1_700_000_100))
+        ])
+        try await orchestrator.flush()
+
+        let sweptBytes = try await wax.readCommittedVecIndexBytes()
+        #expect(sweptBytes != nil)
+        let sweptIds = try photoDeleteCommittedVecFrameIds(from: sweptBytes!)
+        #expect(!sweptIds.contains(oldRootId), "legacy ghost vector survived the retired-tree sweep")
+        #expect(sweptIds.contains(newRootId), "current root vector must survive the sweep")
 
         try await orchestrator.flush()
     }

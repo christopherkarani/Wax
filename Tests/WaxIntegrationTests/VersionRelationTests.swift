@@ -251,6 +251,9 @@ import Wax
 
 #if canImport(SQLite3)
 import SQLite3
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 private enum VersionRelationSQLiteFixture {
     static func int32Pragma(_ pragma: String, fromSerialized data: Data) throws -> Int32 {

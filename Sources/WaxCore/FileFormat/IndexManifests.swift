@@ -109,7 +109,7 @@ extension VecIndexManifest: BinaryCodable {
     }
 }
 
-package struct IndexManifests: Equatable, Sendable {
+struct IndexManifests: Equatable, Sendable {
     package var lex: LexIndexManifest?
     package var vec: VecIndexManifest?
 

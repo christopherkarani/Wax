@@ -2,6 +2,7 @@ import AVFoundation
 import CoreVideo
 import Foundation
 import Wax
+import WaxCore
 
 enum VideoRAGTestSupport {
     static func openWritableTextOnlySession(wax: Wax) async throws -> WaxSession {

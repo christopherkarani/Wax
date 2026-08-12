@@ -15,8 +15,11 @@ func builtInEmbeddingsMiniLMProducesFiniteVectorAndHybridSearch() async throws {
 
         let memory = try await Memory(
             at: url,
-            config: .init(enableVectorSearch: true, requireOnDeviceProviders: true),
-            embedding: embedder
+            config: .init(
+                enableVectorSearch: true,
+                requireOnDeviceProviders: true,
+                embedding: .custom(embedder)
+            )
         )
         try await memory.save(
             "Vector fact: the constellation project uses CoreML MiniLM embeddings for hybrid search."

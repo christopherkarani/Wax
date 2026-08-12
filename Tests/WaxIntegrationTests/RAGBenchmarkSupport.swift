@@ -2,6 +2,7 @@
 import Foundation
 import XCTest
 @testable import Wax
+import WaxCore
 
 struct BenchmarkScale {
     var name: String

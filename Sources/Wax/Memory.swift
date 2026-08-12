@@ -2,7 +2,7 @@ import Foundation
 
 /// Intuitive high-level facade for Wax memory operations.
 public actor Memory {
-    public struct Config: Sendable, Equatable {
+    public struct Config: Sendable {
         public var enableTextSearch: Bool
         public var enableVectorSearch: Bool
         public var enableStructuredMemory: Bool
@@ -11,6 +11,8 @@ public actor Memory {
         public var ingestConcurrency: Int
         public var ingestBatchSize: Int
         public var requireOnDeviceProviders: Bool
+        /// Which embedding provider backs vector search.
+        public var embedding: EmbeddingSource
 
         public init(
             enableTextSearch: Bool = true,
@@ -20,7 +22,8 @@ public actor Memory {
             enableAsyncEnrichment: Bool = false,
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,
-            requireOnDeviceProviders: Bool = true
+            requireOnDeviceProviders: Bool = true,
+            embedding: EmbeddingSource = .automatic
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -30,9 +33,26 @@ public actor Memory {
             self.ingestConcurrency = ingestConcurrency
             self.ingestBatchSize = ingestBatchSize
             self.requireOnDeviceProviders = requireOnDeviceProviders
+            self.embedding = embedding
         }
 
         public static let `default` = Config()
+    }
+
+    /// Selects the embedding provider that backs vector search for a ``Memory`` store.
+    public enum EmbeddingSource: Sendable {
+        /// Wire the built-in MiniLM embedder automatically on iOS 18/macOS 15+ when Wax
+        /// is built with the default `MiniLMEmbeddings` trait. On older OS versions, or
+        /// if the model is unavailable, the store falls back to text-only search;
+        /// inspect ``RAGContext/diagnostics`` on search results or ``Memory/stats()``
+        /// to see which mode is actually in effect.
+        case automatic
+        /// Use one of Wax's built-in embedding providers. Store creation throws if the
+        /// provider cannot be constructed (trait compiled out, model missing, or
+        /// unsupported OS).
+        case builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)
+        /// Use a custom embedding provider.
+        case custom(any EmbeddingProvider)
     }
 
     public enum EmbeddingPolicy: Sendable, Equatable {
@@ -96,72 +116,28 @@ public actor Memory {
 
     /// Create or open a memory store at the given URL.
     ///
-    /// When `config.enableVectorSearch` is true (the default), the built-in MiniLM
-    /// embedder is wired automatically on iOS 18/macOS 15+ when Wax is built with the
-    /// default `MiniLMEmbeddings` trait. On older OS versions, or if the model is
-    /// unavailable, the store falls back to text-only search; inspect
-    /// ``RAGContext/diagnostics`` on search results or ``stats()`` to see which mode
-    /// is actually in effect.
+    /// Embedder selection lives on ``Config/embedding`` and defaults to
+    /// ``EmbeddingSource/automatic``: the built-in MiniLM embedder is wired on
+    /// iOS 18/macOS 15+ when Wax is built with the default `MiniLMEmbeddings` trait.
+    /// On older OS versions, or if the model is unavailable, the store falls back to
+    /// text-only search; inspect ``RAGContext/diagnostics`` on search results or
+    /// ``stats()`` to see which mode is actually in effect.
     public init(at url: URL, config: Config = .default) async throws {
         self.orchestrator = try await MemoryOrchestrator(
             at: url,
             config: Self.makeOrchestratorConfig(config),
-            embedder: Self.makeAutoEmbedderIfPossible(config: config)
+            embedder: try await Self.makeEmbedder(for: config)
         )
     }
 
     /// Create or open a memory store at the given URL with inline configuration.
     ///
-    /// The same automatic built-in embedder wiring as ``init(at:config:)-9v8q0`` applies.
+    /// The same embedder selection as ``init(at:config:)`` applies; set
+    /// ``Config/embedding`` inside the closure to use a built-in or custom provider.
     public init(at url: URL, configure: (inout Config) -> Void) async throws {
         var config = Config.default
         configure(&config)
-        self.orchestrator = try await MemoryOrchestrator(
-            at: url,
-            config: Self.makeOrchestratorConfig(config),
-            embedder: Self.makeAutoEmbedderIfPossible(config: config)
-        )
-    }
-
-    public init(
-        at url: URL,
-        config: Config = .default,
-        embedding: some EmbeddingProvider
-    ) async throws {
-        self.orchestrator = try await MemoryOrchestrator(
-            at: url,
-            config: Self.makeOrchestratorConfig(config),
-            embedder: embedding
-        )
-    }
-
-    public init(
-        at url: URL,
-        embedding: some EmbeddingProvider,
-        configure: (inout Config) -> Void
-    ) async throws {
-        var config = Config.default
-        configure(&config)
-        self.orchestrator = try await MemoryOrchestrator(
-            at: url,
-            config: Self.makeOrchestratorConfig(config),
-            embedder: embedding
-        )
-    }
-
-    /// Open memory with one of Wax's built-in embedding providers.
-    public init(
-        at url: URL,
-        config: Config = .default,
-        builtInEmbedding provider: BuiltInEmbeddingProvider,
-        embeddingOptions: BuiltInEmbeddingProviderOptions = .default
-    ) async throws {
-        let embedding = try await BuiltInEmbeddings.make(provider, options: embeddingOptions)
-        self.orchestrator = try await MemoryOrchestrator(
-            at: url,
-            config: Self.makeOrchestratorConfig(config),
-            embedder: embedding
-        )
+        try await self.init(at: url, config: config)
     }
 
     /// Persist text into memory.
@@ -305,9 +281,21 @@ public actor Memory {
         )
     }
 
-    /// Builds the default on-device embedder for the no-embedder initializers when vector
-    /// search is requested. Returns nil (text-only fallback) on unsupported OS versions,
-    /// when the `MiniLMEmbeddings` trait is compiled out, or when the model fails to load.
+    /// Resolves the embedder for ``Config/embedding``. `.automatic` returns nil
+    /// (text-only fallback) on unsupported OS versions, when the `MiniLMEmbeddings`
+    /// trait is compiled out, or when the model fails to load; `.builtIn` throws
+    /// instead of falling back so misconfiguration surfaces immediately.
+    private static func makeEmbedder(for config: Config) async throws -> (any EmbeddingProvider)? {
+        switch config.embedding {
+        case .automatic:
+            return await Self.makeAutoEmbedderIfPossible(config: config)
+        case .builtIn(let provider, let options):
+            return try await BuiltInEmbeddings.make(provider, options: options)
+        case .custom(let provider):
+            return provider
+        }
+    }
+
     private static func makeAutoEmbedderIfPossible(config: Config) async -> (any EmbeddingProvider)? {
         guard config.enableVectorSearch else { return nil }
         #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)

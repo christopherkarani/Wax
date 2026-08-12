@@ -8,11 +8,8 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
-  - When `config.enableVectorSearch == true` (default), automatically wires the built-in MiniLM embedder on iOS 18/macOS 15+ (requires the default `MiniLMEmbeddings` package trait). On older OS versions or if the model is unavailable, the store runs text-only — check `stats()` or `RAGContext.diagnostics`.
-- `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws`
-- `public init(at: URL, config: Memory.Config = .default, embedding: some EmbeddingProvider) async throws`
-- `public init(at: URL, embedding: some EmbeddingProvider, configure: (inout Memory.Config) -> Void) async throws`
-- `public init(at: URL, config: Memory.Config = .default, builtInEmbedding: BuiltInEmbeddingProvider, embeddingOptions: BuiltInEmbeddingProviderOptions = .default) async throws` — throws `BuiltInEmbeddingProviderError.unavailable` when the provider is unavailable on this OS/build.
+  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the built-in MiniLM embedder is wired on iOS 18/macOS 15+ (requires the default `MiniLMEmbeddings` package trait). On older OS versions or if the model is unavailable, the store runs text-only — check `stats()` or `RAGContext.diagnostics`.
+- `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
 - `public func save(_ text: String, metadata: [String: String] = [:]) async throws`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`
 - `public func search(_ query: String, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
@@ -25,7 +22,15 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable, Equatable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (false), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true); `public static let .default`.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (false), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`.
+
+### Memory.EmbeddingSource
+
+`public enum EmbeddingSource: Sendable` — selects the embedder for a store:
+
+- `.automatic` — built-in MiniLM when the platform/build supports it, text-only fallback otherwise.
+- `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is unavailable on this OS/build.
+- `.custom(any EmbeddingProvider)` — bring your own embedder.
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
@@ -72,7 +77,7 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 ## Errors
 
-- `public enum WaxError` (WaxCore) — `Memory.Error` typealias.
+- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
 
 ## Foundation Models Tools (iOS 26/macOS 26+)
 
@@ -85,6 +90,6 @@ The following are `package`-access internals. They are used by Wax's own CLI/MCP
 - `MemoryOrchestrator`, `OrchestratorConfig`, `FastRAGConfig` (the engine behind `Memory`)
 - `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `MultimodalEmbeddingProvider`, `VideoTranscriptProvider` (experimental multimodal pipelines; host apps cannot use them yet)
 - `WaxSession`, `Wax` actor, `SearchRequest`, `SearchResponse`, `FrameFilter`, structured-memory types (`EntityKey`, facts)
-- `MiniLMEmbedder` (use `BuiltInEmbeddings.make(.miniLM)` or `Memory(at:builtInEmbedding:)` instead)
+- `MiniLMEmbedder` (use `BuiltInEmbeddings.make(.miniLM)` or `Memory.Config.embedding = .builtIn(.miniLM)` instead)
 
 Agent-facing access to structured memory, photo, and video memory is available through the Wax MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, `photo_*`, `video_*`), not through `import Wax`.

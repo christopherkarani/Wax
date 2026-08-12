@@ -2,6 +2,7 @@
 import XCTest
 import Foundation
 @testable import Wax
+import WaxCore
 
 final class RAGPerformanceBenchmarks: XCTestCase {
     private let scale = BenchmarkScale.current()
