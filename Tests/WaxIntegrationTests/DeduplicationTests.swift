@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 
 @Test func rememberIdenticalContentTwiceIsIdempotent() async throws {
     try await TempFiles.withTempFile { url in

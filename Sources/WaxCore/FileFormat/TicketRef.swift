@@ -1,6 +1,6 @@
 import Foundation
 
-package struct TicketRef: Equatable, Sendable {
+struct TicketRef: Equatable, Sendable {
     package var issuer: String
     package var seqNo: UInt64
     package var expiresInSecs: UInt64

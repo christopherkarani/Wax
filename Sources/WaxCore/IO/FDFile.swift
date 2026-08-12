@@ -317,7 +317,7 @@ package final class FDFile {
 
     /// Map a writable region of the file at the given offset and length.
     /// The returned region must be closed to unmap the memory.
-    package func mapWritable(length: Int, at offset: UInt64) throws -> MappedWritableRegion {
+    func mapWritable(length: Int, at offset: UInt64) throws -> MappedWritableRegion {
         try ensureOpen()
         guard length > 0 else {
             throw WaxError.io("mapWritable length must be > 0")
@@ -453,7 +453,7 @@ package final class FDFile {
 extension FDFile: @unchecked Sendable {}
 
 /// RAII wrapper around a writable mmap region.
-package final class MappedWritableRegion: @unchecked Sendable {
+final class MappedWritableRegion: @unchecked Sendable {
     private let basePointer: UnsafeMutableRawPointer
     private let mappedLength: Int
     package let buffer: UnsafeMutableRawBufferPointer

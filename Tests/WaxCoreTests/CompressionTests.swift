@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import WaxCore
+@testable import WaxCore
 
 private func repeatedData(_ seed: Data, count: Int) -> Data {
     var out = Data()

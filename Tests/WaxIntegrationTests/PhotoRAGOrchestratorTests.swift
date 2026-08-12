@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import Testing
 import Wax
+import WaxCore
 
 private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly

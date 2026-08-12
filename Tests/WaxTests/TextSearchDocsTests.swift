@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 
 @Test
 func textSearchDocsDoNotAdvertisePackageOnlyFTS5EngineAsPublicAPI() throws {

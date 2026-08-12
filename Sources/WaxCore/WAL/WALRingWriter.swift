@@ -71,7 +71,7 @@ package final class WALRingWriter {
     }
 
     @discardableResult
-    package func append(payload: Data, flags: WALFlags = []) throws -> UInt64 {
+    func append(payload: Data, flags: WALFlags = []) throws -> UInt64 {
         guard !isFaulted else {
             throw WaxError.io("WAL writer is faulted after a partial write failure")
         }
@@ -192,7 +192,7 @@ package final class WALRingWriter {
 
     /// Append multiple payloads in a single pass, reusing padding and wrap calculations.
     /// Returns the sequence numbers for the appended data records (padding records are excluded).
-    package func appendBatch(payloads: [Data], flags: WALFlags = []) throws -> [UInt64] {
+    func appendBatch(payloads: [Data], flags: WALFlags = []) throws -> [UInt64] {
         guard !isFaulted else {
             throw WaxError.io("WAL writer is faulted after a partial write failure")
         }

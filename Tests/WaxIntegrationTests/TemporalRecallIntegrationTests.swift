@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 
 private func makeTemporalRecallStore(
     at url: URL,

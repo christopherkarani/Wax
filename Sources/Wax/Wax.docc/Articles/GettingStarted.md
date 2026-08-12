@@ -41,13 +41,17 @@ let memory = try await Memory(at: URL(filePath: "memory.wax"))
 To configure the built-in embedder explicitly (and fail loudly when it is unavailable):
 
 ```swift
-let memory = try await Memory(at: URL(filePath: "memory.wax"), builtInEmbedding: .miniLM)
+let memory = try await Memory(at: URL(filePath: "memory.wax")) { config in
+    config.embedding = .builtIn(.miniLM)
+}
 ```
 
-To bring your own embedding model, conform to `EmbeddingProvider` and pass it in:
+To bring your own embedding model, conform to `EmbeddingProvider` and select it in the config:
 
 ```swift
-let memory = try await Memory(at: URL(filePath: "memory.wax"), embedding: MyEmbedder())
+let memory = try await Memory(at: URL(filePath: "memory.wax")) { config in
+    config.embedding = .custom(MyEmbedder())
+}
 ```
 
 The store creates a new `.wax` file if one doesn't exist, or opens and recovers an existing one.

@@ -56,7 +56,7 @@ func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async thr
 @Test
 func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
     try await TempFiles.withTempFile { url in
-        let memory = try await Memory(at: url, builtInEmbedding: .miniLM)
+        let memory = try await Memory(at: url) { $0.embedding = .builtIn(.miniLM) }
 
         try await memory.save(semanticGateTarget)
         for distractor in semanticGateDistractors {

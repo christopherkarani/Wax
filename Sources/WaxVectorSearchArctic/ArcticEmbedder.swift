@@ -126,7 +126,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
             throw WaxError.io("Arctic embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
-            throw WaxError.io("Arctic produced \(vector.count) dims, expected \(dimensions).")
+            throw WaxError.invalidEmbedding(reason: "Arctic produced \(vector.count) dims, expected \(dimensions).")
         }
         return vector
     }
@@ -176,7 +176,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
         }
         for vector in vectors {
             if vector.count != dimensions {
-                throw WaxError.io("Arctic produced \(vector.count) dims, expected \(dimensions).")
+                throw WaxError.invalidEmbedding(reason: "Arctic produced \(vector.count) dims, expected \(dimensions).")
             }
         }
         return vectors

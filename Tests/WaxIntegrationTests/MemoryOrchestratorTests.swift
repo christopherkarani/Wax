@@ -610,6 +610,9 @@ private extension String {
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
+import WaxCore
+import WaxTextSearch
+import WaxVectorSearch
 
 @Test
 func miniLMAdapterSymbolsExistWhenAvailable() async {

@@ -17,14 +17,14 @@ package enum FrameStatus: UInt8, Equatable, Sendable {
     case deleted = 1
 }
 
-package enum SegmentCompression: UInt8, Equatable, Sendable {
+enum SegmentCompression: UInt8, Equatable, Sendable {
     case none = 0
     case lzfse = 1
     case lz4 = 2
     case deflate = 3
 }
 
-package enum SegmentKind: UInt8, Equatable, Sendable {
+enum SegmentKind: UInt8, Equatable, Sendable {
     case lex = 0
     case vec = 1
     case time = 2

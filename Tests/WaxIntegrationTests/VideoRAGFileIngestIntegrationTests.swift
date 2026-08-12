@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 
 private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
     let executionMode: ProviderExecutionMode = .onDeviceOnly

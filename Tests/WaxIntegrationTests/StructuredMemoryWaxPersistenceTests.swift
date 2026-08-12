@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 
 @Test func structuredMemoryPersistsAcrossReopen() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -1,6 +1,6 @@
 import Foundation
 
-package struct WALFlags: OptionSet, Sendable, Equatable {
+struct WALFlags: OptionSet, Sendable, Equatable {
     package let rawValue: UInt32
 
     package init(rawValue: UInt32) {
@@ -10,7 +10,7 @@ package struct WALFlags: OptionSet, Sendable, Equatable {
     package static let isPadding = WALFlags(rawValue: 1 << 0)
 }
 
-package struct WALRecordHeader: Equatable, Sendable {
+struct WALRecordHeader: Equatable, Sendable {
     package static let size: Int = 48
 
     package var sequence: UInt64
@@ -82,7 +82,7 @@ package struct WALRecordHeader: Equatable, Sendable {
     }
 }
 
-package enum WALRecord: Equatable, Sendable {
+enum WALRecord: Equatable, Sendable {
     package static let headerSize: Int = WALRecordHeader.size
     package static let checksumSize: Int = 32
     package static let paddingChecksum: Data = SHA256Checksum.digest(Data())

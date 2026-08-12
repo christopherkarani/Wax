@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 
 @Test
 func waxCoreDocsDoNotAdvertisePackageOnlyWaxActorAsPublicAPI() throws {
@@ -92,11 +93,13 @@ func waxCoreDocCTopicsDoNotLinkPackageOnlySymbols() throws {
             contentsOf: repoRoot.appendingPathComponent(relativePath),
             encoding: .utf8
         )
-        #expect(source.contains("package actor \(symbol)")
-            || source.contains("package struct \(symbol)")
-            || source.contains("package enum \(symbol)")
-            || source.contains("package final class \(symbol)")
-            || source.contains("package protocol \(symbol)"))
+        // The guard is "not public API": package or internal declarations both satisfy
+        // it. Match the declaration with word boundaries so e.g. `WALRecord` does not
+        // match `WALRecordHeader`, and reject any `public` declaration of the symbol.
+        let anyDecl = try Regex(#"\b(?:package|public)?\s*(?:final\s+)?(?:actor|struct|enum|class|protocol)\s+"# + symbol + #"\b"#)
+        let publicDecl = try Regex(#"\bpublic\s+(?:final\s+)?(?:actor|struct|enum|class|protocol)\s+"# + symbol + #"\b"#)
+        #expect(source.contains(anyDecl), "\(symbol) declaration not found in \(relativePath)")
+        #expect(!source.contains(publicDecl), "\(symbol) in \(relativePath) must not be public API")
     }
 
     let doc = try String(
