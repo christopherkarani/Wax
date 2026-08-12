@@ -148,6 +148,54 @@ import Testing
     try await wax.close()
 }
 
+@Test func waxPutBatchCommitsUnderWalPressureForOversizedSequentialFrames() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 4 * 1024 * 1024)
+    let firstSearchText = String(repeating: "a", count: 2_060_043)
+    let secondSearchText = String(repeating: "b", count: 2_166_825)
+
+    _ = try await wax.putBatch(
+        [Data("frame-1".utf8), Data("frame-2".utf8)],
+        options: [
+            FrameMetaSubset(searchText: firstSearchText),
+            FrameMetaSubset(searchText: secondSearchText)
+        ]
+    )
+
+    let stats = await wax.walStats()
+    #expect(stats.autoCommitCount > 0)
+    #expect(stats.pendingBytes <= stats.walSize)
+    #expect(stats.checkpointCount > 0)
+
+    try await wax.close()
+}
+
+@Test func waxCommitsUnderWalPressureForOversizedSingleFrames() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 4 * 1024 * 1024)
+    let searchText = String(repeating: "x", count: 2_166_825)
+
+    _ = try await wax.put(
+        Data("frame-1".utf8),
+        options: FrameMetaSubset(searchText: searchText)
+    )
+    _ = try await wax.put(
+        Data("frame-2".utf8),
+        options: FrameMetaSubset(searchText: searchText)
+    )
+
+    let stats = await wax.walStats()
+    #expect(stats.autoCommitCount > 0)
+    #expect(stats.pendingBytes <= stats.walSize)
+    #expect(stats.checkpointCount > 0)
+
+    try await wax.close()
+}
+
 @Test func waxWalPressureAutoCommitCanBeDisabled() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }

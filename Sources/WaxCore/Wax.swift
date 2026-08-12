@@ -873,6 +873,7 @@ package actor Wax {
         let mutation = PendingMutation(sequence: sequence, entry: entry)
         pendingMutations.append(mutation)
         pendingMutationSummary.record(mutation)
+        dirty = true
     }
 
     private func clearPendingMutations() {
@@ -1684,7 +1685,7 @@ package actor Wax {
     }
 
     private func commitLocked() async throws {
-        guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
+        guard dirty || !pendingMutations.isEmpty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
 
         if stagedVecIndex == nil {
             if pendingMutationSummary.hasPendingEmbedding {

@@ -91,6 +91,8 @@ package final class WALRingWriter {
             throw WaxError.capacityExceeded(limit: walSize, requested: entrySize)
         }
 
+        rewindEmptyRingIfWrapWouldExceed(entrySize: entrySize)
+
         var extraPadding: UInt64 = 0
         var probeWritePos = writePos
         var remaining = walSize - probeWritePos
@@ -231,33 +233,49 @@ package final class WALRingWriter {
 
             var remaining = walSize - localWritePos
             if remaining < headerSize {
-                if remaining > 0 {
-                    let zeroTail = Data(repeating: 0, count: Int(remaining))
-                    appendOperation(offset: walOffset + localWritePos, data: zeroTail)
-                    localPendingBytes &+= remaining
+                if localPendingBytes == 0 && remaining + entrySize > walSize {
+                    if localWritePos != 0 {
+                        localWrapCount &+= 1
+                    }
+                    localWritePos = 0
+                    remaining = walSize
+                } else {
+                    if remaining > 0 {
+                        let zeroTail = Data(repeating: 0, count: Int(remaining))
+                        appendOperation(offset: walOffset + localWritePos, data: zeroTail)
+                        localPendingBytes &+= remaining
+                    }
+                    if localWritePos != 0 {
+                        localWrapCount &+= 1
+                    }
+                    localWritePos = 0
+                    remaining = walSize
                 }
-                if localWritePos != 0 {
-                    localWrapCount &+= 1
-                }
-                localWritePos = 0
-                remaining = walSize
             }
 
             if remaining < entrySize {
-                let skipBytes = remaining - headerSize
-                guard skipBytes <= UInt64(UInt32.max) else {
-                    throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: skipBytes)
+                if localPendingBytes == 0 && remaining + entrySize > walSize {
+                    if localWritePos != 0 {
+                        localWrapCount &+= 1
+                    }
+                    localWritePos = 0
+                    remaining = walSize
+                } else {
+                    let skipBytes = remaining - headerSize
+                    guard skipBytes <= UInt64(UInt32.max) else {
+                        throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: skipBytes)
+                    }
+                    let paddingSeq = localLastSequence &+ 1
+                    let paddingRecord = WALRecord.padding(sequence: paddingSeq, skipBytes: UInt32(skipBytes))
+                    let paddingData = try paddingRecord.encode()
+                    appendOperation(offset: walOffset + localWritePos, data: paddingData)
+                    localLastSequence = paddingSeq
+                    localPendingBytes &+= remaining
+                    if localWritePos != 0 {
+                        localWrapCount &+= 1
+                    }
+                    localWritePos = 0
                 }
-                let paddingSeq = localLastSequence &+ 1
-                let paddingRecord = WALRecord.padding(sequence: paddingSeq, skipBytes: UInt32(skipBytes))
-                let paddingData = try paddingRecord.encode()
-                appendOperation(offset: walOffset + localWritePos, data: paddingData)
-                localLastSequence = paddingSeq
-                localPendingBytes &+= remaining
-                if localWritePos != 0 {
-                    localWrapCount &+= 1
-                }
-                localWritePos = 0
             }
 
             if localPendingBytes + entrySize > walSize {
@@ -331,33 +349,17 @@ package final class WALRingWriter {
         guard walSize > 0 else { return false }
         guard payloadSize <= Int(UInt32.max) else { return false }
 
-        let headerSize = UInt64(WALRecord.headerSize)
-        let entrySize = headerSize + UInt64(payloadSize)
+        let entrySize = UInt64(WALRecord.headerSize) + UInt64(payloadSize)
         if entrySize > walSize { return false }
 
-        var extraPadding: UInt64 = 0
-        var probeWritePos = writePos
-        var remaining = walSize - probeWritePos
-
-        if remaining < headerSize {
-            extraPadding += remaining
-            probeWritePos = 0
-            remaining = walSize
+        let neededAtCursor = occupancyNeeded(entrySize: entrySize, from: writePos)
+        if pendingBytes + neededAtCursor <= walSize {
+            return true
         }
-
-        if remaining < entrySize {
-            extraPadding += remaining
-            probeWritePos = 0
-            remaining = walSize
+        if pendingBytes == 0 {
+            return occupancyNeeded(entrySize: entrySize, from: 0) <= walSize
         }
-
-        let predictedWritePos = probeWritePos + entrySize
-        if walSize - predictedWritePos < headerSize {
-            extraPadding += walSize - predictedWritePos
-        }
-
-        let totalNeeded = entrySize + extraPadding
-        return pendingBytes + totalNeeded <= walSize
+        return false
     }
 
     package func canAppendBatch(payloadSizes: [Int]) -> Bool {
@@ -377,18 +379,27 @@ package final class WALRingWriter {
 
             var remaining = walSize - localWritePos
             if remaining < headerSize {
-                if remaining > 0 {
-                    localPendingBytes &+= remaining
-                    if localPendingBytes > walSize { return false }
+                if localPendingBytes == 0 && remaining + entrySize > walSize {
+                    localWritePos = 0
+                    remaining = walSize
+                } else {
+                    if remaining > 0 {
+                        localPendingBytes &+= remaining
+                        if localPendingBytes > walSize { return false }
+                    }
+                    localWritePos = 0
+                    remaining = walSize
                 }
-                localWritePos = 0
-                remaining = walSize
             }
 
             if remaining < entrySize {
-                localPendingBytes &+= remaining
-                if localPendingBytes > walSize { return false }
-                localWritePos = 0
+                if localPendingBytes == 0 && remaining + entrySize > walSize {
+                    localWritePos = 0
+                } else {
+                    localPendingBytes &+= remaining
+                    if localPendingBytes > walSize { return false }
+                    localWritePos = 0
+                }
             }
 
             if localPendingBytes + entrySize > walSize {
@@ -417,6 +428,44 @@ package final class WALRingWriter {
         pendingBytes = 0
         bytesSinceFsync = 0
         checkpointCount &+= 1
+    }
+
+    /// Bytes the next record would occupy, including wrap/sentinel padding, if written at `startPos`.
+    private func occupancyNeeded(entrySize: UInt64, from startPos: UInt64) -> UInt64 {
+        let headerSize = UInt64(WALRecord.headerSize)
+        var extraPadding: UInt64 = 0
+        var probeWritePos = startPos
+        var remaining = walSize - probeWritePos
+
+        if remaining < headerSize {
+            extraPadding += remaining
+            probeWritePos = 0
+            remaining = walSize
+        }
+
+        if remaining < entrySize {
+            extraPadding += remaining
+            probeWritePos = 0
+            remaining = walSize
+        }
+
+        let predictedWritePos = probeWritePos + entrySize
+        if walSize - predictedWritePos < headerSize {
+            extraPadding += walSize - predictedWritePos
+        }
+
+        return extraPadding + entrySize
+    }
+
+    /// After a checkpoint the ring is logically empty, but `writePos` may sit mid-ring.
+    /// Wrapping from there can charge tail padding that makes a still-fitting record look too big.
+    /// Rewind to offset 0 so the full ring is available.
+    private func rewindEmptyRingIfWrapWouldExceed(entrySize: UInt64) {
+        guard pendingBytes == 0, writePos != 0, entrySize <= walSize else { return }
+        guard occupancyNeeded(entrySize: entrySize, from: writePos) > walSize else { return }
+        wrapCount &+= 1
+        writePos = 0
+        checkpointPos = 0
     }
 
     package func flush() throws {

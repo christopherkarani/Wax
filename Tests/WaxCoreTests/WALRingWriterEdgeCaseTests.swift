@@ -402,6 +402,22 @@ private func makeReadOnlyWalFile(walSize: UInt64, fileSize: UInt64? = nil, body:
 
 // MARK: - WALRingWriter: wrapCount increments
 
+@Test func walRingWriterAllowsSecondOversizedFrameAfterCheckpoint() throws {
+    let walSize: UInt64 = 4 * 1024 * 1024
+    let firstPayload = Data(repeating: 0xAB, count: 2_060_043)
+    let secondPayload = Data(repeating: 0xCD, count: 2_166_825)
+    try makeWalFile(walSize: walSize) { _, writer in
+        _ = try writer.append(payload: firstPayload)
+        writer.recordCheckpoint()
+        #expect(writer.pendingBytes == 0)
+        #expect(writer.canAppend(payloadSize: secondPayload.count))
+        _ = try writer.append(payload: secondPayload)
+        #expect(writer.pendingBytes > 0)
+        #expect(writer.pendingBytes <= walSize)
+        #expect(writer.writePos == UInt64(WALRecord.headerSize + secondPayload.count))
+    }
+}
+
 @Test func walRingWriterWrapCountIncreasesOnRingWrap() throws {
     try TempFiles.withTempFile { url in
         let walSize: UInt64 = 256
