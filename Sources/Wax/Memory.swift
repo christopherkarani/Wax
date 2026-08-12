@@ -6,6 +6,13 @@ public actor Memory {
     public struct Config: Sendable {
         public var enableTextSearch: Bool
         public var enableVectorSearch: Bool
+        /// Enables entity, fact, and edge APIs on ``Memory``.
+        ///
+        /// When false, ``upsertEntity(key:kind:aliases:)``, ``resolveEntities(alias:limit:)``,
+        /// ``assertFact(subject:predicate:object:relation:validFromMs:validToMs:)``,
+        /// ``retractFact(_:atMs:)``, ``facts(subject:predicate:systemAsOfMs:validAsOfMs:limit:)``,
+        /// and ``edges(for:direction:predicate:systemAsOfMs:validAsOfMs:limit:)`` throw
+        /// ``WaxError/featureDisabled(feature:)`` with `feature` `"structured memory"`.
         public var enableStructuredMemory: Bool
         public var enableAccessStatsScoring: Bool
         public var enableAsyncEnrichment: Bool
@@ -114,7 +121,7 @@ public actor Memory {
     public typealias Results = RAGContext
     public typealias Error = WaxError
 
-    private let orchestrator: MemoryOrchestrator
+    package let orchestrator: MemoryOrchestrator
     private let embeddingStatusOverride: EmbeddingStatus?
 
     /// Package-visible wrap of an existing orchestrator for in-module adapters.
