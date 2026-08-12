@@ -30,6 +30,8 @@ private struct PublicVideoEmbedder: MultimodalEmbeddingProvider {
     }
 }
 
+private let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
 private struct PublicTranscriptProvider: VideoTranscriptProvider {
     static let token = "PUBLIC_INGEST_TOKEN"
     let executionMode: ProviderExecutionMode = .onDeviceOnly
@@ -191,6 +193,53 @@ struct PublicVideoMemoryTests {
     }
 
     @Test
+    func searchReturnsSegmentThumbnailPayloadWhenEnabled() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let mp4URL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mp4")
+            defer { try? FileManager.default.removeItem(at: mp4URL) }
+
+            do {
+                try await VideoRAGTestVideoGenerator.writeTinyMP4(
+                    to: mp4URL,
+                    width: 32,
+                    height: 32,
+                    frameCount: 2,
+                    fps: 2
+                )
+            } catch {
+                throw XCTSkip("unsupported-codec: H.264 encode is unavailable (\(error))")
+            }
+
+            let config = VideoMemory.Config(
+                segmentDurationSeconds: 60,
+                segmentOverlapSeconds: 0,
+                maxSegmentsPerVideo: 1,
+                includeThumbnailsInContext: true,
+                requireOnDeviceProviders: true,
+                lockWaitTimeout: .zero
+            )
+            let videos = try await VideoMemory.open(
+                at: storeURL,
+                embedding: PublicVideoEmbedder(),
+                transcriptProvider: PublicTranscriptProvider(),
+                config: config
+            )
+            try await videos.ingest(files: [
+                VideoMemory.File(id: "thumb-fixture", url: mp4URL)
+            ])
+            let hits = try await videos.search(
+                VideoMemory.Query(text: PublicTranscriptProvider.token, resultLimit: 5)
+            )
+            let item = try #require(hits.items.first { $0.id.id == "thumb-fixture" })
+            let thumbnail = try #require(item.segments.first?.thumbnail)
+            #expect(thumbnail.starts(with: pngMagic), "segment thumbnail must be PNG bytes")
+            try await videos.close()
+        }
+    }
+
+    @Test
     func secondWriterReceivesLockUnavailableUntilOwnerCloses() async throws {
         try await TempFiles.withTempFile { storeURL in
             let first = try await VideoMemory.open(
@@ -263,18 +312,21 @@ struct PublicVideoMemoryTests {
 
     @Test
     func publicDTOsExposeMemberwiseInitializers() {
+        let fileURL = URL(fileURLWithPath: "/tmp/clip.mp4")
         let file = VideoMemory.File(
             id: "clip-1",
-            url: URL(fileURLWithPath: "/tmp/clip.mp4"),
+            url: fileURL,
             captureDate: Date(timeIntervalSince1970: 1)
         )
+        let emptyID = VideoMemory.File(id: "  ", url: fileURL)
         let id = VideoMemory.ID(source: .file, id: "clip-1")
         let query = VideoMemory.Query(text: "hello", resultLimit: 4, segmentLimitPerVideo: 2)
         let segment = VideoMemory.Segment(
             startMs: 0,
             endMs: 1_000,
             score: 0.8,
-            transcriptSnippet: "hello wax"
+            transcriptSnippet: "hello wax",
+            thumbnail: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
         )
         let item = VideoMemory.Item(
             id: id,
@@ -291,12 +343,15 @@ struct PublicVideoMemoryTests {
         let chunk = VideoMemory.TranscriptChunk(startMs: 0, endMs: 250, text: "hi")
 
         #expect(file.id == "clip-1")
+        #expect(emptyID.id == fileURL.standardizedFileURL.absoluteString)
         #expect(id.source == .file)
         #expect(query.segmentLimitPerVideo == 2)
         #expect(results.items.count == 1)
+        #expect(segment.thumbnail?.starts(with: pngMagic) == true)
         #expect(request.durationMs == 1_000)
         #expect(chunk.text == "hi")
         #expect(VideoMemory.Config().maxSegmentsPerVideo == 360)
+        #expect(VideoMemory.Config().includeThumbnailsInContext == false)
     }
 }
 #endif

@@ -3,10 +3,6 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
-#if canImport(Photos)
-@preconcurrency import Photos
-#endif
-
 /// Owning public facade for on-device video memory.
 public actor VideoMemory {
     public typealias Error = WaxError
@@ -16,6 +12,11 @@ public actor VideoMemory {
         public var segmentDurationSeconds: Double
         public var segmentOverlapSeconds: Double
         public var maxSegmentsPerVideo: Int
+        /// When true, recalled segments include PNG keyframe thumbnail bytes.
+        ///
+        /// This flag gates pixel attachment on search hits. It is not limited to
+        /// downstream LLM prompt assembly. Public search requests a thumbnail
+        /// budget automatically; the orchestrator still no-ops when this flag is false.
         public var includeThumbnailsInContext: Bool
         public var requireOnDeviceProviders: Bool
         public var searchTopK: Int
@@ -79,7 +80,8 @@ public actor VideoMemory {
         public var captureDate: Date?
 
         public init(id: String, url: URL, captureDate: Date? = nil) {
-            self.id = id
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.id = trimmed.isEmpty ? url.standardizedFileURL.absoluteString : trimmed
             self.url = url
             self.captureDate = captureDate
         }
@@ -114,12 +116,22 @@ public actor VideoMemory {
         public var endMs: Int64
         public var score: Float
         public var transcriptSnippet: String?
+        /// PNG keyframe bytes when ``Config/includeThumbnailsInContext`` is true
+        /// and a file-backed pixel source is still available.
+        public var thumbnail: Data?
 
-        public init(startMs: Int64, endMs: Int64, score: Float, transcriptSnippet: String? = nil) {
+        public init(
+            startMs: Int64,
+            endMs: Int64,
+            score: Float,
+            transcriptSnippet: String? = nil,
+            thumbnail: Data? = nil
+        ) {
             self.startMs = startMs
             self.endMs = endMs
             self.score = score
             self.transcriptSnippet = transcriptSnippet
+            self.thumbnail = thumbnail
         }
     }
 

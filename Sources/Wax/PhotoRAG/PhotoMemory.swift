@@ -3,10 +3,6 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
-#if canImport(Photos)
-@preconcurrency import Photos
-#endif
-
 /// Owning public facade for on-device photo memory.
 public actor PhotoMemory {
     public typealias Error = WaxError
@@ -15,7 +11,15 @@ public actor PhotoMemory {
     public struct Config: Sendable, Equatable {
         public var enableOCR: Bool
         public var enableRegionEmbeddings: Bool
+        /// When true, recalled items include PNG thumbnail bytes.
+        ///
+        /// This flag gates pixel attachment on search hits. It is not limited to
+        /// downstream LLM prompt assembly.
         public var includeThumbnailsInContext: Bool
+        /// When true, recalled items include region crop bytes for matched regions.
+        ///
+        /// This flag gates crop attachment on search hits. It is not limited to
+        /// downstream LLM prompt assembly.
         public var includeRegionCropsInContext: Bool
         public var requireOnDeviceProviders: Bool
         public var ingestConcurrency: Int
@@ -105,16 +109,40 @@ public actor PhotoMemory {
         }
     }
 
+    /// A matched region on a recalled photo, with an optional PNG crop.
+    public struct Region: Sendable, Equatable {
+        public var bbox: BoundingBox
+        public var crop: Data?
+
+        public init(bbox: BoundingBox, crop: Data? = nil) {
+            self.bbox = bbox
+            self.crop = crop
+        }
+    }
+
     /// One recalled photo.
     public struct Item: Sendable, Equatable {
         public var assetID: String
         public var score: Float
         public var summaryText: String
+        /// PNG thumbnail bytes when ``Config/includeThumbnailsInContext`` is true
+        /// and a pixel source is still available.
+        public var thumbnail: Data?
+        /// Matched region crops when ``Config/includeRegionCropsInContext`` is true.
+        public var regions: [Region]
 
-        public init(assetID: String, score: Float, summaryText: String) {
+        public init(
+            assetID: String,
+            score: Float,
+            summaryText: String,
+            thumbnail: Data? = nil,
+            regions: [Region] = []
+        ) {
             self.assetID = assetID
             self.score = score
             self.summaryText = summaryText
+            self.thumbnail = thumbnail
+            self.regions = regions
         }
     }
 

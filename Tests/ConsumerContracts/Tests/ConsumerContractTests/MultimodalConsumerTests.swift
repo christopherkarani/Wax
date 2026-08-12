@@ -3,6 +3,7 @@ import Testing
 import Wax
 
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
+private let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
 private struct ConsumerPhotoEmbedder: MultimodalEmbeddingProvider {
     let dimensions = 4
@@ -78,7 +79,7 @@ struct MultimodalConsumerTests {
         let config = PhotoMemory.Config(
             enableOCR: false,
             enableRegionEmbeddings: false,
-            includeThumbnailsInContext: false,
+            includeThumbnailsInContext: true,
             includeRegionCropsInContext: false,
             lockWaitTimeout: .zero
         )
@@ -95,7 +96,10 @@ struct MultimodalConsumerTests {
             )
             try await photos.ingest(files: files)
             let hits = try await photos.search(PhotoMemory.Query(text: "receipt", resultLimit: 5))
-            #expect(hits.items.contains { $0.assetID == "consumer-photo" })
+            let hit = try #require(hits.items.first { $0.assetID == "consumer-photo" })
+            let thumbnail = try #require(hit.thumbnail)
+            #expect(thumbnail.starts(with: pngMagic))
+            #expect(hit.regions.isEmpty)
 
             try await photos.delete(assetID: "consumer-photo")
             try await photos.close()
@@ -154,5 +158,32 @@ struct MultimodalConsumerTests {
             config: config
         )
         try await second.close()
+    }
+
+    @Test
+    func photoAndVideoResultPayloadsAreReadableFromWaxImport() {
+        let region = PhotoMemory.Region(
+            bbox: PhotoMemory.BoundingBox(x: 0.1, y: 0.2, width: 0.3, height: 0.4),
+            crop: tinyPNGData
+        )
+        let photoItem = PhotoMemory.Item(
+            assetID: "consumer-photo",
+            score: 1,
+            summaryText: "caption",
+            thumbnail: tinyPNGData,
+            regions: [region]
+        )
+        #expect(photoItem.thumbnail?.starts(with: pngMagic) == true)
+        #expect(photoItem.regions.first?.bbox.width == 0.3)
+        #expect(photoItem.regions.first?.crop?.starts(with: pngMagic) == true)
+
+        let segment = VideoMemory.Segment(
+            startMs: 0,
+            endMs: 1_000,
+            score: 0.5,
+            transcriptSnippet: "hello",
+            thumbnail: tinyPNGData
+        )
+        #expect(segment.thumbnail?.starts(with: pngMagic) == true)
     }
 }

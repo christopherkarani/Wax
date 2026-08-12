@@ -62,12 +62,22 @@ extension VideoMemory.ID {
 extension VideoQuery {
     init(_ query: VideoMemory.Query) {
         let allowlist = query.videoIDs?.map(VideoID.init)
+        // Package `VideoContextBudget.default.maxThumbnails` is 0, which would
+        // silently drop payloads even when `includeThumbnailsInContext` is true.
+        // Public search does not expose a context budget, so request enough
+        // thumbnail slots for the query; the orchestrator still honors the config flag.
+        let thumbnailBudget = max(1, query.resultLimit * max(1, query.segmentLimitPerVideo))
         self.init(
             text: query.text,
             timeRange: query.timeRange,
             videoIDs: allowlist.map(Set.init),
             resultLimit: query.resultLimit,
-            segmentLimitPerVideo: query.segmentLimitPerVideo
+            segmentLimitPerVideo: query.segmentLimitPerVideo,
+            contextBudget: VideoContextBudget(
+                maxTextTokens: VideoContextBudget.default.maxTextTokens,
+                maxThumbnails: thumbnailBudget,
+                maxTranscriptLinesPerSegment: VideoContextBudget.default.maxTranscriptLinesPerSegment
+            )
         )
     }
 }
@@ -78,7 +88,8 @@ extension VideoMemory.Segment {
             startMs: hit.startMs,
             endMs: hit.endMs,
             score: hit.score,
-            transcriptSnippet: hit.transcriptSnippet
+            transcriptSnippet: hit.transcriptSnippet,
+            thumbnail: hit.thumbnail?.data
         )
     }
 }

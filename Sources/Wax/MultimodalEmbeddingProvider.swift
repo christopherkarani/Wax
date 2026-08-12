@@ -91,16 +91,6 @@ package enum WaxImageCodec {
         }
         return data as Data
     }
-
-    package static func decodeCGImage(from data: Data) throws -> CGImage {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            throw WaxError.io("failed to create image source")
-        }
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            throw WaxError.io("failed to decode image")
-        }
-        return image
-    }
 }
 
 #endif // canImport(ImageIO)

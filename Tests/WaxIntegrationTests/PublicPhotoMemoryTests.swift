@@ -5,6 +5,7 @@ import Wax
 import XCTest
 
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
+private let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
 private struct PublicPhotoEmbedder: MultimodalEmbeddingProvider {
     let dimensions = 4
@@ -55,6 +56,23 @@ private struct ReceiptCaptionProvider: PhotoCaptionProvider {
         _ = imageData
         _ = format
         return "local receipt image"
+    }
+}
+
+private struct ReceiptOCRProvider: PhotoOCRProvider {
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func recognizeText(in imageData: Data, format: WaxImageFormat) async throws -> [PhotoMemory.RecognizedText] {
+        _ = imageData
+        _ = format
+        return [
+            PhotoMemory.RecognizedText(
+                text: "receipt",
+                confidence: 0.95,
+                language: "en",
+                bbox: PhotoMemory.BoundingBox(x: 0, y: 0, width: 1, height: 1)
+            )
+        ]
     }
 }
 
@@ -231,25 +249,83 @@ struct PublicPhotoMemoryTests {
     }
 
     @Test
+    func searchReturnsThumbnailAndRegionPayloadsWhenEnabled() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-public-photo-payload-\(UUID().uuidString).png")
+            try tinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            let config = PhotoMemory.Config(
+                enableOCR: true,
+                enableRegionEmbeddings: true,
+                includeThumbnailsInContext: true,
+                includeRegionCropsInContext: true,
+                requireOnDeviceProviders: true,
+                maxRegionsPerPhoto: 1,
+                lockWaitTimeout: .zero
+            )
+            let photos = try await PhotoMemory.open(
+                at: storeURL,
+                embedding: PublicPhotoEmbedder(),
+                ocr: ReceiptOCRProvider(),
+                captioner: ReceiptCaptionProvider(),
+                config: config
+            )
+            try await photos.ingest(files: [
+                PhotoMemory.File(id: "payload-fixture", url: imageURL)
+            ])
+
+            let hits = try await photos.search(PhotoMemory.Query(text: "receipt", resultLimit: 5))
+            let item = try #require(hits.items.first { $0.assetID == "payload-fixture" })
+            let thumbnail = try #require(item.thumbnail)
+            #expect(thumbnail.starts(with: pngMagic), "thumbnail must be PNG bytes")
+            #expect(!item.regions.isEmpty)
+            let region = try #require(item.regions.first)
+            #expect(region.bbox.x == 0)
+            #expect(region.bbox.y == 0)
+            #expect(region.bbox.width == 1)
+            #expect(region.bbox.height == 1)
+            let crop = try #require(region.crop)
+            #expect(crop.starts(with: pngMagic), "region crop must be PNG bytes")
+
+            try await photos.close()
+        }
+    }
+
+    @Test
     func publicDTOsExposeMemberwiseInitializers() {
+        let fileURL = URL(fileURLWithPath: "/tmp/photo.png")
         let file = PhotoMemory.File(
             id: "asset-1",
-            url: URL(fileURLWithPath: "/tmp/photo.png"),
+            url: fileURL,
             captureDate: Date(timeIntervalSince1970: 1)
         )
+        let emptyID = PhotoMemory.File(id: "  ", url: fileURL)
         let query = PhotoMemory.Query(text: "receipt", resultLimit: 3)
+        let region = PhotoMemory.Region(
+            bbox: PhotoMemory.BoundingBox(x: 0, y: 0, width: 1, height: 1),
+            crop: tinyPNGData
+        )
         let item = PhotoMemory.Item(
             assetID: "asset-1",
             score: 0.9,
-            summaryText: "Caption: local receipt image"
+            summaryText: "Caption: local receipt image",
+            thumbnail: tinyPNGData,
+            regions: [region]
         )
         let results = PhotoMemory.Results(items: [item], usedTextTokens: 4, degradedResultCount: 0)
         let config = PhotoMemory.Config()
 
         #expect(file.id == "asset-1")
+        #expect(emptyID.id == fileURL.standardizedFileURL.absoluteString)
         #expect(query.resultLimit == 3)
         #expect(results.items.count == 1)
+        #expect(item.thumbnail?.starts(with: pngMagic) == true)
+        #expect(item.regions.count == 1)
         #expect(config.enableOCR == true)
+        #expect(config.includeThumbnailsInContext == true)
+        #expect(config.includeRegionCropsInContext == true)
         #expect(WaxImageFormat.png == .png)
         #expect(WaxImageFormat.jpeg == .jpeg)
         #expect(WaxImageFormat.heic == .heic)

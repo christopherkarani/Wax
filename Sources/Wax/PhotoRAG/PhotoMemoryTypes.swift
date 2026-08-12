@@ -99,7 +99,23 @@ extension PhotoQuery {
 
 extension PhotoMemory.Item {
     init(_ item: PhotoRAGItem) {
-        self.init(assetID: item.assetID, score: item.score, summaryText: item.summaryText)
+        self.init(
+            assetID: item.assetID,
+            score: item.score,
+            summaryText: item.summaryText,
+            thumbnail: item.thumbnail?.data,
+            regions: item.regions.map { region in
+                PhotoMemory.Region(
+                    bbox: PhotoMemory.BoundingBox(
+                        x: region.bbox.x,
+                        y: region.bbox.y,
+                        width: region.bbox.width,
+                        height: region.bbox.height
+                    ),
+                    crop: region.crop?.data
+                )
+            }
+        )
     }
 }
 
