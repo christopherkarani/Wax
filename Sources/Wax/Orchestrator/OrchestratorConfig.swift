@@ -7,8 +7,10 @@ package struct OrchestratorConfig: Sendable {
     package var enableVectorSearch: Bool = true
     package var enableStructuredMemory: Bool = false
     package var enableAccessStatsScoring: Bool = false
+    /// Package equivalent of ``Memory/EnrichmentPolicy/builtIn``.
     package var enableAsyncEnrichment: Bool = false
 
+    /// FastRAG builder config. Public ``Memory/RAGConfig`` is clamped into this once.
     package var rag: FastRAGConfig = .init()
     package var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
     package var ingestConcurrency: Int = 1
@@ -41,4 +43,21 @@ package struct OrchestratorConfig: Sendable {
     package init() {}
 
     package static let `default` = OrchestratorConfig()
+
+    /// Map public ``Memory/Config-swift.struct`` onto package orchestrator knobs.
+    /// RAG fields are clamped here exactly once into ``FastRAGConfig``.
+    package static func resolving(_ config: Memory.Config) -> OrchestratorConfig {
+        var resolved = OrchestratorConfig.default
+        resolved.enableTextSearch = config.enableTextSearch
+        resolved.enableVectorSearch = config.enableVectorSearch
+        resolved.enableStructuredMemory = config.enableStructuredMemory
+        resolved.enableAccessStatsScoring = config.enableAccessStatsScoring
+        resolved.enableAsyncEnrichment = config.enrichment == .builtIn
+        resolved.rag = config.rag.makeFastRAGConfig()
+        resolved.ingestConcurrency = config.ingestConcurrency
+        resolved.ingestBatchSize = config.ingestBatchSize
+        resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
+        resolved.walSizeBytes = config.walSizeBytes
+        return resolved
+    }
 }

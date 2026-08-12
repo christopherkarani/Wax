@@ -107,6 +107,7 @@ package actor MemoryOrchestrator {
         package var structuredMemoryEnabled: Bool
         package var accessStatsScoringEnabled: Bool
         package var embedderIdentity: EmbeddingIdentity?
+        package var enrichment: EnrichmentPipeline.Stats?
 
         package init(
             frameCount: UInt64,
@@ -119,7 +120,8 @@ package actor MemoryOrchestrator {
             queryEmbeddingCircuitOpen: Bool,
             structuredMemoryEnabled: Bool,
             accessStatsScoringEnabled: Bool,
-            embedderIdentity: EmbeddingIdentity?
+            embedderIdentity: EmbeddingIdentity?,
+            enrichment: EnrichmentPipeline.Stats? = nil
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -132,6 +134,7 @@ package actor MemoryOrchestrator {
             self.structuredMemoryEnabled = structuredMemoryEnabled
             self.accessStatsScoringEnabled = accessStatsScoringEnabled
             self.embedderIdentity = embedderIdentity
+            self.enrichment = enrichment
         }
     }
 
@@ -1036,6 +1039,12 @@ package actor MemoryOrchestrator {
         let stats = await wax.stats()
         let walStats = await wax.walStats()
         let storeURL = await wax.fileURL()
+        let enrichmentStats: EnrichmentPipeline.Stats?
+        if let enrichmentPipeline {
+            enrichmentStats = await enrichmentPipeline.stats
+        } else {
+            enrichmentStats = nil
+        }
 
         return RuntimeStats(
             frameCount: stats.frameCount,
@@ -1048,7 +1057,8 @@ package actor MemoryOrchestrator {
             queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
-            embedderIdentity: embedder?.identity
+            embedderIdentity: embedder?.identity,
+            enrichment: enrichmentStats
         )
     }
 
@@ -1517,16 +1527,28 @@ package actor MemoryOrchestrator {
     // MARK: - Persistence lifecycle
 
     package func flush() async throws {
+        try await flush(requireEnrichmentDrain: false)
+    }
+
+    package func flush(requireEnrichmentDrain: Bool) async throws {
         if let enrichmentPipeline {
-            let drained = try await enrichmentPipeline.waitUntilIdle(
-                bestEffortTimeout: config.enrichmentFlushDrainTimeout
-            )
-            if !drained {
-                WaxDiagnostics.logSwallowed(
-                    WaxError.io("enrichment drain timed out before flush"),
-                    context: "enrichment flush drain timeout",
-                    fallback: "continuing flush with pending enrichment work"
+            if requireEnrichmentDrain {
+                try await enrichmentPipeline.waitUntilIdle(timeout: config.enrichmentFlushDrainTimeout)
+                let stats = await enrichmentPipeline.stats
+                if stats.pendingCount > 0 {
+                    throw WaxError.io("enrichment flush left \(stats.pendingCount) pending task(s)")
+                }
+            } else {
+                let drained = try await enrichmentPipeline.waitUntilIdle(
+                    bestEffortTimeout: config.enrichmentFlushDrainTimeout
                 )
+                if !drained {
+                    WaxDiagnostics.logSwallowed(
+                        WaxError.io("enrichment drain timed out before flush"),
+                        context: "enrichment flush drain timeout",
+                        fallback: "continuing flush with pending enrichment work"
+                    )
+                }
             }
         }
         if config.enableAccessStatsScoring {

@@ -15,7 +15,14 @@ public actor Memory {
         /// ``WaxError/featureDisabled(feature:)`` with `feature` `"structured memory"`.
         public var enableStructuredMemory: Bool
         public var enableAccessStatsScoring: Bool
-        public var enableAsyncEnrichment: Bool
+        /// Built-in keyword/entity enrichment. ``EnrichmentPolicy/disabled`` (the
+        /// default) leaves ``Stats-swift.struct/enrichment`` `nil`.
+        public var enrichment: EnrichmentPolicy
+        /// Bounded FastRAG knobs (context budget, search depth, answer rerank).
+        ///
+        /// Out-of-range values are clamped once while mapping into the package
+        /// FastRAG builder; they do not throw ``WaxError/invalidConfiguration(reason:)``.
+        public var rag: RAGConfig
         public var ingestConcurrency: Int
         public var ingestBatchSize: Int
         public var requireOnDeviceProviders: Bool
@@ -31,7 +38,8 @@ public actor Memory {
             enableVectorSearch: Bool = true,
             enableStructuredMemory: Bool = false,
             enableAccessStatsScoring: Bool = false,
-            enableAsyncEnrichment: Bool = false,
+            enrichment: EnrichmentPolicy = .disabled,
+            rag: RAGConfig = .default,
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
@@ -42,7 +50,8 @@ public actor Memory {
             self.enableVectorSearch = enableVectorSearch
             self.enableStructuredMemory = enableStructuredMemory
             self.enableAccessStatsScoring = enableAccessStatsScoring
-            self.enableAsyncEnrichment = enableAsyncEnrichment
+            self.enrichment = enrichment
+            self.rag = rag
             self.ingestConcurrency = ingestConcurrency
             self.ingestBatchSize = ingestBatchSize
             self.requireOnDeviceProviders = requireOnDeviceProviders
@@ -195,10 +204,10 @@ public actor Memory {
             embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
-            topK: options.topK,
+            topK: nil,
             mode: directMode
         )
-        var results = execution.context
+        var results = Self.limiting(execution.context, toTopK: options.topK)
         results.diagnostics = RAGContext.Diagnostics(
             requestedMode: execution.requestedModeSummary,
             effectiveMode: execution.effectiveModeSummary,
@@ -243,8 +252,12 @@ public actor Memory {
     }
 
     /// Force pending writes to durable storage.
+    ///
+    /// When enrichment is enabled, this waits for the pipeline to drain. After a
+    /// successful return, ``Stats-swift.struct/enrichment`` pending count is zero;
+    /// if the drain times out, this throws.
     public func flush() async throws {
-        try await orchestrator.flush()
+        try await orchestrator.flush(requireEnrichmentDrain: true)
     }
 
     /// Close the memory handle and release resources.
@@ -268,6 +281,9 @@ public actor Memory {
         public var embedderIdentity: EmbeddingIdentity?
         /// Embedding setup recorded at store initialization.
         public var embeddingStatus: EmbeddingStatus
+        /// Enrichment pipeline snapshot when ``Config-swift.struct/enrichment`` is
+        /// ``EnrichmentPolicy/builtIn``; `nil` when enrichment is disabled.
+        public var enrichment: EnrichmentStats?
 
         public init(
             frameCount: UInt64,
@@ -276,7 +292,8 @@ public actor Memory {
             queryEmbedderConfigured: Bool,
             queryEmbeddingCircuitOpen: Bool,
             embedderIdentity: EmbeddingIdentity?,
-            embeddingStatus: EmbeddingStatus = .disabled
+            embeddingStatus: EmbeddingStatus = .disabled,
+            enrichment: EnrichmentStats? = nil
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -285,6 +302,7 @@ public actor Memory {
             self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.embedderIdentity = embedderIdentity
             self.embeddingStatus = embeddingStatus
+            self.enrichment = enrichment
         }
     }
 
@@ -301,7 +319,14 @@ public actor Memory {
             queryEmbedderConfigured: runtime.queryEmbedderConfigured,
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
             embedderIdentity: runtime.embedderIdentity,
-            embeddingStatus: embeddingStatusOverride ?? Self.inferredEmbeddingStatus(from: runtime)
+            embeddingStatus: embeddingStatusOverride ?? Self.inferredEmbeddingStatus(from: runtime),
+            enrichment: runtime.enrichment.map {
+                EnrichmentStats(
+                    processedCount: $0.processedCount,
+                    pendingCount: $0.pendingCount,
+                    isRunning: $0.isRunning
+                )
+            }
         )
     }
 
@@ -387,17 +412,19 @@ public actor Memory {
     }
 
     private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {
-        var resolved = OrchestratorConfig.default
-        resolved.enableTextSearch = config.enableTextSearch
-        resolved.enableVectorSearch = config.enableVectorSearch
-        resolved.enableStructuredMemory = config.enableStructuredMemory
-        resolved.enableAccessStatsScoring = config.enableAccessStatsScoring
-        resolved.enableAsyncEnrichment = config.enableAsyncEnrichment
-        resolved.ingestConcurrency = config.ingestConcurrency
-        resolved.ingestBatchSize = config.ingestBatchSize
-        resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
-        resolved.walSizeBytes = config.walSizeBytes
-        return resolved
+        OrchestratorConfig.resolving(config)
+    }
+
+    private static func limiting(_ context: RAGContext, toTopK topK: Int) -> RAGContext {
+        if topK <= 0 {
+            return RAGContext(query: context.query, items: [], totalTokens: 0)
+        }
+        guard context.items.count > topK else { return context }
+        return RAGContext(
+            query: context.query,
+            items: Array(context.items.prefix(topK)),
+            totalTokens: context.totalTokens
+        )
     }
 }
 
