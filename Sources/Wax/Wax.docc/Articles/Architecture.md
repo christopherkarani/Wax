@@ -6,6 +6,8 @@ Understand the module dependency graph, actor model, and end-to-end data flow.
 
 Wax is organized as a stack of Swift Package Manager library targets. Each layer adds capability while depending only on the layers below it.
 
+> Note: ``Memory`` is the public facade. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, and `WaxSession` are package-only internals — they are documented here for contributors and are not callable from outside the Wax package.
+
 ## Module Dependency Graph
 
 ```
@@ -37,17 +39,18 @@ Wax is organized as a stack of Swift Package Manager library targets. Each layer
 
 Every major subsystem is an actor with its own serial executor:
 
-| Actor | Responsibility |
-|-------|---------------|
-| ``MemoryOrchestrator`` | Text ingestion, recall, session management |
-| ``PhotoRAGOrchestrator`` | Photo library sync, OCR, photo queries |
-| ``VideoRAGOrchestrator`` | Video ingestion, transcript handling, segment queries |
-| ``WaxSession`` | Frame writes, search delegation, structured memory |
-| `Wax` (WaxCore) | File I/O, WAL, frame storage, writer leasing |
-| `FTS5SearchEngine` | BM25 indexing/search, structured memory persistence |
-| `AccelerateVectorEngine` | CPU vector index |
-| `MetalANNSVectorEngine` | GPU vector index |
-| `MiniLMEmbedder` | CoreML inference |
+| Actor | Access | Responsibility |
+|-------|--------|---------------|
+| ``Memory`` | **public** | Facade: save/search/delete/flush/close, stats, diagnostics |
+| `MemoryOrchestrator` | package | Text ingestion, recall, session management |
+| `PhotoRAGOrchestrator` | package | Photo library sync, OCR, photo queries |
+| `VideoRAGOrchestrator` | package | Video ingestion, transcript handling, segment queries |
+| `WaxSession` | package | Frame writes, search delegation, structured memory |
+| `Wax` (WaxCore) | package | File I/O, WAL, frame storage, writer leasing |
+| `FTS5SearchEngine` | package | BM25 indexing/search, structured memory persistence |
+| `AccelerateVectorEngine` | package | CPU vector index (default below 10,000 vectors) |
+| `MetalANNSVectorEngine` | package | GPU vector index (auto-activates at 10,000+ vectors) |
+| `MiniLMEmbedder` | package | CoreML inference |
 
 ### Actor Boundaries
 
@@ -71,9 +74,10 @@ MemoryOrchestrator.remember()
   │
   ├─ FTS5SearchEngine.index() ──► SQLite FTS5
   │
-  ├─ VectorEngine.add() ──► Flat vector / MetalANNS index
+  ├─ VectorEngine.add() ──► Flat vector / MetalANNS index (pending)
   │
-  └─ WaxSession.commit() ──► TOC + Footer + Header
+  └─ Writes land in the WAL; WaxSession.commit() (via flush()/close())
+     persists them ──► TOC + Footer + Header
 ```
 
 ### Retrieval (recall)

@@ -65,14 +65,18 @@ let waxRepoPackageDependencies: [Package.Dependency]
 let waxRepoTargets: [Target]
 #if os(macOS)
 waxRepoPackageDependencies = [
-    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
+    // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
     .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
 ]
 """#))
     #expect(manifest.source.contains(#"""
 #if os(macOS)
 waxRepoPackageDependencies = [
-    .package(url: "https://github.com/rensbreur/SwiftTUI.git", branch: "main"),
+    // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
+    // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
+    .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
     .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
 ]
 waxRepoTargets = [

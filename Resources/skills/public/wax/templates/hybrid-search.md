@@ -1,48 +1,38 @@
-Template: Hybrid Search (Wax + SearchRequest)
-Goal: Run unified hybrid search with text + vector signals.
+Template: Hybrid Search (Memory)
+Goal: Run hybrid search fusing text + vector signals through the public Memory facade.
 
 Placeholders:
 - <STORE_URL>
 - <QUERY>
-- <EMBEDDING>
 - <ALPHA>
 - <TOP_K>
-- <MIN_SCORE>
-- <TIME_RANGE>
 
 Steps:
-1. Open Wax and a session with vector search enabled.
-2. Build a SearchRequest with `.hybrid(alpha:)` and an embedding.
-3. Execute `session.search` and handle results.
+1. Open Memory (built-in MiniLM is auto-wired on iOS 18/macOS 15+).
+2. Search with `.hybrid(alpha:)`.
+3. Check `results.diagnostics` to confirm the vector lane actually ran.
 
 Swift Skeleton:
 ```swift
 import Foundation
 import Wax
 
-let wax = try await Wax.open(at: <STORE_URL>)
-let session = try await wax.openSession(
-    .readOnly,
-    config: .init(
-        enableTextSearch: true,
-        enableVectorSearch: true,
-        enableStructuredMemory: false,
-        vectorEnginePreference: .auto,
-        vectorMetric: .cosine,
-        vectorDimensions: <EMBEDDING>.count
-    )
+let memory = try await Memory(at: <STORE_URL>)
+
+let results = try await memory.search(
+    <QUERY>,
+    options: .init(topK: <TOP_K>, mode: .hybrid(alpha: <ALPHA>))
 )
 
-let request = SearchRequest(
-    query: <QUERY>,
-    embedding: <EMBEDDING>,
-    vectorEnginePreference: .auto,
-    mode: .hybrid(alpha: <ALPHA>),
-    topK: <TOP_K>,
-    minScore: <MIN_SCORE>,
-    timeRange: <TIME_RANGE>
-)
+for item in results.items {
+    // item.sources contains .vector when the vector lane contributed
+    print(item.text)
+}
 
-let response = try await session.search(request)
-_ = response.results
+if let diagnostics = results.diagnostics {
+    // "hybrid(alpha=…)" when both lanes ran, "text" when the vector lane was unavailable
+    print(diagnostics.effectiveMode, diagnostics.queryEmbeddingState)
+}
+
+try await memory.close()
 ```

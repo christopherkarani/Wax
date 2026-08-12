@@ -94,19 +94,32 @@ public actor Memory {
         self.orchestrator = orchestrator
     }
 
+    /// Create or open a memory store at the given URL.
+    ///
+    /// When `config.enableVectorSearch` is true (the default), the built-in MiniLM
+    /// embedder is wired automatically on iOS 18/macOS 15+ when Wax is built with the
+    /// default `MiniLMEmbeddings` trait. On older OS versions, or if the model is
+    /// unavailable, the store falls back to text-only search; inspect
+    /// ``RAGContext/diagnostics`` on search results or ``stats()`` to see which mode
+    /// is actually in effect.
     public init(at url: URL, config: Config = .default) async throws {
         self.orchestrator = try await MemoryOrchestrator(
             at: url,
-            config: Self.makeOrchestratorConfig(config)
+            config: Self.makeOrchestratorConfig(config),
+            embedder: Self.makeAutoEmbedderIfPossible(config: config)
         )
     }
 
+    /// Create or open a memory store at the given URL with inline configuration.
+    ///
+    /// The same automatic built-in embedder wiring as ``init(at:config:)-9v8q0`` applies.
     public init(at url: URL, configure: (inout Config) -> Void) async throws {
         var config = Config.default
         configure(&config)
         self.orchestrator = try await MemoryOrchestrator(
             at: url,
-            config: Self.makeOrchestratorConfig(config)
+            config: Self.makeOrchestratorConfig(config),
+            embedder: Self.makeAutoEmbedderIfPossible(config: config)
         )
     }
 
@@ -182,7 +195,7 @@ public actor Memory {
             .ifAvailable
         }
 
-        return try await orchestrator.recall(
+        let execution = try await orchestrator.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
@@ -190,6 +203,13 @@ public actor Memory {
             topK: options.topK,
             mode: directMode
         )
+        var results = execution.context
+        results.diagnostics = RAGContext.Diagnostics(
+            requestedMode: execution.requestedModeSummary,
+            effectiveMode: execution.effectiveModeSummary,
+            queryEmbeddingState: RAGContext.QueryEmbeddingState(execution.queryEmbeddingState)
+        )
+        return results
     }
 
     /// Search with inline option customization.
@@ -235,6 +255,75 @@ public actor Memory {
     /// Close the memory handle and release resources.
     public func close() async throws {
         try await orchestrator.close()
+    }
+
+    /// Snapshot of memory health and retrieval configuration.
+    public struct Stats: Sendable, Equatable {
+        /// Total frames in the store.
+        public var frameCount: UInt64
+        /// Frames written but not yet committed to durable storage.
+        public var pendingFrames: UInt64
+        /// Whether the vector index is enabled for this store.
+        public var vectorSearchEnabled: Bool
+        /// Whether a query-time embedding provider is configured.
+        public var queryEmbedderConfigured: Bool
+        /// Whether query embedding is currently paused by the timeout circuit breaker.
+        public var queryEmbeddingCircuitOpen: Bool
+        /// Identity of the configured embedding provider, if any.
+        public var embedderIdentity: EmbeddingIdentity?
+
+        public init(
+            frameCount: UInt64,
+            pendingFrames: UInt64,
+            vectorSearchEnabled: Bool,
+            queryEmbedderConfigured: Bool,
+            queryEmbeddingCircuitOpen: Bool,
+            embedderIdentity: EmbeddingIdentity?
+        ) {
+            self.frameCount = frameCount
+            self.pendingFrames = pendingFrames
+            self.vectorSearchEnabled = vectorSearchEnabled
+            self.queryEmbedderConfigured = queryEmbedderConfigured
+            self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
+            self.embedderIdentity = embedderIdentity
+        }
+    }
+
+    /// Health snapshot: store counts, vector status, and query-embedding circuit state.
+    ///
+    /// Use this to verify that semantic search is actually active — for example after
+    /// opening a store on a platform where the built-in embedder is unavailable.
+    public func stats() async -> Stats {
+        let runtime = await orchestrator.runtimeStats()
+        return Stats(
+            frameCount: runtime.frameCount,
+            pendingFrames: runtime.pendingFrames,
+            vectorSearchEnabled: runtime.vectorSearchEnabled,
+            queryEmbedderConfigured: runtime.queryEmbedderConfigured,
+            queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
+            embedderIdentity: runtime.embedderIdentity
+        )
+    }
+
+    /// Builds the default on-device embedder for the no-embedder initializers when vector
+    /// search is requested. Returns nil (text-only fallback) on unsupported OS versions,
+    /// when the `MiniLMEmbeddings` trait is compiled out, or when the model fails to load.
+    private static func makeAutoEmbedderIfPossible(config: Config) async -> (any EmbeddingProvider)? {
+        guard config.enableVectorSearch else { return nil }
+        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+        if #available(macOS 15.0, iOS 18.0, *) {
+            do {
+                return try await BuiltInEmbeddings.make(.miniLM)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "automatic MiniLM embedder setup",
+                    fallback: "text-only search"
+                )
+            }
+        }
+        #endif
+        return nil
     }
 
     private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {

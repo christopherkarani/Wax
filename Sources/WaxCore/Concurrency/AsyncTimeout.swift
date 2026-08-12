@@ -38,8 +38,12 @@ package enum AsyncTimeout {
                 } catch {
                     return
                 }
-                operationTask.cancel()
+                // Resume BEFORE cancelling: cancelling first lets a cooperatively
+                // cancellable operation complete with CancellationError, and the
+                // watcher task (running on another executor thread) can then win the
+                // once-only resume race — misclassifying a timeout as a cancellation.
                 _ = once.resume(throwing: TimeoutError(operation: String(describing: name), timeout: timeout))
+                operationTask.cancel()
                 cancels.cancelWatcher()
             }
 

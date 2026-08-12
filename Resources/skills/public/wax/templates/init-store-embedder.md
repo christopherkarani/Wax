@@ -1,5 +1,5 @@
 Template: Initialize Store + Embedder
-Goal: Open or create a Wax store and wire an embedder for ingest + recall.
+Goal: Open or create a Wax store and wire an embedder for ingest + search.
 
 Placeholders:
 - <STORE_URL>
@@ -12,9 +12,8 @@ Placeholders:
 
 Steps:
 1. Build the store URL.
-2. Configure the orchestrator.
-3. Create the embedder (custom or MiniLM).
-4. Open the MemoryOrchestrator.
+2. Create the embedder (custom or built-in MiniLM).
+3. Open the Memory facade with the embedder.
 
 Swift Skeleton:
 ```swift
@@ -37,21 +36,24 @@ struct <EMBEDDER_TYPE>: EmbeddingProvider {
 }
 
 let storeURL = <STORE_URL>
-var config = OrchestratorConfig.default
-<CONFIG_OVERRIDES>
-
-let embedder = <EMBEDDER_TYPE>()
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: config,
-    embedder: embedder
-)
+let memory = try await Memory(at: storeURL, embedding: <EMBEDDER_TYPE>()) { config in
+    <CONFIG_OVERRIDES>
+}
 ```
 
-Alternative (MiniLM):
+Alternative (built-in MiniLM, throws when unavailable):
 ```swift
 import Wax
 
 let storeURL = <STORE_URL>
-let orchestrator = try await MemoryOrchestrator.openMiniLM(at: storeURL)
+let memory = try await Memory(at: storeURL, builtInEmbedding: .miniLM)
+```
+
+Alternative (automatic: built-in MiniLM when the platform supports it, text-only otherwise):
+```swift
+import Wax
+
+let storeURL = <STORE_URL>
+let memory = try await Memory(at: storeURL)
+// Verify: await memory.stats().queryEmbedderConfigured
 ```

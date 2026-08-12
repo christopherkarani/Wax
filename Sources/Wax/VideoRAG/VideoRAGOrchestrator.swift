@@ -520,6 +520,7 @@ package actor VideoRAGOrchestrator {
 
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
+            try await session.removeVector(frameId: frameId)
         }
         try await session.commit()
         try await rebuildIndex()
@@ -527,6 +528,18 @@ package actor VideoRAGOrchestrator {
 
     package func flush() async throws {
         try await session.commit()
+    }
+
+    /// Removes vector-index entries for a superseded root and its segment frames.
+    /// Without this, superseded keyframe vectors stay searchable as ghost hits.
+    private func removeVectorsForRetiredTree(_ rootId: UInt64, videoID: VideoID) async throws {
+        var ids: [UInt64] = [rootId]
+        if let segmentIds = index.segmentIdsByVideoID[videoID] {
+            ids.append(contentsOf: segmentIds)
+        }
+        for frameId in ids {
+            try await session.removeVector(frameId: frameId)
+        }
     }
 
     // MARK: - Ingest internals
@@ -583,6 +596,7 @@ package actor VideoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            try await removeVectorsForRetiredTree(previousRoot, videoID: videoID)
         }
     }
 
@@ -647,6 +661,7 @@ package actor VideoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            try await removeVectorsForRetiredTree(previousRoot, videoID: videoID)
         }
     }
     #endif
