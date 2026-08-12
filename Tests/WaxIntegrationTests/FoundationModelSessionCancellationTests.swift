@@ -278,11 +278,13 @@ struct FoundationModelSessionCancellationTests {
             let (chunkSignal, chunkContinuation) = AsyncStream.makeStream(of: String.self)
             let consume = Task {
                 var chunks: [String] = []
-                for try await chunk in stream {
-                    chunks.append(chunk)
-                    if chunks.count == 1 {
-                        chunkContinuation.yield(chunk)
-                        chunkContinuation.finish()
+                for try await event in stream {
+                    if case .content(let chunk) = event {
+                        chunks.append(chunk)
+                        if chunks.count == 1 {
+                            chunkContinuation.yield(chunk)
+                            chunkContinuation.finish()
+                        }
                     }
                 }
                 return chunks

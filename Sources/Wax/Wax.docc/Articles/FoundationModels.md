@@ -126,8 +126,15 @@ let collected = try await session.streamResponseAndCollect(to: "Summarize my pre
 // collected.content is the full assistant text; both sides persist per policy.
 ```
 
-Raw ``streamResponse(to:options:)`` still persists only the user turn (partial tokens are
-not written as assistant memory).
+``streamResponse(to:options:)`` returns an owning ``WaxGenerationStream`` of
+``WaxGenerationStream/Event`` values (``.content`` snapshots, then ``.completed`` with
+accounting). The generation lease is held until the stream finishes, fails, is cancelled,
+or is dropped. A second concurrent stream fails with ``WaxError/writerBusy``; non-streaming
+``respond`` calls still wait in FIFO order.
+
+Persistence follows the stream lifecycle: nothing is stored before the first ``.content``;
+the user turn is stored on that first token when policy requires it; the assistant turn is
+stored only on normal completion. Cancellation or failure never writes assistant text.
 
 ## Availability and reset
 
@@ -195,7 +202,9 @@ let session = try await Memory.openFoundationModelsSession(
 
 - The public entry point is always ``Memory``. Package-only orchestrators stay internal.
 - Memory tools and session adapters are availability-gated to Foundation Models platforms.
-- Streaming via ``WaxFoundationModelSession/streamResponse(to:options:)`` persists the user
-  turn when configured, but does not auto-persist partial assistant tokens; use
-  ``streamResponseAndCollect(to:options:)`` when you want full-turn persistence.
+- Streaming via ``WaxFoundationModelSession/streamResponse(to:options:)`` returns
+  ``WaxGenerationStream``, which owns the generation lease and persists the user turn
+  only after the first token. Assistant text is persisted on normal completion; use
+  ``streamResponseAndCollect(to:options:)`` to consume that same stream to a
+  ``WaxFMResponse``. Concurrent streams fail with ``WaxError/writerBusy``.
 - Keep secrets out of memory; Wax stores durable text, not credentials.

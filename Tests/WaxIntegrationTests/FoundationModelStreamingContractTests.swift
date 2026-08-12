@@ -1,0 +1,379 @@
+#if canImport(FoundationModels)
+import Foundation
+import FoundationModels
+import Testing
+@testable import Wax
+
+@Suite("FoundationModelStreamingContractTests")
+struct FoundationModelStreamingContractTests {
+    @Test
+    func normalConsumptionEmitsContentThenCompletedAndPersistsAfterFirstToken() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator()
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-stream-normal-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            var contents: [String] = []
+            var completed: WaxFMResponse<String>?
+            for try await event in stream {
+                switch event {
+                case .content(let text):
+                    #expect(completed == nil, "content must arrive before completed")
+                    contents.append(text)
+                case .completed(let response):
+                    completed = response
+                }
+            }
+
+            #expect(!contents.isEmpty)
+            let response = try #require(completed)
+            #expect(response.content.contains(marker))
+            #expect(response.didPersistUser)
+            #expect(response.didPersistAssistant)
+            #expect(try await countFrames(memory, query: marker, role: "user") == 1)
+            #expect(try await countFrames(memory, query: "reply:", role: "assistant") >= 1)
+
+            let followUp = try await withBoundedTimeout(description: "respond after normal stream") {
+                try await session.respond(to: "after-normal-stream")
+            }
+            #expect(followUp.contains("after-normal-stream"))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func cancellationBeforeFirstOutputPersistsNothingAndReleasesLease() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(pauseBeforeFirstChunk: true)
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-stream-pre-output-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            let consume = Task {
+                for try await event in stream {
+                    _ = event
+                }
+            }
+            try await generator.waitUntilHoldingBeforeFirstChunk()
+            #expect(try await countFrames(memory, query: marker, role: "user") == 0)
+
+            consume.cancel()
+            do {
+                try await consume.value
+            } catch is CancellationError {
+            } catch {
+                // Stream termination may surface as a wrapped cancellation.
+            }
+
+            #expect(try await countFrames(memory, query: marker, role: "user") == 0)
+            #expect(try await countFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            let followUp = try await withBoundedTimeout(description: "respond after pre-output cancel") {
+                try await session.respond(to: "after-pre-output-cancel")
+            }
+            #expect(followUp.contains("after-pre-output-cancel"))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func cancellationAfterFirstOutputPersistsUserOnly() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(blockUntilCancelled: true)
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-stream-post-output-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            let (chunkSignal, chunkContinuation) = AsyncStream.makeStream(of: String.self)
+            let consume = Task {
+                for try await event in stream {
+                    if case .content(let text) = event {
+                        chunkContinuation.yield(text)
+                        chunkContinuation.finish()
+                    }
+                }
+            }
+
+            let firstChunk = try await withBoundedTimeout(description: "first stream content") {
+                var received: String?
+                for await chunk in chunkSignal {
+                    received = chunk
+                    break
+                }
+                return received
+            }
+            #expect(firstChunk != nil)
+            try await generator.waitUntilGenerating()
+
+            consume.cancel()
+            do {
+                try await consume.value
+            } catch is CancellationError {
+            } catch {
+            }
+
+            try await memory.flush()
+            #expect(try await countFrames(memory, query: marker, role: "user") == 1)
+            #expect(try await countFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            let followUp = try await withBoundedTimeout(description: "respond after post-output cancel") {
+                try await session.respond(to: "after-post-output-cancel")
+            }
+            #expect(followUp.contains("after-post-output-cancel"))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func droppingStreamReleasesLeaseWithoutPersistingUnansweredPrompt() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(pauseBeforeFirstChunk: true)
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-stream-drop-\(UUID().uuidString)"
+
+            var stream: WaxGenerationStream? = try await session.streamResponse(to: marker)
+            try await generator.waitUntilHoldingBeforeFirstChunk()
+            #expect(try await countFrames(memory, query: marker, role: "user") == 0)
+            stream = nil
+
+            let followUp = try await withBoundedTimeout(description: "respond after drop") {
+                try await session.respond(to: "after-stream-drop")
+            }
+            #expect(followUp.contains("after-stream-drop"))
+            #expect(try await countFrames(memory, query: marker, role: "user") == 0)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func guardrailFailureAfterFirstTokenPersistsUserNotAssistant() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(streamFailure: .afterFirstChunk)
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-stream-guardrail-\(UUID().uuidString)"
+
+            let stream = try await session.streamResponse(to: marker)
+            var sawContent = false
+            do {
+                for try await event in stream {
+                    if case .content = event {
+                        sawContent = true
+                    }
+                }
+                Issue.record("guardrail failure must throw")
+            } catch is ControllableFoundationModelGuardrailError {
+            } catch {
+                Issue.record("expected ControllableFoundationModelGuardrailError, got \(error)")
+            }
+            #expect(sawContent)
+
+            try await memory.flush()
+            #expect(try await countFrames(memory, query: marker, role: "user") == 1)
+            #expect(try await countFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            let followUp = try await withBoundedTimeout(description: "respond after guardrail") {
+                try await session.respond(to: "after-guardrail")
+            }
+            #expect(followUp.contains("after-guardrail"))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func simultaneousStreamRequestThrowsGenerationInProgress() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(delay: .milliseconds(80))
+            let session = makeStreamingSession(
+                memory: memory,
+                generator: generator,
+                persistence: .none
+            )
+
+            let stream = try await session.streamResponse(to: "stream-A")
+            do {
+                _ = try await session.streamResponse(to: "stream-B")
+                Issue.record("second stream must fail while the first is active")
+            } catch let error as WaxError {
+                guard case .writerBusy = error else {
+                    Issue.record("expected WaxError.writerBusy, got \(error)")
+                    return
+                }
+            } catch {
+                Issue.record("expected WaxError.writerBusy, got \(error)")
+            }
+
+            var events = 0
+            for try await _ in stream {
+                events += 1
+            }
+            #expect(events >= 1)
+
+            let after = try await session.streamResponse(to: "stream-C")
+            var afterEvents = 0
+            for try await _ in after {
+                afterEvents += 1
+            }
+            #expect(afterEvents >= 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func secondIteratorIsInvalidated() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator()
+            let session = makeStreamingSession(
+                memory: memory,
+                generator: generator,
+                persistence: .none
+            )
+
+            let stream = try await session.streamResponse(to: "iterator-once")
+            var first = stream.makeAsyncIterator()
+            var second = stream.makeAsyncIterator()
+
+            let firstEvent = try await first.next()
+            #expect(firstEvent != nil)
+
+            do {
+                _ = try await second.next()
+                Issue.record("second iterator must be invalidated")
+            } catch let error as WaxError {
+                guard case .invalidConfiguration = error else {
+                    Issue.record("expected invalidConfiguration, got \(error)")
+                    return
+                }
+            } catch {
+                Issue.record("expected WaxError.invalidConfiguration, got \(error)")
+            }
+
+            while try await first.next() != nil {}
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func streamResponseAndCollectUsesOwningStreamPersistenceOnCancel() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(blockUntilCancelled: true)
+            let session = makeStreamingSession(memory: memory, generator: generator)
+            let marker = "unique-collect-cancel-\(UUID().uuidString)"
+
+            let task = Task {
+                try await session.streamResponseAndCollect(to: marker)
+            }
+            try await generator.waitUntilGenerating()
+            try await waitUntilFrameCount(memory, query: marker, role: "user", equals: 1)
+            task.cancel()
+            do {
+                _ = try await task.value
+            } catch is CancellationError {
+            } catch {
+            }
+
+            try await memory.flush()
+            #expect(try await countFrames(memory, query: marker, role: "user") == 1)
+            #expect(try await countFrames(memory, query: "reply:", role: "assistant") == 0)
+
+            let followUp = try await withBoundedTimeout(description: "respond after collect cancel") {
+                try await session.respond(to: "after-collect-cancel")
+            }
+            #expect(followUp.contains("after-collect-cancel"))
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private func makeStreamingSession(
+    memory: Memory,
+    generator: ControllableFoundationModelGenerator,
+    persistence: FoundationModelsMemorySessionConfig.PersistencePolicy = .userAndAssistant
+) -> WaxFoundationModelSession {
+    var configuration = FoundationModelsMemorySessionConfig.default
+    configuration.embeddingPolicy = .never
+    configuration.persistencePolicy = persistence
+    configuration.includeMemoryTools = false
+    configuration.contextStrategy = .promptAugmentation
+    return WaxFoundationModelSession(
+        memory: memory,
+        configuration: configuration,
+        generator: generator
+    )
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private func countFrames(
+    _ memory: Memory,
+    query: String,
+    role: String
+) async throws -> Int {
+    let hits = try await memory.search(query, options: .init(topK: 10, mode: .textOnly))
+    return hits.items.filter { item in
+        item.metadata["wax.role"] == role && item.text.contains(query)
+    }.count
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private func waitUntilFrameCount(
+    _ memory: Memory,
+    query: String,
+    role: String,
+    equals expected: Int,
+    timeout: Duration = .seconds(5)
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if try await countFrames(memory, query: query, role: role) == expected {
+            return
+        }
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    let actual = try await countFrames(memory, query: query, role: role)
+    throw FoundationModelGeneratorWaitTimeout(
+        "frame count \(role)/\(query) == \(expected) (got \(actual))"
+    )
+}
+#endif

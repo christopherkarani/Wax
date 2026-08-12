@@ -12,12 +12,22 @@ struct FoundationModelGeneratorWaitTimeout: Error, CustomStringConvertible {
     }
 }
 
+struct ControllableFoundationModelGuardrailError: Error, Equatable {}
+
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, @unchecked Sendable {
+    enum StreamFailurePoint: Sendable {
+        case none
+        case beforeFirstChunk
+        case afterFirstChunk
+    }
+
     private let lock = NSLock()
     private let delay: Duration
     private let blockUntilCancelled: Bool
+    private let streamFailure: StreamFailurePoint
     private var remainingPersistenceHolds: Int
+    private var remainingFirstChunkHolds: Int
     private var inFlight = 0
     private var peakInFlight = 0
     private var completed: [String] = []
@@ -25,15 +35,21 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private var observedCancellation = false
     private var holdingBeforePersistence = false
     private var persistenceHoldContinuation: CheckedContinuation<Void, Never>?
+    private var holdingBeforeFirstChunk = false
+    private var firstChunkHoldContinuation: CheckedContinuation<Void, Never>?
 
     init(
         delay: Duration = .milliseconds(20),
         blockUntilCancelled: Bool = false,
-        pauseBeforePersistence: Bool = false
+        pauseBeforePersistence: Bool = false,
+        pauseBeforeFirstChunk: Bool = false,
+        streamFailure: StreamFailurePoint = .none
     ) {
         self.delay = delay
         self.blockUntilCancelled = blockUntilCancelled
+        self.streamFailure = streamFailure
         self.remainingPersistenceHolds = pauseBeforePersistence ? 1 : 0
+        self.remainingFirstChunkHolds = pauseBeforeFirstChunk ? 1 : 0
     }
 
     func maxInFlight() -> Int {
@@ -60,6 +76,10 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         lock.withLock { holdingBeforePersistence }
     }
 
+    func isHoldingBeforeFirstChunk() -> Bool {
+        lock.withLock { holdingBeforeFirstChunk }
+    }
+
     func waitUntilGenerating(timeout: Duration = .seconds(5)) async throws {
         try await pollFlag(timeout: timeout, description: "isGenerating") { isGenerating() }
     }
@@ -67,6 +87,12 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     func waitUntilPersistenceHold(timeout: Duration = .seconds(5)) async throws {
         try await pollFlag(timeout: timeout, description: "persistence hold") {
             isHoldingBeforePersistence()
+        }
+    }
+
+    func waitUntilHoldingBeforeFirstChunk(timeout: Duration = .seconds(5)) async throws {
+        try await pollFlag(timeout: timeout, description: "first-chunk hold") {
+            isHoldingBeforeFirstChunk()
         }
     }
 
@@ -122,9 +148,17 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    try await self.holdBeforeFirstChunkIfNeeded()
+                    try Task.checkCancellation()
+                    if self.streamFailure == .beforeFirstChunk {
+                        throw ControllableFoundationModelGuardrailError()
+                    }
                     // Yield a prefix before the underlying generate so tests can
                     // consume a chunk, then cancel while generation is still open.
                     continuation.yield("partial:\(prompt)")
+                    if self.streamFailure == .afterFirstChunk {
+                        throw ControllableFoundationModelGuardrailError()
+                    }
                     let text = try await self.generateText(prompt: prompt, options: options)
                     continuation.yield(text)
                     continuation.finish()
@@ -136,6 +170,42 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
                 task.cancel()
             }
         }
+    }
+
+    private func holdBeforeFirstChunkIfNeeded() async throws {
+        let shouldHold = lock.withLock {
+            guard remainingFirstChunkHolds > 0 else { return false }
+            remainingFirstChunkHolds -= 1
+            return true
+        }
+        guard shouldHold else { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                self.lock.lock()
+                if Task.isCancelled {
+                    self.holdingBeforeFirstChunk = true
+                    self.lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                self.holdingBeforeFirstChunk = true
+                self.firstChunkHoldContinuation = continuation
+                self.lock.unlock()
+            }
+        } onCancel: {
+            self.resumeFirstChunkHold()
+        }
+        lock.withLock { holdingBeforeFirstChunk = false }
+        try Task.checkCancellation()
+    }
+
+    private func resumeFirstChunkHold() {
+        let pending: CheckedContinuation<Void, Never>?
+        lock.lock()
+        pending = firstChunkHoldContinuation
+        firstChunkHoldContinuation = nil
+        lock.unlock()
+        pending?.resume()
     }
 
     func holdBeforePersistence() async throws {

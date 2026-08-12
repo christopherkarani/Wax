@@ -33,6 +33,11 @@ public struct WaxFMResponse<Content: Sendable>: Sendable {
     }
 }
 
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+extension WaxFMResponse: Equatable where Content: Equatable {}
+
 /// High-level availability of Apple's on-device Foundation Models runtime.
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
@@ -105,6 +110,10 @@ public actor WaxFoundationModelSession {
     private let ownsMemory: Bool
     private let generator: any WaxFoundationModelGenerating
     private let generationGate = AsyncMutex()
+    /// True while an owning ``WaxGenerationStream`` holds the generation lease.
+    /// Concurrent ``streamResponse`` callers fail with ``WaxError/writerBusy``
+    /// instead of queueing; non-streaming ``respond`` calls still FIFO-wait.
+    private var isStreaming = false
 
     /// Underlying Foundation Models session. Use for advanced multi-turn control.
     public nonisolated let languageModelSession: LanguageModelSession
@@ -365,42 +374,43 @@ public actor WaxFoundationModelSession {
         }
     }
 
-    /// Streams a text response. User turns are persisted when configured; assistant
-    /// persistence is skipped because the full response is not available until collection.
+    /// Streams a text response as an owning ``WaxGenerationStream``.
+    ///
+    /// The generation lease is held until the stream completes, fails, is cancelled,
+    /// or is dropped. Persistence: nothing before the first ``WaxGenerationStream/Event/content``;
+    /// user on first content (if policy requires it); assistant only on normal completion.
+    /// A second concurrent ``streamResponse`` fails with ``WaxError/writerBusy``.
     public func streamResponse(
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
-    ) async throws -> WaxGenerationLeaseStream {
+    ) async throws -> WaxGenerationStream {
+        if isStreaming {
+            throw WaxError.writerBusy
+        }
+        isStreaming = true
         await generationGate.lock()
         let lease = GenerationLease(gate: generationGate)
         do {
             try Task.checkCancellation()
             let prepared = try await preparePromptDetailed(for: userPrompt)
-            if configuration.persistencePolicy.shouldPersistUser {
-                _ = try await persistUserTracked(userPrompt)
-            }
             let turn = invocationForTurn(prepared: prepared)
             let inner = generator.streamText(prompt: turn.prompt, options: options)
-            return WaxGenerationLeaseStream(
-                stream: AsyncThrowingStream { continuation in
-                    let task = Task {
-                        defer { lease.release() }
-                        do {
-                            for try await element in inner {
-                                try Task.checkCancellation()
-                                continuation.yield(element)
-                            }
-                            continuation.finish()
-                        } catch {
-                            continuation.finish(throwing: error)
-                        }
-                    }
-                    continuation.onTermination = { _ in
-                        task.cancel()
-                    }
-                }
-            )
+            let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
+            let producer = Task {
+                await self.runStreamingProducer(
+                    userPrompt: userPrompt,
+                    prepared: prepared,
+                    inner: inner,
+                    continuation: continuation,
+                    lease: lease
+                )
+            }
+            continuation.onTermination = { _ in
+                producer.cancel()
+            }
+            return WaxGenerationStream(stream: stream, cancelProducer: { producer.cancel() })
         } catch {
+            isStreaming = false
             lease.release()
             throw error
         }
@@ -408,30 +418,15 @@ public actor WaxFoundationModelSession {
 
     /// Streams a text response, collects the full assistant text, and persists both sides
     /// of the turn when the session persistence policy allows.
+    ///
+    /// Consumes ``streamResponse(to:options:)`` so collection shares the owning stream's
+    /// persistence and lease semantics.
     @discardableResult
     public func streamResponseAndCollect(
         to userPrompt: String,
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<String> {
-        try await withGenerationLease {
-            let prepared = try await self.preparePromptDetailed(for: userPrompt)
-            let turn = self.invocationForTurn(prepared: prepared)
-            let content = try await WaxGenerationLeaseStream(
-                stream: self.generator.streamText(prompt: turn.prompt, options: options)
-            ).collect()
-            let persistence = try await self.persistTurnTracked(
-                userPrompt: userPrompt,
-                assistantResponse: content
-            )
-            return WaxFMResponse(
-                content: content,
-                recalledItemCount: prepared.recalledItemCount,
-                includedItemCount: prepared.includedItemCount,
-                truncatedByBudget: prepared.truncatedByBudget,
-                didPersistUser: persistence.didPersistUser,
-                didPersistAssistant: persistence.didPersistAssistant
-            )
-        }
+        try await streamResponse(to: userPrompt, options: options).collect()
     }
 
     /// Returns a **new** session wrapping the same ``Memory`` and configuration, with a
@@ -525,6 +520,62 @@ public actor WaxFoundationModelSession {
         }
     }
 
+    /// Produces ``WaxGenerationStream/Event`` values, persists on the stream lifecycle,
+    /// and releases the generation lease in `defer`.
+    private func runStreamingProducer(
+        userPrompt: String,
+        prepared: PreparedMemoryPrompt,
+        inner: AsyncThrowingStream<String, Error>,
+        continuation: AsyncThrowingStream<WaxGenerationStream.Event, Error>.Continuation,
+        lease: GenerationLease
+    ) async {
+        defer {
+            isStreaming = false
+            lease.release()
+        }
+
+        var lastContent = ""
+        var sawContent = false
+        var didPersistUser = false
+
+        do {
+            for try await chunk in inner {
+                try Task.checkCancellation()
+                if !sawContent {
+                    sawContent = true
+                    if configuration.persistencePolicy.shouldPersistUser {
+                        didPersistUser = try await persistUserTracked(userPrompt)
+                    }
+                }
+                lastContent = chunk
+                continuation.yield(.content(chunk))
+            }
+
+            try Task.checkCancellation()
+
+            var didPersistAssistant = false
+            if configuration.persistencePolicy.shouldPersistAssistant {
+                didPersistAssistant = try await persistAssistantTracked(lastContent)
+            }
+
+            continuation.yield(
+                .completed(
+                    WaxFMResponse(
+                        content: lastContent,
+                        recalledItemCount: prepared.recalledItemCount,
+                        includedItemCount: prepared.includedItemCount,
+                        truncatedByBudget: prepared.truncatedByBudget,
+                        didPersistUser: didPersistUser,
+                        didPersistAssistant: didPersistAssistant
+                    )
+                )
+            )
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: error)
+        }
+    }
+
     private func persistTurn(userPrompt: String, assistantResponse: String) async throws {
         _ = try await persistTurnTracked(
             userPrompt: userPrompt,
@@ -550,11 +601,7 @@ public actor WaxFoundationModelSession {
         try Task.checkCancellation()
 
         if configuration.persistencePolicy.shouldPersistAssistant {
-            let trimmedResponse = assistantResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedResponse.isEmpty {
-                try await memory.save(trimmedResponse, metadata: configuration.assistantMetadata)
-                didPersistAssistant = true
-            }
+            didPersistAssistant = try await persistAssistantTracked(assistantResponse)
         }
 
         return (didPersistUser, didPersistAssistant)
@@ -569,6 +616,14 @@ public actor WaxFoundationModelSession {
         let trimmedPrompt = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return false }
         try await memory.save(trimmedPrompt, metadata: configuration.userMetadata)
+        return true
+    }
+
+    @discardableResult
+    private func persistAssistantTracked(_ assistantResponse: String) async throws -> Bool {
+        let trimmedResponse = assistantResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResponse.isEmpty else { return false }
+        try await memory.save(trimmedResponse, metadata: configuration.assistantMetadata)
         return true
     }
 

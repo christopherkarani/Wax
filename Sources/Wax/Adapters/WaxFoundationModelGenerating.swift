@@ -7,8 +7,8 @@ import WaxCore
 ///
 /// Production uses ``LiveLanguageModelGenerator`` (Apple's ``LanguageModelSession``).
 /// Tests inject a controllable fake so concurrency and cancellation can be asserted
-/// without the live on-device model. Task 8 should keep this seam when introducing
-/// ``WaxFoundationModelStream``.
+/// without the live on-device model. Streaming lifecycle and persistence live on
+/// ``WaxGenerationStream``.
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
@@ -40,35 +40,6 @@ package protocol WaxFoundationModelGenerating: Sendable {
 @available(watchOS, unavailable)
 extension WaxFoundationModelGenerating {
     package func holdBeforePersistence() async throws {}
-}
-
-/// Thin stream that forwards text snapshots. Task 7 holds the session generation
-/// lease until this stream finishes, fails, or is cancelled. Task 8 replaces it
-/// with ``WaxFoundationModelStream`` (events + persistence lifecycle).
-@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
-@available(tvOS, unavailable)
-@available(watchOS, unavailable)
-public struct WaxGenerationLeaseStream: AsyncSequence, Sendable {
-    public typealias Element = String
-    public typealias Failure = Error
-
-    private let stream: AsyncThrowingStream<String, Error>
-
-    package init(stream: AsyncThrowingStream<String, Error>) {
-        self.stream = stream
-    }
-
-    public func makeAsyncIterator() -> AsyncThrowingStream<String, Error>.Iterator {
-        stream.makeAsyncIterator()
-    }
-
-    public func collect() async throws -> String {
-        var last = ""
-        for try await chunk in stream {
-            last = chunk
-        }
-        return last
-    }
 }
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)

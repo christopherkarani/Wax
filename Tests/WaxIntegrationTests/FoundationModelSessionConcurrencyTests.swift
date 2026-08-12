@@ -65,8 +65,10 @@ struct FoundationModelSessionConcurrencyTests {
             #expect(await generator.completedPrompts().isEmpty)
 
             var chunks: [String] = []
-            for try await chunk in stream {
-                chunks.append(chunk)
+            for try await event in stream {
+                if case .content(let chunk) = event {
+                    chunks.append(chunk)
+                }
             }
             #expect(!chunks.isEmpty)
             _ = try await second.value
