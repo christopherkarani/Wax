@@ -33,6 +33,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private nonisolated let model: any MiniLMEmbeddingModel
     

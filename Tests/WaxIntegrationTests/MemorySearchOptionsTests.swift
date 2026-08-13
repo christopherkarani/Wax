@@ -153,6 +153,7 @@ private struct DeterministicEmbeddingProvider: EmbeddingProvider, Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         [1.0, 0.0]

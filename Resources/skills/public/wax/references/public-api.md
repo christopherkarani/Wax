@@ -76,7 +76,7 @@ Requires `config.enableStructuredMemory = true`. Otherwise throws `WaxError.feat
 - `facts(subject:predicate:systemAsOfMs:validAsOfMs:limit:) -> FactsResult` — field is `.hits`, not `.facts`
 - `edges(for:direction:predicate:systemAsOfMs:validAsOfMs:limit:) -> EdgesResult`
 
-DTOs: `Memory.EntityMatch`, `Memory.FactHit`, `Memory.FactsResult`, `Memory.FactID`, `Memory.EntityID`, `Memory.FactValue`, `Memory.FactRelation`, `Memory.Edge`, `Memory.EdgeDirection`.
+DTOs: `Memory.EntityMatch`, `Memory.FactHit`, `Memory.FactsResult` (`hits`, `wasTruncated`), `Memory.FactID`, `Memory.EntityID`, `Memory.FactValue`, `Memory.FactRelation`, `Memory.Edge`, `Memory.EdgeDirection`, `Memory.EdgesResult` (`hits`, `wasTruncated`), `Memory.MillisecondTimeRange` (`fromMs`, `toMs`; used on `FactHit.valid` / `FactHit.system`).
 
 ## PhotoMemory / VideoMemory
 
@@ -104,8 +104,9 @@ Package traits: default includes `MiniLMEmbeddings`. `traits: []` compiles no bu
 
 Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
-- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode`.
+- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `executionMode: ProviderExecutionMode` (required; protocol default is `.mayUseNetwork` so `requireOnDeviceProviders` can reject omitted/network providers), `func embed(_:) async throws -> [Float]`. On-device providers must set `.onDeviceOnly` explicitly.
 - `public protocol BatchEmbeddingProvider: EmbeddingProvider` — `func embed(batch:) async throws -> [[Float]]`.
+- `public protocol QueryAwareEmbeddingProvider: EmbeddingProvider` — `func embedQuery(_:) async throws -> [Float]` (Arctic-style query prefixes). Re-exported from `import Wax`.
 - `public struct EmbeddingIdentity` (`provider`, `model`, `dimensions`, `normalized`).
 - `public enum ProviderExecutionMode { case onDeviceOnly, mayUseNetwork }`
 
@@ -118,11 +119,12 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 When `canImport(FoundationModels)`:
 
-- `memory.foundationModelsSession(...)` — nonthrowing, does not own `Memory`, does not preflight.
+- `memory.foundationModelsSession(...)` — nonthrowing, does not own `Memory`, does not preflight. Public `WaxFoundationModelSession.init` has no `ownsMemory:`; it never closes a caller-held store.
 - `memory.makeFoundationModelsSession(...)` — preflights `WaxFoundationModelsAvailability`, prewarms, does not own `Memory`.
-- `Memory.openFoundationModelsSession(...)` — owns the store; `close()` closes `Memory`.
+- `Memory.openFoundationModelsSession(...)` — owns the store; `close()` closes `Memory`. Embedder selection is `config.embedding` only (no `embedding:` side-channel).
 - `memory.foundationModelsTools(kit:config:)` / `Memory.openFoundationModelsTools(...)` (owning `WaxFoundationModelsToolSession`).
 - Streaming: `WaxGenerationStream` of `Event.content` / `Event.completed`.
+- `languageModelSession` is package-only. Use `respond` / `streamResponse`; inspect `transcript` / `isResponding`.
 
 ## Package-only (NOT public API)
 
@@ -132,3 +134,4 @@ The following are `package`-access internals. They are used by Wax's own CLI/MCP
 - `PhotoRAGOrchestrator`, `VideoRAGOrchestrator` (use `PhotoMemory` / `VideoMemory`)
 - `WaxSession`, `Wax` actor, `SearchRequest`, `SearchResponse`, `FrameFilter`, core structured-memory types (`EntityKey`, …)
 - `MiniLMEmbedder` (use `BuiltInEmbeddings.make(.miniLM)` or `Memory.Config.embedding = .builtIn(.miniLM)` instead)
+- `WaxFoundationModelSession.languageModelSession` (use `respond` / `streamResponse`; inspect `transcript` / `isResponding`)

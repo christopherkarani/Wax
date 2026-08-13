@@ -18,7 +18,7 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 1. Use `Memory` (public actor) for text memory, retrieval, and structured entities/facts.
 2. Use `PhotoMemory` and `VideoMemory` for on-device photo and video recall. They take a `MultimodalEmbeddingProvider` (`executionMode` is `.onDeviceOnly` or `.mayUseNetwork`).
 3. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, and `WaxSession` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
-4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
+4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `QueryAwareEmbeddingProvider`, `EmbeddingIdentity`).
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
@@ -100,6 +100,7 @@ actor MyEmbedder: EmbeddingProvider {
         dimensions: 4,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         text.localizedCaseInsensitiveContains("password")

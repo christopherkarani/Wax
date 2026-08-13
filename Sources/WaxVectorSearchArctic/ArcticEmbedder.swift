@@ -28,6 +28,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private nonisolated let model: ArcticEmbeddings
 

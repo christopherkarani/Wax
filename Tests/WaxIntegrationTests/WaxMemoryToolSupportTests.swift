@@ -742,6 +742,7 @@ private struct QueryCancelEmbedder: QueryAwareEmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         let a = Float(text.utf8.count % 97) / 97.0

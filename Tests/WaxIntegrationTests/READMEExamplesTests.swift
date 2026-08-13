@@ -58,6 +58,7 @@ private actor TestReadmeEmbedder: EmbeddingProvider {
         dimensions: 384,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         // Deterministic embedding based on text hash
@@ -237,6 +238,7 @@ func readmeExampleCustomEmbeddings() async throws {
             dimensions: 384,
             normalized: true
         )
+        let executionMode: ProviderExecutionMode = .onDeviceOnly
 
         func embed(_ text: String) async throws -> [Float] {
             // Return a normalized 384-dim vector.

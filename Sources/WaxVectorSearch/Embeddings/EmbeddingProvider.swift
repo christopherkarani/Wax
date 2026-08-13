@@ -17,7 +17,10 @@ public protocol EmbeddingProvider: Sendable {
 }
 
 public extension EmbeddingProvider {
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
+    /// Safe-by-default: providers that omit `executionMode` are treated as
+    /// network-capable so ``Memory/Config-swift.struct/requireOnDeviceProviders``
+    /// can reject them. On-device providers must set `.onDeviceOnly` explicitly.
+    var executionMode: ProviderExecutionMode { .mayUseNetwork }
 }
 
 public protocol BatchEmbeddingProvider: EmbeddingProvider {

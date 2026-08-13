@@ -58,6 +58,7 @@ actor MyEmbedder: EmbeddingProvider {
         dimensions: 4,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         text.localizedCaseInsensitiveContains("password")
@@ -155,11 +156,29 @@ let results = try await memory.search("query", options: .init(topK: 10))
 |---------|-----------|--------|
 | ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)`` | Does **not** own ``Memory`` | Nonthrowing; does not preflight or prewarm |
 | ``Memory/makeFoundationModelsSession(model:instructions:additionalTools:configuration:)`` | Does **not** own ``Memory`` | Throws ``WaxFoundationModelsError/unavailable(_:)`` after ``WaxFoundationModelsAvailability`` preflight, then prewarms |
-| ``Memory/openFoundationModelsSession(at:config:embedding:model:instructions:additionalTools:sessionConfiguration:)`` | **Owns** the store | `close()` closes ``Memory``. Optional `embedding:` still maps onto `config.embedding = .custom(...)` |
+| ``Memory/openFoundationModelsSession(at:config:model:instructions:additionalTools:sessionConfiguration:)`` | **Owns** the store | `close()` closes ``Memory``. Set the embedder on `config.embedding` only |
 | ``Memory/openFoundationModelsSession(at:config:builtInEmbedding:embeddingOptions:model:instructions:additionalTools:sessionConfiguration:)`` | **Owns** the store | Sets `config.embedding = .builtIn(...)` |
 | ``Memory/openFoundationModelsTools(at:config:kit:toolConfig:)`` | **Owns** the store via ``WaxFoundationModelsToolSession`` | Prefer this over a tool array with no close handle |
 
 Replace “open a session and assume the model is ready” with `makeFoundationModelsSession` or `openFoundationModelsSession`, and check ``WaxFoundationModelsAvailability/current(model:)``.
+
+The `embedding:` argument on `openFoundationModelsSession` is removed. It was a side-channel onto `config.embedding = .custom(...)`. Pass the embedder on ``Memory/Config-swift.struct/embedding``:
+
+```swift
+var config = Memory.Config.default
+config.embedding = .custom(MyEmbedder())
+let session = try await Memory.openFoundationModelsSession(at: storeURL, config: config)
+```
+
+``WaxFoundationModelSession/init(memory:model:instructions:additionalTools:configuration:)`` never owns the store. There is no public `ownsMemory:` parameter; a caller who still holds ``Memory`` cannot construct a session that will `close()` that store. Owning sessions come only from ``Memory/openFoundationModelsSession``.
+
+`languageModelSession` was a public `LanguageModelSession` handle in 0.1.x and is `package` in 0.2.0. A public accessor would bypass the generation lease and let callers overlap Apple requests. Use ``WaxFoundationModelSession/respond(to:options:)`` / ``WaxFoundationModelSession/streamResponse(to:options:)``; inspect ``WaxFoundationModelSession/transcript`` / ``WaxFoundationModelSession/isResponding`` for status.
+
+### `EmbeddingProvider.executionMode` defaults to `.mayUseNetwork`
+
+``EmbeddingProvider/executionMode`` used to default to `.onDeviceOnly`, so ``Memory/Config-swift.struct/requireOnDeviceProviders`` (default `true`) could not reject a network embedder that omitted the property. The protocol default is now `.mayUseNetwork`. On-device providers must set `.onDeviceOnly` explicitly. Omitting the property is treated as network-capable and is rejected when `requireOnDeviceProviders` is true.
+
+``QueryAwareEmbeddingProvider`` is re-exported from `import Wax` (same as ``EmbeddingProvider``). Arctic-style query prefixes no longer require `import WaxVectorSearch`.
 
 ### Removed duplicate Foundation Models config fields
 
@@ -187,6 +206,6 @@ After: use the public ``WaxMemoryTool`` surface (and the focused remember/recall
 
 - ``Memory/foundationModelsTools(kit:config:)`` / ``Memory/foundationModelsMemoryTool(config:)`` — tools bound to an existing ``Memory`` (the handle is not owned by the tools)
 - ``Memory/openFoundationModelsTools(at:config:kit:toolConfig:)`` — owns the store; ``WaxFoundationModelsToolSession/close()`` closes ``Memory``
-- ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)``, ``Memory/makeFoundationModelsSession(model:instructions:additionalTools:configuration:)``, and ``Memory/openFoundationModelsSession(at:config:embedding:model:instructions:additionalTools:sessionConfiguration:)`` — Language Model sessions with memory tools registered according to ``FoundationModelsMemorySessionConfig/contextStrategy``
+- ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)``, ``Memory/makeFoundationModelsSession(model:instructions:additionalTools:configuration:)``, and ``Memory/openFoundationModelsSession(at:config:model:instructions:additionalTools:sessionConfiguration:)`` — Language Model sessions with memory tools registered according to ``FoundationModelsMemorySessionConfig/contextStrategy``
 
 `WaxMemoryToolKit`, `WaxMemoryToolAction`, `WaxMemoryToolConfig`, `WaxMemoryToolResult`, and the `Tool` types (``WaxMemoryTool``, ``WaxRememberTool``, ``WaxRecallTool``, ``WaxSearchTool``, ``WaxForgetTool``) remain public.

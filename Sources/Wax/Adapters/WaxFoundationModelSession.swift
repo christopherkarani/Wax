@@ -126,13 +126,37 @@ public actor WaxFoundationModelSession {
     /// Last prompt-prep accounting (updated by ``preparePromptDetailed(for:)``).
     public private(set) var lastPreparedPrompt: PreparedMemoryPrompt?
 
+    /// Creates a session that does **not** own `memory`. ``close()`` leaves the store open.
+    ///
+    /// Store-owning sessions come from ``Memory/openFoundationModelsSession``. Public
+    /// callers cannot pass `ownsMemory:` — that would let `close()` shut a store the
+    /// caller still holds.
     public init(
         memory: Memory,
         model: SystemLanguageModel = .default,
         instructions: String? = nil,
         additionalTools: [any Tool] = [],
+        configuration: FoundationModelsMemorySessionConfig = .default
+    ) {
+        self.init(
+            memory: memory,
+            model: model,
+            instructions: instructions,
+            additionalTools: additionalTools,
+            configuration: configuration,
+            ownsMemory: false
+        )
+    }
+
+    /// Designated session initializer. `ownsMemory: true` is reserved for
+    /// ``Memory/openFoundationModelsSession`` (and in-package owning factories).
+    package init(
+        memory: Memory,
+        model: SystemLanguageModel = .default,
+        instructions: String? = nil,
+        additionalTools: [any Tool] = [],
         configuration: FoundationModelsMemorySessionConfig = .default,
-        ownsMemory: Bool = false
+        ownsMemory: Bool
     ) {
         self.memory = memory
         self.model = model
@@ -201,7 +225,6 @@ public actor WaxFoundationModelSession {
         model: SystemLanguageModel = .default,
         additionalTools: [any Tool] = [],
         configuration: FoundationModelsMemorySessionConfig = .default,
-        ownsMemory: Bool = false,
         @InstructionsBuilder instructions: () throws -> Instructions
     ) rethrows {
         self.memory = memory
@@ -210,7 +233,7 @@ public actor WaxFoundationModelSession {
         self.userInstructions = nil
         self.additionalTools = additionalTools
         self.configuration = configuration
-        self.ownsMemory = ownsMemory
+        self.ownsMemory = false
 
         let tools = Self.assembleTools(
             memory: memory,
@@ -497,8 +520,7 @@ public actor WaxFoundationModelSession {
             model: model,
             instructions: instructions ?? userInstructions,
             additionalTools: additionalTools,
-            configuration: configuration,
-            ownsMemory: false
+            configuration: configuration
         )
     }
 
@@ -1076,20 +1098,19 @@ public extension Memory {
 
     /// Opens a store and returns a memory-backed Foundation Models session that **owns**
     /// the store (``WaxFoundationModelSession/close()`` closes ``Memory``).
+    ///
+    /// Embedder selection lives on `config.embedding` only. There is no `embedding:`
+    /// side-channel; pass ``Memory/EmbeddingSource/custom(_:)`` (or `.builtIn` via the
+    /// `builtInEmbedding:` overload) on ``Memory/Config-swift.struct``.
     static func openFoundationModelsSession(
         at url: URL,
         config: Config = .default,
-        embedding: (any EmbeddingProvider)? = nil,
         model: SystemLanguageModel = .default,
         instructions: String? = nil,
         additionalTools: [any Tool] = [],
         sessionConfiguration: FoundationModelsMemorySessionConfig = .default
     ) async throws -> WaxFoundationModelSession {
         try WaxFoundationModelsAvailability.preflight(.current(model: model))
-        var config = config
-        if let embedding {
-            config.embedding = .custom(embedding)
-        }
         let memory = try await Memory(at: url, config: config)
         let session = WaxFoundationModelSession(
             memory: memory,

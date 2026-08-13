@@ -603,6 +603,7 @@ private struct TestEmbedder2D: EmbeddingProvider, Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         VectorMath.normalizeL2([1.0, 0.0])

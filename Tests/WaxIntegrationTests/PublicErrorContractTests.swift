@@ -113,6 +113,7 @@ private struct NonFiniteTextEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -129,6 +130,7 @@ private struct ZeroVectorTextEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -147,6 +149,7 @@ private struct MismatchedIdentityTextEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -164,6 +167,7 @@ private struct ZeroVectorUnnormalizedTextEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: false
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text

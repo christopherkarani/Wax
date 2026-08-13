@@ -7,6 +7,7 @@ actor CountingEmbedder: EmbeddingProvider {
     nonisolated let dimensions: Int
     nonisolated let normalize: Bool
     nonisolated let identity: EmbeddingIdentity?
+    nonisolated let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private var count: Int = 0
 

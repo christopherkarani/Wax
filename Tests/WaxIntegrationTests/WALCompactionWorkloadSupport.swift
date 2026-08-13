@@ -270,6 +270,7 @@ actor WALCompactionDeterministicEmbedder: EmbeddingProvider {
     let dimensions: Int
     let normalize: Bool
     let identity: EmbeddingIdentity?
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     init(dimensions: Int, normalize: Bool = true) {
         self.dimensions = dimensions

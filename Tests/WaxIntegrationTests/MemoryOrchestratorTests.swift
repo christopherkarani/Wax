@@ -483,6 +483,7 @@ private actor RecordingBatchEmbedder: BatchEmbeddingProvider {
         dimensions: 8,
         normalized: false
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private(set) var batches: [[String]] = []
 
@@ -517,6 +518,7 @@ private final class FailOnNthEmbedder: EmbeddingProvider, @unchecked Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private let failOnCall: Int
     private let state = FailOnNthEmbedderState()
@@ -543,6 +545,7 @@ private final class RejectConcurrentEmbedder: EmbeddingProvider, @unchecked Send
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private let state = RejectConcurrentEmbedderState()
 
@@ -595,6 +598,7 @@ private struct TestEmbedder: EmbeddingProvider, Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         let a = Float(text.utf8.count % 97) / 97.0

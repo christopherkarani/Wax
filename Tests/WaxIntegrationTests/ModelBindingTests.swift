@@ -9,6 +9,7 @@ private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int
     let normalize: Bool
     let identity: EmbeddingIdentity?
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
     private let vector: [Float]
 
     init(

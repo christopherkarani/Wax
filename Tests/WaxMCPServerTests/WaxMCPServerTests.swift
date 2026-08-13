@@ -5765,6 +5765,7 @@ private actor HangingCountingEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -5777,6 +5778,7 @@ private actor IdentitylessEmbedder: EmbeddingProvider {
     let dimensions: Int = 2
     let normalize: Bool = true
     let identity: EmbeddingIdentity? = nil
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -5793,6 +5795,7 @@ private struct MCPTestDeterministicEmbedder: EmbeddingProvider, Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         let a = Float(text.utf8.count % 97) / 97.0

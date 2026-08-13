@@ -1,7 +1,7 @@
 import Foundation
 import Wax
 
-actor ContractEmbedder: EmbeddingProvider {
+actor ContractEmbedder: QueryAwareEmbeddingProvider {
     let dimensions = 4
     let normalize = true
     let identity: EmbeddingIdentity? = .init(
@@ -10,11 +10,16 @@ actor ContractEmbedder: EmbeddingProvider {
         dimensions: 4,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         text.localizedCaseInsensitiveContains("password")
             ? [1, 0, 0, 0]
             : [0, 1, 0, 0]
+    }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        try await embed(text)
     }
 }
 

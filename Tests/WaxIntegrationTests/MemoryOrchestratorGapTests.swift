@@ -48,6 +48,7 @@ private struct TestEmbedder: EmbeddingProvider, Sendable {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         // Simple deterministic embedding
@@ -124,6 +125,7 @@ private actor WhitespaceRecallCountingEmbedder: EmbeddingProvider {
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     private var calls = 0
 

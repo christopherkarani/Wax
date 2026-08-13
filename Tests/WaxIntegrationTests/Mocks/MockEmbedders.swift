@@ -43,6 +43,7 @@ final class WrongCountBatchEmbedder: BatchEmbeddingProvider, @unchecked Sendable
         dimensions: 2,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -64,6 +65,7 @@ struct WrongDimensionTextEmbedder: EmbeddingProvider, Sendable {
         dimensions: 4,
         normalized: false
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         _ = text
@@ -108,6 +110,7 @@ actor HangingCountingEmbedder: EmbeddingProvider {
     let dimensions: Int
     let normalize: Bool
     let identity: EmbeddingIdentity?
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
     private var calls: Int = 0
 
     init(

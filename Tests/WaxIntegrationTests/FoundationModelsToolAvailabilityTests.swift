@@ -210,8 +210,29 @@ func foundationModelsSessionFactoryBindsFocusedMemoryToolsByDefault() async thro
         #expect(recalled.query == "theme preference" || !recalled.query.isEmpty)
 
         try await session.close()
-        // Caller-provided Memory stays open after session.close().
+        // Caller-provided Memory stays open after session close().
         try await memory.save("still open after session close")
+        try await memory.close()
+    }
+}
+
+@Test
+func foundationModelsPublicInitCannotOwnCallerHeldMemory() async throws {
+    guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(at: url) { config in
+            config.enableVectorSearch = false
+        }
+        // Public designated init has no ownsMemory: argument; close() must not
+        // shut a store the caller still holds.
+        let session = WaxFoundationModelSession(
+            memory: memory,
+            instructions: "Be concise."
+        )
+        #expect(session.ownsMemoryStore == false)
+        try await session.close()
+        try await memory.save("still open after public session init close")
         try await memory.close()
     }
 }

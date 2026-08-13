@@ -302,6 +302,7 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
     nonisolated let dimensions: Int = 384
     nonisolated let normalize: Bool
     nonisolated let identity: EmbeddingIdentity?
+    nonisolated var executionMode: ProviderExecutionMode { .onDeviceOnly }
 
     private let kind: Kind
     private let timeout: Duration

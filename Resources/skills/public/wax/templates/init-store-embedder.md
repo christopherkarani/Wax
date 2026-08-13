@@ -24,6 +24,7 @@ actor DocsEmbedder: EmbeddingProvider {
         dimensions: 4,
         normalized: true
     )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
 
     func embed(_ text: String) async throws -> [Float] {
         text.localizedCaseInsensitiveContains("password")
