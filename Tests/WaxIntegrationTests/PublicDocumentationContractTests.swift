@@ -45,6 +45,7 @@ struct PublicDocumentationContractTests {
         "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
         "Sources/Wax/Wax.docc/Articles/VideoRAG.md",
         "Sources/Wax/Wax.docc/Articles/RAGPipeline.md",
+        "Sources/Wax/Wax.docc/Articles/MemoryOrchestrator.md",
         "Sources/Wax/Wax.docc/Articles/UnifiedSearch.md",
         "Resources/skills/public/wax/SKILL.md",
         "Resources/skills/public/wax/templates/init-store-embedder.md",
@@ -214,6 +215,7 @@ struct PublicDocumentationContractTests {
             "Resources/skills/public/wax/SKILL.md",
             "Sources/Wax/Wax.docc/Articles/UnifiedSearch.md",
             "Sources/Wax/Wax.docc/Articles/FoundationModels.md",
+            "Sources/Wax/Wax.docc/Articles/MemoryOrchestrator.md",
         ]
         for relativePath in paths {
             let unmarked = Self.unmarkedSwiftFenceLines(in: try Self.read(relativePath))
@@ -231,6 +233,39 @@ struct PublicDocumentationContractTests {
         #expect(verifier.contains("trait:MiniLMEmbeddings"))
         #expect(verifier.contains("canImport(FoundationModels)"))
         #expect(verifier.contains("traits: []"))
+        #expect(verifier.contains("compile run"))
+        #expect(verifier.contains("compile-package"))
+        #expect(verifier.contains("-warnings-as-errors"))
+        #expect(verifier.contains("comment-only"))
+    }
+
+    @Test
+    func rankingExampleIsMarkedCompileRun() throws {
+        let gettingStarted = try Self.read("Sources/Wax/Wax.docc/Articles/GettingStarted.md")
+        #expect(
+            gettingStarted.contains("```swift compile run"),
+            "GettingStarted ranking example must be marked compile run so preconditions execute"
+        )
+        #expect(gettingStarted.contains("gettingStartedCustomEmbedderRanksIntendedMatchFirst"))
+        #expect(gettingStarted.contains("Password reset"))
+    }
+
+    @Test
+    func packageOnlyDocCSamplesUseCompilePackageMarker() throws {
+        let orchestrator = try Self.read("Sources/Wax/Wax.docc/Articles/MemoryOrchestrator.md")
+        #expect(
+            orchestrator.contains("```swift compile-package"),
+            "MemoryOrchestrator package-only samples must be compile-package marked"
+        )
+        #expect(orchestrator.contains("MemoryOrchestrator("))
+        #expect(!orchestrator.contains("```swift\nlet orchestrator"))
+
+        let rag = try Self.read("Sources/Wax/Wax.docc/Articles/RAGPipeline.md")
+        #expect(
+            rag.contains("```swift compile-package"),
+            "FastRAGConfig package-only sample must be compile-package marked"
+        )
+        #expect(rag.contains("FastRAGConfig()"))
     }
 
     @Test
@@ -330,7 +365,7 @@ struct PublicDocumentationContractTests {
     private static func swiftCompileFenceBodies(in text: String) -> [String] {
         swiftFences(in: text).compactMap { info, body in
             let tokens = info.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            guard tokens.first == "swift", tokens.contains("compile") else { return nil }
+            guard tokens.first == "swift", tokens.contains("compile") || tokens.contains("compile-package") else { return nil }
             return body
         }
     }
@@ -352,7 +387,7 @@ struct PublicDocumentationContractTests {
                 .split(whereSeparator: { $0.isWhitespace })
                 .map(String.init)
             guard tokens.first == "swift" else { continue }
-            if !tokens.contains("compile") {
+            if !tokens.contains("compile") && !tokens.contains("compile-package") {
                 lines.append(offset + 1)
             }
         }

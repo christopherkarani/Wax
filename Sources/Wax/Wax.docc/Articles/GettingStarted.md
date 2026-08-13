@@ -85,7 +85,7 @@ func gettingStartedOpenBuiltIn() async throws {
 
 To bring your own embedding model, conform to ``EmbeddingProvider`` and select it on ``Memory/Config-swift.struct/embedding``. Use an input-dependent vector — never an all-zero embedding:
 
-```swift compile
+```swift compile run
 import Foundation
 import Wax
 
@@ -107,7 +107,8 @@ actor DocsEmbedder: EmbeddingProvider {
 }
 
 func gettingStartedCustomEmbedderRanksIntendedMatchFirst() async throws {
-    let storeURL = URL.documentsDirectory.appending(path: "memory.wax")
+    let storeURL = FileManager.default.temporaryDirectory
+        .appending(path: "wax-docs-ranking-\(UUID().uuidString).wax")
     var config = Memory.Config.default
     config.embedding = .custom(DocsEmbedder())
     let memory = try await Memory(at: storeURL, config: config)

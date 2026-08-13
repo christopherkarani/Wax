@@ -124,29 +124,33 @@ For certain query intents (location, date, ownership), snippets may be expanded 
 
 `FastRAGConfig` (package-only) controls all pipeline parameters:
 
-```swift
-var config = FastRAGConfig()
+```swift compile-package
+import Wax
 
-// Mode
-config.mode = .fast  // .fast or .denseCached
+func packageFastRAGConfig() {
+    var config = FastRAGConfig()
 
-// Token budgets
-config.maxContextTokens = 2000
-config.expansionMaxTokens = 800
-config.snippetMaxTokens = 300
-config.surrogateMaxTokens = 80
-config.maxSnippets = 5
-config.maxSurrogates = 10
+    // Mode
+    config.mode = .fast  // .fast or .denseCached
 
-// Search
-config.searchTopK = 32
-config.searchMode = .hybrid(alpha: 0.5)
-config.rrfK = 60
+    // Token budgets
+    config.maxContextTokens = 2000
+    config.expansionMaxTokens = 800
+    config.snippetMaxTokens = 300
+    config.surrogateMaxTokens = 80
+    config.maxSnippets = 5
+    config.maxSurrogates = 10
 
-// Reranking
-config.enableAnswerFocusedRanking = true
-config.answerRerankWindow = 12
-config.answerDistractorPenalty = 0.70
+    // Search
+    config.searchTopK = 32
+    config.searchMode = .hybrid(alpha: 0.5)
+    config.rrfK = 60
+
+    // Reranking
+    config.enableAnswerFocusedRanking = true
+    config.answerRerankWindow = 12
+    config.answerDistractorPenalty = 0.30
+}
 ```
 
 ## Surrogate Tier Selection

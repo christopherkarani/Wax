@@ -14,12 +14,22 @@ Use this article as internal implementation documentation for Wax contributors. 
 
 ## Initialization
 
-```swift
-let orchestrator = try await MemoryOrchestrator(
-    at: storeURL,
-    config: config,
-    embedder: embedder  // nil for text-only mode
-)
+```swift compile-package
+import Foundation
+import Wax
+
+func packageOrchestratorInit() async throws {
+    let storeURL = FileManager.default.temporaryDirectory
+        .appending(path: "wax-orchestrator-docs.wax")
+    let config = OrchestratorConfig.default
+    let embedder: (any EmbeddingProvider)? = nil
+    let orchestrator = try await MemoryOrchestrator(
+        at: storeURL,
+        config: config,
+        embedder: embedder  // nil for text-only mode
+    )
+    try await orchestrator.close()
+}
 ```
 
 The orchestrator creates a new `.wax` file if one doesn't exist at the URL, or opens an existing one with automatic crash recovery.
@@ -55,8 +65,14 @@ A bounded LRU cache (default capacity: 2,048) avoids re-embedding identical text
 
 `recall(query:)` returns a ``RAGContext`` assembled within the configured token budget:
 
-```swift
-let context = try await orchestrator.recall(query: "project timeline")
+```swift compile-package
+import Foundation
+import Wax
+
+func packageOrchestratorRecall(_ orchestrator: MemoryOrchestrator) async throws {
+    let context = try await orchestrator.recall(query: "project timeline")
+    _ = context
+}
 ```
 
 ### Embedding Policies
@@ -69,11 +85,16 @@ Control when query embeddings are computed:
 | `.ifAvailable` | Use vector search if an embedder is configured; otherwise fall back to text |
 | `.always` | Require vector search; throw if no embedder |
 
-```swift
-let context = try await orchestrator.recall(
-    query: "timeline",
-    embeddingPolicy: .ifAvailable
-)
+```swift compile-package
+import Wax
+
+func packageOrchestratorRecallPolicy(_ orchestrator: MemoryOrchestrator) async throws {
+    let context = try await orchestrator.recall(
+        query: "timeline",
+        embeddingPolicy: .ifAvailable
+    )
+    _ = context
+}
 ```
 
 When the vector lane is unavailable under `.ifAvailable`, the search falls back to the text lane. `recallExecution(...)` reports the requested vs. effective mode and the query-embedding state; the public ``Memory/search(_:options:)`` surfaces the same information via ``RAGContext/diagnostics``.
@@ -84,96 +105,117 @@ If query embedding times out, a circuit breaker pauses query embedding for `quer
 
 Restrict recall to specific frames:
 
-```swift
-let context = try await orchestrator.recall(
-    query: "meeting notes",
-    embeddingPolicy: .ifAvailable,
-    frameFilter: FrameFilter(
-        metadataFilter: MetadataFilter(requiredEntries: ["kind": "meeting"])
-    ),
-    timeRange: SearchTimeRange(after: weekAgoMs, before: nil),
-    topK: nil,
-    mode: nil
-)
+```swift compile-package
+import Foundation
+import Wax
+
+func packageOrchestratorRecallFilter(_ orchestrator: MemoryOrchestrator) async throws {
+    let weekAgoMs = Int64(Date().timeIntervalSince1970 * 1000) - 7 * 24 * 60 * 60 * 1000
+    let context = try await orchestrator.recall(
+        query: "meeting notes",
+        embeddingPolicy: .ifAvailable,
+        frameFilter: FrameFilter(
+            metadataFilter: MetadataFilter(requiredEntries: ["kind": "meeting"])
+        ),
+        timeRange: SearchTimeRange(after: weekAgoMs, before: nil),
+        topK: nil,
+        mode: nil
+    )
+    _ = context
+}
 ```
 
 ## Direct Search
 
 For raw search results without RAG assembly, use `search(query:mode:topK:frameFilter:)`:
 
-```swift
-let hits = try await orchestrator.search(
-    query: "velocity",
-    mode: .hybrid(alpha: 0.5),
-    topK: 20
-)
+```swift compile-package
+import Wax
+
+func packageOrchestratorSearch(_ orchestrator: MemoryOrchestrator) async throws {
+    let hits = try await orchestrator.search(
+        query: "velocity",
+        mode: .hybrid(alpha: 0.5),
+        topK: 20
+    )
+    if let best = hits.first {
+        print(best.metadata["id"] ?? "unknown")
+    }
+}
 ```
 
 Each hit includes the stored `frameId` and a `metadata` dictionary. If you save
 structured records as JSON plus stable identifiers, put the identifier in
 metadata and read it back from the returned hit or RAG item after recall.
 
-```swift
-if let best = hits.first {
-    print(best.metadata["id"] ?? "unknown")
-}
-```
-
 ## Structured Memory
 
 When `enableStructuredMemory` is set in the config:
 
-```swift
-// Entities
-try await orchestrator.upsertEntity(
-    key: EntityKey("alice"),
-    kind: "Person",
-    aliases: ["Alice Smith"]
-)
+```swift compile-package
+import Foundation
+import Wax
+import WaxCore
 
-// Facts
-try await orchestrator.assertFact(
-    subject: EntityKey("alice"),
-    predicate: PredicateKey("role"),
-    object: .string("Engineering Lead"),
-    evidence: [...]
-)
+func packageOrchestratorStructured(_ orchestrator: MemoryOrchestrator) async throws {
+    _ = try await orchestrator.upsertEntity(
+        key: EntityKey("alice"),
+        kind: "Person",
+        aliases: ["Alice Smith"]
+    )
 
-// Queries
-let facts = try await orchestrator.facts(
-    about: EntityKey("alice"),
-    predicate: nil,
-    asOfMs: nowMs
-)
+    _ = try await orchestrator.assertFact(
+        subject: EntityKey("alice"),
+        predicate: PredicateKey("role"),
+        object: .string("Engineering Lead"),
+        evidence: []
+    )
+
+    let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    let facts = try await orchestrator.facts(
+        about: EntityKey("alice"),
+        predicate: nil,
+        asOfMs: nowMs
+    )
+    _ = facts
+}
 ```
 
 ## Session Handoffs
 
 Store and retrieve cross-session handoff records:
 
-```swift
-// Save handoff at session end
-try await orchestrator.rememberHandoff(
-    content: "Current project state summary...",
-    project: "my-app",
-    pendingTasks: ["Fix login bug", "Add dark mode"],
-    sessionId: sessionId
-)
+```swift compile-package
+import Foundation
+import Wax
 
-// Retrieve at next session start
-if let handoff = try await orchestrator.latestHandoff(project: "my-app") {
-    print(handoff.content)
-    print(handoff.pendingTasks)
+func packageOrchestratorHandoff(_ orchestrator: MemoryOrchestrator) async throws {
+    let sessionId = UUID()
+    _ = try await orchestrator.rememberHandoff(
+        content: "Current project state summary...",
+        project: "my-app",
+        pendingTasks: ["Fix login bug", "Add dark mode"],
+        sessionId: sessionId
+    )
+
+    if let handoff = try await orchestrator.latestHandoff(project: "my-app") {
+        print(handoff.content)
+        print(handoff.pendingTasks)
+    }
 }
 ```
 
 ## Runtime Statistics
 
-```swift
-let stats = await orchestrator.runtimeStats()
-print("Frames: \(stats.frameCount)")
-print("Vector search: \(stats.vectorSearchEnabled)")
-print("Embedder: \(stats.embedderIdentity?.model ?? "none")")
+```swift compile-package
+import Wax
+
+func packageOrchestratorRuntimeStats(_ orchestrator: MemoryOrchestrator) async {
+    let stats = await orchestrator.runtimeStats()
+    print("Frames: \(stats.frameCount)")
+    print("Vector search: \(stats.vectorSearchEnabled)")
+    print("Embedder: \(stats.embedderIdentity?.model ?? "none")")
+}
 ```
 
 The public equivalent is ``Memory/stats()``.

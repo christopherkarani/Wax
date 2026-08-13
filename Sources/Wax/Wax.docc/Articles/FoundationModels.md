@@ -77,7 +77,7 @@ func foundationModelsConfiguration() async throws {
         configuration.persistencePolicy = .userAndAssistant
         configuration.embeddingPolicy = .automatic
         configuration.toolKit = .focused
-        let session = await memory.foundationModelsSession(
+        let session = memory.foundationModelsSession(
             instructions: "Be concise.",
             configuration: configuration
         )
@@ -168,7 +168,7 @@ func foundationModelsRespondDetailed() async throws {
         print(detailed.content)
         print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
         print(detailed.didPersistUser, detailed.didPersistAssistant)
-        print(detailed.estimatedPreparedCharacters, detailed.retrievalDiagnostics?.effectiveMode)
+        print(detailed.estimatedPreparedCharacters, detailed.retrievalDiagnostics?.effectiveMode ?? "none")
         try await session.close()
     }
     #endif
