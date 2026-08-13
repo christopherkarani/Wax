@@ -19,7 +19,7 @@ final class CrashSafetyHarnessTests: XCTestCase {
             throw XCTSkip("Set WAX_RUN_CRASH_HARNESS=1 to run crash-safety harness scenarios.")
         }
 
-        for scenario in ["toc", "footer_write", "footer", "header"] {
+        for scenario in ["toc", "footer_write", "footer", "header", "put_batch_mmap"] {
             let result = try runHarnessScenario(scenario)
             XCTAssertEqual(
                 result.status,

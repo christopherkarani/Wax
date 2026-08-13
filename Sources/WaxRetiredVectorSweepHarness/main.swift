@@ -49,7 +49,8 @@ struct WaxRetiredVectorSweepHarness {
             _ = try await PhotoRAGOrchestrator(
                 storeURL: storeURL,
                 config: config,
-                embedder: PhotoHarnessEmbedder()
+                embedder: PhotoHarnessEmbedder(),
+                walSizeBytes: Memory.Config.defaultWalSizeBytes
             )
         case "photo-pending-delete":
             try await writePhotoPendingDeletes(storeURL: storeURL)
@@ -64,7 +65,8 @@ struct WaxRetiredVectorSweepHarness {
             _ = try await VideoRAGOrchestrator(
                 storeURL: storeURL,
                 config: config,
-                embedder: VideoHarnessEmbedder()
+                embedder: VideoHarnessEmbedder(),
+                walSizeBytes: Memory.Config.defaultWalSizeBytes
             )
         case "video-pending-delete":
             try await writeVideoPendingDeletes(storeURL: storeURL)

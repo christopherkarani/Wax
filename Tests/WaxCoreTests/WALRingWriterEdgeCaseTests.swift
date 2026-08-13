@@ -436,3 +436,162 @@ private func makeReadOnlyWalFile(walSize: UInt64, fileSize: UInt64? = nil, body:
         #expect(writer.wrapCount > wrapsBefore)
     }
 }
+
+@Test func putBatchFaultAfterMmapBeforeWalReopensCleanWithoutCorruptPayloads() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: Constants.publicFacadeWalSize)
+    let seedId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+    try await wax.commit()
+
+    CommitIOFaultInjection.enable(.afterPutBatchMmapBeforeWal, for: url)
+    do {
+        _ = try await wax.putBatch(
+            [Data("batch-a".utf8), Data("batch-b".utf8)],
+            options: [
+                FrameMetaSubset(searchText: "batch-a"),
+                FrameMetaSubset(searchText: "batch-b"),
+            ]
+        )
+        Issue.record("putBatch succeeded despite mmap-then-WAL injected fault")
+    } catch {
+        let message = String(describing: error)
+        #expect(message.contains("injected commit I/O fault"))
+    }
+    CommitIOFaultInjection.disable(for: url)
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    let metas = await reopened.frameMetas()
+    let texts = Set(metas.compactMap(\.searchText))
+    #expect(texts.contains("seed"))
+    #expect(!texts.contains("batch-a"), "mmap-without-WAL frames must not be acknowledged")
+    #expect(!texts.contains("batch-b"))
+    #expect(try await reopened.frameContent(frameId: seedId) == Data("seed".utf8))
+    let ids = metas.map(\.id)
+    #expect(Set(ids).count == ids.count)
+    try await reopened.close()
+}
+
+@Test func concurrentPutsWaitForInFlightWalPressureStageInsteadOfThrowingCapacity() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let walSize: UInt64 = 512 * 1024
+    let wax = try await Wax.create(
+        at: url,
+        walSize: walSize,
+        options: WaxOptions(walProactiveCommitThresholdPercent: nil)
+    )
+    await wax.setWalPressureIndexPreparer { [weak wax] in
+        try await Task.sleep(for: .milliseconds(80))
+        guard let wax else { return }
+        let embeddings = await wax.pendingEmbeddingMutations()
+        guard let first = embeddings.first else { return }
+        var vectors: [Float] = []
+        var frameIds: [UInt64] = []
+        for embedding in embeddings {
+            vectors.append(contentsOf: embedding.vector)
+            frameIds.append(embedding.frameId)
+        }
+        let bytes = walRingValidFlatVecIndexSegment(
+            vectors: vectors,
+            frameIds: frameIds,
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+        try await wax.stageVecIndexForNextCommit(
+            bytes: bytes,
+            vectorCount: UInt64(frameIds.count),
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+    }
+
+    let seedId = try await wax.put(
+        Data("pressure-seed".utf8),
+        options: FrameMetaSubset(searchText: "pressure-seed")
+    )
+    try await wax.putEmbedding(frameId: seedId, vector: [0.1, 0.2])
+
+    let filler = Data(repeating: 0x61, count: 24_000)
+    var index = 0
+    while (await wax.walStats()).pendingBytes + 30_000 < walSize, index < 40 {
+        let frameId = try await wax.put(
+            filler,
+            options: FrameMetaSubset(searchText: "fill-\(index)")
+        )
+        try await wax.putEmbedding(frameId: frameId, vector: [0.1, 0.2])
+        index += 1
+    }
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for index in 0..<2 {
+            group.addTask {
+                let frameId = try await wax.put(
+                    filler,
+                    options: FrameMetaSubset(searchText: "concurrent-\(index)")
+                )
+                try await wax.putEmbedding(frameId: frameId, vector: [0.1, 0.2])
+            }
+        }
+        try await group.waitForAll()
+    }
+
+    let leftover = await wax.pendingEmbeddingMutations()
+    if let first = leftover.first {
+        var vectors: [Float] = []
+        var frameIds: [UInt64] = []
+        for embedding in leftover {
+            vectors.append(contentsOf: embedding.vector)
+            frameIds.append(embedding.frameId)
+        }
+        let bytes = walRingValidFlatVecIndexSegment(
+            vectors: vectors,
+            frameIds: frameIds,
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+        try await wax.stageVecIndexForNextCommit(
+            bytes: bytes,
+            vectorCount: UInt64(frameIds.count),
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+        try await wax.commit()
+    }
+
+    try await wax.close()
+    let reopened = try await Wax.open(at: url)
+    let texts = Set((await reopened.frameMetas()).compactMap(\.searchText))
+    #expect(texts.contains("pressure-seed"))
+    #expect(texts.contains("concurrent-0"))
+    #expect(texts.contains("concurrent-1"))
+    try await reopened.close()
+}
+
+private func walRingValidFlatVecIndexSegment(
+    vectors: [Float],
+    frameIds: [UInt64],
+    dimension: UInt32,
+    similarity: VecSimilarity
+) -> Data {
+    var data = Data([0x4D, 0x56, 0x32, 0x56])
+    var version = UInt16(1).littleEndian
+    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
+    data.append(3)
+    data.append(similarity.rawValue)
+    var dimensionLE = dimension.littleEndian
+    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
+    var vectorCountLE = UInt64(frameIds.count).littleEndian
+    withUnsafeBytes(of: &vectorCountLE) { data.append(contentsOf: $0) }
+    var payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride).littleEndian
+    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
+    data.append(Data(repeating: 0, count: 8))
+    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    var frameIdLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
+    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    return data
+}

@@ -303,6 +303,98 @@ struct RetiredVectorSweepDurabilityTests {
             try await orchestrator.wax.close()
         }
     }
+
+    @Test
+    func photoRAGSweepStoreUsesPublicFourMiBWal() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-sweep-wal-size-\(UUID().uuidString).png")
+            try photoSweepTinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            _ = try await seedPhotoLegacyGhost(
+                storeURL: storeURL,
+                imageURL: imageURL,
+                assetID: "wal-size-asset"
+            )
+
+            let wax = try await Wax.open(at: storeURL)
+            let stats = await wax.walStats()
+            #expect(stats.walSize == Memory.Config.defaultWalSizeBytes)
+            #expect(Memory.Config.defaultWalSizeBytes == 4 * 1024 * 1024)
+            try await wax.close()
+        }
+    }
+
+    @Test
+    func photoRAGSecondOpenDoesNotCommitWhenRetiredVectorsAlreadySwept() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-sweep-second-open-\(UUID().uuidString).png")
+            try photoSweepTinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            let ghostId = try await seedPhotoLegacyGhost(
+                storeURL: storeURL,
+                imageURL: imageURL,
+                assetID: "second-open-asset"
+            )
+
+            let repaired = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+            let generationAfterRepair = (await repaired.wax.stats()).generation
+            let repairedIds = try sweepCommittedVecFrameIds(
+                from: try #require(await repaired.wax.readCommittedVecIndexBytes())
+            )
+            #expect(!repairedIds.contains(ghostId), "first open must commit the sweep")
+            await repaired.session.close()
+            try await repaired.wax.close()
+
+            let second = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+            let generationOnSecondOpen = (await second.wax.stats()).generation
+            #expect(
+                generationOnSecondOpen == generationAfterRepair,
+                "second open with already-swept history must not repair-commit (gen \(generationAfterRepair) → \(generationOnSecondOpen))"
+            )
+            let secondIds = try sweepCommittedVecFrameIds(
+                from: try #require(await second.wax.readCommittedVecIndexBytes())
+            )
+            #expect(!secondIds.contains(ghostId))
+            await second.session.close()
+            try await second.wax.close()
+        }
+    }
+
+    @Test
+    func photoRAGRebuildSurvivesSIGKILLDuringRepairCommitAfterTocWrite() async throws {
+        try await assertPhotoRepairKillDuringCommit(
+            checkpoint: "after_toc_write_before_footer",
+            assetID: "kill-during-toc"
+        )
+    }
+
+    @Test
+    func photoRAGRebuildSurvivesSIGKILLDuringRepairCommitAfterFooterWrite() async throws {
+        try await assertPhotoRepairKillDuringCommit(
+            checkpoint: "after_footer_write_before_fsync",
+            assetID: "kill-during-footer"
+        )
+    }
+
+    @Test
+    func photoRAGRebuildThrowsWhenCommitFaultsAfterTocWriteAndReopenIsConsistent() async throws {
+        try await assertPhotoRepairCommitIOFault(
+            point: .afterTocWriteBeforeFooter,
+            assetID: "fault-toc"
+        )
+    }
+
+    @Test
+    func photoRAGRebuildThrowsWhenCommitFaultsAfterFooterWriteAndReopenIsConsistent() async throws {
+        try await assertPhotoRepairCommitIOFault(
+            point: .afterFooterWriteBeforeFsync,
+            assetID: "fault-footer"
+        )
+    }
 }
 
 // MARK: - Seed / inspect
@@ -329,7 +421,8 @@ private func makePhotoSweepOrchestrator(storeURL: URL) async throws -> PhotoRAGO
     return try await PhotoRAGOrchestrator(
         storeURL: storeURL,
         config: config,
-        embedder: DeterministicMultimodalEmbedder()
+        embedder: DeterministicMultimodalEmbedder(),
+        walSizeBytes: Memory.Config.defaultWalSizeBytes
     )
 }
 
@@ -419,7 +512,8 @@ private func makeVideoSweepOrchestrator(storeURL: URL) async throws -> VideoRAGO
     return try await VideoRAGOrchestrator(
         storeURL: storeURL,
         config: config,
-        embedder: SweepDurabilityVideoEmbedder()
+        embedder: SweepDurabilityVideoEmbedder(),
+        walSizeBytes: Memory.Config.defaultWalSizeBytes
     )
 }
 
@@ -491,6 +585,109 @@ private enum SweepHarnessError: Error, CustomStringConvertible {
     }
 }
 
+private func assertPhotoRepairKillDuringCommit(checkpoint: String, assetID: String) async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-sweep-kill-\(assetID)-\(UUID().uuidString).png")
+        try photoSweepTinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let ghostId = try await seedPhotoLegacyGhost(
+            storeURL: storeURL,
+            imageURL: imageURL,
+            assetID: assetID
+        )
+
+        try runRebuildChildAndKillDuringCommit(
+            storeURL: storeURL,
+            kind: "photo",
+            checkpoint: checkpoint
+        )
+
+        let wax = try await Wax.open(at: storeURL)
+        let bytes = try await wax.readCommittedVecIndexBytes()
+        #expect(bytes != nil, "store must reopen after SIGKILL during repair commit")
+        let ids = try sweepCommittedVecFrameIds(from: bytes!)
+        let ghostPresent = ids.contains(ghostId)
+        let liveRoots = livePhotoRoots(from: await wax.frameMetas(), assetID: assetID)
+        #expect(
+            liveRoots.count == 1,
+            "repair-commit crash must not tear live roots; liveRoots=\(liveRoots)"
+        )
+        try await wax.close()
+
+        let repaired = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+        let repairedIds = try sweepCommittedVecFrameIds(
+            from: try #require(await repaired.wax.readCommittedVecIndexBytes())
+        )
+        #expect(
+            !repairedIds.contains(ghostId),
+            "successful reopen after mid-commit SIGKILL must finish repair (ghostPresentOnFirstReopen=\(ghostPresent))"
+        )
+        await repaired.session.close()
+        try await repaired.wax.close()
+    }
+}
+
+private func assertPhotoRepairCommitIOFault(
+    point: CommitIOFaultInjection.Point,
+    assetID: String
+) async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-sweep-iofault-\(assetID)-\(UUID().uuidString).png")
+        try photoSweepTinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let ghostId = try await seedPhotoLegacyGhost(
+            storeURL: storeURL,
+            imageURL: imageURL,
+            assetID: assetID
+        )
+
+        CommitIOFaultInjection.enable(point, for: storeURL)
+        defer { CommitIOFaultInjection.disable(for: storeURL) }
+
+        do {
+            let orchestrator = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+            await orchestrator.session.close()
+            try await orchestrator.wax.close()
+            Issue.record("photo open/rebuild succeeded despite injected \(point.rawValue) commit fault")
+        } catch {
+            let message = String(describing: error)
+            #expect(
+                message.contains("injected commit I/O fault"),
+                "open/rebuild must throw the injected I/O fault, got: \(message)"
+            )
+        }
+
+        CommitIOFaultInjection.disable(for: storeURL)
+
+        let wax = try await Wax.open(at: storeURL)
+        let bytes = try await wax.readCommittedVecIndexBytes()
+        #expect(bytes != nil, "torn TOC/footer must not produce an unreadable store")
+        let ids = try sweepCommittedVecFrameIds(from: bytes!)
+        let ghostPresent = ids.contains(ghostId)
+        let liveRoots = livePhotoRoots(from: await wax.frameMetas(), assetID: assetID)
+        #expect(
+            liveRoots.count == 1,
+            "commit I/O fault must leave a consistent pre- or post-repair TOC; liveRoots=\(liveRoots)"
+        )
+        try await wax.close()
+
+        let repaired = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+        let repairedIds = try sweepCommittedVecFrameIds(
+            from: try #require(await repaired.wax.readCommittedVecIndexBytes())
+        )
+        #expect(
+            !repairedIds.contains(ghostId),
+            "next successful open must complete repair (ghostPresentOnFaultReopen=\(ghostPresent))"
+        )
+        await repaired.session.close()
+        try await repaired.wax.close()
+    }
+}
+
 private func runRebuildChildAndKillAfterCommit(storeURL: URL, kind: String) throws {
     let process = Process()
     process.executableURL = try sweepHarnessURL()
@@ -498,6 +695,34 @@ private func runRebuildChildAndKillAfterCommit(storeURL: URL, kind: String) thro
     environment["WAX_RETIRED_VECTOR_SWEEP_STORE"] = storeURL.path
     environment["WAX_RETIRED_VECTOR_SWEEP_KIND"] = kind
     environment["WAX_RETIRED_VECTOR_SWEEP_CRASH_AFTER_COMMIT"] = "1"
+    process.environment = environment
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationReason == .uncaughtSignal, process.terminationStatus == 9 else {
+        throw SweepHarnessError.childFailed(
+            status: process.terminationStatus,
+            stdout: stdout,
+            stderr: stderr
+        )
+    }
+}
+
+private func runRebuildChildAndKillDuringCommit(storeURL: URL, kind: String, checkpoint: String) throws {
+    let process = Process()
+    process.executableURL = try sweepHarnessURL()
+    var environment = ProcessInfo.processInfo.environment
+    environment["WAX_RETIRED_VECTOR_SWEEP_STORE"] = storeURL.path
+    environment["WAX_RETIRED_VECTOR_SWEEP_KIND"] = kind
+    environment["WAX_CRASH_INJECT_CHECKPOINT"] = checkpoint
     process.environment = environment
 
     let stdoutPipe = Pipe()

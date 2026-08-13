@@ -31,7 +31,8 @@ private func photoDeleteMakeOrchestrator(storeURL: URL) async throws -> PhotoRAG
     return try await PhotoRAGOrchestrator(
         storeURL: storeURL,
         config: config,
-        embedder: DeterministicMultimodalEmbedder()
+        embedder: DeterministicMultimodalEmbedder(),
+        walSizeBytes: Memory.Config.defaultWalSizeBytes
     )
 }
 
@@ -162,6 +163,60 @@ func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         let sweptIds = try photoDeleteCommittedVecFrameIds(from: sweptBytes!)
         #expect(!sweptIds.contains(oldRootId), "legacy ghost vector survived the retired-tree sweep")
         #expect(sweptIds.contains(newRootId), "current root vector must survive the sweep")
+    }
+}
+
+@Test
+func concurrentPhotoIngestOnFourMiBStoreSucceeds() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.ingestConcurrency = 2
+        config.vectorEnginePreference = .cpuOnly
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: storeURL,
+            config: config,
+            embedder: DeterministicMultimodalEmbedder(),
+            walSizeBytes: Memory.Config.defaultWalSizeBytes
+        )
+
+        let dir = storeURL.deletingLastPathComponent()
+        var files: [PhotoFile] = []
+        files.reserveCapacity(8)
+        for index in 0..<8 {
+            let imageURL = dir.appendingPathComponent("wax-concurrent-photo-\(index)-\(UUID().uuidString).png")
+            try photoDeleteTinyPNGData.write(to: imageURL)
+            files.append(
+                PhotoFile(
+                    id: "concurrent-\(index)",
+                    url: imageURL,
+                    captureDate: Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+                )
+            )
+        }
+        defer {
+            for file in files {
+                try? FileManager.default.removeItem(at: file.url)
+            }
+        }
+
+        try await orchestrator.ingest(files: files)
+        try await orchestrator.flush()
+
+        let wax = await orchestrator.wax
+        #expect((await wax.walStats()).walSize == Memory.Config.defaultWalSizeBytes)
+        let liveRoots = (await wax.frameMetas()).filter {
+            $0.kind == PhotoFrameKind.root.rawValue
+                && $0.status != .deleted
+                && $0.supersededBy == nil
+        }
+        #expect(liveRoots.count == 8, "concurrent 4 MiB ingest lost roots: \(liveRoots.count)")
+
+        await orchestrator.session.close()
+        try await orchestrator.wax.close()
     }
 }
 }

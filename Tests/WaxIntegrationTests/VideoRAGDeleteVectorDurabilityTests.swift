@@ -64,7 +64,8 @@ private func videoDeleteMakeOrchestrator(storeURL: URL) async throws -> VideoRAG
     return try await VideoRAGOrchestrator(
         storeURL: storeURL,
         config: config,
-        embedder: DeleteDurabilityVideoEmbedder()
+        embedder: DeleteDurabilityVideoEmbedder(),
+        walSizeBytes: Memory.Config.defaultWalSizeBytes
     )
 }
 

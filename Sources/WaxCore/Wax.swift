@@ -143,6 +143,72 @@ package struct SurrogateSourceFrame: Equatable, Sendable {
     }
 }
 
+/// Test-only hook that throws from inside commit / `putBatch` I/O (TOC, footer, or
+/// mmap-then-WAL). Isolated per store path so parallel tests do not collide.
+package enum CommitIOFaultInjection: Sendable {
+    package enum Point: String, Sendable {
+        case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
+        case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
+        case afterPutBatchMmapBeforeWal = "after_put_batch_mmap_before_wal"
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var pointsByPath: [String: Point] = [:]
+
+    package static func enable(_ point: Point, for storeURL: URL) {
+        lock.lock()
+        pointsByPath[storeURL.path] = point
+        lock.unlock()
+    }
+
+    package static func disable(for storeURL: URL) {
+        lock.lock()
+        pointsByPath.removeValue(forKey: storeURL.path)
+        lock.unlock()
+    }
+
+    static func throwIfMatches(point: Point, url: URL) throws {
+        lock.lock()
+        let enabled = pointsByPath[url.path]
+        lock.unlock()
+        guard enabled == point else { return }
+        throw WaxError.io("injected commit I/O fault at \(point.rawValue)")
+    }
+}
+
+/// One-shot waiter so a second `put` can block on an in-flight WAL-pressure `stage()`
+/// instead of throwing `capacityExceeded` while the first task holds the preparer flag.
+private final class WalPressureStageWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var stored: Result<Void, Error>?
+
+    func wait() async throws {
+        try await withCheckedThrowingContinuation { cont in
+            lock.lock()
+            if let stored {
+                lock.unlock()
+                cont.resume(with: stored)
+            } else {
+                continuation = cont
+                lock.unlock()
+            }
+        }
+    }
+
+    func resume(with result: Result<Void, Error>) {
+        lock.lock()
+        if let continuation {
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(with: result)
+        } else {
+            stored = result
+            lock.unlock()
+        }
+    }
+}
+
 /// Primary handle for interacting with a `.wax` memory file.
 ///
 /// Holds the file descriptor, lock, header, TOC, and in-memory index state.
@@ -153,6 +219,7 @@ package actor Wax {
         case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
         case afterFooterFsyncBeforeHeader = "after_footer_fsync_before_header"
         case afterHeaderWriteBeforeFinalFsync = "after_header_write_before_final_fsync"
+        case afterPutBatchMmapBeforeWal = "after_put_batch_mmap_before_wal"
 
         static let envKey = "WAX_CRASH_INJECT_CHECKPOINT"
     }
@@ -187,6 +254,7 @@ package actor Wax {
     private var walReplaySnapshotHitCount: UInt64
     private var walPressureIndexPreparer: (@Sendable () async throws -> Void)?
     private var isInvokingWalPressureIndexPreparer = false
+    private var walPressureStageWaiters: [WalPressureStageWaiter] = []
     private let walProactiveCommitThresholdBytes: UInt64?
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
@@ -289,18 +357,41 @@ package actor Wax {
     }
 
     private func invokeWalPressureIndexPreparerLocked() async throws {
+        guard walPressureIndexPreparer != nil else { return }
+        if isInvokingWalPressureIndexPreparer {
+            let waiter = WalPressureStageWaiter()
+            walPressureStageWaiters.append(waiter)
+            await opLock.writeUnlock()
+            do {
+                try await waiter.wait()
+                await opLock.writeLock()
+            } catch {
+                await opLock.writeLock()
+                throw error
+            }
+            return
+        }
         guard let preparer = walPressureIndexPreparer else { return }
-        guard !isInvokingWalPressureIndexPreparer else { return }
         isInvokingWalPressureIndexPreparer = true
         await opLock.writeUnlock()
         do {
             try await preparer()
             await opLock.writeLock()
             isInvokingWalPressureIndexPreparer = false
+            finishWalPressureStageWaiters(with: .success(()))
         } catch {
             await opLock.writeLock()
             isInvokingWalPressureIndexPreparer = false
+            finishWalPressureStageWaiters(with: .failure(error))
             throw error
+        }
+    }
+
+    private func finishWalPressureStageWaiters(with result: Result<Void, Error>) {
+        let waiters = walPressureStageWaiters
+        walPressureStageWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(with: result)
         }
     }
 
@@ -1151,6 +1242,8 @@ package actor Wax {
             }
         }
 
+        try injectAfterCheckpoint(.afterPutBatchMmapBeforeWal)
+
         // Batch append WAL entries
         let walPayloads = walPayloadsArray
         let sequences = try await io.run {
@@ -1860,17 +1953,17 @@ package actor Wax {
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
         }
-        maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
+        try injectAfterCheckpoint(.afterTocWriteBeforeFooter)
 
         try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }
-        maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
+        try injectAfterCheckpoint(.afterFooterWriteBeforeFsync)
 
         try await io.run {
             try file.fsync()
         }
-        maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
+        try injectAfterCheckpoint(.afterFooterFsyncBeforeHeader)
 
         header.footerOffset = footerOffset
         header.fileGeneration = footer.generation
@@ -1882,7 +1975,7 @@ package actor Wax {
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
-        maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
+        try injectAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
         try await io.run {
             try file.fsync()
             wal.recordCheckpoint()
@@ -3021,6 +3114,13 @@ package actor Wax {
 
     // MARK: - Internal helpers
 
+    private func injectAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) throws {
+        if let point = CommitIOFaultInjection.Point(rawValue: checkpoint.rawValue) {
+            try CommitIOFaultInjection.throwIfMatches(point: point, url: url)
+        }
+        maybeCrashAfterCheckpoint(checkpoint)
+    }
+
     private func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
         let env = ProcessInfo.processInfo.environment
         guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
@@ -3032,7 +3132,15 @@ package actor Wax {
         // for those cases; it should never be reached in normal crash-injection runs but
         // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
-        fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
+        // SIGKILL is asynchronous; spin until it lands so we do not lose the race
+        // to fatalError (which would surface as SIGTRAP / status 5 instead of 9).
+        while true {
+            #if canImport(Darwin)
+            Darwin.pause()
+            #else
+            sched_yield()
+            #endif
+        }
     }
 
     private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {

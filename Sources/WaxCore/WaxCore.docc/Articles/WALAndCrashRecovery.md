@@ -12,7 +12,14 @@ The WAL (Write-Ahead Log) is a fixed-size circular ring buffer that records all 
 
 ## Ring Buffer Architecture
 
-The WAL occupies a contiguous region starting at file offset 8 KiB. Its default size is 256 MiB, configurable at creation time. The ring buffer uses two pointers:
+The WAL occupies a contiguous region starting at file offset 8 KiB. Size is chosen at create time and stored in the header (`walSize`); open never rewrites it.
+
+Two defaults exist:
+
+- **Public facades** (`Memory`, `PhotoMemory`, `VideoMemory`) create new stores with a **4 MiB** WAL (`Memory.Config.defaultWalSizeBytes` / `Constants.publicFacadeWalSize`). This is the iOS-appropriate size.
+- **Low-level `Wax.create`** and `FrameStore` default to **256 MiB** (`Constants.defaultWalSize`) so CLI/MCP and existing large stores stay compatible. Legacy 256 MiB files reopen at that layout even when the public facade is configured for 4 MiB.
+
+The ring buffer uses two pointers:
 
 - **Write position** — where the next record will be written
 - **Checkpoint position** — the boundary of committed records
@@ -73,19 +80,21 @@ When opening a store, WaxCore performs the following recovery sequence:
 
 ## Proactive Commit
 
-WaxCore supports proactive commit thresholds to bound the amount of data at risk in the WAL:
+WaxCore bounds WAL occupancy with a **percent-of-WAL** threshold, not an entry count:
 
 ```swift
 let options = WaxOptions(
-    proactiveCommitThreshold: 1024  // Auto-commit after 1024 pending entries
+    walProactiveCommitThresholdPercent: 80,          // fire at 80% pending
+    walProactiveCommitMaxWalSizeBytes: 4 * 1024 * 1024, // only for WALs ≤ 4 MiB
+    walProactiveCommitMinPendingBytes: 128 * 1024
 )
 ```
 
-When the pending entry count exceeds this threshold, a commit is triggered automatically during the next write operation.
+These are the current ``WaxOptions`` names. When projected pending bytes reach the threshold, the next write auto-commits (and, if embeddings are pending, stages the vector index first). Pass `walProactiveCommitThresholdPercent: nil` to disable.
 
 ## Replay State Snapshots
 
-When `enableReplayStateSnapshot` is set in ``WaxOptions``, the header stores a snapshot of the WAL state at the last commit. This snapshot includes:
+When `walReplayStateSnapshotEnabled` is set in ``WaxOptions``, the header stores a snapshot of the WAL state at the last commit. This snapshot includes:
 
 - File generation
 - Committed sequence number
@@ -106,3 +115,18 @@ Every layer of the persistence stack uses SHA-256 checksums:
 - **Footer** — Validates that the TOC hash matches
 
 This multi-layer checksum strategy ensures that corruption is detected at every level.
+
+## Commit Atomicity (TOC then footer)
+
+A commit writes index blobs, then the TOC, then the footer, fsyncs, then the alternate header page, then a final fsync and WAL checkpoint. Open selects the newest *valid* footer and ignores a TOC that has no matching footer.
+
+- Crash **after TOC write, before footer**: the old footer still wins. Orphan TOC bytes past that footer are truncated. Reopen is the pre-commit generation (never a torn TOC).
+- Crash **after footer write**: open prefers the new footer if it checksums; otherwise the previous footer. Reopen is either fully pre-commit or fully post-commit, never a mix.
+- A thrown I/O fault at those same points rolls back in-memory commit state (`CommitRollbackState`). The next open still uses footer validity, not the abandoned in-memory handle.
+
+## `putBatch` mmap-then-WAL window
+
+The fast `putBatch` path mmap-writes all frame payloads, then appends WAL records that point at those offsets.
+
+- **Kill between mmap write and WAL append:** the payloads are unacknowledged. Open does not replay them (no WAL records). Repair truncates orphan bytes past the committed footer / pending-WAL `requiredEnd`. Reopen is clean.
+- **WAL appended against a torn mmap payload:** `validatePendingPayloadChecksums` compares each pending `putFrame.storedChecksum` to the bytes at `payloadOffset`. Mismatch is **fail-loud** (`checksumMismatch`); the store will not open as a silently corrupt readable file. This window is hotter on a 4 MiB WAL that wraps more often than a 256 MiB ring.

@@ -50,6 +50,9 @@ package enum RetiredVectorSweepFaultInjection: Sendable {
         guard ProcessInfo.processInfo.environment[crashAfterCommitEnvKey] == "1" else { return }
         #if canImport(Darwin)
         _ = Darwin.kill(Darwin.getpid(), SIGKILL)
+        while true {
+            Darwin.pause()
+        }
         #endif
         fatalError("retired-vector repair crash injection did not terminate")
     }
@@ -181,7 +184,7 @@ package actor PhotoRAGOrchestrator {
         } else {
             self.wax = try await Wax.create(
                 at: storeURL,
-                walSize: walSizeBytes ?? Constants.defaultWalSize,
+                walSize: walSizeBytes ?? Constants.publicFacadeWalSize,
                 options: waxOptions
             )
         }
@@ -1113,9 +1116,9 @@ package actor PhotoRAGOrchestrator {
 
     private func rebuildIndex() async throws {
         let retiredVectorIds = Self.indexSnapshot(from: await wax.frameMetasIncludingPending()).retiredVectorIds
-        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
+        let remainingUnrepaired = try await sweepRetiredVectors(retiredVectorIds)
         let hasPendingWAL = await wax.walStats().pendingBytes > 0
-        if removedCount > 0 || hasPendingWAL {
+        if remainingUnrepaired > 0 || hasPendingWAL {
             if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
                 throw injected
             }
@@ -1194,11 +1197,28 @@ package actor PhotoRAGOrchestrator {
     /// frames). Stores written before vector cleanup existed can otherwise keep serving
     /// ghost hits for retired frames. Failures are thrown so a successful rebuild
     /// always means the sweep was durably committed.
+    ///
+    /// Returns the number of retired ids that still appear in the *committed* vec
+    /// index (unrepaired ghosts). Already-swept history returns 0 so a later open
+    /// does not attempt a no-op repair commit.
     private func sweepRetiredVectors(_ frameIDs: Set<UInt64>) async throws -> Int {
+        let remainingUnrepaired = try await countRetiredVectorsStillCommitted(frameIDs)
         for frameID in frameIDs.sorted() {
             try await session.removeVector(frameId: frameID)
         }
-        return frameIDs.count
+        return remainingUnrepaired
+    }
+
+    private func countRetiredVectorsStillCommitted(_ frameIDs: Set<UInt64>) async throws -> Int {
+        guard !frameIDs.isEmpty else { return 0 }
+        guard let bytes = try await wax.readCommittedVecIndexBytes() else { return 0 }
+        let decoded = try VectorSerializer.decodeVecSegment(from: bytes)
+        guard case .metal(_, _, let ids) = decoded else { return 0 }
+        var remaining = 0
+        for id in ids where frameIDs.contains(id) {
+            remaining += 1
+        }
+        return remaining
     }
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {

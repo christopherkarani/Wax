@@ -27,6 +27,7 @@ private enum CrashScenario: String, CaseIterable {
     case footerWrite = "footer_write"
     case footer
     case header
+    case putBatchMmap = "put_batch_mmap"
 
     var checkpoint: String {
         switch self {
@@ -38,15 +39,26 @@ private enum CrashScenario: String, CaseIterable {
             return "after_footer_fsync_before_header"
         case .header:
             return "after_header_write_before_final_fsync"
+        case .putBatchMmap:
+            return "after_put_batch_mmap_before_wal"
         }
     }
 
     /// Whether the in-flight payload frame is expected in the committed TOC after SIGKILL.
     var inFlightCommitIsDurable: Bool {
         switch self {
-        case .toc:
+        case .toc, .putBatchMmap:
             return false
         case .footerWrite, .footer, .header:
+            return true
+        }
+    }
+
+    var drivesAutoCommitsBeforeCrash: Bool {
+        switch self {
+        case .putBatchMmap:
+            return false
+        case .toc, .footerWrite, .footer, .header:
             return true
         }
     }
@@ -118,10 +130,12 @@ struct WaxCrashHarness {
         }
 
         let acked = try readAckedSearchTexts(at: ackURL)
-        guard acked.count >= 3 else {
-            throw HarnessError.invariantFailed(
-                "scenario \(scenario.rawValue) expected at least 3 auto-committed frames, got \(acked.count)"
-            )
+        if scenario.drivesAutoCommitsBeforeCrash {
+            guard acked.count >= 3 else {
+                throw HarnessError.invariantFailed(
+                    "scenario \(scenario.rawValue) expected at least 3 auto-committed frames, got \(acked.count)"
+                )
+            }
         }
 
         let recovered = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
@@ -183,7 +197,9 @@ struct WaxCrashHarness {
         env[storePathEnv] = storeURL.path
         env[scenarioEnv] = scenario.rawValue
         env[crashCheckpointEnv] = scenario.checkpoint
-        env[crashAfterAutoCommitsEnv] = "3"
+        if scenario.drivesAutoCommitsBeforeCrash {
+            env[crashAfterAutoCommitsEnv] = "3"
+        }
         env[ackPathEnv] = ackURL.path
         process.environment = env
         try process.run()
@@ -206,32 +222,48 @@ struct WaxCrashHarness {
         let url = URL(fileURLWithPath: storePath)
         let wax = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         var acked: [String] = []
-        var index = 0
-        var autoCommits: UInt64 = 0
-        while autoCommits < 3 {
-            let text = "ack-\(index)-" + String(repeating: "p", count: 8_192)
-            _ = try await wax.put(
-                Data("ack-\(index)".utf8),
-                options: FrameMetaSubset(searchText: text)
-            )
-            acked.append(text)
-            autoCommits = (await wax.walStats()).autoCommitCount
-            index += 1
-            if index > 4_000 {
-                throw HarnessError.invariantFailed("failed to reach 3 auto-commits on 4 MiB WAL")
+        if scenario.drivesAutoCommitsBeforeCrash {
+            var index = 0
+            var autoCommits: UInt64 = 0
+            while autoCommits < 3 {
+                let text = "ack-\(index)-" + String(repeating: "p", count: 8_192)
+                _ = try await wax.put(
+                    Data("ack-\(index)".utf8),
+                    options: FrameMetaSubset(searchText: text)
+                )
+                acked.append(text)
+                autoCommits = (await wax.walStats()).autoCommitCount
+                index += 1
+                if index > 4_000 {
+                    throw HarnessError.invariantFailed("failed to reach 3 auto-commits on 4 MiB WAL")
+                }
             }
-        }
-        if (await wax.walStats()).pendingBytes > 0, !acked.isEmpty {
-            // The put that tripped the last auto-commit is still pending.
-            acked.removeLast()
+            if (await wax.walStats()).pendingBytes > 0, !acked.isEmpty {
+                // The put that tripped the last auto-commit is still pending.
+                acked.removeLast()
+            }
         }
         try Data(acked.joined(separator: "\n").utf8).write(to: URL(fileURLWithPath: ackPath), options: .atomic)
 
-        _ = try await wax.put(
-            Data("payload-\(scenario.rawValue)".utf8),
-            options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")
-        )
-        try await wax.commit()
+        switch scenario {
+        case .putBatchMmap:
+            _ = try await wax.putBatch(
+                [
+                    Data("payload-\(scenario.rawValue)-a".utf8),
+                    Data("payload-\(scenario.rawValue)-b".utf8),
+                ],
+                options: [
+                    FrameMetaSubset(searchText: "payload-\(scenario.rawValue)"),
+                    FrameMetaSubset(searchText: "payload-\(scenario.rawValue)-b"),
+                ]
+            )
+        case .toc, .footerWrite, .footer, .header:
+            _ = try await wax.put(
+                Data("payload-\(scenario.rawValue)".utf8),
+                options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")
+            )
+            try await wax.commit()
+        }
         try await wax.close()
     }
 
