@@ -20,6 +20,11 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        // Default broker start timeout is 5s; suite-wide process-spawn
+        // contention can exceed that without changing CLI semantics.
+        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "30"
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
