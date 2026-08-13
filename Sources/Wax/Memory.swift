@@ -207,7 +207,7 @@ public actor Memory {
             topK: nil,
             mode: directMode
         )
-        var results = Self.limiting(execution.context, toTopK: options.topK)
+        var results = try await Self.limiting(execution.context, toTopK: options.topK)
         results.diagnostics = RAGContext.Diagnostics(
             requestedMode: execution.requestedModeSummary,
             effectiveMode: execution.effectiveModeSummary,
@@ -415,15 +415,26 @@ public actor Memory {
         OrchestratorConfig.resolving(config)
     }
 
-    private static func limiting(_ context: RAGContext, toTopK topK: Int) -> RAGContext {
+    /// Caps the returned item list to `topK` without changing FastRAG candidate depth.
+    ///
+    /// FastRAG still assembles up to ``RAGConfig/searchTopK`` candidates; ``SearchOptions/topK``
+    /// only truncates what the caller receives. Passing that cap into assembly would
+    /// collapse the two knobs. `totalTokens` is recomputed from the surviving items
+    /// (sum of ``TokenCounter`` counts, matching FastRAG assembly) so
+    /// ``Results/totalTokens`` describes the returned list — callers observe
+    /// `maxContextTokens` through that field.
+    private static func limiting(_ context: RAGContext, toTopK topK: Int) async throws -> RAGContext {
         if topK <= 0 {
             return RAGContext(query: context.query, items: [], totalTokens: 0)
         }
         guard context.items.count > topK else { return context }
+        let items = Array(context.items.prefix(topK))
+        let counter = try await TokenCounter.shared()
+        let totalTokens = await counter.countBatch(items.map(\.text)).reduce(0, +)
         return RAGContext(
             query: context.query,
-            items: Array(context.items.prefix(topK)),
-            totalTokens: context.totalTokens
+            items: items,
+            totalTokens: totalTokens
         )
     }
 }

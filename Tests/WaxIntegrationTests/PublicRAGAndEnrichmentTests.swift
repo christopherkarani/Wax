@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 
 @Suite("PublicRAGAndEnrichmentTests")
 struct PublicRAGAndEnrichmentTests {
@@ -90,6 +90,63 @@ struct PublicRAGAndEnrichmentTests {
             )
             #expect(results.totalTokens > 32)
             #expect(results.totalTokens <= 1_500)
+
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func defaultSearchUsesSearchTopKForCandidatesAndCapsReturnedItemsAtTopK() async throws {
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url, config: Self.textOnly)
+            try await seedMatchingSwiftFacts(into: memory, count: 16)
+
+            let capped = try await memory.search(
+                "Swift",
+                options: .init(mode: .textOnly)
+            )
+            #expect(capped.items.count == Memory.SearchOptions.default.topK)
+            #expect(Memory.SearchOptions.default.topK == 10)
+            #expect(Memory.RAGConfig.default.searchTopK == 24)
+
+            let assembled = try await memory.search(
+                "Swift",
+                options: .init(topK: 50, mode: .textOnly)
+            )
+            #expect(assembled.items.count > Memory.SearchOptions.default.topK)
+            #expect(assembled.items.count <= Memory.RAGConfig.default.searchTopK)
+            #expect(Array(assembled.items.prefix(10).map(\.text)) == capped.items.map(\.text))
+
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func truncatedSearchTotalTokensDescribesReturnedItemsOnly() async throws {
+        try await TempFiles.withTempFile { url in
+            var config = Self.textOnly
+            config.rag.searchTopK = 24
+            config.rag.maxContextTokens = 1_500
+            let memory = try await Memory(at: url, config: config)
+            try await seedMatchingSwiftFacts(into: memory, count: 16)
+
+            let assembled = try await memory.search(
+                "Swift",
+                options: .init(topK: 50, mode: .textOnly)
+            )
+            #expect(assembled.items.count > 10)
+
+            let truncated = try await memory.search(
+                "Swift",
+                options: .init(topK: 10, mode: .textOnly)
+            )
+            #expect(truncated.items.count == 10)
+            #expect(Array(assembled.items.prefix(10).map(\.text)) == truncated.items.map(\.text))
+
+            let counter = try await TokenCounter.shared()
+            let returnedSum = await counter.countBatch(truncated.items.map(\.text)).reduce(0, +)
+            #expect(truncated.totalTokens == returnedSum)
+            #expect(truncated.totalTokens < assembled.totalTokens)
 
             try await memory.close()
         }
@@ -228,6 +285,15 @@ struct PublicRAGAndEnrichmentTests {
             try await memory.close()
         }
     }
+}
+
+private func seedMatchingSwiftFacts(into memory: Memory, count: Int) async throws {
+    for index in 1...count {
+        try await memory.save(
+            "Swift language fact \(index): structured concurrency, actors, and protocols remain distinct \(index)."
+        )
+    }
+    try await memory.flush()
 }
 
 private func seedDistinctSwiftFacts(into memory: Memory) async throws {
