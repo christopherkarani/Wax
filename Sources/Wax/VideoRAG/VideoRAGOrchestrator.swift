@@ -594,6 +594,12 @@ package actor VideoRAGOrchestrator {
         )
         let transcriptByIndex = Self.mapTranscript(chunks: transcriptChunks, segments: segments, maxBytes: config.maxTranscriptBytesPerSegment)
 
+        let embeddings = try await prepareSegmentEmbeddings(
+            segments: segments,
+            keyframes: keyframeImages,
+            transcriptByIndex: transcriptByIndex
+        )
+
         let rootMeta = baseMetadata(
             videoID: videoID,
             captureMs: captureMs,
@@ -611,7 +617,7 @@ package actor VideoRAGOrchestrator {
             videoID: videoID,
             captureMs: captureMs,
             segments: segments,
-            keyframes: keyframeImages,
+            embeddings: embeddings,
             transcriptByIndex: transcriptByIndex
         )
 
@@ -658,6 +664,17 @@ package actor VideoRAGOrchestrator {
             transcriptByIndex = [:]
         }
 
+        let embeddings: [[Float]]
+        if record.isLocal {
+            embeddings = try await prepareSegmentEmbeddings(
+                segments: segments,
+                keyframes: keyframes,
+                transcriptByIndex: transcriptByIndex
+            )
+        } else {
+            embeddings = []
+        }
+
         let rootMeta = baseMetadata(
             videoID: videoID,
             captureMs: captureMs,
@@ -675,7 +692,7 @@ package actor VideoRAGOrchestrator {
                 videoID: videoID,
                 captureMs: captureMs,
                 segments: segments,
-                keyframes: keyframes,
+                embeddings: embeddings,
                 transcriptByIndex: transcriptByIndex
             )
         }
@@ -687,30 +704,49 @@ package actor VideoRAGOrchestrator {
     }
     #endif
 
+    /// Embed and validate every keyframe (and non-empty transcript text) before any frame write.
+    private func prepareSegmentEmbeddings(
+        segments: [SegmentPlan],
+        keyframes: [CGImage],
+        transcriptByIndex: [Int: String]
+    ) async throws -> [[Float]] {
+        guard segments.isEmpty || segments.count == keyframes.count else {
+            throw VideoIngestError.invalidVideo(reason: "segment/keyframe count mismatch")
+        }
+        for text in transcriptByIndex.values {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            _ = try await validatedTextEmbedding(trimmed)
+        }
+        var embeddings: [[Float]] = []
+        embeddings.reserveCapacity(keyframes.count)
+        for image in keyframes {
+            try Task.checkCancellation()
+            embeddings.append(try await validatedImageEmbedding(image))
+        }
+        return embeddings
+    }
+
     private func writeSegments(
         rootId: UInt64,
         videoID: VideoID,
         captureMs: Int64,
         segments: [SegmentPlan],
-        keyframes: [CGImage],
+        embeddings: [[Float]],
         transcriptByIndex: [Int: String]
     ) async throws {
         guard !segments.isEmpty else { return }
-        guard segments.count == keyframes.count else {
-            throw VideoIngestError.invalidVideo(reason: "segment/keyframe count mismatch")
+        guard segments.count == embeddings.count else {
+            throw VideoIngestError.invalidVideo(reason: "segment/embedding count mismatch")
         }
 
-        var embeddings: [[Float]] = []
-        embeddings.reserveCapacity(segments.count)
         var contents: [Data] = []
         contents.reserveCapacity(segments.count)
         var options: [FrameMetaSubset] = []
         options.reserveCapacity(segments.count)
 
-        for (idx, segment) in segments.enumerated() {
+        for segment in segments {
             try Task.checkCancellation()
-            let vec = try await validatedImageEmbedding(keyframes[idx])
-            embeddings.append(vec)
 
             let text = transcriptByIndex[segment.index] ?? ""
             contents.append(Data(text.utf8))
@@ -898,10 +934,10 @@ package actor VideoRAGOrchestrator {
         _ vector: [Float],
         embedder: some CGImageEmbeddingProvider
     ) throws -> [Float] {
-        try EmbeddingValidation.validate(
+        try EmbeddingValidation.validateIngest(
             vector,
             dimensions: embedder.dimensions,
-            requireNonZero: embedder.normalize
+            identity: embedder.identity
         )
         if embedder.normalize {
             return VectorMath.normalizeL2(vector)

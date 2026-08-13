@@ -1421,10 +1421,10 @@ package actor PhotoRAGOrchestrator {
         _ vector: [Float],
         embedder: some CGImageEmbeddingProvider
     ) throws -> [Float] {
-        try EmbeddingValidation.validate(
+        try EmbeddingValidation.validateIngest(
             vector,
             dimensions: embedder.dimensions,
-            requireNonZero: embedder.normalize
+            identity: embedder.identity
         )
         if embedder.normalize {
             return VectorMath.normalizeL2(vector)

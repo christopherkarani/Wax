@@ -21,7 +21,7 @@ package protocol VectorSearchEngine: Sendable {
 
 package enum VectorValidation {
     package static func validate(_ vector: [Float], dimensions: Int) throws {
-        try EmbeddingValidation.validate(vector, dimensions: dimensions, requireNonZero: false)
+        try EmbeddingValidation.validate(vector, dimensions: dimensions, requireNonZero: true)
         guard vector.count <= Constants.maxEmbeddingDimensions else {
             throw WaxError.capacityExceeded(
                 limit: UInt64(Constants.maxEmbeddingDimensions),

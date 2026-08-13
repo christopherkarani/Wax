@@ -1959,10 +1959,10 @@ package actor MemoryOrchestrator {
         _ vector: [Float],
         embedder: some EmbeddingProvider
     ) throws -> [Float] {
-        try EmbeddingValidation.validate(
+        try EmbeddingValidation.validateIngest(
             vector,
             dimensions: embedder.dimensions,
-            requireNonZero: embedder.normalize
+            identity: embedder.identity
         )
         if embedder.normalize {
             return normalizedL2(vector)
