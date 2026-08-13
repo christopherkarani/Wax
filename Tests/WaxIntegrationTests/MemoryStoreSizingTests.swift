@@ -120,6 +120,61 @@ struct MemoryStoreSizingTests {
     }
 
     @Test
+    func defaultPublicWalCommitsUnderPendingEmbeddingPressureAndSurvivesReopen() async throws {
+        try await TempFiles.withTempFile { url in
+            var config = OrchestratorConfig.default
+            config.enableVectorSearch = true
+            config.enableTextSearch = true
+            config.vectorEnginePreference = .cpuOnly
+            config.walSizeBytes = Memory.Config.defaultWalSizeBytes
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicTextEmbedder(dimensions: 2)
+            )
+
+            var acknowledged: [String] = []
+            var autoCommits: UInt64 = 0
+            for index in 0..<1_500 {
+                let text = "embed-pressure-\(index)-" + String(repeating: "e", count: 32_768)
+                try await orchestrator.remember(text)
+                acknowledged.append(text)
+                autoCommits = (await orchestrator.runtimeStats()).wal.autoCommitCount
+                if autoCommits >= 1 { break }
+            }
+            #expect(
+                autoCommits >= 1,
+                "pending embeddings must not block 4 MiB WAL pressure commits; autoCommitCount=\(autoCommits) after \(acknowledged.count) writes"
+            )
+            #expect(!acknowledged.isEmpty)
+
+            try await orchestrator.close()
+
+            let inspect = try await WaxCore.Wax.open(at: url)
+            let committedTexts = Set((await inspect.frameMetas()).compactMap(\.searchText))
+            try await inspect.close()
+
+            var reopenConfig = OrchestratorConfig.default
+            reopenConfig.enableVectorSearch = true
+            reopenConfig.enableTextSearch = true
+            reopenConfig.vectorEnginePreference = .cpuOnly
+            let reopened = try await MemoryOrchestrator(
+                at: url,
+                config: reopenConfig,
+                embedder: DeterministicTextEmbedder(dimensions: 2)
+            )
+            for text in acknowledged {
+                let prefix = String(text.prefix(24))
+                #expect(
+                    committedTexts.contains { $0.hasPrefix(prefix) },
+                    "missing acknowledged embedded text prefix \(prefix) after reopen"
+                )
+            }
+            try await reopened.close()
+        }
+    }
+
+    @Test
     func reopenAcrossTwoCloseCyclesPreservesAcknowledgedFrames() async throws {
         try await TempFiles.withTempFile { url in
             let texts = (0..<8).map { "n-minus-cycle-\($0)-unique-payload" }

@@ -196,6 +196,66 @@ import Testing
     try await wax.close()
 }
 
+@Test func waxCommitsUnderWalPressureWhenEmbeddingsArePending() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 4 * 1024 * 1024)
+    await wax.setWalPressureIndexPreparer { [weak wax] in
+        guard let wax else { return }
+        let embeddings = await wax.pendingEmbeddingMutations()
+        guard let first = embeddings.first else { return }
+        var vectors: [Float] = []
+        var frameIds: [UInt64] = []
+        for embedding in embeddings {
+            vectors.append(contentsOf: embedding.vector)
+            frameIds.append(embedding.frameId)
+        }
+        let bytes = validFlatVecIndexSegment(
+            vectors: vectors,
+            frameIds: frameIds,
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+        try await wax.stageVecIndexForNextCommit(
+            bytes: bytes,
+            vectorCount: UInt64(frameIds.count),
+            dimension: first.dimension,
+            similarity: .cosine
+        )
+    }
+
+    let firstId = try await wax.put(
+        Data("embed-pressure-seed".utf8),
+        options: FrameMetaSubset(searchText: "embed-pressure-seed")
+    )
+    try await wax.putEmbedding(frameId: firstId, vector: [0.1, 0.2])
+
+    var autoCommits: UInt64 = 0
+    for index in 0..<800 {
+        let text = "embed-pressure-\(index)-" + String(repeating: "x", count: 8_192)
+        let frameId = try await wax.put(
+            Data("embed-pressure-\(index)".utf8),
+            options: FrameMetaSubset(searchText: text)
+        )
+        autoCommits = (await wax.walStats()).autoCommitCount
+        if autoCommits > 0 { break }
+        try await wax.putEmbedding(frameId: frameId, vector: [0.1, 0.2])
+    }
+
+    let stats = await wax.walStats()
+    #expect(stats.autoCommitCount > 0)
+    #expect(stats.pendingBytes <= stats.walSize)
+    #expect(stats.checkpointCount > 0)
+
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    let texts = Set((await reopened.frameMetas()).compactMap(\.searchText))
+    #expect(texts.contains("embed-pressure-seed"))
+    try await reopened.close()
+}
+
 @Test func waxWalPressureAutoCommitCanBeDisabled() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -278,4 +338,29 @@ import Testing
     let stats = await reopened.walStats()
     #expect(stats.replaySnapshotHitCount > 0)
     try await reopened.close()
+}
+
+private func validFlatVecIndexSegment(
+    vectors: [Float],
+    frameIds: [UInt64],
+    dimension: UInt32,
+    similarity: VecSimilarity
+) -> Data {
+    var data = Data([0x4D, 0x56, 0x32, 0x56])
+    var version = UInt16(1).littleEndian
+    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
+    data.append(3)
+    data.append(similarity.rawValue)
+    var dimensionLE = dimension.littleEndian
+    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
+    var vectorCountLE = UInt64(frameIds.count).littleEndian
+    withUnsafeBytes(of: &vectorCountLE) { data.append(contentsOf: $0) }
+    var payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride).littleEndian
+    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
+    data.append(Data(repeating: 0, count: 8))
+    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    var frameIdLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
+    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+    return data
 }

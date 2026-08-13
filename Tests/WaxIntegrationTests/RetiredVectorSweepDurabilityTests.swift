@@ -154,7 +154,155 @@ struct RetiredVectorSweepDurabilityTests {
             try await wax.close()
         }
     }
+
+    @Test
+    func videoRebuildAfterCrashedDeleteDoesNotPersistGhostsAndSurvivesKillAfterRepair() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let mp4URL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mp4")
+            defer { try? FileManager.default.removeItem(at: mp4URL) }
+            try await VideoRAGTestVideoGenerator.writeTinyMP4(
+                to: mp4URL,
+                width: 32,
+                height: 32,
+                frameCount: 2,
+                fps: 2
+            )
+
+            let ghostId = try await seedVideoLegacyGhost(storeURL: storeURL, mp4URL: mp4URL)
+            let liveRootId = try await liveVideoRootId(storeURL: storeURL)
+
+            try runPendingMutationChild(storeURL: storeURL, kind: "video-pending-delete")
+            try runRebuildChildAndKillAfterCommit(storeURL: storeURL, kind: "video")
+
+            let wax = try await Wax.open(at: storeURL)
+            let bytes = try await wax.readCommittedVecIndexBytes()
+            #expect(bytes != nil, "repair commit must persist a vec index")
+            let ids = try sweepCommittedVecFrameIds(from: bytes!)
+            #expect(
+                !ids.contains(ghostId),
+                "historical retired video frame \(ghostId) survived repair after crash-during-delete"
+            )
+            #expect(
+                !ids.contains(liveRootId),
+                "pending-deleted live video root \(liveRootId) persisted as a ghost vector after repair"
+            )
+            let liveRoots = liveVideoRoots(from: await wax.frameMetas())
+            #expect(liveRoots.isEmpty, "pending deletes must be committed; live roots=\(liveRoots)")
+            try await wax.close()
+        }
+    }
+
+    @Test
+    func videoRebuildAfterCrashedIngestThenRetryKeepsSingleLiveRoot() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let mp4URL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mp4")
+            defer { try? FileManager.default.removeItem(at: mp4URL) }
+            try await VideoRAGTestVideoGenerator.writeTinyMP4(
+                to: mp4URL,
+                width: 32,
+                height: 32,
+                frameCount: 2,
+                fps: 2
+            )
+
+            _ = try await seedVideoLegacyGhost(storeURL: storeURL, mp4URL: mp4URL)
+
+            try runPendingMutationChild(storeURL: storeURL, kind: "video-pending-ingest")
+            try runRebuildChildAndKillAfterCommit(storeURL: storeURL, kind: "video")
+
+            let orchestrator = try await makeVideoSweepOrchestrator(storeURL: storeURL)
+            let file = VideoFile(id: "legacy-ghost-kill", url: mp4URL, captureDate: nil)
+            try await orchestrator.ingest(files: [file])
+            try await orchestrator.flush()
+
+            let wax = await orchestrator.wax
+            let liveRoots = liveVideoRoots(from: await wax.frameMetas())
+            #expect(
+                liveRoots.count == 1,
+                "crash-during-ingest + retry produced \(liveRoots.count) live roots: \(liveRoots)"
+            )
+            await orchestrator.session.close()
+            try await orchestrator.wax.close()
+        }
+    }
     #endif
+
+    @Test
+    func photoRebuildAfterCrashedDeleteDoesNotPersistGhostsAndSurvivesKillAfterRepair() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-sweep-pending-delete-\(UUID().uuidString).png")
+            try photoSweepTinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            let ghostId = try await seedPhotoLegacyGhost(
+                storeURL: storeURL,
+                imageURL: imageURL,
+                assetID: "pending-delete-asset"
+            )
+            let liveRootId = try await livePhotoRootId(storeURL: storeURL, assetID: "pending-delete-asset")
+
+            try runPendingMutationChild(storeURL: storeURL, kind: "photo-pending-delete")
+            try runRebuildChildAndKillAfterCommit(storeURL: storeURL, kind: "photo")
+
+            let wax = try await Wax.open(at: storeURL)
+            let bytes = try await wax.readCommittedVecIndexBytes()
+            #expect(bytes != nil, "repair commit must persist a vec index")
+            let ids = try sweepCommittedVecFrameIds(from: bytes!)
+            #expect(
+                !ids.contains(ghostId),
+                "historical retired photo frame \(ghostId) survived repair after crash-during-delete"
+            )
+            #expect(
+                !ids.contains(liveRootId),
+                "pending-deleted live photo root \(liveRootId) persisted as a ghost vector after repair"
+            )
+            let liveRoots = livePhotoRoots(from: await wax.frameMetas(), assetID: "pending-delete-asset")
+            #expect(liveRoots.isEmpty, "pending deletes must be committed; live roots=\(liveRoots)")
+            try await wax.close()
+        }
+    }
+
+    @Test
+    func photoRebuildAfterCrashedIngestThenRetryKeepsSingleLiveRoot() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-sweep-pending-ingest-\(UUID().uuidString).png")
+            try photoSweepTinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            _ = try await seedPhotoLegacyGhost(
+                storeURL: storeURL,
+                imageURL: imageURL,
+                assetID: "pending-ingest-asset"
+            )
+
+            try runPendingMutationChild(storeURL: storeURL, kind: "photo-pending-ingest")
+            try runRebuildChildAndKillAfterCommit(storeURL: storeURL, kind: "photo")
+
+            let orchestrator = try await makePhotoSweepOrchestrator(storeURL: storeURL)
+            let file = PhotoFile(
+                id: "pending-ingest-asset",
+                url: imageURL,
+                captureDate: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+            try await orchestrator.ingest(files: [file])
+            try await orchestrator.flush()
+
+            let wax = await orchestrator.wax
+            let liveRoots = livePhotoRoots(from: await wax.frameMetas(), assetID: "pending-ingest-asset")
+            #expect(
+                liveRoots.count == 1,
+                "crash-during-ingest + retry produced \(liveRoots.count) live roots: \(liveRoots)"
+            )
+            await orchestrator.session.close()
+            try await orchestrator.wax.close()
+        }
+    }
 }
 
 // MARK: - Seed / inspect
@@ -191,6 +339,24 @@ private func photoSweepRootId(wax: Wax, assetID: String, superseded: Bool) async
             && $0.metadata?.entries[PhotoMetadataKey.assetID.rawValue] == assetID
             && (($0.supersededBy != nil) == superseded)
     }?.id)
+}
+
+private func livePhotoRoots(from metas: [FrameMeta], assetID: String) -> [UInt64] {
+    metas.compactMap { meta in
+        guard meta.kind == PhotoFrameKind.root.rawValue,
+              meta.status != .deleted,
+              meta.supersededBy == nil,
+              meta.metadata?.entries[PhotoMetadataKey.assetID.rawValue] == assetID
+        else { return nil }
+        return meta.id
+    }
+}
+
+private func livePhotoRootId(storeURL: URL, assetID: String) async throws -> UInt64 {
+    let wax = try await Wax.open(at: storeURL)
+    let rootId = try #require(livePhotoRoots(from: await wax.frameMetas(), assetID: assetID).first)
+    try await wax.close()
+    return rootId
 }
 
 private func seedPhotoLegacyGhost(storeURL: URL, imageURL: URL, assetID: String) async throws -> UInt64 {
@@ -290,6 +456,23 @@ private func seedVideoLegacyGhost(storeURL: URL, mp4URL: URL) async throws -> UI
     try await orchestrator.wax.close()
     return ghostSegmentId
 }
+
+private func liveVideoRoots(from metas: [FrameMeta]) -> [UInt64] {
+    metas.compactMap { meta in
+        guard meta.kind == VideoFrameKind.root.rawValue,
+              meta.status != .deleted,
+              meta.supersededBy == nil
+        else { return nil }
+        return meta.id
+    }
+}
+
+private func liveVideoRootId(storeURL: URL) async throws -> UInt64 {
+    let wax = try await Wax.open(at: storeURL)
+    let rootId = try #require(liveVideoRoots(from: await wax.frameMetas()).first)
+    try await wax.close()
+    return rootId
+}
 #endif
 
 // MARK: - Child process
@@ -305,6 +488,61 @@ private enum SweepHarnessError: Error, CustomStringConvertible {
         case .childFailed(let status, let stdout, let stderr):
             return "child failed status=\(status)\nstdout:\n\(stdout)\nstderr:\n\(stderr)"
         }
+    }
+}
+
+private func runRebuildChildAndKillAfterCommit(storeURL: URL, kind: String) throws {
+    let process = Process()
+    process.executableURL = try sweepHarnessURL()
+    var environment = ProcessInfo.processInfo.environment
+    environment["WAX_RETIRED_VECTOR_SWEEP_STORE"] = storeURL.path
+    environment["WAX_RETIRED_VECTOR_SWEEP_KIND"] = kind
+    environment["WAX_RETIRED_VECTOR_SWEEP_CRASH_AFTER_COMMIT"] = "1"
+    process.environment = environment
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationReason == .uncaughtSignal, process.terminationStatus == 9 else {
+        throw SweepHarnessError.childFailed(
+            status: process.terminationStatus,
+            stdout: stdout,
+            stderr: stderr
+        )
+    }
+}
+
+private func runPendingMutationChild(storeURL: URL, kind: String) throws {
+    let process = Process()
+    process.executableURL = try sweepHarnessURL()
+    var environment = ProcessInfo.processInfo.environment
+    environment["WAX_RETIRED_VECTOR_SWEEP_STORE"] = storeURL.path
+    environment["WAX_RETIRED_VECTOR_SWEEP_KIND"] = kind
+    process.environment = environment
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0, stdout.contains("PENDING_OK") else {
+        throw SweepHarnessError.childFailed(
+            status: process.terminationStatus,
+            stdout: stdout,
+            stderr: stderr
+        )
     }
 }
 

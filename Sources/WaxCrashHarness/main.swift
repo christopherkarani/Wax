@@ -24,6 +24,7 @@ private enum HarnessError: Error, CustomStringConvertible {
 
 private enum CrashScenario: String, CaseIterable {
     case toc
+    case footerWrite = "footer_write"
     case footer
     case header
 
@@ -31,6 +32,8 @@ private enum CrashScenario: String, CaseIterable {
         switch self {
         case .toc:
             return "after_toc_write_before_footer"
+        case .footerWrite:
+            return "after_footer_write_before_fsync"
         case .footer:
             return "after_footer_fsync_before_header"
         case .header:
@@ -38,12 +41,13 @@ private enum CrashScenario: String, CaseIterable {
         }
     }
 
-    var expectedCommittedFramesAfterRecovery: UInt64 {
+    /// Whether the in-flight payload frame is expected in the committed TOC after SIGKILL.
+    var inFlightCommitIsDurable: Bool {
         switch self {
         case .toc:
-            return 1
-        case .footer, .header:
-            return 2
+            return false
+        case .footerWrite, .footer, .header:
+            return true
         }
     }
 }
@@ -55,6 +59,9 @@ struct WaxCrashHarness {
     private static let storePathEnv = "WAX_CRASH_HARNESS_STORE_PATH"
     private static let scenarioEnv = "WAX_CRASH_HARNESS_SCENARIO"
     private static let crashCheckpointEnv = "WAX_CRASH_INJECT_CHECKPOINT"
+    private static let crashAfterAutoCommitsEnv = "WAX_CRASH_INJECT_AFTER_AUTOCOMMITS"
+    private static let ackPathEnv = "WAX_CRASH_HARNESS_ACK_PATH"
+    private static let publicWalSize = Memory.Config.defaultWalSizeBytes
 
     private static func writeStderr(_ message: String) {
         guard let data = (message + "\n").data(using: .utf8) else { return }
@@ -102,31 +109,50 @@ struct WaxCrashHarness {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let seedFrameId = try await seedStore(at: url)
+        let ackURL = url.deletingPathExtension().appendingPathExtension("ack")
+        defer { try? FileManager.default.removeItem(at: ackURL) }
 
-        let child = try runChildProcess(storeURL: url, scenario: scenario)
+        let child = try runChildProcess(storeURL: url, scenario: scenario, ackURL: ackURL)
         guard child.reason == .uncaughtSignal, child.status == sigKillStatus else {
             throw HarnessError.childDidNotCrash(status: child.status, reason: child.reason)
         }
 
-        let recovered = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
-        let stats = await recovered.stats()
-        guard stats.frameCount == scenario.expectedCommittedFramesAfterRecovery else {
+        let acked = try readAckedSearchTexts(at: ackURL)
+        guard acked.count >= 3 else {
             throw HarnessError.invariantFailed(
-                "scenario \(scenario.rawValue) expected frameCount \(scenario.expectedCommittedFramesAfterRecovery), got \(stats.frameCount)"
+                "scenario \(scenario.rawValue) expected at least 3 auto-committed frames, got \(acked.count)"
             )
         }
+
+        let recovered = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let committedTexts = Set((await recovered.frameMetas()).compactMap(\.searchText))
+        for text in acked {
+            guard committedTexts.contains(text) else {
+                throw HarnessError.invariantFailed(
+                    "scenario \(scenario.rawValue) missing auto-committed frame \(text)"
+                )
+            }
+        }
+
         let seed = try await recovered.frameContent(frameId: seedFrameId)
         guard seed == Data("seed".utf8) else {
             throw HarnessError.invariantFailed("seed frame mismatch after recovery")
         }
 
-        if scenario.expectedCommittedFramesAfterRecovery >= 2 {
-            // The child's frame is the next frame allocated after the seed frame.
-            let second = try await recovered.frameContent(frameId: seedFrameId + 1)
-            let expected = Data("payload-\(scenario.rawValue)".utf8)
-            guard second == expected else {
-                throw HarnessError.invariantFailed("second frame mismatch for \(scenario.rawValue)")
+        let payloadText = "payload-\(scenario.rawValue)"
+        if scenario.inFlightCommitIsDurable {
+            guard committedTexts.contains(payloadText) else {
+                throw HarnessError.invariantFailed("in-flight payload missing for \(scenario.rawValue)")
             }
+        } else {
+            guard !committedTexts.contains(payloadText) else {
+                throw HarnessError.invariantFailed("toc crash unexpectedly committed in-flight payload")
+            }
+        }
+
+        let ids = (await recovered.frameMetas()).map(\.id)
+        guard Set(ids).count == ids.count else {
+            throw HarnessError.invariantFailed("duplicate frame ids after recovery")
         }
         try await recovered.close()
     }
@@ -134,14 +160,22 @@ struct WaxCrashHarness {
     /// Seeds the store with a single "seed" frame and returns its allocated frame ID.
     @discardableResult
     private static func seedStore(at url: URL) async throws -> UInt64 {
-        let wax = try await WaxCore.Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        let wax = try await WaxCore.Wax.create(
+            at: url,
+            walSize: publicWalSize,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
         let seedFrameId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
         try await wax.commit()
         try await wax.close()
         return seedFrameId
     }
 
-    private static func runChildProcess(storeURL: URL, scenario: CrashScenario) throws -> (status: Int32, reason: Process.TerminationReason) {
+    private static func runChildProcess(
+        storeURL: URL,
+        scenario: CrashScenario,
+        ackURL: URL
+    ) throws -> (status: Int32, reason: Process.TerminationReason) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         var env = ProcessInfo.processInfo.environment
@@ -149,6 +183,8 @@ struct WaxCrashHarness {
         env[storePathEnv] = storeURL.path
         env[scenarioEnv] = scenario.rawValue
         env[crashCheckpointEnv] = scenario.checkpoint
+        env[crashAfterAutoCommitsEnv] = "3"
+        env[ackPathEnv] = ackURL.path
         process.environment = env
         try process.run()
         process.waitUntilExit()
@@ -163,14 +199,44 @@ struct WaxCrashHarness {
         guard let scenarioName = env[scenarioEnv], let scenario = CrashScenario(rawValue: scenarioName) else {
             throw HarnessError.missingEnv(scenarioEnv)
         }
+        guard let ackPath = env[ackPathEnv], !ackPath.isEmpty else {
+            throw HarnessError.missingEnv(ackPathEnv)
+        }
 
         let url = URL(fileURLWithPath: storePath)
         let wax = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        var acked: [String] = []
+        var index = 0
+        var autoCommits: UInt64 = 0
+        while autoCommits < 3 {
+            let text = "ack-\(index)-" + String(repeating: "p", count: 8_192)
+            _ = try await wax.put(
+                Data("ack-\(index)".utf8),
+                options: FrameMetaSubset(searchText: text)
+            )
+            acked.append(text)
+            autoCommits = (await wax.walStats()).autoCommitCount
+            index += 1
+            if index > 4_000 {
+                throw HarnessError.invariantFailed("failed to reach 3 auto-commits on 4 MiB WAL")
+            }
+        }
+        if (await wax.walStats()).pendingBytes > 0, !acked.isEmpty {
+            // The put that tripped the last auto-commit is still pending.
+            acked.removeLast()
+        }
+        try Data(acked.joined(separator: "\n").utf8).write(to: URL(fileURLWithPath: ackPath), options: .atomic)
+
         _ = try await wax.put(
             Data("payload-\(scenario.rawValue)".utf8),
             options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")
         )
         try await wax.commit()
         try await wax.close()
+    }
+
+    private static func readAckedSearchTexts(at url: URL) throws -> [String] {
+        let body = try String(contentsOf: url, encoding: .utf8)
+        return body.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 }
