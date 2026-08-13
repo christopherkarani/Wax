@@ -111,11 +111,13 @@ env_skip_flag() {
 should_skip() {
   local step="$1"
   local item
-  for item in "${SKIP_STEPS[@]}"; do
-    if [[ "$item" == "$step" || "$item" == "all" ]]; then
-      return 0
-    fi
-  done
+  if [[ ${#SKIP_STEPS[@]} -gt 0 ]]; then
+    for item in "${SKIP_STEPS[@]}"; do
+      if [[ "$item" == "$step" || "$item" == "all" ]]; then
+        return 0
+      fi
+    done
+  fi
   if [[ "$(env_skip_flag "$step")" == "1" ]]; then
     return 0
   fi
