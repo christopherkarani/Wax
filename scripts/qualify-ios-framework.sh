@@ -228,7 +228,10 @@ step_crash() {
 }
 
 step_tsan() {
-  swift test --sanitize=thread --filter "$TSAN_FILTER"
+  # --disable-xctest: macOS refuses TSan dylib injection into the platform-signed
+  # swiftpm-xctest-helper ("Sanitizer load violates platform policy"). The targeted
+  # suites are all Swift Testing, so XCTest discovery is not needed.
+  swift test --sanitize=thread --disable-xctest --filter "$TSAN_FILTER"
 }
 
 step_tsan_consumer() {
