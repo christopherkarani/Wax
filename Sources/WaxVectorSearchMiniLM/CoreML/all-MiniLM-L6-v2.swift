@@ -84,8 +84,10 @@ package class all_MiniLM_L6_v2Output : MLFeatureProvider {
 package class all_MiniLM_L6_v2 {
     package let model: MLModel
 
-    /// URL of model assuming it was installed in the same bundle as this class
-    class var urlOfModelInThisBundle : URL {
+    /// URL of model assuming it was installed in the same bundle as this class.
+    /// Private crash path: force-unwraps a missing resource. Production loads
+    /// go through `MiniLMEmbeddings.loadModelFromBundle`.
+    private class var urlOfModelInThisBundle : URL {
         #if SWIFT_PACKAGE
         let moduleBundle = Bundle.module
         if let url = moduleBundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
@@ -117,7 +119,7 @@ package class all_MiniLM_L6_v2 {
 
         - throws: an NSError object that describes the problem
     */
-    package convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
+    private convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
         try self.init(contentsOf: type(of:self).urlOfModelInThisBundle, configuration: configuration)
     }
 
@@ -154,7 +156,7 @@ package class all_MiniLM_L6_v2 {
           - configuration: the desired model configuration
           - handler: the completion handler to be called when the model loading completes successfully or unsuccessfully
     */
-    package class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
+    private class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<all_MiniLM_L6_v2, Error>) -> Void) {
         load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration, completionHandler: handler)
     }
 
@@ -166,7 +168,7 @@ package class all_MiniLM_L6_v2 {
         - parameters:
           - configuration: the desired model configuration
     */
-    package class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
+    private class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> all_MiniLM_L6_v2 {
         try await load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration)
     }
 

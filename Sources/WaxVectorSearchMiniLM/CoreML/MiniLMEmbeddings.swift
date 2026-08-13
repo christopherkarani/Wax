@@ -46,26 +46,33 @@ package final class MiniLMEmbeddings {
         var tokenizerFactory: (@Sendable () throws -> BertTokenizer)?
         var usesBundleFallback: Bool
         var blockingModelLoadDelay: Duration?
+        /// When set, `loadModelFromBundle` uses this bundle instead of the module
+        /// resource bundle. Tests inject an empty bundle directory to prove the
+        /// production path throws rather than hitting the generated force-unwrap.
+        var resourceBundleURL: URL?
 
         static let `default` = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: nil,
             usesBundleFallback: true,
-            blockingModelLoadDelay: nil
+            blockingModelLoadDelay: nil,
+            resourceBundleURL: nil
         )
 
         static let missingModel = Overrides(
             modelURLProvider: { nil },
             tokenizerFactory: nil,
             usesBundleFallback: false,
-            blockingModelLoadDelay: nil
+            blockingModelLoadDelay: nil,
+            resourceBundleURL: nil
         )
 
         static let missingTokenizer = Overrides(
             modelURLProvider: nil,
             tokenizerFactory: { throw InitError.tokenizerLoadFailed("override requested failure") },
             usesBundleFallback: true,
-            blockingModelLoadDelay: nil
+            blockingModelLoadDelay: nil,
+            resourceBundleURL: nil
         )
     }
 
@@ -292,14 +299,24 @@ private extension MiniLMEmbeddings {
     }
 
     /// Production MiniLM loads go through this throwing helper. The generated
-    /// CoreML convenience accessor that force-unwraps the class bundle URL is a
-    /// dead crash path: initialization always uses `MLModel(contentsOf:)` and
-    /// `all_MiniLM_L6_v2(model:)`.
-    static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-        let bundle = WaxBundleResolver.resolveModule(
-            named: "Wax_WaxVectorSearchMiniLM.bundle",
-            moduleFallback: .module
-        )
+    /// CoreML convenience accessor that force-unwraps the class bundle URL is
+    /// `private` and unreachable from this type or any other package entry point.
+    static func loadModelFromBundle(
+        configuration: MLModelConfiguration,
+        resourceBundleURL: URL? = nil
+    ) throws -> all_MiniLM_L6_v2 {
+        let bundle: Bundle
+        if let resourceBundleURL {
+            guard let injected = Bundle(url: resourceBundleURL) else {
+                throw InitError.missingModelResource
+            }
+            bundle = injected
+        } else {
+            bundle = WaxBundleResolver.resolveModule(
+                named: "Wax_WaxVectorSearchMiniLM.bundle",
+                moduleFallback: .module
+            )
+        }
         if let compiledURL = bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc") {
             let core = try MLModel(contentsOf: compiledURL, configuration: configuration)
             return all_MiniLM_L6_v2(model: core)
@@ -327,7 +344,15 @@ private extension MiniLMEmbeddings {
         }
 
         do {
+            if overrides.resourceBundleURL != nil {
+                return try loadModelFromBundle(
+                    configuration: configuration,
+                    resourceBundleURL: overrides.resourceBundleURL
+                )
+            }
             return try cachedModel(configuration: configuration)
+        } catch let error as InitError {
+            throw error
         } catch {
             throw InitError.modelLoadFailed(error.localizedDescription)
         }

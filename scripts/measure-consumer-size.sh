@@ -47,6 +47,7 @@ export HOME="$fixture_root/home"
 SWIFT_COMMON=(
   --cache-path "$CACHE_PATH"
   --disable-sandbox
+  -Xswiftc -warnings-as-errors
 )
 
 fail() {
@@ -272,7 +273,19 @@ inventory = {
     "hasTopKReductionShader": has_topk,
     "hasWaxShaders": has_cosine and has_topk,
     "waxShaderBytes": shader_bytes,
-    "hasPrivacyInfo": bool(privacy_bundles),
+    "waxResourceBundles": [b.name for b in bundles if b.name.startswith("Wax_")],
+    "waxPrivacyInfoBundles": [name for name in privacy_bundles if name.startswith("Wax_")],
+    "waxBundlesMissingPrivacyInfo": [
+        b.name for b in bundles
+        if b.name.startswith("Wax_") and b.name not in privacy_bundles
+    ],
+    "hasPrivacyInfo": (
+        "Wax_Wax.bundle" in privacy_bundles
+        and not any(
+            b.name.startswith("Wax_") and b.name not in privacy_bundles
+            for b in bundles
+        )
+    ),
     "privacyInfoBundles": privacy_bundles,
 }
 print(json.dumps({"inventory": inventory, "resourceBundles": bundle_entries}))
@@ -364,6 +377,44 @@ echo "GREEN: traits-off consumer"
 arctic_json="$(measure_consumer arctic ARCTIC)"
 echo "GREEN: Arctic consumer"
 
+echo "Building default consumer for x86_64 with warnings-as-errors..."
+x86_probe="$fixture_root/x86_64-float16-probe"
+mkdir -p "$x86_probe/Sources/F16Probe"
+printf '%s\n' 'let value = Float16(1.5)' '_ = value.bitPattern' \
+  > "$x86_probe/Sources/F16Probe/main.swift"
+cat > "$x86_probe/Package.swift" <<'EOF'
+// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "F16Probe",
+    platforms: [.macOS(.v14)],
+    targets: [.executableTarget(name: "F16Probe")]
+)
+EOF
+x86_probe_log="$fixture_root/logs/x86_64-float16-probe.log"
+if run_swift swift build \
+  --package-path "$x86_probe" \
+  --arch x86_64 \
+  --scratch-path "$fixture_root/build-x86_64-float16-probe" \
+  "${SWIFT_COMMON[@]}" \
+  >"$x86_probe_log" 2>&1; then
+  x86_log="$fixture_root/logs/default-x86_64-build.log"
+  if ! run_swift swift build \
+    --package-path "$fixture_root/default" \
+    --product SizeConsumer \
+    --scratch-path "$fixture_root/build-default-x86_64" \
+    --arch x86_64 \
+    "${SWIFT_COMMON[@]}" \
+    >"$x86_log" 2>&1; then
+    echo "---- default x86_64 build log ----" >&2
+    cat "$x86_log" >&2
+    fail "default x86_64 consumer failed to build with warnings-as-errors"
+  fi
+  echo "GREEN: x86_64 consumer warnings-as-errors"
+else
+  echo "SKIP: x86_64 consumer — this toolchain cannot compile Swift.Float16 under --arch x86_64 (required by MetalANNS/Wax). warnings-as-errors still applies to host-arch consumer builds."
+  echo "  probe log: $x86_probe_log"
+fi
 python3 - "$default_json" "$off_json" "$arctic_json" "$MINILM_MAX" "$ARCTIC_MAX" <<'PY'
 import json, sys
 default = json.loads(sys.argv[1])
@@ -389,8 +440,15 @@ def require_shared_runtime_resources(consumer, label):
         failures.append(
             f"{label} consumer missing Wax Metal shaders ({', '.join(missing) or 'unknown'})"
         )
-    if not inventory["hasPrivacyInfo"]:
-        failures.append(f"{label} consumer missing PrivacyInfo.xcprivacy")
+    wax_privacy = inventory.get("waxPrivacyInfoBundles") or []
+    wax_missing = inventory.get("waxBundlesMissingPrivacyInfo") or []
+    if "Wax_Wax.bundle" not in wax_privacy:
+        failures.append(f"{label} consumer missing PrivacyInfo.xcprivacy in Wax_Wax.bundle")
+    other_missing = [name for name in wax_missing if name != "Wax_Wax.bundle"]
+    if other_missing:
+        failures.append(
+            f"{label} consumer missing PrivacyInfo.xcprivacy in Wax-owned bundles ({', '.join(other_missing)})"
+        )
     if consumer["containsSwiftNIO"] or consumer["containsMCP"]:
         failures.append(f"{label} consumer graph contains swift-nio or MCP product")
 

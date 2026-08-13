@@ -237,6 +237,9 @@ struct PublicDocumentationContractTests {
         #expect(verifier.contains("compile-package"))
         #expect(verifier.contains("-warnings-as-errors"))
         #expect(verifier.contains("comment-only"))
+        #expect(verifier.contains("sandbox-exec"))
+        #expect(verifier.contains("sandbox-self-check"))
+        #expect(verifier.contains("wax-snippet-sandbox-canary"))
     }
 
     @Test
@@ -280,6 +283,10 @@ struct PublicDocumentationContractTests {
 
         let gates = try Self.read(".github/workflows/quality-gates.yml")
         #expect(gates.contains("verify-public-swift-snippets.swift"))
+
+        let consumer = try Self.read("scripts/test-consumer-contracts.sh")
+        #expect(consumer.contains("-warnings-as-errors"))
+        #expect(consumer.contains("--arch x86_64"))
     }
 
     @Test

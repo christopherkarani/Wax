@@ -64,6 +64,9 @@ SWIFT_COMMON=(
   --cache-path "$CACHE_PATH"
   --disable-sandbox
 )
+SWIFT_WERROR=(
+  -Xswiftc -warnings-as-errors
+)
 
 snapshot_real_caches() {
   local dest="$1"
@@ -180,8 +183,45 @@ run_strict_step "StrictConsumer macOS" "$fixture_root/logs/strict-macos.log" \
   run_swift_isolated swift build \
     --package-path "$CONSUMER_ROOT" \
     --product StrictConsumer \
-    "${SWIFT_COMMON[@]}"
+    "${SWIFT_COMMON[@]}" \
+    "${SWIFT_WERROR[@]}"
 
+host_can_cross_compile_float16_x86_64() {
+  local probe="$fixture_root/x86_64-float16-probe"
+  mkdir -p "$probe/Sources/F16Probe"
+  printf '%s\n' 'let value = Float16(1.5)' '_ = value.bitPattern' \
+    > "$probe/Sources/F16Probe/main.swift"
+  cat > "$probe/Package.swift" <<'EOF'
+// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "F16Probe",
+    platforms: [.macOS(.v14)],
+    targets: [.executableTarget(name: "F16Probe")]
+)
+EOF
+  run_swift_isolated swift build \
+    --package-path "$probe" \
+    --arch x86_64 \
+    --scratch-path "$fixture_root/x86_64-float16-build" \
+    "${SWIFT_COMMON[@]}" \
+    "${SWIFT_WERROR[@]}" \
+    >"$fixture_root/logs/x86_64-float16-probe.log" 2>&1
+}
+
+stage "strict-macos-x86_64"
+if host_can_cross_compile_float16_x86_64; then
+  run_strict_step "StrictConsumer macOS x86_64" "$fixture_root/logs/strict-macos-x86_64.log" \
+    run_swift_isolated swift build \
+      --package-path "$CONSUMER_ROOT" \
+      --product StrictConsumer \
+      --arch x86_64 \
+      "${SWIFT_COMMON[@]}" \
+      "${SWIFT_WERROR[@]}"
+else
+  echo "SKIP: StrictConsumer macOS x86_64 — this toolchain cannot compile Swift.Float16 under --arch x86_64 (required by MetalANNS/Wax). warnings-as-errors still applies to host macOS and iOS Simulator consumer builds."
+  echo "  probe log: $fixture_root/logs/x86_64-float16-probe.log"
+fi
 stage "xcodebuild-list"
 xcodebuild_list_log="$fixture_root/logs/xcodebuild-list.log"
 # -list rejects -derivedDataPath unless -scheme is also set.
@@ -259,6 +299,7 @@ if ! run_swift_isolated swift test \
   --scratch-path "$fixture_root/test-build" \
   --disable-build-manifest-caching \
   "${SWIFT_COMMON[@]}" \
+  "${SWIFT_WERROR[@]}" \
   >"$test_log" 2>&1; then
   echo "---- consumer-tests log ----" >&2
   cat "$test_log" >&2
@@ -310,6 +351,7 @@ if ! run_swift_isolated swift build \
   --product TraitsOffConsumer \
   --scratch-path "$fixture_root/traits-off-build" \
   "${SWIFT_COMMON[@]}" \
+  "${SWIFT_WERROR[@]}" \
   >"$traits_build_log" 2>&1; then
   echo "---- traits-off build log ----" >&2
   cat "$traits_build_log" >&2
@@ -322,6 +364,7 @@ if ! run_swift_isolated swift run \
   --package-path "$traits_root" \
   --scratch-path "$fixture_root/traits-off-build" \
   "${SWIFT_COMMON[@]}" \
+  "${SWIFT_WERROR[@]}" \
   TraitsOffConsumer \
   >"$traits_run_log" 2>&1; then
   echo "---- traits-off run log ----" >&2

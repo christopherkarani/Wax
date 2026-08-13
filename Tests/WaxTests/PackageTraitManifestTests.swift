@@ -89,6 +89,11 @@ import Testing
     #expect(source.contains("hasBertVocab"))
     #expect(source.contains("hasWaxShaders"))
     #expect(source.contains("hasPrivacyInfo"))
+    #expect(source.contains("Wax_Wax.bundle"))
+    #expect(source.contains("waxBundlesMissingPrivacyInfo"))
+    #expect(source.contains("Wax-owned bundles"))
+    #expect(source.contains("-warnings-as-errors"))
+    #expect(source.contains("--arch x86_64"))
     #expect(source.contains("traits-off consumer unexpectedly contains bert_tokenizer_vocab.txt"))
 }
 
@@ -104,6 +109,12 @@ import Testing
     #expect(arctic.contains("loadModelFromBundle"))
     #expect(arctic.contains("WaxBundleResolver.resolveModule"))
     #expect(!arctic.contains("urlOfModelInThisBundle"))
+    #expect(generatedMiniLM.contains("private class var urlOfModelInThisBundle"))
+    #expect(generatedMiniLM.contains("private convenience init(configuration:"))
+    #expect(!generatedMiniLM.contains("package convenience init(configuration:"))
+    #expect(generatedArctic.contains("private class var urlOfModelInThisBundle"))
+    #expect(generatedArctic.contains("private convenience init(configuration:"))
+    #expect(!generatedArctic.contains("package convenience init(configuration:"))
     #expect(generatedMiniLM.contains(#"return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc")!"#))
     #expect(generatedArctic.contains(#"return bundle.url(forResource: "snowflake-arctic-embed-s", withExtension: "mlmodelc")!"#))
 }

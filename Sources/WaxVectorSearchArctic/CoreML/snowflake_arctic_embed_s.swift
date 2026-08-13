@@ -84,8 +84,10 @@ package class snowflake_arctic_embed_sOutput : MLFeatureProvider {
 package class snowflake_arctic_embed_s {
     package let model: MLModel
 
-    /// URL of model assuming it was installed in the same bundle as this class
-    class var urlOfModelInThisBundle : URL {
+    /// URL of model assuming it was installed in the same bundle as this class.
+    /// Private crash path: force-unwraps a missing resource. Production loads
+    /// go through `ArcticEmbeddings.loadModelFromBundle`.
+    private class var urlOfModelInThisBundle : URL {
         #if SWIFT_PACKAGE
         let moduleBundle = Bundle.module
         if let url = moduleBundle.url(forResource: "snowflake-arctic-embed-s", withExtension: "mlmodelc") {
@@ -100,7 +102,7 @@ package class snowflake_arctic_embed_s {
         self.model = model
     }
 
-    package convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
+    private convenience init(configuration: MLModelConfiguration = MLModelConfiguration()) throws {
         try self.init(contentsOf: type(of:self).urlOfModelInThisBundle, configuration: configuration)
     }
 
@@ -112,11 +114,11 @@ package class snowflake_arctic_embed_s {
         try self.init(model: MLModel(contentsOf: modelURL, configuration: configuration))
     }
 
-    package class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<snowflake_arctic_embed_s, Error>) -> Void) {
+    private class func load(configuration: MLModelConfiguration = MLModelConfiguration(), completionHandler handler: @escaping (Swift.Result<snowflake_arctic_embed_s, Error>) -> Void) {
         load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration, completionHandler: handler)
     }
 
-    package class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> snowflake_arctic_embed_s {
+    private class func load(configuration: MLModelConfiguration = MLModelConfiguration()) async throws -> snowflake_arctic_embed_s {
         try await load(contentsOf: self.urlOfModelInThisBundle, configuration: configuration)
     }
 

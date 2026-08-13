@@ -163,7 +163,10 @@ let package = Package(
         .target(
             name: "WaxBertTokenizer",
             dependencies: [],
-            resources: [.process("Resources/bert_tokenizer_vocab.txt")],
+            resources: [
+                .process("Resources/bert_tokenizer_vocab.txt"),
+                .process("Resources/PrivacyInfo.xcprivacy"),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
@@ -184,7 +187,10 @@ let package = Package(
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
             ],
-            resources: [.process("Shaders")],
+            resources: [
+                .process("Shaders"),
+                .process("PrivacyInfo.xcprivacy"),
+            ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
         .target(
@@ -196,6 +202,7 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/all-MiniLM-L6-v2.mlmodelc"),
+                .process("PrivacyInfo.xcprivacy"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),
@@ -208,6 +215,7 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/snowflake-arctic-embed-s.mlmodelc"),
+                .process("PrivacyInfo.xcprivacy"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),

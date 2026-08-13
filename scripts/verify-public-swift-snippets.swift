@@ -1,5 +1,8 @@
 #!/usr/bin/env swift
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Extracts fenced `swift` blocks that carry a `compile` / `compile-package` /
 /// `compile run` marker from README.md, Wax DocC articles,
@@ -17,7 +20,8 @@ import Foundation
 ///       Typecheck this fence in the default-trait consumer AND the traits-off
 ///       consumer (`traits: []`).
 ///   ```swift compile run
-///       Same as `compile`, then execute the generated consumer. Declaration
+///       Same as `compile`, then execute the generated consumer in an isolated
+///       HOME/TMPDIR (and `sandbox-exec` when it launches). Declaration
 ///       snippets must expose a top-level `func` which the harness invokes.
 ///   ```swift compile trait:MiniLMEmbeddings
 ///       Typecheck only in the default-trait consumer. Excluded from traits-off.
@@ -46,7 +50,7 @@ import Foundation
 /// statements are written verbatim as main.swift.
 ///
 /// Flags:
-///   --self-test              Run parser negative/positive fixtures and exit
+///   --self-test              Run parser fixtures, sandbox compile-run self-check, and exit
 ///   --self-test-fixtures     Run /tmp negative build/run fixtures and exit
 ///   --markdown-root PATH     Collect markdown from PATH instead of the repo docs
 
@@ -75,6 +79,8 @@ let fileManager = FileManager.default
 let scriptURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
 let scriptsDir = scriptURL.deletingLastPathComponent()
 let repoRoot = scriptsDir.deletingLastPathComponent()
+/// Login/session HOME at verifier launch. Compile-run children must not inherit this.
+let hostHomePath = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
 let fixtureReplacements: [(String, String)] = [
     ("__WAX_STORE_URL__", #"URL(fileURLWithPath: "/tmp/wax-docs-fixture.wax")"#),
@@ -463,12 +469,23 @@ func snippetTargetName(_ snippet: Snippet, offset: Int) -> String {
     "Snippet\(String(format: "%03d", offset + 1))_\(swiftIdentifier(snippet.sourcePath))_\(snippet.index)"
 }
 
-func runProcess(arguments: [String], failMessage: String) -> Int32 {
+func runProcess(
+    arguments: [String],
+    failMessage: String,
+    environment: [String: String]? = nil,
+    currentDirectory: URL? = nil
+) -> Int32 {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = arguments
     process.standardOutput = FileHandle.standardOutput
     process.standardError = FileHandle.standardError
+    if let environment {
+        process.environment = environment
+    }
+    if let currentDirectory {
+        process.currentDirectoryURL = currentDirectory
+    }
     do {
         try process.run()
         process.waitUntilExit()
@@ -478,13 +495,23 @@ func runProcess(arguments: [String], failMessage: String) -> Int32 {
     return process.terminationStatus
 }
 
-func captureProcess(arguments: [String]) -> (status: Int32, output: String) {
+func captureProcess(
+    arguments: [String],
+    environment: [String: String]? = nil,
+    currentDirectory: URL? = nil
+) -> (status: Int32, output: String) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = arguments
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = pipe
+    if let environment {
+        process.environment = environment
+    }
+    if let currentDirectory {
+        process.currentDirectoryURL = currentDirectory
+    }
     do {
         try process.run()
         process.waitUntilExit()
@@ -532,14 +559,199 @@ func swiftBinPath(packagePath: URL) -> String {
     return path
 }
 
+struct RunIsolation {
+    var root: URL
+    var home: URL
+    var tmp: URL
+    var profileURL: URL
+
+    func cleanup() {
+        try? fileManager.removeItem(at: root)
+    }
+}
+
+func swiftStringLiteral(_ value: String) -> String {
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escaped)\""
+}
+
+func canonicalFilePath(_ url: URL) -> String {
+    url.withUnsafeFileSystemRepresentation { pointer in
+        guard let pointer else { return url.path }
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(pointer, &buffer) != nil else { return url.path }
+        return String(cString: buffer)
+    }
+}
+
+func sandboxProfileAllowingWrites(under roots: [URL]) -> String {
+    var paths = Set<String>()
+    for root in roots {
+        paths.insert(root.path)
+        paths.insert(root.resolvingSymlinksInPath().path)
+        paths.insert(canonicalFilePath(root))
+        if root.path.hasPrefix("/var/") {
+            paths.insert("/private" + root.path)
+        }
+    }
+    paths.insert("/dev")
+    paths.insert("/private/dev")
+    let clauses = paths.sorted().map { path in
+        "        (require-not (subpath \"\(path)\"))"
+    }.joined(separator: "\n")
+    return """
+    (version 1)
+    (allow default)
+    (deny file-write*
+      (require-all
+    \(clauses)
+      )
+    )
+    """
+}
+
+#if canImport(Darwin)
+func darwinConfstrDirectory(_ name: Int32) -> URL? {
+    let length = confstr(name, nil, 0)
+    guard length > 0 else { return nil }
+    var buffer = [CChar](repeating: 0, count: length)
+    guard confstr(name, &buffer, length) > 0 else { return nil }
+    return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+}
+#endif
+
+func makeRunIsolation() throws -> RunIsolation {
+    let root = fileManager.temporaryDirectory
+        .appendingPathComponent("wax-snippet-run-\(UUID().uuidString)", isDirectory: true)
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let tmp = root.appendingPathComponent("tmp", isDirectory: true)
+    try fileManager.createDirectory(at: home.appendingPathComponent("Documents"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: home.appendingPathComponent("Library/Caches"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let profileURL = root.appendingPathComponent("sandbox.sb")
+    // FileManager.temporaryDirectory on Darwin follows confstr(_CS_DARWIN_USER_TEMP_DIR),
+    // which ignores TMPDIR. Allow that per-user temp/cache so compile-run snippets can
+    // create stores, while still denying ~/Documents and the rest of the real home.
+    var allowed = [root]
+    #if canImport(Darwin)
+    if let darwinTmp = darwinConfstrDirectory(_CS_DARWIN_USER_TEMP_DIR) {
+        allowed.append(darwinTmp)
+    }
+    if let darwinCache = darwinConfstrDirectory(_CS_DARWIN_USER_CACHE_DIR) {
+        allowed.append(darwinCache)
+    }
+    #endif
+    let profile = sandboxProfileAllowingWrites(under: allowed)
+    try profile.write(to: profileURL, atomically: true, encoding: .utf8)
+    return RunIsolation(root: root, home: home, tmp: tmp, profileURL: profileURL)
+}
+
+func isolatedRunEnvironment(home: URL, tmp: URL) -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    environment["HOME"] = home.path
+    environment["TMPDIR"] = tmp.path
+    environment["TMP"] = tmp.path
+    environment["TEMP"] = tmp.path
+    environment.removeValue(forKey: "REAL_HOME")
+    return environment
+}
+
 func runExecutable(at url: URL, label: String) {
+    let isolation: RunIsolation
+    do {
+        isolation = try makeRunIsolation()
+    } catch {
+        fail("failed to create compile-run isolation for \(label): \(error)")
+    }
+    defer { isolation.cleanup() }
+
+    let environment = isolatedRunEnvironment(home: isolation.home, tmp: isolation.tmp)
+    let sandboxExec = "/usr/bin/sandbox-exec"
+    var arguments = [url.path]
+    if fileManager.isExecutableFile(atPath: sandboxExec) {
+        let probe = captureProcess(
+            arguments: [sandboxExec, "-f", isolation.profileURL.path, "/usr/bin/true"],
+            environment: environment,
+            currentDirectory: isolation.root
+        )
+        if probe.status == 0 {
+            arguments = [sandboxExec, "-f", isolation.profileURL.path, url.path]
+        } else {
+            fputs(
+                "warning: sandbox-exec failed to launch for \(label); falling back to HOME/TMPDIR isolation\n",
+                stderr
+            )
+        }
+    }
+
     let status = runProcess(
-        arguments: [url.path],
-        failMessage: "failed to launch \(label)"
+        arguments: arguments,
+        failMessage: "failed to launch \(label)",
+        environment: environment,
+        currentDirectory: isolation.root
     )
     if status != 0 {
         fail("compile run snippet \(label) exited \(status)")
     }
+}
+
+func runSandboxSelfCheck() {
+    let work = fileManager.temporaryDirectory
+        .appendingPathComponent("wax-sandbox-self-check-\(UUID().uuidString)", isDirectory: true)
+    defer { try? fileManager.removeItem(at: work) }
+    do {
+        try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
+    } catch {
+        fail("sandbox-self-check: failed to create work dir: \(error)")
+    }
+
+    let canaryName = "wax-snippet-sandbox-canary-\(UUID().uuidString).txt"
+    let realCanary = URL(fileURLWithPath: hostHomePath, isDirectory: true)
+        .appendingPathComponent("Documents")
+        .appendingPathComponent(canaryName)
+    if fileManager.fileExists(atPath: realCanary.path) {
+        try? fileManager.removeItem(at: realCanary)
+    }
+
+    let source = """
+    import Foundation
+    let canaryName = \(swiftStringLiteral(canaryName))
+    let realHomeCanary = URL(fileURLWithPath: \(swiftStringLiteral(realCanary.path)))
+    let destinations = [
+        URL.documentsDirectory.appending(path: canaryName),
+        realHomeCanary,
+    ]
+    for dest in destinations {
+        do {
+            try Data("unsandboxed".utf8).write(to: dest, options: .atomic)
+        } catch {
+            // sandbox deny or isolated HOME is the expected outcome
+        }
+    }
+    """
+    do {
+        try source.write(to: work.appendingPathComponent("main.swift"), atomically: true, encoding: .utf8)
+    } catch {
+        fail("sandbox-self-check: failed to write fixture: \(error)")
+    }
+
+    let binary = work.appendingPathComponent("canary-writer")
+    let compiled = captureProcess(
+        arguments: ["swiftc", "-o", binary.path, work.appendingPathComponent("main.swift").path]
+    )
+    if compiled.status != 0 {
+        fail("sandbox-self-check: swiftc failed: \(compiled.output)")
+    }
+
+    runExecutable(at: binary, label: "sandbox-self-check")
+
+    if fileManager.fileExists(atPath: realCanary.path) {
+        try? fileManager.removeItem(at: realCanary)
+        fail("sandbox-self-check: write landed at \(realCanary.path)")
+    }
+    print("GREEN: sandbox-self-check did not write \(canaryName) under $REAL_HOME/Documents")
 }
 
 func materializeConsumer(at fixtureRoot: URL, snippets: [Snippet], traitsClause: String) throws {
@@ -836,6 +1048,7 @@ func runParserSelfTests() {
     }
 
     print("GREEN: snippet verifier parser self-tests passed")
+    runSandboxSelfCheck()
 }
 
 func writeFixtureMarkdown(at directory: URL, contents: String) throws {
@@ -957,6 +1170,7 @@ print("Wax public snippet verifier")
 print("  repo:     \(repoRoot.path)")
 print("  snippets: \(snippets.count)")
 print("  host FM:  \(hostHasFoundationModels ? "available" : "unavailable")")
+runSandboxSelfCheck()
 for snippet in snippets {
     var tags: [String] = []
     if snippet.isPackageOnly {
