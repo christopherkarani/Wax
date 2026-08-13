@@ -11,7 +11,7 @@ Offset          Region              Size
 ──────          ──────              ────
 0 KiB           Header Page A       4 KiB
 4 KiB           Header Page B       4 KiB
-8 KiB           WAL Ring Buffer     Configurable (default 256 MiB)
+8 KiB           WAL Ring Buffer     Configurable (WaxCore 256 MiB / Memory 4 MiB)
 WAL + 8 KiB     Frame Payloads      Variable
 After Payloads  TOC                 Variable
 After TOC       Footer              64 bytes
@@ -57,7 +57,14 @@ This ensures that a crash during a header write never corrupts the store — at 
 
 ## WAL Ring Buffer
 
-The WAL occupies a fixed-size region starting at offset 8 KiB. See <doc:WALAndCrashRecovery> for details on the ring buffer protocol, record format, and replay semantics.
+The WAL occupies a fixed-size region starting at offset 8 KiB. Size is chosen at create time and stored in the header (`walSize`); open never rewrites it.
+
+Two defaults exist (see <doc:WALAndCrashRecovery>):
+
+- **Public facades** (`Memory`, `PhotoMemory`, `VideoMemory`) create new stores with a **4 MiB** WAL (`Memory.Config.defaultWalSizeBytes` / `Constants.publicFacadeWalSize`). This is the iOS-appropriate size documented on the public Wax Getting Started page and README.
+- **Low-level `Wax.create`** and `FrameStore` default to **256 MiB** (`Constants.defaultWalSize`) so CLI/MCP and existing large stores stay compatible. Legacy 256 MiB files reopen at that layout even when the public facade is configured for 4 MiB.
+
+See <doc:WALAndCrashRecovery> for details on the ring buffer protocol, record format, and replay semantics.
 
 ## Table of Contents (TOC)
 
@@ -117,7 +124,7 @@ Frame payloads support four encoding strategies via ``CanonicalEncoding``:
 | Header region (A+B) | 8 KiB |
 | Footer size | 64 bytes |
 | WAL record header | 48 bytes |
-| Default WAL size | 256 MiB |
+| Default WAL size | 256 MiB (low-level WaxCore / `Wax.create`); 4 MiB for the public `Memory` facade |
 | Max string bytes | 16 MiB |
 | Max blob bytes | 256 MiB |
 | Max array count | 10,000,000 |

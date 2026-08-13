@@ -16,7 +16,14 @@ The WAL (Write-Ahead Log) is a fixed-size circular ring buffer that records all 
 
 ## Ring Buffer Architecture
 
-The WAL occupies a contiguous region starting at file offset 8 KiB. Its default size is 256 MiB, configurable at creation time. The ring buffer uses two pointers:
+The WAL occupies a contiguous region starting at file offset 8 KiB. Size is chosen at create time and stored in the header (`walSize`); open never rewrites it.
+
+Two defaults exist:
+
+- **Public facades** (`Memory`, `PhotoMemory`, `VideoMemory`) create new stores with a **4 MiB** WAL (`Memory.Config.defaultWalSizeBytes`). This is the iOS-appropriate size documented on the public Wax Getting Started page and README.
+- **Low-level `Wax.create`** and `FrameStore` default to **256 MiB** (`Constants.defaultWalSize`) so CLI/MCP and existing large stores stay compatible. Legacy 256 MiB files reopen at that layout even when the public facade is configured for 4 MiB.
+
+The ring buffer uses two pointers:
 
 - **Write position** — where the next record will be written
 - **Checkpoint position** — the boundary of committed records
