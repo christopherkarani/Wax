@@ -783,8 +783,20 @@ package actor VideoRAGOrchestrator {
     // MARK: - Indexing
 
     private func rebuildIndex() async throws {
-        let metas = await wax.frameMetas()
+        let retiredVectorIds = Self.indexSnapshot(from: await wax.frameMetasIncludingPending()).retiredVectorIds
+        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
+        let hasPendingWAL = await wax.walStats().pendingBytes > 0
+        if removedCount > 0 || hasPendingWAL {
+            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
+                throw injected
+            }
+            try await session.commit()
+            RetiredVectorSweepFaultInjection.maybeCrashAfterCommit()
+        }
+        index = Self.indexSnapshot(from: await wax.frameMetas()).state
+    }
 
+    private static func indexSnapshot(from metas: [FrameMeta]) -> (state: IndexState, retiredVectorIds: Set<UInt64>) {
         var supersededRoots: Set<UInt64> = []
         supersededRoots.reserveCapacity(64)
         for meta in metas where meta.kind == FrameKind.root {
@@ -833,14 +845,7 @@ package actor VideoRAGOrchestrator {
             }
         }
 
-        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
-        if removedCount > 0 {
-            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
-                throw injected
-            }
-            try await session.commit()
-        }
-        index = next
+        return (next, retiredVectorIds)
     }
 
     /// Removes vectors for frames outside the live index (superseded trees, deleted

@@ -5,6 +5,9 @@ import ImageIO
 import UniformTypeIdentifiers
 import WaxCore
 import WaxVectorSearch
+#if canImport(Darwin)
+import Darwin
+#endif
 
 #if canImport(Photos)
 @preconcurrency import Photos
@@ -39,6 +42,16 @@ package enum RetiredVectorSweepFaultInjection: Sendable {
         defer { lock.unlock() }
         guard failingStorePaths.contains(storeURL.path) else { return nil }
         return WaxError.io("injected retired-vector sweep commit failure")
+    }
+
+    static let crashAfterCommitEnvKey = "WAX_RETIRED_VECTOR_SWEEP_CRASH_AFTER_COMMIT"
+
+    static func maybeCrashAfterCommit() {
+        guard ProcessInfo.processInfo.environment[crashAfterCommitEnvKey] == "1" else { return }
+        #if canImport(Darwin)
+        _ = Darwin.kill(Darwin.getpid(), SIGKILL)
+        #endif
+        fatalError("retired-vector repair crash injection did not terminate")
     }
 }
 
@@ -1099,12 +1112,24 @@ package actor PhotoRAGOrchestrator {
     // MARK: - Indexing
 
     private func rebuildIndex() async throws {
-        let metas = await wax.frameMetas()
+        let retiredVectorIds = Self.indexSnapshot(from: await wax.frameMetasIncludingPending()).retiredVectorIds
+        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
+        let hasPendingWAL = await wax.walStats().pendingBytes > 0
+        if removedCount > 0 || hasPendingWAL {
+            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
+                throw injected
+            }
+            try await session.commit()
+            RetiredVectorSweepFaultInjection.maybeCrashAfterCommit()
+        }
+        index = Self.indexSnapshot(from: await wax.frameMetas()).state
+    }
 
+    private static func indexSnapshot(from metas: [FrameMeta]) -> (state: IndexState, retiredVectorIds: Set<UInt64>) {
         var supersededRoots: Set<UInt64> = []
         supersededRoots.reserveCapacity(64)
         for meta in metas where meta.kind == FrameKind.root {
-            if meta.supersededBy != nil {
+            if meta.supersededBy != nil || meta.status == .deleted {
                 supersededRoots.insert(meta.id)
             }
         }
@@ -1162,14 +1187,7 @@ package actor PhotoRAGOrchestrator {
             }
         }
 
-        let removedCount = try await sweepRetiredVectors(retiredVectorIds)
-        if removedCount > 0 {
-            if let injected = RetiredVectorSweepFaultInjection.injectedError(for: storeURL) {
-                throw injected
-            }
-            try await session.commit()
-        }
-        index = next
+        return (next, retiredVectorIds)
     }
 
     /// Removes vectors for frames outside the live index (superseded trees, deleted

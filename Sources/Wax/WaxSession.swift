@@ -116,18 +116,29 @@ package actor WaxSession {
             }
             throw error
         }
+
+        if case .readWrite = mode {
+            await wax.setWalPressureIndexPreparer { [weak self] in
+                guard let self else { return }
+                try await self.stage()
+            }
+        }
     }
 
     deinit {
         if let leaseId = writerLeaseId {
             let wax = wax
-            Task { await wax.releaseWriterLease(leaseId) }
+            Task {
+                await wax.setWalPressureIndexPreparer(nil)
+                await wax.releaseWriterLease(leaseId)
+            }
         }
     }
 
     package func close() async {
         guard !isClosed else { return }
         isClosed = true
+        await wax.setWalPressureIndexPreparer(nil)
         if let leaseId = writerLeaseId {
             writerLeaseId = nil
             await wax.releaseWriterLease(leaseId)

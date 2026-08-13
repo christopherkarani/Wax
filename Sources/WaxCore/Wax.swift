@@ -185,6 +185,8 @@ package actor Wax {
     private var dirty: Bool
     private var walAutoCommitCount: UInt64
     private var walReplaySnapshotHitCount: UInt64
+    private var walPressureIndexPreparer: (@Sendable () async throws -> Void)?
+    private var isInvokingWalPressureIndexPreparer = false
     private let walProactiveCommitThresholdBytes: UInt64?
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
@@ -280,6 +282,28 @@ package actor Wax {
         !(pendingMutationSummary.hasPendingEmbedding && stagedVecIndex == nil)
     }
 
+    package func setWalPressureIndexPreparer(
+        _ preparer: (@Sendable () async throws -> Void)?
+    ) {
+        walPressureIndexPreparer = preparer
+    }
+
+    private func invokeWalPressureIndexPreparerLocked() async throws {
+        guard let preparer = walPressureIndexPreparer else { return }
+        guard !isInvokingWalPressureIndexPreparer else { return }
+        isInvokingWalPressureIndexPreparer = true
+        await opLock.writeUnlock()
+        do {
+            try await preparer()
+            await opLock.writeLock()
+            isInvokingWalPressureIndexPreparer = false
+        } catch {
+            await opLock.writeLock()
+            isInvokingWalPressureIndexPreparer = false
+            throw error
+        }
+    }
+
     private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
         guard payloadSize > 0 else { return nil }
         guard payloadSize <= Int(UInt32.max) else { return nil }
@@ -305,7 +329,6 @@ package actor Wax {
     private func maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: UInt64) async throws {
         guard let thresholdBytes = walProactiveCommitThresholdBytes else { return }
         guard estimatedIncomingWalBytes > 0 else { return }
-        guard canAutoCommitForWalPressureLocked() else { return }
         if let maxWalSizeBytes = walProactiveCommitMaxWalSizeBytes,
            wal.walSize > maxWalSizeBytes {
             return
@@ -317,6 +340,11 @@ package actor Wax {
         let (projectedPendingBytes, overflowed) = pendingBytes.addingReportingOverflow(estimatedIncomingWalBytes)
         let projected = overflowed ? UInt64.max : projectedPendingBytes
         guard projected >= thresholdBytes else { return }
+
+        if !canAutoCommitForWalPressureLocked() {
+            try await invokeWalPressureIndexPreparerLocked()
+        }
+        guard canAutoCommitForWalPressureLocked() else { return }
 
         try await commitLocked()
         walAutoCommitCount &+= 1
@@ -331,6 +359,9 @@ package actor Wax {
             return
         }
 
+        if !canAutoCommitForWalPressureLocked() {
+            try await invokeWalPressureIndexPreparerLocked()
+        }
         if !canAutoCommitForWalPressureLocked() {
             throw WaxError.io("WAL capacity exceeded before vector index staged; stageForCommit() and commit() earlier or increase wal_size.")
         }
@@ -352,6 +383,9 @@ package actor Wax {
             return
         }
 
+        if !canAutoCommitForWalPressureLocked() {
+            try await invokeWalPressureIndexPreparerLocked()
+        }
         if !canAutoCommitForWalPressureLocked() {
             throw WaxError.io("WAL capacity exceeded before vector index staged; stageForCommit() and commit() earlier or increase wal_size.")
         }
@@ -917,22 +951,26 @@ package actor Wax {
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
 
-        let payloadOffset = dataEnd
-        let entry = WALEntry.putFrame(
-            PutFrame(
-                frameId: frameId,
-                timestampMs: timestampMs ?? currentTimestampMs(),
-                options: options,
-                payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
-                canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
-                canonicalChecksum: canonicalChecksum,
-                storedChecksum: storedChecksum
-            )
+        var putFrame = PutFrame(
+            frameId: frameId,
+            timestampMs: timestampMs ?? currentTimestampMs(),
+            options: options,
+            payloadOffset: 0,
+            payloadLength: UInt64(storedBytes.count),
+            canonicalEncoding: canonicalEncoding,
+            canonicalLength: UInt64(content.count),
+            canonicalChecksum: canonicalChecksum,
+            storedChecksum: storedChecksum
         )
+        let estimatedWalBytes = try WALEntryCodec.encode(.putFrame(putFrame)).count
+        // Pressure commits may write lex/vec/TOC/footer at the current dataEnd.
+        // Capture the payload offset only after that commit so the new frame
+        // cannot overwrite the blobs we just made durable.
+        try await ensureWalCapacityLocked(payloadSize: estimatedWalBytes)
+        putFrame.payloadOffset = dataEnd
+        let entry = WALEntry.putFrame(putFrame)
         let payload = try WALEntryCodec.encode(entry)
-        try await ensureWalCapacityLocked(payloadSize: payload.count)
+        let payloadOffset = putFrame.payloadOffset
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
@@ -1822,17 +1860,17 @@ package actor Wax {
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
         }
-        Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
+        maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
 
         try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }
-        Self.maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
+        maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
 
         try await io.run {
             try file.fsync()
         }
-        Self.maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
+        maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
 
         header.footerOffset = footerOffset
         header.fileGeneration = footer.generation
@@ -1844,7 +1882,7 @@ package actor Wax {
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
-        Self.maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
+        maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
         try await io.run {
             try file.fsync()
             wal.recordCheckpoint()
@@ -2983,9 +3021,12 @@ package actor Wax {
 
     // MARK: - Internal helpers
 
-    private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
+    private func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
         let env = ProcessInfo.processInfo.environment
         guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
+        if let raw = env["WAX_CRASH_INJECT_AFTER_AUTOCOMMITS"], let minimum = UInt64(raw) {
+            guard walAutoCommitCount >= minimum else { return }
+        }
         // SIGKILL is delivered asynchronously and may be delayed or masked in sandboxed
         // environments (containers, test harnesses). The fatalError below is a safety net
         // for those cases; it should never be reached in normal crash-injection runs but
