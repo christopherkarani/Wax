@@ -413,9 +413,10 @@ public actor WaxFoundationModelSession {
             throw WaxFoundationModelsError.generationInProgress
         }
         isStreaming = true
-        await generationGate.lock()
-        let lease = GenerationLease(gate: generationGate)
+        var holdsGate = false
         do {
+            try await acquireGenerationGateCancellably()
+            holdsGate = true
             try Task.checkCancellation()
             let prepared = try await preparePromptDetailed(for: userPrompt)
             try checkConversationTurnLimit()
@@ -423,6 +424,8 @@ public actor WaxFoundationModelSession {
             let inner = generator.streamText(prompt: turn.prompt, options: options)
             let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
             let generationPrompt = turn.prompt
+            let lease = GenerationLease(gate: generationGate)
+            holdsGate = false
             let producer = Task {
                 await self.runStreamingProducer(
                     userPrompt: userPrompt,
@@ -440,7 +443,9 @@ public actor WaxFoundationModelSession {
             return WaxGenerationStream(stream: stream, cancelProducer: { producer.cancel() })
         } catch {
             isStreaming = false
-            lease.release()
+            if holdsGate {
+                await generationGate.unlock()
+            }
             throw error
         }
     }
@@ -531,6 +536,32 @@ public actor WaxFoundationModelSession {
 
     // MARK: - Persistence helpers
 
+    /// Acquires ``generationGate`` but returns ``CancellationError`` if the caller
+    /// is cancelled while waiting. The cancelled waiter is not left holding
+    /// ``isStreaming``; a sidecar task still takes the FIFO lock hop and unlocks
+    /// so Apple serialization is preserved.
+    private func acquireGenerationGateCancellably() async throws {
+        let acquire = Task {
+            await generationGate.lock()
+        }
+        let race = GenerationGateCancellationRace()
+        do {
+            try await withTaskCancellationHandler {
+                try await race.waitForAcquisition {
+                    await acquire.value
+                }
+            } onCancel: {
+                race.cancel()
+            }
+        } catch {
+            Task {
+                await acquire.value
+                await generationGate.unlock()
+            }
+            throw error
+        }
+    }
+
     /// FIFO generation lease. Actor isolation is reentrant, so overlapping
     /// `respond`/`streamResponse` calls must not rely on it to keep Apple's
     /// ``LanguageModelSession`` single-flight.
@@ -550,11 +581,12 @@ public actor WaxFoundationModelSession {
     }
 
     /// Produces ``WaxGenerationStream/Event`` values, persists on the stream lifecycle,
-    /// and releases the generation lease in `defer`. Overflow retry (when configured)
-    /// resets the transcript and consumes a fresh inner stream once. User persistence
-    /// still happens only after the first yielded token of the overall attempt, so a
-    /// retry after a pre-token overflow persists on the retry's first token, and a
-    /// retry after a post-token overflow does not persist the user turn again.
+    /// and releases the generation lease after the backing Apple request has fully
+    /// terminated. Overflow retry (when configured) resets the transcript and consumes
+    /// a fresh inner stream once. User persistence still happens only after the first
+    /// yielded token of the overall attempt, so a retry after a pre-token overflow
+    /// persists on the retry's first token, and a retry after a post-token overflow
+    /// does not persist the user turn again.
     private func runStreamingProducer(
         userPrompt: String,
         prepared: PreparedMemoryPrompt,
@@ -564,11 +596,6 @@ public actor WaxFoundationModelSession {
         continuation: AsyncThrowingStream<WaxGenerationStream.Event, Error>.Continuation,
         lease: GenerationLease
     ) async {
-        defer {
-            isStreaming = false
-            lease.release()
-        }
-
         var lastContent = ""
         var sawContent = false
         var didPersistUser = false
@@ -631,6 +658,10 @@ public actor WaxFoundationModelSession {
                 )
             )
         }
+
+        await generator.joinStream()
+        isStreaming = false
+        await lease.release()
     }
 
     private func persistTurn(userPrompt: String, assistantResponse: String) async throws {
@@ -1138,3 +1169,50 @@ package extension MemoryOrchestrator {
     }
 }
 #endif
+
+/// Once-only resume used so a cancelled ``streamResponse`` waiter can leave
+/// ``isStreaming`` without waiting for ``AsyncMutex/lock()`` to observe cancel.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private final class GenerationGateCancellationRace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var finished = false
+    private var pending: Result<Void, Error>?
+
+    func waitForAcquisition(_ acquire: @escaping @Sendable () async -> Void) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            if let pending {
+                lock.unlock()
+                cont.resume(with: pending)
+                return
+            }
+            continuation = cont
+            lock.unlock()
+            Task {
+                await acquire()
+                self.resume(with: .success(()))
+            }
+        }
+    }
+
+    func cancel() {
+        resume(with: .failure(CancellationError()))
+    }
+
+    private func resume(with result: Result<Void, Error>) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        let cont = continuation
+        continuation = nil
+        if cont == nil {
+            pending = result
+        }
+        lock.unlock()
+        cont?.resume(with: result)
+    }
+}

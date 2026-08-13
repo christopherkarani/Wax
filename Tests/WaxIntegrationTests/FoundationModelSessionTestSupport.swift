@@ -54,12 +54,19 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private var firstChunkHoldContinuation: CheckedContinuation<Void, Never>?
     private var forceCancel = false
     private let structuredResult: (any Sendable)?
+    private let lingerAfterCancel: Bool
+    private var underlyingRequests = 0
+    private var lingeringAfterCancel = false
+    private var lingerReleased = false
+    private var lingerContinuation: CheckedContinuation<Void, Never>?
+    private var streamTask: Task<Void, Never>?
 
     init(
         delay: Duration = .milliseconds(20),
         blockUntilCancelled: Bool = false,
         pauseBeforePersistence: Bool = false,
         pauseBeforeFirstChunk: Bool = false,
+        lingerAfterCancel: Bool = false,
         streamFailure: StreamFailurePoint = .none,
         generateError: Error? = nil,
         generateErrorCount: Int = 1,
@@ -77,6 +84,7 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         self.remainingPersistenceHolds = pauseBeforePersistence ? 1 : 0
         self.remainingFirstChunkHolds = pauseBeforeFirstChunk ? 1 : 0
         self.structuredResult = structuredResult
+        self.lingerAfterCancel = lingerAfterCancel
     }
 
     func maxInFlight() -> Int {
@@ -111,8 +119,43 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         lock.withLock { holdingBeforeFirstChunk }
     }
 
+    func isUnderlyingRequestActive() -> Bool {
+        lock.withLock { underlyingRequests > 0 }
+    }
+
+    func isLingeringAfterCancel() -> Bool {
+        lock.withLock { lingeringAfterCancel }
+    }
+
     func requestCancellation() {
         lock.withLock { forceCancel = true }
+    }
+
+    func releaseLingerAfterCancel() {
+        let pending: CheckedContinuation<Void, Never>?
+        lock.lock()
+        lingerReleased = true
+        pending = lingerContinuation
+        lingerContinuation = nil
+        lock.unlock()
+        pending?.resume()
+    }
+
+    func waitUntilLingeringAfterCancel(timeout: Duration = .seconds(60)) async throws {
+        try await pollFlag(timeout: timeout, description: "linger after cancel") {
+            isLingeringAfterCancel()
+        }
+    }
+
+    func waitUntilUnderlyingRequestActive(timeout: Duration = .seconds(60)) async throws {
+        try await pollFlag(timeout: timeout, description: "underlying request active") {
+            isUnderlyingRequestActive()
+        }
+    }
+
+    func joinStream() async {
+        let task = lock.withLock { streamTask }
+        await task?.value
     }
 
     func waitUntilGenerating(timeout: Duration = .seconds(60)) async throws {
@@ -195,8 +238,14 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                self.lock.withLock {
+                    self.streamCalls += 1
+                    self.underlyingRequests += 1
+                }
+                defer {
+                    self.lock.withLock { self.underlyingRequests -= 1 }
+                }
                 do {
-                    self.lock.withLock { self.streamCalls += 1 }
                     try await self.holdBeforeFirstChunkIfNeeded()
                     try Task.checkCancellation()
                     let plannedStreamError: Error? = self.lock.withLock {
@@ -223,12 +272,30 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
+                    await self.lingerAfterCancelIfNeeded()
                 }
             }
+            self.lock.withLock { self.streamTask = task }
             continuation.onTermination = { _ in
                 task.cancel()
             }
         }
+    }
+
+    private func lingerAfterCancelIfNeeded() async {
+        guard lingerAfterCancel else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.lock.lock()
+            if lingerReleased {
+                self.lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.lingeringAfterCancel = true
+            self.lingerContinuation = continuation
+            self.lock.unlock()
+        }
+        lock.withLock { lingeringAfterCancel = false }
     }
 
     private func holdBeforeFirstChunkIfNeeded() async throws {
@@ -335,6 +402,38 @@ func withBoundedTimeout<T: Sendable>(
         let value = try await group.next()!
         group.cancelAll()
         return value
+    }
+}
+
+func waitUntilCondition(
+    timeout: Duration = .seconds(5),
+    description: String,
+    isMet: () async -> Bool
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if await isMet() { return }
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    if await isMet() { return }
+    throw FoundationModelGeneratorWaitTimeout(description)
+}
+
+final class TaskOutcome<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<T, Error>?
+
+    func set(_ result: Result<T, Error>) {
+        lock.lock()
+        stored = result
+        lock.unlock()
+    }
+
+    func snapshot() -> Result<T, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
 #endif

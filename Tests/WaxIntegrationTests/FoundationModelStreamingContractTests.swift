@@ -359,6 +359,150 @@ struct FoundationModelStreamingContractTests {
             try await memory.close()
         }
     }
+
+    @Test
+    func cancellingStreamDoesNotReleaseLeaseUntilUnderlyingRequestEnds() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(
+                blockUntilCancelled: true,
+                lingerAfterCancel: true
+            )
+            let session = makeStreamingSession(
+                memory: memory,
+                generator: generator,
+                persistence: .none
+            )
+
+            let stream = try await session.streamResponse(to: "stream-linger")
+            let (chunkSignal, chunkContinuation) = AsyncStream.makeStream(of: String.self)
+            let consume = Task {
+                for try await event in stream {
+                    if case .content(let text) = event {
+                        chunkContinuation.yield(text)
+                        chunkContinuation.finish()
+                    }
+                }
+            }
+
+            _ = try await withBoundedTimeout(description: "first stream content") {
+                var received: String?
+                for await chunk in chunkSignal {
+                    received = chunk
+                    break
+                }
+                return received
+            }
+            try await generator.waitUntilGenerating()
+            let streamGenerateCalls = await generator.generateCallCount()
+
+            consume.cancel()
+            do {
+                try await consume.value
+                Issue.record("cancelled stream must throw")
+            } catch let error as WaxFoundationModelsError {
+                guard case .cancelled = error else {
+                    Issue.record("expected .cancelled, got \(error)")
+                    return
+                }
+            } catch is CancellationError {
+                Issue.record("consumer cancel must be WaxFoundationModelsError.cancelled, not CancellationError")
+            } catch {
+                Issue.record("expected WaxFoundationModelsError.cancelled, got \(error)")
+            }
+
+            try await generator.waitUntilLingeringAfterCancel()
+            #expect(await generator.isUnderlyingRequestActive())
+
+            let respondTask = Task {
+                try await session.respond(to: "after-linger")
+            }
+            try await session.flush()
+            do {
+                try await waitUntilCondition(
+                    timeout: .milliseconds(250),
+                    description: "respond started during Apple teardown"
+                ) {
+                    await generator.generateCallCount() > streamGenerateCalls
+                }
+                Issue.record(
+                    "next respond started while the cancelled Apple stream was still tearing down"
+                )
+            } catch is FoundationModelGeneratorWaitTimeout {
+                // Expected: the generation lease stays held until linger ends.
+            }
+            #expect(await generator.generateCallCount() == streamGenerateCalls)
+            #expect(await generator.isUnderlyingRequestActive())
+
+            generator.releaseLingerAfterCancel()
+            let reply = try await withBoundedTimeout(description: "respond after linger release") {
+                try await respondTask.value
+            }
+            #expect(reply.contains("after-linger"))
+            #expect(await generator.generateCallCount() == streamGenerateCalls + 1)
+            #expect(await generator.maxInFlight() == 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func droppingStreamDoesNotReleaseLeaseUntilUnderlyingRequestEnds() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(
+                pauseBeforeFirstChunk: true,
+                lingerAfterCancel: true
+            )
+            let session = makeStreamingSession(
+                memory: memory,
+                generator: generator,
+                persistence: .none
+            )
+
+            var stream: WaxGenerationStream? = try await session.streamResponse(to: "drop-linger")
+            try await generator.waitUntilHoldingBeforeFirstChunk()
+            stream = nil
+
+            try await generator.waitUntilLingeringAfterCancel()
+            #expect(await generator.isUnderlyingRequestActive())
+            #expect(await generator.generateCallCount() == 0)
+
+            let respondTask = Task {
+                try await session.respond(to: "after-drop-linger")
+            }
+            try await session.flush()
+            do {
+                try await waitUntilCondition(
+                    timeout: .milliseconds(250),
+                    description: "respond started while dropped stream still owns Apple"
+                ) {
+                    await generator.generateCallCount() > 0
+                }
+                Issue.record(
+                    "dropping a stream unlocked the generation gate before Apple was idle"
+                )
+            } catch is FoundationModelGeneratorWaitTimeout {
+                // Expected: drop waits for the underlying request to finish.
+            }
+            #expect(await generator.generateCallCount() == 0)
+
+            generator.releaseLingerAfterCancel()
+            let reply = try await withBoundedTimeout(description: "respond after drop linger release") {
+                try await respondTask.value
+            }
+            #expect(reply.contains("after-drop-linger"))
+            #expect(await generator.maxInFlight() == 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
 }
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)

@@ -1,5 +1,7 @@
+import Foundation
 import Testing
 @testable import Wax
+import WaxVectorSearch
 
 // MARK: - Action parsing
 
@@ -299,7 +301,7 @@ func waxMemoryToolExecutorRejectsInvalidAndMissingInputs() async throws {
         let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
         let config = WaxMemoryToolConfig.default
 
-        let invalid = await WaxMemoryToolExecutor.execute(
+        let invalid = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "nope"
@@ -307,7 +309,7 @@ func waxMemoryToolExecutorRejectsInvalidAndMissingInputs() async throws {
         #expect(invalid.status == .error)
         #expect(invalid.message.contains("invalid action"))
 
-        let missingContent = await WaxMemoryToolExecutor.execute(
+        let missingContent = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .remember,
@@ -316,7 +318,7 @@ func waxMemoryToolExecutorRejectsInvalidAndMissingInputs() async throws {
         #expect(missingContent.status == .error)
         #expect(missingContent.message.contains("content is required"))
 
-        let missingRecallQuery = await WaxMemoryToolExecutor.execute(
+        let missingRecallQuery = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .recall,
@@ -325,7 +327,7 @@ func waxMemoryToolExecutorRejectsInvalidAndMissingInputs() async throws {
         #expect(missingRecallQuery.status == .error)
         #expect(missingRecallQuery.message.contains("query is required"))
 
-        let missingSearchQuery = await WaxMemoryToolExecutor.execute(
+        let missingSearchQuery = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "find",
@@ -347,7 +349,7 @@ func waxMemoryToolExecutorRememberRecallSearchRoundTripAndAliases() async throws
         config.recallMaxItems = 3
         config.maxItemCharacters = 200
 
-        let stored = await WaxMemoryToolExecutor.execute(
+        let stored = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "store",
@@ -357,7 +359,7 @@ func waxMemoryToolExecutorRememberRecallSearchRoundTripAndAliases() async throws
         #expect(stored.action == "remember")
         #expect(stored.message.contains("Stored memory"))
 
-        let recalled = await WaxMemoryToolExecutor.execute(
+        let recalled = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "lookup",
@@ -367,7 +369,7 @@ func waxMemoryToolExecutorRememberRecallSearchRoundTripAndAliases() async throws
         #expect(recalled.action == "recall")
         #expect(recalled.message.contains("dark mode") || recalled.itemCount >= 0)
 
-        let searched = await WaxMemoryToolExecutor.execute(
+        let searched = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "find",
@@ -390,7 +392,7 @@ func waxMemoryToolExecutorRejectsOversizedContent() async throws {
         let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
         let config = WaxMemoryToolConfig(maxContentCharacters: 8)
 
-        let result = await WaxMemoryToolExecutor.execute(
+        let result = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .remember,
@@ -399,7 +401,7 @@ func waxMemoryToolExecutorRejectsOversizedContent() async throws {
         #expect(result.status == .error)
         #expect(result.message.contains("maxContentCharacters"))
 
-        let ok = await WaxMemoryToolExecutor.execute(
+        let ok = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .remember,
@@ -426,7 +428,7 @@ func waxMemoryToolExecutorRecallMaxItemsZeroReturnsNoItemsMessage() async throws
         try await memory.save("alpha beta gamma")
         let config = WaxMemoryToolConfig(recallMaxItems: 0, embeddingPolicy: .never)
 
-        let result = await WaxMemoryToolExecutor.execute(
+        let result = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .recall,
@@ -453,7 +455,7 @@ func waxMemoryToolExecutorVectorAlwaysFallsBackToTextWhenConfigured() async thro
             embeddingPolicy: .always,
             fallbackToTextOnVectorFailure: true
         )
-        let result = await WaxMemoryToolExecutor.execute(
+        let result = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .search,
@@ -481,7 +483,7 @@ func waxMemoryToolExecutorForgetRequiresQueryAndDeletesMatchingFrames() async th
             forgetTopK: 3
         )
 
-        let missingQuery = await WaxMemoryToolExecutor.execute(
+        let missingQuery = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "erase",
@@ -490,7 +492,7 @@ func waxMemoryToolExecutorForgetRequiresQueryAndDeletesMatchingFrames() async th
         #expect(missingQuery.status == .error)
         #expect(missingQuery.message.contains("query is required"))
 
-        let stored = await WaxMemoryToolExecutor.execute(
+        let stored = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .remember,
@@ -498,7 +500,7 @@ func waxMemoryToolExecutorForgetRequiresQueryAndDeletesMatchingFrames() async th
         )
         #expect(stored.isSuccess)
 
-        let before = await WaxMemoryToolExecutor.execute(
+        let before = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .search,
@@ -508,7 +510,7 @@ func waxMemoryToolExecutorForgetRequiresQueryAndDeletesMatchingFrames() async th
         #expect(before.isSuccess)
         #expect(before.itemCount >= 1)
 
-        let forgotten = await WaxMemoryToolExecutor.execute(
+        let forgotten = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: "delete",
@@ -520,7 +522,7 @@ func waxMemoryToolExecutorForgetRequiresQueryAndDeletesMatchingFrames() async th
         #expect(forgotten.itemCount >= 1)
         #expect(forgotten.message.lowercased().contains("delete") || forgotten.message.contains("\(forgotten.itemCount)"))
 
-        let after = await WaxMemoryToolExecutor.execute(
+        let after = try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .search,
@@ -568,12 +570,12 @@ func waxMemoryToolKitCasesAreDistinct() {
 // MARK: - Forget partial delete reporting (M-9)
 
 @Test
-func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async {
+func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async throws {
     enum Boom: Error { case stop }
 
     // Succeed twice, then fail — itemCount must reflect the 2 successful deletes.
     var call = 0
-    let outcome = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+    let outcome = try await WaxMemoryToolExecutor.deleteFramesReportingPartial(
         frameIDs: [10, 20, 30, 40]
     ) { _ in
         call += 1
@@ -602,14 +604,14 @@ func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async {
     #expect(!result.isSuccess)
 
     // Zero successes still report itemCount 0.
-    let zero = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+    let zero = try await WaxMemoryToolExecutor.deleteFramesReportingPartial(
         frameIDs: [1]
     ) { _ in throw Boom.stop }
     #expect(zero.deleted == 0)
     #expect(zero.failure != nil)
 
     // All succeed → no failure.
-    let ok = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+    let ok = try await WaxMemoryToolExecutor.deleteFramesReportingPartial(
         frameIDs: [1, 2]
     ) { _ in }
     #expect(ok.deleted == 2)
@@ -622,4 +624,134 @@ func waxMemoryToolConfigHybridAlphaPreservedInSearchOptions() {
     #expect(config.alpha(nil) == 0.25)
     #expect(config.searchOptions(topK: 4).mode == .hybrid(alpha: 0.25))
     #expect(config.searchOptions(topK: 4, alpha: 0.9).mode == .hybrid(alpha: 0.9))
+}
+
+@Test
+func waxMemoryToolExecutorRethrowsCancellationInsteadOfErrorResult() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = Memory.Config.default
+        config.embedding = .custom(QueryCancelEmbedder())
+        config.enableVectorSearch = true
+        let memory = try await Memory(at: url, config: config)
+        try await memory.save("User likes Vim keybindings.")
+
+        let toolConfig = WaxMemoryToolConfig(
+            embeddingPolicy: .always,
+            fallbackToTextOnVectorFailure: true
+        )
+        await #expect(throws: CancellationError.self) {
+            _ = try await WaxMemoryToolExecutor.execute(
+                memory: memory,
+                config: toolConfig,
+                action: .recall,
+                query: "Vim"
+            )
+        }
+
+        try await memory.close()
+    }
+}
+
+@Test
+func deleteFramesReportingPartialDoesNotMutateWhenTaskIsCancelled() async throws {
+    let deleted = DeletedFrameIDs()
+    let task = Task {
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        return try await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+            frameIDs: [1, 2, 3]
+        ) { id in
+            deleted.append(id)
+        }
+    }
+    task.cancel()
+    do {
+        let outcome = try await task.value
+        #expect(deleted.snapshot().isEmpty, "cancelled forget must not delete frames")
+        if let failure = outcome.failure {
+            #expect(failure is CancellationError)
+        } else {
+            Issue.record("cancelled delete loop returned success instead of CancellationError")
+        }
+    } catch is CancellationError {
+        #expect(deleted.snapshot().isEmpty)
+    } catch {
+        Issue.record("expected CancellationError, got \(error)")
+    }
+}
+
+@Test
+func deleteFramesReportingPartialStopsBeforeNextDeleteOnCancellation() async throws {
+    let deleted = DeletedFrameIDs()
+    let (started, startedContinuation) = AsyncStream.makeStream(of: UInt64.self)
+    let task = Task {
+        try await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+            frameIDs: [10, 20, 30]
+        ) { id in
+            deleted.append(id)
+            if id == 10 {
+                startedContinuation.yield(id)
+                startedContinuation.finish()
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+                throw CancellationError()
+            }
+        }
+    }
+    for await _ in started {
+        break
+    }
+    task.cancel()
+    do {
+        let outcome = try await task.value
+        #expect(deleted.snapshot() == [10], "later frames must not be deleted after cancel")
+        #expect(outcome.failure is CancellationError)
+        Issue.record("CancellationError must propagate from deleteFramesReportingPartial, not become a partial-forget result")
+    } catch is CancellationError {
+        #expect(deleted.snapshot() == [10])
+    } catch {
+        Issue.record("expected CancellationError, got \(error)")
+    }
+}
+
+private final class DeletedFrameIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: [UInt64] = []
+
+    func append(_ id: UInt64) {
+        lock.lock()
+        ids.append(id)
+        lock.unlock()
+    }
+
+    func snapshot() -> [UInt64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids
+    }
+}
+
+private struct QueryCancelEmbedder: QueryAwareEmbeddingProvider {
+    let dimensions = 2
+    let normalize = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Mock",
+        model: "QueryCancel",
+        dimensions: 2,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        let a = Float(text.utf8.count % 97) / 97.0
+        let b: Float = 0.5
+        let norm = (a * a + b * b).squareRoot()
+        return [a / max(norm, 1e-6), b / max(norm, 1e-6)]
+    }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        _ = text
+        throw CancellationError()
+    }
 }

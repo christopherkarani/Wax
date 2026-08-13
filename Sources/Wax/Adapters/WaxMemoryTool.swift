@@ -116,12 +116,7 @@ Do not store secrets or one-off ephemeral chatter.
     }
 
     public func call(arguments: Arguments) async throws -> WaxMemoryToolResult {
-        await perform(arguments)
-    }
-
-    /// Non-throwing entry point that always returns a structured result (errors are status=error).
-    public func perform(_ arguments: Arguments) async -> WaxMemoryToolResult {
-        await WaxMemoryToolExecutor.execute(
+        try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: arguments.action,
@@ -130,6 +125,33 @@ Do not store secrets or one-off ephemeral chatter.
             topK: arguments.topK,
             alpha: arguments.alpha
         )
+    }
+
+    /// Non-throwing entry point that always returns a structured result (errors are status=error).
+    /// Cancellation is rethrown by ``call(arguments:)``; this helper maps it to status=error
+    /// for callers that opted into the non-throwing API.
+    public func perform(_ arguments: Arguments) async -> WaxMemoryToolResult {
+        do {
+            return try await WaxMemoryToolExecutor.execute(
+                memory: memory,
+                config: config,
+                action: arguments.action,
+                content: arguments.content,
+                query: arguments.query,
+                topK: arguments.topK,
+                alpha: arguments.alpha
+            )
+        } catch is CancellationError {
+            return .error(
+                action: arguments.action,
+                message: "operation failed: cancelled"
+            )
+        } catch {
+            return .error(
+                action: arguments.action,
+                message: "operation failed: \(error.localizedDescription)"
+            )
+        }
     }
 }
 
@@ -166,7 +188,7 @@ Use for information that should survive across sessions. Do not store secrets.
     }
 
     public func call(arguments: Arguments) async throws -> WaxMemoryToolResult {
-        await WaxMemoryToolExecutor.execute(
+        try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .remember,
@@ -206,7 +228,7 @@ Use before answering questions about user preferences, past decisions, or prior 
     }
 
     public func call(arguments: Arguments) async throws -> WaxMemoryToolResult {
-        await WaxMemoryToolExecutor.execute(
+        try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .recall,
@@ -254,7 +276,7 @@ Use when you need broader retrieval or want to control result count via topK.
     }
 
     public func call(arguments: Arguments) async throws -> WaxMemoryToolResult {
-        await WaxMemoryToolExecutor.execute(
+        try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .search,
@@ -300,7 +322,7 @@ Use when the user asks to forget, delete, remove, or erase prior stored facts.
     }
 
     public func call(arguments: Arguments) async throws -> WaxMemoryToolResult {
-        await WaxMemoryToolExecutor.execute(
+        try await WaxMemoryToolExecutor.execute(
             memory: memory,
             config: config,
             action: .forget,

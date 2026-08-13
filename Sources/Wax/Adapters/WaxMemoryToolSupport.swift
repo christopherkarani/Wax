@@ -425,14 +425,14 @@ package enum WaxMemoryToolExecutor: Sendable {
         query: String? = nil,
         topK: Int? = nil,
         alpha: Float? = nil
-    ) async -> WaxMemoryToolResult {
+    ) async throws -> WaxMemoryToolResult {
         guard let action = WaxMemoryToolAction.parse(rawAction) else {
             return .error(
                 action: rawAction,
                 message: "invalid action. Use remember, recall, search, or forget (aliases: store/save, get/lookup, find/query, delete/remove/erase)."
             )
         }
-        return await execute(
+        return try await execute(
             memory: memory,
             config: config,
             action: action,
@@ -451,7 +451,7 @@ package enum WaxMemoryToolExecutor: Sendable {
         query: String? = nil,
         topK: Int? = nil,
         alpha: Float? = nil
-    ) async -> WaxMemoryToolResult {
+    ) async throws -> WaxMemoryToolResult {
         do {
             switch action {
             case .remember:
@@ -474,6 +474,8 @@ package enum WaxMemoryToolExecutor: Sendable {
                     topK: topK
                 )
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return .error(
                 action: action.canonicalName,
@@ -576,6 +578,7 @@ package enum WaxMemoryToolExecutor: Sendable {
             query,
             options: config.textOnlySearchOptions(topK: resolvedTopK)
         )
+        try Task.checkCancellation()
 
         var frameIDs: [UInt64] = []
         var seen = Set<UInt64>()
@@ -584,7 +587,7 @@ package enum WaxMemoryToolExecutor: Sendable {
             frameIDs.append(item.frameId)
         }
 
-        let outcome = await deleteFramesReportingPartial(
+        let outcome = try await deleteFramesReportingPartial(
             frameIDs: frameIDs,
             delete: { try await memory.delete(frameID: $0) }
         )
@@ -610,15 +613,20 @@ package enum WaxMemoryToolExecutor: Sendable {
     /// Deletes frames one-by-one, tracking successful deletes for accurate partial reporting.
     ///
     /// Package-visible so unit tests can inject a throwing `delete` without a live store.
+    /// ``CancellationError`` is rethrown so a cancelled forget cannot be reported as a
+    /// successful ``WaxMemoryToolResult`` with `status=error`.
     package static func deleteFramesReportingPartial(
         frameIDs: [UInt64],
         delete: (UInt64) async throws -> Void
-    ) async -> (deleted: Int, failure: Error?) {
+    ) async throws -> (deleted: Int, failure: Error?) {
         var deleted = 0
         for frameID in frameIDs {
+            try Task.checkCancellation()
             do {
                 try await delete(frameID)
                 deleted += 1
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return (deleted, error)
             }

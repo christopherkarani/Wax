@@ -29,6 +29,11 @@ package protocol WaxFoundationModelGenerating: Sendable {
         options: GenerationOptions
     ) -> AsyncThrowingStream<String, Error>
 
+    /// Waits until the backing stream request has fully terminated, including Apple
+    /// ``LanguageModelSession`` teardown after cancel/drop. Production generators
+    /// join the unstructured Apple consumer; test fakes join their linger task.
+    func joinStream() async
+
     /// Test seam invoked after generation succeeds and immediately before turn persistence.
     /// Production generators no-op; the controllable fake can park here so tests cancel
     /// in the post-generation persistence window.
@@ -40,6 +45,7 @@ package protocol WaxFoundationModelGenerating: Sendable {
 @available(watchOS, unavailable)
 extension WaxFoundationModelGenerating {
     package func holdBeforePersistence() async throws {}
+    package func joinStream() async {}
 }
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
@@ -47,6 +53,7 @@ extension WaxFoundationModelGenerating {
 @available(watchOS, unavailable)
 package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
     let session: LanguageModelSession
+    private let streamJoin = StreamJoinBox()
 
     package init(session: LanguageModelSession) {
         self.session = session
@@ -72,6 +79,7 @@ package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
         options: GenerationOptions
     ) -> AsyncThrowingStream<String, Error> {
         let session = self.session
+        let join = streamJoin
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -79,15 +87,22 @@ package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
                     for try await snapshot in appleStream {
                         continuation.yield(Self.stringifyPartial(snapshot.content))
                     }
+                    await Self.waitUntilSessionQuiesced(session)
                     continuation.finish()
                 } catch {
+                    await Self.waitUntilSessionQuiesced(session)
                     continuation.finish(throwing: error)
                 }
             }
+            join.attach(task)
             continuation.onTermination = { _ in
                 task.cancel()
             }
         }
+    }
+
+    package func joinStream() async {
+        await streamJoin.join()
     }
 
     private static func stringifyPartial<T>(_ value: T) -> String {
@@ -95,6 +110,34 @@ package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
             return string
         }
         return String(describing: value)
+    }
+
+    /// Cancellation of the Swift consumer is not Apple idle. Keep waiting even if
+    /// this task is cancelled so the generation lease cannot be released while
+    /// ``LanguageModelSession/isResponding`` is still true.
+    private static func waitUntilSessionQuiesced(_ session: LanguageModelSession) async {
+        while session.isResponding {
+            do {
+                try await Task.sleep(for: .milliseconds(1))
+            } catch {
+                await Task.yield()
+            }
+        }
+    }
+}
+
+/// Tracks the unstructured Apple stream consumer so lease release can join it.
+private final class StreamJoinBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func attach(_ task: Task<Void, Never>) {
+        lock.withLock { self.task = task }
+    }
+
+    func join() async {
+        let task = lock.withLock { self.task }
+        await task?.value
     }
 }
 
@@ -131,15 +174,14 @@ package final class GenerationLease: @unchecked Sendable {
         self.gate = gate
     }
 
-    package func release() {
-        lock.lock()
-        let shouldRelease = !released
-        released = true
-        lock.unlock()
-        guard shouldRelease else { return }
-        Task {
-            await gate.unlock()
+    package func release() async {
+        let shouldRelease = lock.withLock { () -> Bool in
+            let shouldRelease = !released
+            released = true
+            return shouldRelease
         }
+        guard shouldRelease else { return }
+        await gate.unlock()
     }
 }
 #endif
