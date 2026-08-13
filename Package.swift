@@ -190,6 +190,7 @@ let package = Package(
         .target(
             name: "WaxVectorSearchMiniLM",
             dependencies: [
+                "WaxCore",
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
             ],
@@ -201,6 +202,7 @@ let package = Package(
         .target(
             name: "WaxVectorSearchArctic",
             dependencies: [
+                "WaxCore",
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
             ],
