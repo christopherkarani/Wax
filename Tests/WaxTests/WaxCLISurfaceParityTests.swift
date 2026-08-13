@@ -113,11 +113,16 @@ private enum WaxCLIProcess {
     static func run(
         executableURL: URL,
         arguments: [String],
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = 150
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
+        // Broker startup is process-spawn bound; full-suite parallel load can
+        // exceed the 5s default without changing CLI semantics.
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "120"
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

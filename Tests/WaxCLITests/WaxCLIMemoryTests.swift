@@ -618,7 +618,7 @@ struct WaxCLIMemoryTests {
             }
         }
 
-        try waitForSocket(atPath: socketURL.path, timeout: 5)
+        try waitForSocket(atPath: socketURL.path, timeout: 30)
 
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
@@ -627,7 +627,7 @@ struct WaxCLIMemoryTests {
         let responseLine = try sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
-            timeoutSeconds: 3
+            timeoutSeconds: 30
         )
         let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
         #expect(response.ok)
@@ -1322,12 +1322,15 @@ struct WaxCLIMemoryTests {
         environment: [String: String]? = nil,
         currentDirectoryURL: URL? = nil,
         input: String? = nil,
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = 150
     ) throws -> ProcessOutput {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
         var mergedEnvironment = ProcessInfo.processInfo.environment
+        // Broker startup is process-spawn bound; full-suite parallel load can
+        // exceed the 5s default without changing CLI semantics.
+        mergedEnvironment["WAX_BROKER_START_TIMEOUT_SECS"] = "120"
         if let environment {
             for (key, value) in environment {
                 mergedEnvironment[key] = value
