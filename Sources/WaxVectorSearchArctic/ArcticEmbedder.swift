@@ -122,13 +122,20 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     // MARK: - EmbeddingProvider
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
-            throw WaxError.io("Arctic embedding failed to produce a vector.")
+        let vector: [Float]
+        do {
+            guard let encoded = try await model.encode(sentence: text) else {
+                throw WaxError.encodingError(reason: "Arctic embedding failed to produce a vector.")
+            }
+            vector = encoded
+        } catch let error as ArcticEmbeddings.DecodeError {
+            throw WaxError.invalidEmbedding(reason: error.localizedDescription)
+        } catch let error as BertTokenizerError {
+            // Tokenization is input encoding. `.invalidEmbedding` is reserved for produced
+            // vectors that fail width/finite/zero-norm checks.
+            throw WaxError.encodingError(reason: error.localizedDescription)
         }
-        if vector.count != dimensions {
-            throw WaxError.invalidEmbedding(reason: "Arctic produced \(vector.count) dims, expected \(dimensions).")
-        }
-        return vector
+        return try Self.validatedProducedVector(vector, dimensions: dimensions)
     }
 
     // MARK: - QueryAwareEmbeddingProvider
@@ -168,18 +175,21 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// Tokenization happens synchronously on the actor (needs inout access to buffers),
     /// then prediction is dispatched off the cooperative pool via ArcticEmbeddings.
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
-            throw WaxError.io("Arctic batch embedding failed.")
+        let vectors: [[Float]]
+        do {
+            guard let encoded = try await model.encode(batch: texts) else {
+                throw WaxError.encodingError(reason: "Arctic batch embedding failed.")
+            }
+            vectors = encoded
+        } catch let error as ArcticEmbeddings.DecodeError {
+            throw WaxError.invalidEmbedding(reason: error.localizedDescription)
+        } catch let error as BertTokenizerError {
+            throw WaxError.encodingError(reason: error.localizedDescription)
         }
         guard vectors.count == texts.count else {
-            throw WaxError.io("Arctic batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
+            throw WaxError.encodingError(reason: "Arctic batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
         }
-        for vector in vectors {
-            if vector.count != dimensions {
-                throw WaxError.invalidEmbedding(reason: "Arctic produced \(vector.count) dims, expected \(dimensions).")
-            }
-        }
-        return vectors
+        return try vectors.map { try Self.validatedProducedVector($0, dimensions: dimensions) }
     }
 
     package func prewarm(batchSize: Int = 16) async throws {
@@ -233,6 +243,11 @@ extension ArcticEmbedder {
         )
     }
 
+    /// Test helper for provider-boundary validation (NaN/Inf/zero/width).
+    package static func _validatedProducedVectorForTesting(_ vector: [Float], dimensions: Int) throws -> [Float] {
+        try validatedProducedVector(vector, dimensions: dimensions)
+    }
+
     /// Test helper for deterministic batch planning verification.
     package static func _planBatchSizesForTesting(totalCount: Int, maxBatchSize: Int) -> [Int] {
         planBatchSizes(for: totalCount, maxBatchSize: maxBatchSize)
@@ -241,6 +256,12 @@ extension ArcticEmbedder {
 
 @available(macOS 15.0, iOS 18.0, *)
 private extension ArcticEmbedder {
+    /// Arctic's CoreML graph already L2-normalizes, so we validate and return as-is.
+    static func validatedProducedVector(_ vector: [Float], dimensions: Int) throws -> [Float] {
+        try EmbeddingValidation.validate(vector, dimensions: dimensions, requireNonZero: true)
+        return vector
+    }
+
     static func describe(_ units: MLComputeUnits) -> String {
         switch units {
         case .all:
