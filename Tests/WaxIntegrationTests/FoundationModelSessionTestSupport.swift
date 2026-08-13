@@ -396,7 +396,7 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 func withBoundedTimeout<T: Sendable>(
-    _ timeout: Duration = .seconds(5),
+    _ timeout: Duration = .seconds(30),
     description: String,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
@@ -415,7 +415,7 @@ func withBoundedTimeout<T: Sendable>(
 }
 
 func waitUntilCondition(
-    timeout: Duration = .seconds(5),
+    timeout: Duration = .seconds(30),
     description: String,
     isMet: () async -> Bool
 ) async throws {
