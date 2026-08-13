@@ -280,6 +280,10 @@ private extension ArcticEmbeddings {
         return Float(bitPattern: resultBits)
     }
 
+    /// Production Arctic loads go through this throwing helper. The generated
+    /// CoreML convenience accessor that force-unwraps the class bundle URL is a
+    /// dead crash path: initialization always uses `MLModel(contentsOf:)` and
+    /// `snowflake_arctic_embed_s(model:)`.
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
         let bundle = WaxBundleResolver.resolveModule(
             named: "Wax_WaxVectorSearchArctic.bundle",

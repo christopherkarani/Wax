@@ -57,6 +57,57 @@ import Testing
     }
 }
 
+@Test func miniLMAndArcticTargetsDeclareWaxCoreDirectly() throws {
+    let manifest = try PackageManifest.load()
+
+    #expect(manifest.source.contains(#"""
+        .target(
+            name: "WaxVectorSearchMiniLM",
+            dependencies: [
+                "WaxCore",
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+"""#))
+    #expect(manifest.source.contains(#"""
+        .target(
+            name: "WaxVectorSearchArctic",
+            dependencies: [
+                "WaxCore",
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+"""#))
+}
+
+@Test func consumerSizeGateInventoriesNonModelResourcesAndRejectsArcticMiniLM() throws {
+    let source = try PackageSource.load("scripts/measure-consumer-size.sh")
+
+    #expect(source.contains(#"arctic["miniLMResourceBytes"] != 0"#))
+    #expect(source.contains(#"inv(arctic)["hasMiniLMModel"]"#))
+    #expect(source.contains("hasTiktoken"))
+    #expect(source.contains("hasBertVocab"))
+    #expect(source.contains("hasWaxShaders"))
+    #expect(source.contains("hasPrivacyInfo"))
+    #expect(source.contains("traits-off consumer unexpectedly contains bert_tokenizer_vocab.txt"))
+}
+
+@Test func productionCoreMLLoadersBypassGeneratedBundleForceUnwrap() throws {
+    let miniLM = try PackageSource.load("Sources/WaxVectorSearchMiniLM/CoreML/MiniLMEmbeddings.swift")
+    let arctic = try PackageSource.load("Sources/WaxVectorSearchArctic/CoreML/ArcticEmbeddings.swift")
+    let generatedMiniLM = try PackageSource.load("Sources/WaxVectorSearchMiniLM/CoreML/all-MiniLM-L6-v2.swift")
+    let generatedArctic = try PackageSource.load("Sources/WaxVectorSearchArctic/CoreML/snowflake_arctic_embed_s.swift")
+
+    #expect(miniLM.contains("loadModelFromBundle"))
+    #expect(miniLM.contains("WaxBundleResolver.resolveModule"))
+    #expect(!miniLM.contains("urlOfModelInThisBundle"))
+    #expect(arctic.contains("loadModelFromBundle"))
+    #expect(arctic.contains("WaxBundleResolver.resolveModule"))
+    #expect(!arctic.contains("urlOfModelInThisBundle"))
+    #expect(generatedMiniLM.contains(#"return bundle.url(forResource: "all-MiniLM-L6-v2", withExtension: "mlmodelc")!"#))
+    #expect(generatedArctic.contains(#"return bundle.url(forResource: "snowflake-arctic-embed-s", withExtension: "mlmodelc")!"#))
+}
+
 @Test func waxRepoUIDependenciesAreMacOSScoped() throws {
     let manifest = try PackageManifest.load()
 

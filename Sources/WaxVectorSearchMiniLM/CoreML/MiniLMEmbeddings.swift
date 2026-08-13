@@ -291,6 +291,10 @@ private extension MiniLMEmbeddings {
         return Float(bitPattern: resultBits)
     }
 
+    /// Production MiniLM loads go through this throwing helper. The generated
+    /// CoreML convenience accessor that force-unwraps the class bundle URL is a
+    /// dead crash path: initialization always uses `MLModel(contentsOf:)` and
+    /// `all_MiniLM_L6_v2(model:)`.
     static func loadModelFromBundle(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
         let bundle = WaxBundleResolver.resolveModule(
             named: "Wax_WaxVectorSearchMiniLM.bundle",
