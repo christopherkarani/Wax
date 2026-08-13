@@ -19,3 +19,21 @@ jobs:
       - name: Run Production Gate
         run: |
           bash Resources/scripts/quality/production_readiness_gates.sh ${{ matrix.mode }}
+
+  consumer-contracts:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Consumer contracts
+        run: bash scripts/test-consumer-contracts.sh
+
+  consumer-size:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Consumer size
+        run: bash scripts/measure-consumer-size.sh
