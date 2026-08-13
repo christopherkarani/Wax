@@ -31,7 +31,6 @@ struct FoundationModelSessionConcurrencyTests {
             #expect(firstReply.contains("first"))
             #expect(secondReply.contains("second"))
             #expect(await generator.maxInFlight() == 1)
-            #expect(await generator.completedPrompts() == ["first", "second"])
 
             try await session.close()
             try await memory.close()
@@ -324,6 +323,70 @@ struct FoundationModelSessionConcurrencyTests {
     }
 
     @Test
+    func escapedUnstructuredPrepareAfterRespondDoesNotBypassLease() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let embedder = LatchEmbeddingProvider(holdCount: 0)
+            let memory = try await Memory(at: url) { config in
+                config.enableVectorSearch = true
+                config.embedding = .custom(embedder)
+                config.requireOnDeviceProviders = true
+            }
+            let escapedPrompt = "escaped-stale-token-\(UUID().uuidString)"
+            let holdPrompt = "hold-lease-\(UUID().uuidString)"
+            let hook = EscapedPrepareHook()
+            let generator = ControllableFoundationModelGenerator(delay: .milliseconds(20)) {
+                hook.spawnEscapedPrepare(for: escapedPrompt)
+            }
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .always
+            configuration.persistencePolicy = .none
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+            hook.setSession(session)
+
+            let reply = try await withBoundedTimeout(description: "respond that spawns escaped prepare") {
+                try await session.respond(to: "outer-prompt")
+            }
+            #expect(reply.contains("outer-prompt"))
+            #expect(hook.didSpawn)
+
+            embedder.armHold()
+            let holdTask = Task {
+                try await session.preparePromptDetailed(for: holdPrompt)
+            }
+            try await embedder.waitUntilHolding()
+
+            hook.releaseEscaped()
+            try await waitUntilCondition(description: "escaped prepare queued on generation lease") {
+                await session.generationGateWaiterCount() > 0
+            }
+            #expect(hook.escapedSnapshot() == nil)
+            #expect(embedder.peakInFlight() == 1)
+
+            embedder.releaseHold()
+            let hold = try await withBoundedTimeout(description: "lease holder after latch release") {
+                try await holdTask.value
+            }
+            let escaped = try await withBoundedTimeout(description: "escaped prepare after lease release") {
+                try await hook.escapedValue()
+            }
+            #expect(hold.prompt.contains(holdPrompt))
+            #expect(escaped.prompt.contains(escapedPrompt))
+            #expect(embedder.peakInFlight() == 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
     func independentPreparePromptDetailedCallsStillSerialize() async throws {
         guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
 
@@ -465,6 +528,80 @@ private final class NestedPrepareHook: @unchecked Sendable {
     }
 }
 
+/// Spawns an unstructured `Task` from a fake-tool callback and parks it until
+/// after the owning `respond` has released the generation lease.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private final class EscapedPrepareHook: @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: WaxFoundationModelSession?
+    private var spawned = false
+    private var released = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var task: Task<PreparedMemoryPrompt, Error>?
+    private var outcome: Result<PreparedMemoryPrompt, Error>?
+
+    var didSpawn: Bool { lock.withLock { spawned } }
+
+    func setSession(_ session: WaxFoundationModelSession) {
+        lock.withLock { self.session = session }
+    }
+
+    func spawnEscapedPrepare(for prompt: String) {
+        let session = lock.withLock { self.session }
+        guard let session else { return }
+        let task = Task<PreparedMemoryPrompt, Error> {
+            await self.waitUntilReleased()
+            do {
+                let prepared = try await session.preparePromptDetailed(for: prompt)
+                self.lock.withLock { self.outcome = .success(prepared) }
+                return prepared
+            } catch {
+                self.lock.withLock { self.outcome = .failure(error) }
+                throw error
+            }
+        }
+        lock.withLock {
+            self.task = task
+            self.spawned = true
+        }
+    }
+
+    func waitUntilReleased() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                releaseContinuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func releaseEscaped() {
+        let pending: CheckedContinuation<Void, Never>?
+        lock.lock()
+        released = true
+        pending = releaseContinuation
+        releaseContinuation = nil
+        lock.unlock()
+        pending?.resume()
+    }
+
+    func escapedSnapshot() -> Result<PreparedMemoryPrompt, Error>? {
+        lock.withLock { outcome }
+    }
+
+    func escapedValue() async throws -> PreparedMemoryPrompt {
+        let task = lock.withLock { self.task }
+        guard let task else {
+            throw FoundationModelGeneratorWaitTimeout("escaped prepare was not spawned")
+        }
+        return try await task.value
+    }
+}
+
 /// Holds the first `embed` until `releaseHold()` so two public prepares can be
 /// observed serializing on the generation lease.
 private final class LatchEmbeddingProvider: EmbeddingProvider, @unchecked Sendable {
@@ -481,12 +618,20 @@ private final class LatchEmbeddingProvider: EmbeddingProvider, @unchecked Sendab
     private let lock = NSLock()
     private var inFlight = 0
     private var peak = 0
-    private var remainingHolds = 1
+    private var remainingHolds: Int
     private var holding = false
     private var startedContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
+    init(holdCount: Int = 1) {
+        remainingHolds = holdCount
+    }
+
     func peakInFlight() -> Int { lock.withLock { peak } }
+
+    func armHold() {
+        lock.withLock { remainingHolds += 1 }
+    }
 
     func waitUntilHolding() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in

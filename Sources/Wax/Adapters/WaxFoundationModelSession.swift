@@ -98,6 +98,9 @@ public actor WaxFoundationModelSession {
     private let ownsMemory: Bool
     private var generator: any WaxFoundationModelGenerating
     private let generationGate = AsyncMutex()
+    /// Incremented immediately before each mutex unlock so inherited TaskLocal
+    /// snapshots from escaped unstructured children cannot bypass a later holder.
+    private var generationLeaseEpoch: UInt64 = 0
     /// True while an owning ``WaxGenerationStream`` holds the generation lease.
     /// Concurrent ``streamResponse`` callers fail with
     /// ``WaxFoundationModelsError/generationInProgress`` instead of queueing;
@@ -260,10 +263,12 @@ public actor WaxFoundationModelSession {
     /// Serialized with the generation lease so a concurrent prepare cannot
     /// overwrite ``lastPreparedPrompt`` used by an in-flight persist (C-P2-4).
     ///
-    /// The lease is re-entrant for the task that already holds it: a custom
-    /// Foundation Models tool invoked during ``respond`` / ``streamResponse`` may
-    /// call this method without deadlocking. Callers from a *different* task still
-    /// wait until the in-flight generation (or prepare) releases the lease.
+    /// The lease is re-entrant for the task that already holds the *current*
+    /// generation epoch: a custom Foundation Models tool invoked during
+    /// ``respond`` / ``streamResponse`` may call this method without deadlocking.
+    /// Independent tasks, and unstructured `Task {}` children that outlive the
+    /// owning operation, wait until the in-flight generation (or prepare)
+    /// releases the lease.
     public func preparePromptDetailed(for userPrompt: String) async throws -> PreparedMemoryPrompt {
         try await withGenerationLease {
             try await self.preparePromptDetailedUngated(for: userPrompt)
@@ -494,7 +499,7 @@ public actor WaxFoundationModelSession {
         } catch {
             isStreaming = false
             if holdsGate {
-                await generationGate.unlock()
+                await invalidateAndUnlockGenerationLease()
             }
             throw error
         }
@@ -604,8 +609,9 @@ public actor WaxFoundationModelSession {
     /// `respond`/`streamResponse` calls must not rely on it to keep Apple's
     /// ``LanguageModelSession`` single-flight.
     ///
-    /// Nested calls from the task that already owns the lease reuse it (tools
-    /// during generate). Independent tasks wait on ``AsyncMutex``.
+    /// Nested calls from the task that already owns the *current* lease epoch
+    /// reuse it (tools during generate). Independent tasks and unstructured
+    /// children holding a stale epoch wait on ``AsyncMutex``.
     private func withGenerationLease<T>(
         _ operation: () async throws -> T
     ) async throws -> T {
@@ -617,24 +623,41 @@ public actor WaxFoundationModelSession {
             let value = try await withGenerationLeaseOwnership {
                 try await operation()
             }
-            await generationGate.unlock()
+            await invalidateAndUnlockGenerationLease()
             return value
         } catch {
-            await generationGate.unlock()
+            await invalidateAndUnlockGenerationLease()
             throw error
         }
     }
 
     private var holdsCurrentGenerationLease: Bool {
-        GenerationLeaseOwnership.owner == ObjectIdentifier(generationGate)
+        guard let token = GenerationLeaseOwnership.token else { return false }
+        return token.owner == ObjectIdentifier(generationGate)
+            && token.epoch == generationLeaseEpoch
     }
 
     private func withGenerationLeaseOwnership<T>(
         _ operation: () async throws -> T
     ) async throws -> T {
-        try await GenerationLeaseOwnership.$owner.withValue(ObjectIdentifier(generationGate)) {
+        let token = GenerationLeaseOwnership.Token(
+            owner: ObjectIdentifier(generationGate),
+            epoch: generationLeaseEpoch
+        )
+        return try await GenerationLeaseOwnership.$token.withValue(token) {
             try await operation()
         }
+    }
+
+    /// Invalidate inherited TaskLocal snapshots *before* waking waiters so a
+    /// stale child cannot observe the old epoch while the mutex is already free.
+    private func invalidateGenerationLeaseToken() {
+        generationLeaseEpoch &+= 1
+    }
+
+    private func invalidateAndUnlockGenerationLease() async {
+        invalidateGenerationLeaseToken()
+        await generationGate.unlock()
     }
 
     /// Produces ``WaxGenerationStream/Event`` values, persists on the stream lifecycle,
@@ -718,6 +741,7 @@ public actor WaxFoundationModelSession {
 
         await generator.joinStream()
         isStreaming = false
+        invalidateGenerationLeaseToken()
         await lease.release()
     }
 

@@ -658,7 +658,8 @@ func isolatedRunEnvironment(home: URL, tmp: URL) -> [String: String] {
     return environment
 }
 
-func runExecutable(at url: URL, label: String) {
+@discardableResult
+func runExecutable(at url: URL, label: String) -> Bool {
     let isolation: RunIsolation
     do {
         isolation = try makeRunIsolation()
@@ -670,6 +671,7 @@ func runExecutable(at url: URL, label: String) {
     let environment = isolatedRunEnvironment(home: isolation.home, tmp: isolation.tmp)
     let sandboxExec = "/usr/bin/sandbox-exec"
     var arguments = [url.path]
+    var usedSandboxExec = false
     if fileManager.isExecutableFile(atPath: sandboxExec) {
         let probe = captureProcess(
             arguments: [sandboxExec, "-f", isolation.profileURL.path, "/usr/bin/true"],
@@ -678,6 +680,7 @@ func runExecutable(at url: URL, label: String) {
         )
         if probe.status == 0 {
             arguments = [sandboxExec, "-f", isolation.profileURL.path, url.path]
+            usedSandboxExec = true
         } else {
             fputs(
                 "warning: sandbox-exec failed to launch for \(label); falling back to HOME/TMPDIR isolation\n",
@@ -695,6 +698,13 @@ func runExecutable(at url: URL, label: String) {
     if status != 0 {
         fail("compile run snippet \(label) exited \(status)")
     }
+    return usedSandboxExec
+}
+
+func removeCanaryIfPresent(_ url: URL) {
+    if fileManager.fileExists(atPath: url.path) {
+        try? fileManager.removeItem(at: url)
+    }
 }
 
 func runSandboxSelfCheck() {
@@ -708,21 +718,39 @@ func runSandboxSelfCheck() {
     }
 
     let canaryName = "wax-snippet-sandbox-canary-\(UUID().uuidString).txt"
-    let realCanary = URL(fileURLWithPath: hostHomePath, isDirectory: true)
+    let realHome = URL(fileURLWithPath: hostHomePath, isDirectory: true)
+    let realDocumentsCanary = realHome
         .appendingPathComponent("Documents")
         .appendingPathComponent(canaryName)
-    if fileManager.fileExists(atPath: realCanary.path) {
-        try? fileManager.removeItem(at: realCanary)
+    let realLibraryCanary = realHome
+        .appendingPathComponent("Library")
+        .appendingPathComponent(canaryName)
+    let realSSHCanary = realHome
+        .appendingPathComponent(".ssh")
+        .appendingPathComponent(canaryName)
+    let deniedCanaries = [realLibraryCanary, realSSHCanary]
+    for canary in [realDocumentsCanary] + deniedCanaries {
+        removeCanaryIfPresent(canary)
+    }
+    defer {
+        for canary in deniedCanaries {
+            removeCanaryIfPresent(canary)
+        }
     }
 
     let source = """
     import Foundation
     let canaryName = \(swiftStringLiteral(canaryName))
-    let realHomeCanary = URL(fileURLWithPath: \(swiftStringLiteral(realCanary.path)))
-    let destinations = [
+    var destinations = [
         URL.documentsDirectory.appending(path: canaryName),
-        realHomeCanary,
+        URL(fileURLWithPath: \(swiftStringLiteral(realDocumentsCanary.path))),
+        URL(fileURLWithPath: \(swiftStringLiteral(realLibraryCanary.path))),
+        URL(fileURLWithPath: \(swiftStringLiteral(realSSHCanary.path))),
     ]
+    let libraryDirs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
+    if let libraryDir = libraryDirs.first {
+        destinations.append(libraryDir.appendingPathComponent(canaryName))
+    }
     for dest in destinations {
         do {
             try Data("unsandboxed".utf8).write(to: dest, options: .atomic)
@@ -745,13 +773,30 @@ func runSandboxSelfCheck() {
         fail("sandbox-self-check: swiftc failed: \(compiled.output)")
     }
 
-    runExecutable(at: binary, label: "sandbox-self-check")
+    let usedSandboxExec = runExecutable(at: binary, label: "sandbox-self-check")
 
-    if fileManager.fileExists(atPath: realCanary.path) {
-        try? fileManager.removeItem(at: realCanary)
-        fail("sandbox-self-check: write landed at \(realCanary.path)")
+    if fileManager.fileExists(atPath: realDocumentsCanary.path) {
+        try? fileManager.removeItem(at: realDocumentsCanary)
+        fail("sandbox-self-check: write landed at \(realDocumentsCanary.path)")
     }
     print("GREEN: sandbox-self-check did not write \(canaryName) under $REAL_HOME/Documents")
+
+    if usedSandboxExec {
+        if fileManager.fileExists(atPath: realLibraryCanary.path) {
+            try? fileManager.removeItem(at: realLibraryCanary)
+            fail("sandbox-self-check: write landed at \(realLibraryCanary.path)")
+        }
+        if fileManager.fileExists(atPath: realSSHCanary.path) {
+            try? fileManager.removeItem(at: realSSHCanary)
+            fail("sandbox-self-check: write landed at \(realSSHCanary.path)")
+        }
+        print("GREEN: sandbox-self-check did not write \(canaryName) under $REAL_HOME/Library")
+        print("GREEN: sandbox-self-check did not write \(canaryName) under $REAL_HOME/.ssh")
+    } else {
+        print(
+            "SKIP: sandbox-self-check Library/.ssh deny assertions skipped (sandbox-exec did not launch; HOME/TMPDIR isolation only)"
+        )
+    }
 }
 
 func materializeConsumer(at fixtureRoot: URL, snippets: [Snippet], traitsClause: String) throws {
