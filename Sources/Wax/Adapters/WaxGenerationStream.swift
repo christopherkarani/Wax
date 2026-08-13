@@ -136,35 +136,95 @@ public struct WaxGenerationStream: AsyncSequence, Sendable {
             }
         }
     }
-    fileprivate final class Mailbox: @unchecked Sendable {
+    /// Single-consumer mailbox. Concurrent ``pop()`` fails with
+    /// ``WaxFoundationModelsError/iteratorAlreadyCreated`` instead of leaking a
+    /// continuation. A cancelled ``pop()`` waits briefly for a producer terminal
+    /// (so consumer cancel can still surface ``WaxFoundationModelsError/cancelled``)
+    /// and then resumes with ``CancellationError`` so a stuck producer cannot hang
+    /// the consumer forever.
+    package final class Mailbox: @unchecked Sendable {
+        private struct Waiter {
+            let id: UUID
+            let continuation: CheckedContinuation<Result<Event?, Error>, Never>
+        }
+
         private let lock = NSLock()
         private var buffer: [Result<Event?, Error>] = []
-        private var waiter: UnsafeContinuation<Result<Event?, Error>, Never>?
+        private var waiter: Waiter?
+        private let stuckProducerGrace: Duration
 
-        func push(_ result: Result<Event?, Error>) {
+        package init(stuckProducerGrace: Duration = .seconds(5)) {
+            self.stuckProducerGrace = stuckProducerGrace
+        }
+
+        package var hasParkedWaiter: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return waiter != nil
+        }
+
+        package func push(_ result: Result<Event?, Error>) {
             lock.lock()
             if let waiter {
                 self.waiter = nil
                 lock.unlock()
-                waiter.resume(returning: result)
+                waiter.continuation.resume(returning: result)
                 return
             }
             buffer.append(result)
             lock.unlock()
         }
 
-        func pop() async -> Result<Event?, Error> {
-            await withUnsafeContinuation { continuation in
-                lock.lock()
-                if !buffer.isEmpty {
-                    let value = buffer.removeFirst()
-                    lock.unlock()
-                    continuation.resume(returning: value)
-                    return
+        package func pop() async -> Result<Event?, Error> {
+            let id = UUID()
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    self.enqueue(id: id, continuation: continuation)
                 }
-                waiter = continuation
-                lock.unlock()
+            } onCancel: {
+                self.armStuckProducerTimeout(id: id)
             }
+        }
+
+        private func enqueue(
+            id: UUID,
+            continuation: CheckedContinuation<Result<Event?, Error>, Never>
+        ) {
+            lock.lock()
+            if waiter != nil {
+                lock.unlock()
+                continuation.resume(returning: .failure(WaxFoundationModelsError.iteratorAlreadyCreated))
+                return
+            }
+            if !buffer.isEmpty {
+                let value = buffer.removeFirst()
+                lock.unlock()
+                continuation.resume(returning: value)
+                return
+            }
+            waiter = Waiter(id: id, continuation: continuation)
+            lock.unlock()
+        }
+
+        private func armStuckProducerTimeout(id: UUID) {
+            let grace = stuckProducerGrace
+            Task.detached { [self] in
+                if grace > .zero {
+                    try? await Task.sleep(for: grace)
+                }
+                self.resumeWaiter(id: id, with: .failure(CancellationError()))
+            }
+        }
+
+        private func resumeWaiter(id: UUID, with result: Result<Event?, Error>) {
+            lock.lock()
+            guard let current = waiter, current.id == id else {
+                lock.unlock()
+                return
+            }
+            waiter = nil
+            lock.unlock()
+            current.continuation.resume(returning: result)
         }
     }
 

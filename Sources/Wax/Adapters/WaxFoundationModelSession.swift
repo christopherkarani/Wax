@@ -107,8 +107,12 @@ public actor WaxFoundationModelSession {
     private var resetTranscriptForContext = false
     private let sessionBox: LanguageModelSessionBox
 
-    /// Underlying Foundation Models session. Use for advanced multi-turn control.
-    public nonisolated var languageModelSession: LanguageModelSession {
+    /// Package-only Apple session handle (prewarm, overflow reset, tests).
+    ///
+    /// Decision (C-P2-3): this is **not** public. A public accessor would bypass
+    /// ``generationGate`` and let callers overlap Apple requests. Use ``respond`` /
+    /// ``streamResponse``; inspect ``transcript`` / ``isResponding`` for status.
+    package nonisolated var languageModelSession: LanguageModelSession {
         sessionBox.session
     }
     /// Immutable session configuration (safe to read off the actor).
@@ -229,7 +233,16 @@ public actor WaxFoundationModelSession {
     }
 
     /// Builds a memory-augmented prompt and returns budget / recall accounting.
+    ///
+    /// Serialized with the generation lease so a concurrent prepare cannot
+    /// overwrite ``lastPreparedPrompt`` used by an in-flight persist (C-P2-4).
     public func preparePromptDetailed(for userPrompt: String) async throws -> PreparedMemoryPrompt {
+        try await withGenerationLease {
+            try await self.preparePromptDetailedUngated(for: userPrompt)
+        }
+    }
+
+    private func preparePromptDetailedUngated(for userPrompt: String) async throws -> PreparedMemoryPrompt {
         guard configuration.shouldAugmentPrompt else {
             var prepared = PreparedMemoryPrompt(
                 prompt: userPrompt,
@@ -286,7 +299,7 @@ public actor WaxFoundationModelSession {
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<String> {
         try await withGenerationLease {
-            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let prepared = try await self.preparePromptDetailedUngated(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
             try self.checkConversationTurnLimit()
             let response: String
@@ -302,7 +315,8 @@ public actor WaxFoundationModelSession {
             do {
                 persistence = try await self.persistTurnTracked(
                     userPrompt: userPrompt,
-                    assistantResponse: response
+                    assistantResponse: response,
+                    prepared: prepared
                 )
             } catch {
                 throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
@@ -328,7 +342,7 @@ public actor WaxFoundationModelSession {
         options: GenerationOptions = GenerationOptions()
     ) async throws -> T {
         try await withGenerationLease {
-            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let prepared = try await self.preparePromptDetailedUngated(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
             try self.checkConversationTurnLimit()
             let response: T
@@ -342,7 +356,11 @@ public actor WaxFoundationModelSession {
                 throw self.mapTerminalError(error, prepared: prepared, didPersistUser: false)
             }
             if let serialized = self.serializeStructured(response) {
-                try await self.persistTurn(userPrompt: userPrompt, assistantResponse: serialized)
+                try await self.persistTurn(
+                    userPrompt: userPrompt,
+                    assistantResponse: serialized,
+                    prepared: prepared
+                )
             } else if self.configuration.persistencePolicy.shouldPersistUser {
                 try await self.persistUser(userPrompt)
             }
@@ -361,7 +379,7 @@ public actor WaxFoundationModelSession {
         options: GenerationOptions = GenerationOptions()
     ) async throws -> WaxFMResponse<T> {
         try await withGenerationLease {
-            let prepared = try await self.preparePromptDetailed(for: userPrompt)
+            let prepared = try await self.preparePromptDetailedUngated(for: userPrompt)
             let turn = self.invocationForTurn(prepared: prepared)
             try self.checkConversationTurnLimit()
             let response: T
@@ -379,7 +397,8 @@ public actor WaxFoundationModelSession {
             if let serialized {
                 persistence = try await self.persistTurnTracked(
                     userPrompt: userPrompt,
-                    assistantResponse: serialized
+                    assistantResponse: serialized,
+                    prepared: prepared
                 )
             } else {
                 var didPersistUser = false
@@ -418,7 +437,7 @@ public actor WaxFoundationModelSession {
             try await acquireGenerationGateCancellably()
             holdsGate = true
             try Task.checkCancellation()
-            let prepared = try await preparePromptDetailed(for: userPrompt)
+            let prepared = try await preparePromptDetailedUngated(for: userPrompt)
             try checkConversationTurnLimit()
             let turn = invocationForTurn(prepared: prepared)
             let inner = generator.streamText(prompt: turn.prompt, options: options)
@@ -505,17 +524,24 @@ public actor WaxFoundationModelSession {
 
     /// The live multi-turn transcript managed by Foundation Models.
     ///
-    /// Nonisolated: forwards to the nonisolated ``languageModelSession`` handle so callers
-    /// can inspect transcript state without hopping onto the session actor.
+    /// Nonisolated: reads the boxed Apple session so callers can inspect
+    /// transcript state without hopping onto the session actor.
     public nonisolated var transcript: Transcript {
-        languageModelSession.transcript
+        sessionBox.session.transcript
     }
 
     /// Whether the underlying model is currently generating.
     ///
-    /// Nonisolated: forwards to the nonisolated ``languageModelSession`` handle.
+    /// Nonisolated: reads the boxed Apple session. This is status only; it does
+    /// not vend a request handle that could overlap a leased generation.
     public nonisolated var isResponding: Bool {
-        languageModelSession.isResponding
+        sessionBox.session.isResponding
+    }
+
+    /// Test seam: tasks parked on ``generationGate``. Used to observe that a
+    /// ``streamResponse`` waiter has actually entered the mutex wait.
+    package func generationGateWaiterCount() async -> Int {
+        await generationGate.waiterCount
     }
 
     /// Flushes pending memory writes without closing the store.
@@ -537,29 +563,11 @@ public actor WaxFoundationModelSession {
     // MARK: - Persistence helpers
 
     /// Acquires ``generationGate`` but returns ``CancellationError`` if the caller
-    /// is cancelled while waiting. The cancelled waiter is not left holding
-    /// ``isStreaming``; a sidecar task still takes the FIFO lock hop and unlocks
-    /// so Apple serialization is preserved.
+    /// is cancelled while waiting. Cancelled waiters are unregistered by
+    /// ``AsyncMutex`` and do not take the lock, so ``isStreaming`` can be cleared
+    /// without a sidecar hop.
     private func acquireGenerationGateCancellably() async throws {
-        let acquire = Task {
-            await generationGate.lock()
-        }
-        let race = GenerationGateCancellationRace()
-        do {
-            try await withTaskCancellationHandler {
-                try await race.waitForAcquisition {
-                    await acquire.value
-                }
-            } onCancel: {
-                race.cancel()
-            }
-        } catch {
-            Task {
-                await acquire.value
-                await generationGate.unlock()
-            }
-            throw error
-        }
+        try await generationGate.lock()
     }
 
     /// FIFO generation lease. Actor isolation is reentrant, so overlapping
@@ -568,9 +576,8 @@ public actor WaxFoundationModelSession {
     private func withGenerationLease<T>(
         _ operation: () async throws -> T
     ) async throws -> T {
-        await generationGate.lock()
+        try await generationGate.lock()
         do {
-            try Task.checkCancellation()
             let value = try await operation()
             await generationGate.unlock()
             return value
@@ -664,16 +671,22 @@ public actor WaxFoundationModelSession {
         await lease.release()
     }
 
-    private func persistTurn(userPrompt: String, assistantResponse: String) async throws {
+    private func persistTurn(
+        userPrompt: String,
+        assistantResponse: String,
+        prepared: PreparedMemoryPrompt
+    ) async throws {
         _ = try await persistTurnTracked(
             userPrompt: userPrompt,
-            assistantResponse: assistantResponse
+            assistantResponse: assistantResponse,
+            prepared: prepared
         )
     }
 
     private func persistTurnTracked(
         userPrompt: String,
-        assistantResponse: String
+        assistantResponse: String,
+        prepared: PreparedMemoryPrompt
     ) async throws -> (didPersistUser: Bool, didPersistAssistant: Bool) {
         // Test seam: the fake can pause here so cancellation lands after the model
         // completed and before either side of the turn is written.
@@ -697,7 +710,7 @@ public actor WaxFoundationModelSession {
         } catch {
             throw mapTerminalError(
                 error,
-                prepared: lastPreparedPrompt,
+                prepared: prepared,
                 didPersistUser: didPersistUser,
                 didPersistAssistant: didPersistAssistant
             )
@@ -1170,49 +1183,3 @@ package extension MemoryOrchestrator {
 }
 #endif
 
-/// Once-only resume used so a cancelled ``streamResponse`` waiter can leave
-/// ``isStreaming`` without waiting for ``AsyncMutex/lock()`` to observe cancel.
-@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
-private final class GenerationGateCancellationRace: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
-    private var finished = false
-    private var pending: Result<Void, Error>?
-
-    func waitForAcquisition(_ acquire: @escaping @Sendable () async -> Void) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            lock.lock()
-            if let pending {
-                lock.unlock()
-                cont.resume(with: pending)
-                return
-            }
-            continuation = cont
-            lock.unlock()
-            Task {
-                await acquire()
-                self.resume(with: .success(()))
-            }
-        }
-    }
-
-    func cancel() {
-        resume(with: .failure(CancellationError()))
-    }
-
-    private func resume(with result: Result<Void, Error>) {
-        lock.lock()
-        guard !finished else {
-            lock.unlock()
-            return
-        }
-        finished = true
-        let cont = continuation
-        continuation = nil
-        if cont == nil {
-            pending = result
-        }
-        lock.unlock()
-        cont?.resume(with: result)
-    }
-}

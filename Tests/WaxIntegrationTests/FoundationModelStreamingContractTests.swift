@@ -503,6 +503,50 @@ struct FoundationModelStreamingContractTests {
             try await memory.close()
         }
     }
+
+    @Test
+    func mailboxPopResumesOnCancelWhenProducerIsStuck() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        let mailbox = WaxGenerationStream.Mailbox(stuckProducerGrace: .milliseconds(20))
+        let task = Task {
+            await mailbox.pop()
+        }
+        try await waitUntilCondition(description: "mailbox waiter parked") {
+            mailbox.hasParkedWaiter
+        }
+        let started = ContinuousClock.now
+        task.cancel()
+        let result = await task.value
+        #expect(throws: CancellationError.self) {
+            try result.get()
+        }
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(!mailbox.hasParkedWaiter)
+    }
+
+    @Test
+    func mailboxRejectsConcurrentPopInsteadOfLeakingWaiter() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        let mailbox = WaxGenerationStream.Mailbox()
+        let first = Task {
+            await mailbox.pop()
+        }
+        try await waitUntilCondition(description: "first mailbox pop parked") {
+            mailbox.hasParkedWaiter
+        }
+        let second = await mailbox.pop()
+        if case .failure(let error as WaxFoundationModelsError) = second,
+           case .iteratorAlreadyCreated = error {
+            // Expected single-consumer rejection
+        } else {
+            Issue.record("concurrent pop must fail with iteratorAlreadyCreated, got \(second)")
+        }
+        mailbox.push(.success(nil))
+        let firstResult = await first.value
+        #expect(try firstResult.get() == nil)
+    }
 }
 
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)

@@ -115,13 +115,69 @@ package struct LiveLanguageModelGenerator: WaxFoundationModelGenerating {
     /// Cancellation of the Swift consumer is not Apple idle. Keep waiting even if
     /// this task is cancelled so the generation lease cannot be released while
     /// ``LanguageModelSession/isResponding`` is still true.
+    ///
+    /// Uses uncooperative backoff so a cancelled consumer does not busy-spin.
+    /// A slice timeout does **not** release the lease: we keep waiting until idle.
     private static func waitUntilSessionQuiesced(_ session: LanguageModelSession) async {
         while session.isResponding {
-            do {
-                try await Task.sleep(for: .milliseconds(1))
-            } catch {
-                await Task.yield()
+            switch await waitForGenerationQuiesce(
+                timeout: .seconds(30),
+                isResponding: { session.isResponding }
+            ) {
+            case .idled:
+                return
+            case .timedOutStillResponding:
+                continue
             }
+        }
+    }
+}
+
+/// Outcome of a bounded Apple-idle wait. ``timedOutStillResponding`` is fail-safe:
+/// callers must keep the generation lease and keep waiting.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+package enum GenerationQuiesceResult: Sendable, Equatable {
+    case idled
+    case timedOutStillResponding
+}
+
+/// Waits until `isResponding` is false, or `timeout` elapses. Sleeps on a detached
+/// task so caller cancellation cannot turn the wait into a busy `yield` loop.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+package func waitForGenerationQuiesce(
+    timeout: Duration,
+    initialBackoffMilliseconds: Int = 2,
+    maxBackoffMilliseconds: Int = 50,
+    isResponding: () -> Bool
+) async -> GenerationQuiesceResult {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    var delayMs = max(1, initialBackoffMilliseconds)
+    let maxDelayMs = max(delayMs, maxBackoffMilliseconds)
+    while isResponding() {
+        if clock.now >= deadline {
+            return .timedOutStillResponding
+        }
+        await sleepUncooperatively(.milliseconds(delayMs))
+        delayMs = min(delayMs * 2, maxDelayMs)
+    }
+    return .idled
+}
+
+/// Sleep that does not observe the caller's cancellation flag.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+package func sleepUncooperatively(_ duration: Duration) async {
+    guard duration > .zero else { return }
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        Task.detached {
+            try? await Task.sleep(for: duration)
+            continuation.resume()
         }
     }
 }

@@ -472,22 +472,23 @@ func validateEvidenceRejectsBadConfidence(_ confidence: Double) {
 
 // MARK: - Concurrency: bounded multi-writer no lost updates
 
-@Test func asyncMutexNoLostUpdatesUnderContention() async {
+@Test func asyncMutexNoLostUpdatesUnderContention() async throws {
     let mutex = AsyncMutex()
     let iterations = 200
     let workers = 8
     let counter = AdversarialCounter()
 
-    await withTaskGroup(of: Void.self) { group in
+    try await withThrowingTaskGroup(of: Void.self) { group in
         for _ in 0..<workers {
             group.addTask {
                 for _ in 0..<iterations {
-                    await mutex.withLock {
+                    try await mutex.withLock {
                         await counter.increment()
                     }
                 }
             }
         }
+        try await group.waitForAll()
     }
 
     let value = await counter.value

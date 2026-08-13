@@ -144,12 +144,9 @@ struct FoundationModelSessionConcurrencyTests {
                     throw error
                 }
             }
-            try await waitUntilCondition(description: "stream waiter entered session") {
-                try? await session.flush()
-                return waitingStream.isCancelled == false
+            try await waitUntilCondition(description: "stream waiter parked on generation gate") {
+                await session.generationGateWaiterCount() > 0
             }
-            try await session.flush()
-            try await session.flush()
 
             waitingStream.cancel()
             do {
@@ -234,6 +231,120 @@ struct FoundationModelSessionConcurrencyTests {
             try await session.close()
             try await memory.close()
         }
+    }
+
+    @Test
+    func preparePromptDetailedDoesNotOverwriteInFlightGenerationAccounting() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let generator = ControllableFoundationModelGenerator(pauseBeforePersistence: true)
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .userAndAssistant
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+
+            let inFlightPrompt = "in-flight-prompt-gate-\(UUID().uuidString)"
+            let otherPrompt = "other-prompt-gate-\(UUID().uuidString)"
+            let respondTask = Task {
+                try await session.respond(to: inFlightPrompt)
+            }
+            try await generator.waitUntilPersistenceHold()
+            let duringHold = await session.lastPreparedPrompt
+            #expect(duringHold?.prompt.contains(inFlightPrompt) == true)
+
+            let prepareOutcome = TaskOutcome<PreparedMemoryPrompt>()
+            let prepareTask = Task {
+                do {
+                    let prepared = try await session.preparePromptDetailed(for: otherPrompt)
+                    prepareOutcome.set(.success(prepared))
+                    return prepared
+                } catch {
+                    prepareOutcome.set(.failure(error))
+                    throw error
+                }
+            }
+            try await Task.sleep(for: .milliseconds(80))
+            #expect(prepareOutcome.snapshot() == nil)
+            #expect(await session.lastPreparedPrompt?.prompt.contains(inFlightPrompt) == true)
+
+            respondTask.cancel()
+            _ = await respondTask.result
+            let prepared = try await withBoundedTimeout(description: "queued prepare after generation") {
+                try await prepareTask.value
+            }
+            #expect(prepared.prompt.contains(otherPrompt))
+            #expect(await session.lastPreparedPrompt?.prompt.contains(otherPrompt) == true)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func waitForGenerationQuiesceTimesOutWhenSessionNeverIdles() async {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        let started = ContinuousClock.now
+        let result = await waitForGenerationQuiesce(timeout: .milliseconds(80)) {
+            true
+        }
+        #expect(result == .timedOutStillResponding)
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed >= .milliseconds(40))
+        #expect(elapsed < .seconds(2))
+    }
+
+    @Test
+    func waitForGenerationQuiesceDoesNotBusySpinUnderCancel() async {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        let started = ContinuousClock.now
+        let task = Task {
+            await waitForGenerationQuiesce(timeout: .milliseconds(100)) {
+                true
+            }
+        }
+        task.cancel()
+        let result = await task.value
+        #expect(result == .timedOutStillResponding)
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed >= .milliseconds(50))
+        #expect(elapsed < .seconds(2))
+    }
+
+    @Test
+    func waitForGenerationQuiesceReturnsIdledWhenFlagClears() async {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        let flag = NeverIdleThenClearFlag()
+        let task = Task {
+            await waitForGenerationQuiesce(timeout: .seconds(2)) {
+                flag.isResponding
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        flag.isResponding = false
+        let result = await task.value
+        #expect(result == .idled)
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private final class NeverIdleThenClearFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responding = true
+
+    var isResponding: Bool {
+        get { lock.withLock { responding } }
+        set { lock.withLock { responding = newValue } }
     }
 }
 #endif
