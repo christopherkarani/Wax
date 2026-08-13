@@ -285,6 +285,29 @@ struct PublicRAGAndEnrichmentTests {
             try await memory.close()
         }
     }
+
+    @Test
+    func closeDrainsEnrichmentBeforeRelease() async throws {
+        try await TempFiles.withTempFile { url in
+            var config = Self.textOnly
+            config.enrichment = .builtIn
+            let memory = try await Memory(at: url, config: config)
+            try await memory.save("Swift concurrency enrichment stores durable keywords.")
+            try await memory.close()
+
+            let store = try await FrameStore.open(at: url)
+            let frames = try await store.frames()
+            try await store.close()
+
+            let enrichment = try #require(frames.first { $0.kind == "enrichment" })
+            #expect(enrichment.metadata["wax.enrichment.keywords"]?.contains("concurrency") == true)
+
+            let reopened = try await Memory(at: url, config: config)
+            let stats = await reopened.stats()
+            #expect(stats.enrichment?.pendingCount == 0)
+            try await reopened.close()
+        }
+    }
 }
 
 private func seedMatchingSwiftFacts(into memory: Memory, count: Int) async throws {

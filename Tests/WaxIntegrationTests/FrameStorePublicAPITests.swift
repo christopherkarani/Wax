@@ -3,6 +3,24 @@ import Testing
 import Wax
 
 @Test
+func frameStoreFlushPersistsAcrossReopen() async throws {
+    try await TempFiles.withTempFile { url in
+        let store = try await FrameStore.create(at: url, walSize: 4 * 1024 * 1024)
+        let payload = Data("flush-persist unique-payload".utf8)
+        let id = try await store.put(payload, kind: "note", metadata: ["k": "flush"])
+        try await store.flush()
+        try await store.close()
+
+        let reopened = try await FrameStore.open(at: url)
+        let content = try await reopened.content(frameID: id)
+        #expect(String(data: content, encoding: .utf8) == "flush-persist unique-payload")
+        let frames = try await reopened.frames()
+        #expect(frames.contains(where: { $0.id == id && $0.status == .active && $0.kind == "note" }))
+        try await reopened.close()
+    }
+}
+
+@Test
 func frameStoreCreatePutReadDeleteRoundTrip() async throws {
     try await TempFiles.withTempFile { url in
         let store = try await FrameStore.create(at: url, walSize: 4 * 1024 * 1024)
