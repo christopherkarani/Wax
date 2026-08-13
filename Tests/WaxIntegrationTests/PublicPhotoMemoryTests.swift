@@ -1,5 +1,7 @@
 #if canImport(ImageIO)
+import CoreGraphics
 import Foundation
+import os
 import Testing
 import Wax
 import XCTest
@@ -73,6 +75,61 @@ private struct ReceiptOCRProvider: PhotoOCRProvider {
                 bbox: PhotoMemory.BoundingBox(x: 0, y: 0, width: 1, height: 1)
             )
         ]
+    }
+}
+
+/// Opposite unit vectors whose 0.5/0.5 mix is the zero query vector.
+private struct OppositeUnitEmbedder: CGImageEmbeddingProvider {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "test",
+        model: "opposite-unit",
+        dimensions: 4,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func embed(text: String) async throws -> [Float] {
+        _ = text
+        return [1, 0, 0, 0]
+    }
+
+    func embed(image: CGImage) async throws -> [Float] {
+        _ = image
+        return [-1, 0, 0, 0]
+    }
+}
+
+/// First image embed (global) is valid; later region-crop embeds are NaN.
+private final class RegionNaNEmbedder: MultimodalEmbeddingProvider, @unchecked Sendable {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "test",
+        model: "region-nan",
+        dimensions: 4,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+    private let imageEmbedCount = OSAllocatedUnfairLock(initialState: 0)
+
+    func embed(text: String) async throws -> [Float] {
+        _ = text
+        return [1, 0, 0, 0]
+    }
+
+    func embed(imageData: Data, format: WaxImageFormat) async throws -> [Float] {
+        _ = imageData
+        _ = format
+        let count = imageEmbedCount.withLock { value -> Int in
+            value += 1
+            return value
+        }
+        if count > 1 {
+            return [.nan, 0, 0, 0]
+        }
+        return [0, 1, 0, 0]
     }
 }
 
@@ -288,6 +345,96 @@ struct PublicPhotoMemoryTests {
             #expect(region.bbox.height == 1)
             let crop = try #require(region.crop)
             #expect(crop.starts(with: pngMagic), "region crop must be PNG bytes")
+
+            try await photos.close()
+        }
+    }
+
+    @Test
+    func fusedTextAndImageQueryRejectsZeroMixAsInvalidEmbedding() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-public-photo-fused-\(UUID().uuidString).png")
+            try tinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            var config = PhotoRAGConfig.default
+            config.enableOCR = false
+            config.enableRegionEmbeddings = false
+            config.includeThumbnailsInContext = false
+            config.includeRegionCropsInContext = false
+            config.requireOnDeviceProviders = true
+            config.vectorEnginePreference = .cpuOnly
+            config.textEmbeddingWeight = 0.5
+
+            let orchestrator = try await PhotoRAGOrchestrator(
+                storeURL: storeURL,
+                config: config,
+                embedder: OppositeUnitEmbedder()
+            )
+            try await orchestrator.ingest(files: [
+                PhotoFile(id: "fused-fixture", url: imageURL)
+            ])
+
+            do {
+                _ = try await orchestrator.recall(
+                    PhotoQuery(
+                        text: "receipt",
+                        image: PhotoQueryImage(data: tinyPNGData, format: .png),
+                        resultLimit: 5
+                    )
+                )
+                Issue.record("fused zero mix must throw")
+            } catch let error as WaxError {
+                guard case .invalidEmbedding = error else {
+                    Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+                    return
+                }
+            } catch {
+                Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+            }
+
+            try await orchestrator.close()
+        }
+    }
+
+    @Test
+    func invalidRegionEmbeddingThrowsInvalidEmbedding() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let imageURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-public-photo-region-\(UUID().uuidString).png")
+            try tinyPNGData.write(to: imageURL)
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            let config = PhotoMemory.Config(
+                enableOCR: true,
+                enableRegionEmbeddings: true,
+                includeThumbnailsInContext: false,
+                includeRegionCropsInContext: false,
+                requireOnDeviceProviders: true,
+                maxRegionsPerPhoto: 1,
+                lockWaitTimeout: .zero
+            )
+            let photos = try await PhotoMemory.open(
+                at: storeURL,
+                embedding: RegionNaNEmbedder(),
+                ocr: ReceiptOCRProvider(),
+                captioner: ReceiptCaptionProvider(),
+                config: config
+            )
+            do {
+                try await photos.ingest(files: [
+                    PhotoMemory.File(id: "region-nan", url: imageURL)
+                ])
+                Issue.record("NaN region embedding must throw")
+            } catch let error as WaxError {
+                guard case .invalidEmbedding = error else {
+                    Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+                    return
+                }
+            } catch {
+                Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+            }
 
             try await photos.close()
         }

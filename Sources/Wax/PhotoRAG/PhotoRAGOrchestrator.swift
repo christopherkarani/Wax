@@ -856,7 +856,7 @@ package actor PhotoRAGOrchestrator {
 
                     _ = try await session.putBatch(
                         contents: regionContents,
-                        embeddings: regionEmbeddings,
+                        embeddings: try requireValidRegionEmbeddings(regionEmbeddings),
                         identity: embedder.identity,
                         options: regionOptions,
                         timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
@@ -1104,7 +1104,7 @@ package actor PhotoRAGOrchestrator {
 
         _ = try await session.putBatch(
             contents: regionContents,
-            embeddings: regionEmbeddings,
+            embeddings: try requireValidRegionEmbeddings(regionEmbeddings),
             identity: embedder.identity,
             options: regionOptions,
             timestampsMs: Array(repeating: timestampMs, count: regionContents.count),
@@ -1407,6 +1407,11 @@ package actor PhotoRAGOrchestrator {
                 out[idx] = wt * t[idx] + wi * i[idx]
             }
             if embedder.normalize, !out.isEmpty { out = VectorMath.normalizeL2(out) }
+            try EmbeddingValidation.validateIngest(
+                out,
+                dimensions: embedder.dimensions,
+                identity: embedder.identity
+            )
             return out
         }
     }
@@ -1450,6 +1455,17 @@ package actor PhotoRAGOrchestrator {
             return VectorMath.normalizeL2(vector)
         }
         return vector
+    }
+
+    private func requireValidRegionEmbeddings(_ vectors: [[Float]]) throws -> [[Float]] {
+        for vector in vectors {
+            try EmbeddingValidation.validateIngest(
+                vector,
+                dimensions: embedder.dimensions,
+                identity: embedder.identity
+            )
+        }
+        return vectors
     }
 
     // MARK: - Pixels (thumbnails + crops)
