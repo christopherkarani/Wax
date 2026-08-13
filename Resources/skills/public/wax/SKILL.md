@@ -42,7 +42,7 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 
 ## Examples
 
-```swift
+```swift compile
 import Foundation
 import Wax
 
@@ -66,7 +66,7 @@ func demoDefault() async throws {
 }
 ```
 
-```swift
+```swift compile
 import Foundation
 import Wax
 
@@ -87,7 +87,7 @@ func demoTextOnly() async throws {
 }
 ```
 
-```swift
+```swift compile
 import Foundation
 import Wax
 
@@ -119,7 +119,7 @@ func demoCustomEmbedder() async throws {
     try await memory.save("Password reset instructions are in account settings.")
     try await memory.save("The office snack drawer has trail mix.")
 
-    let results = try await memory.search("recover password", options: .init(mode: .vectorOnly, topK: 1))
+    let results = try await memory.search("recover password", options: .init(topK: 1, mode: .vectorOnly))
     precondition(results.items.first?.text.contains("Password reset") == true)
 
     try await memory.flush()

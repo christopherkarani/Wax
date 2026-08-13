@@ -68,16 +68,24 @@ Classification is fully offline. It does not call network services or external m
 
 Use ``Memory`` for supported retrieval:
 
-```swift
-let results = try await memory.search("quarterly roadmap")
-for item in results.items {
-    print(item.text)
-}
+```swift compile
+import Foundation
+import Wax
 
-// Which lanes actually ran?
-if let diagnostics = results.diagnostics {
-    print(diagnostics.effectiveMode)          // "text", "vector", or "hybrid(alpha=…)"
-    print(diagnostics.queryEmbeddingState)    // e.g. .available or .noEmbedder
+func unifiedSearchPublicUsage() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "memory.wax")
+    let memory = try await Memory(at: storeURL)
+    let results = try await memory.search("quarterly roadmap")
+    for item in results.items {
+        print(item.text)
+    }
+
+    // Which lanes actually ran?
+    if let diagnostics = results.diagnostics {
+        print(diagnostics.effectiveMode)          // "text", "vector", or "hybrid(alpha=…)"
+        print(diagnostics.queryEmbeddingState)    // e.g. .available or .noEmbedder
+    }
+    try await memory.close()
 }
 ```
 

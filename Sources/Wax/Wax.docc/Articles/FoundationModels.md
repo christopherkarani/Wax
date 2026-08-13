@@ -148,12 +148,32 @@ func foundationModelsTools() async throws {
 Prefer ``WaxFoundationModelSession/respondDetailed(to:options:)`` when you need recall /
 persistence accounting. Plain ``respond(to:options:)`` still returns just the content string.
 
-```swift
-let detailed = try await session.respondDetailed(to: "What theme do I prefer?")
-print(detailed.content)
-print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
-print(detailed.didPersistUser, detailed.didPersistAssistant)
-print(detailed.estimatedPreparedCharacters, detailed.retrievalDiagnostics?.effectiveMode)
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsRespondDetailed() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let session = try await memory.makeFoundationModelsSession(
+            instructions: "You are a helpful assistant with durable memory."
+        )
+        let detailed = try await session.respondDetailed(to: "What theme do I prefer?")
+        print(detailed.content)
+        print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
+        print(detailed.didPersistUser, detailed.didPersistAssistant)
+        print(detailed.estimatedPreparedCharacters, detailed.retrievalDiagnostics?.effectiveMode)
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ``preparePromptDetailed(for:)`` returns a ``PreparedMemoryPrompt`` with the same budget fields
@@ -161,9 +181,30 @@ without calling the model.
 
 For streaming with full assistant persistence after the stream finishes:
 
-```swift
-let collected = try await session.streamResponseAndCollect(to: "Summarize my prefs.")
-// collected.content is the full assistant text; both sides persist per policy.
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsStreamAndCollect() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let session = try await memory.makeFoundationModelsSession(
+            instructions: "You are a helpful assistant with durable memory."
+        )
+        let collected = try await session.streamResponseAndCollect(to: "Summarize my prefs.")
+        // collected.content is the full assistant text; both sides persist per policy.
+        _ = collected
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ``streamResponse(to:options:)`` returns an owning ``WaxGenerationStream`` of
@@ -210,9 +251,30 @@ func foundationModelsAvailability() async throws {
 
 To clear the in-model transcript while keeping the Wax store:
 
-```swift
-let fresh = await session.resetConversationPreservingMemory()
-// Replace your handle with `fresh`; both share the same Memory store.
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsResetConversation() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let session = try await memory.makeFoundationModelsSession(
+            instructions: "You are a helpful assistant with durable memory."
+        )
+        let fresh = await session.resetConversationPreservingMemory()
+        // Replace your handle with `fresh`; both share the same Memory store.
+        _ = fresh
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ## Use Wax tools on your own LanguageModelSession
@@ -247,24 +309,46 @@ func foundationModelsOpenTools() async throws {
 
 ## Structured generation
 
-```swift
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @Generable
 struct PreferenceSummary {
     var theme: String
     var editor: String
 }
+#endif
 
-let summary = try await session.respond(
-    to: "Summarize my UI and editor preferences.",
-    generating: PreferenceSummary.self
-)
-// Persistence of structured values follows configuration.structuredPersistence
-// (.stringDescribing | .jsonLike | .disabled).
+func foundationModelsStructuredGeneration() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let session = try await memory.makeFoundationModelsSession(
+            instructions: "You are a helpful assistant with durable memory."
+        )
+        let summary = try await session.respond(
+            to: "Summarize my UI and editor preferences.",
+            generating: PreferenceSummary.self
+        )
+        // Persistence of structured values follows configuration.structuredPersistence
+        // (.stringDescribing | .jsonLike | .disabled).
+        _ = summary
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ## Built-in embeddings open helper
 
-```swift compile
+```swift compile trait:MiniLMEmbeddings
 import Foundation
 import Wax
 
