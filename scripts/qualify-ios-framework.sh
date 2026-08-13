@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # qualify-ios-framework.sh — one-command iOS framework qualification gate.
 #
-# Runs hygiene, build, test, consumer contracts, size measurement, crash
-# harness, TSan suites, TSan consumer build, and dependency-graph capture.
+# Runs hygiene, build, test, consumer contracts, size measurement, public
+# snippet verification, crash harness, TSan suites, TSan consumer build, and
+# dependency-graph capture.
 # Continues after a failed step and exits non-zero if any step failed.
 #
 # Evidence: WAX_QUALIFY_EVIDENCE_DIR (default /tmp/wax-qualify-evidence)
@@ -28,6 +29,7 @@ STEPS=(
   test
   consumer
   size
+  snippets
   crash
   tsan
   tsan-consumer
@@ -55,6 +57,7 @@ Steps:
   test            swift test
   consumer        scripts/test-consumer-contracts.sh
   size            scripts/measure-consumer-size.sh (archives JSON)
+  snippets        swift scripts/verify-public-swift-snippets.swift
   crash           WAX_RUN_CRASH_HARNESS=1 swift test --filter CrashSafetyHarnessTests
   tsan            swift test --sanitize=thread (real suite/function names)
   tsan-consumer   swift build --package-path Tests/ConsumerContracts --sanitize=thread --product StrictConsumer
@@ -100,6 +103,7 @@ env_skip_flag() {
     test) printf '%s' "${WAX_QUALIFY_SKIP_TEST:-0}" ;;
     consumer) printf '%s' "${WAX_QUALIFY_SKIP_CONSUMER:-0}" ;;
     size) printf '%s' "${WAX_QUALIFY_SKIP_SIZE:-0}" ;;
+    snippets) printf '%s' "${WAX_QUALIFY_SKIP_SNIPPETS:-0}" ;;
     crash) printf '%s' "${WAX_QUALIFY_SKIP_CRASH:-0}" ;;
     tsan) printf '%s' "${WAX_QUALIFY_SKIP_TSAN:-0}" ;;
     tsan-consumer) printf '%s' "${WAX_QUALIFY_SKIP_TSAN_CONSUMER:-0}" ;;
@@ -215,6 +219,10 @@ step_size() {
   "$REPO_ROOT/scripts/measure-consumer-size.sh"
 }
 
+step_snippets() {
+  swift "$REPO_ROOT/scripts/verify-public-swift-snippets.swift"
+}
+
 step_crash() {
   WAX_RUN_CRASH_HARNESS=1 swift test --filter CrashSafetyHarnessTests
 }
@@ -249,6 +257,7 @@ run_named_step() {
     test) step_test ;;
     consumer) step_consumer ;;
     size) step_size ;;
+    snippets) step_snippets ;;
     crash) step_crash ;;
     tsan) step_tsan ;;
     tsan-consumer) step_tsan_consumer ;;

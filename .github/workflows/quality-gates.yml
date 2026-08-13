@@ -37,3 +37,12 @@ jobs:
 
       - name: Consumer size
         run: bash scripts/measure-consumer-size.sh
+
+  public-snippets:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Public Swift snippet verifier
+        run: swift scripts/verify-public-swift-snippets.swift
