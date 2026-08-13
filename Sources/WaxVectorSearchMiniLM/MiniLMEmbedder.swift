@@ -130,11 +130,16 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         let vector: [Float]
         do {
             guard let encoded = try await model.encode(sentence: text) else {
-                throw WaxError.io("MiniLMAll embedding failed to produce a vector.")
+                // No vector was produced (empty tokenization), not a store I/O failure.
+                throw WaxError.encodingError(reason: "MiniLMAll embedding failed to produce a vector.")
             }
             vector = encoded
         } catch let error as MiniLMEmbeddings.DecodeError {
             throw WaxError.invalidEmbedding(reason: error.localizedDescription)
+        } catch let error as BertTokenizerError {
+            // Tokenization is input encoding. `.invalidEmbedding` is reserved for produced
+            // vectors that fail width/finite/zero-norm checks.
+            throw WaxError.encodingError(reason: error.localizedDescription)
         }
         return try Self.validatedNormalizedVector(vector, dimensions: dimensions)
     }
@@ -176,15 +181,17 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         let vectors: [[Float]]
         do {
             guard let encoded = try await model.encode(batch: texts, reuseBuffers: &buffers) else {
-                throw WaxError.io("MiniLMAll batch embedding failed.")
+                throw WaxError.encodingError(reason: "MiniLMAll batch embedding failed.")
             }
             vectors = encoded
         } catch let error as MiniLMEmbeddings.DecodeError {
             throw WaxError.invalidEmbedding(reason: error.localizedDescription)
+        } catch let error as BertTokenizerError {
+            throw WaxError.encodingError(reason: error.localizedDescription)
         }
         batchInputBuffers = buffers
         guard vectors.count == texts.count else {
-            throw WaxError.io("MiniLMAll batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
+            throw WaxError.encodingError(reason: "MiniLMAll batch embedding count mismatch: expected \(texts.count), got \(vectors.count).")
         }
         for vector in vectors {
             if vector.count != dimensions {

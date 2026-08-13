@@ -182,10 +182,11 @@ package final class MiniLMEmbeddings {
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
     package func encode(sentence: String) async throws -> [Float]? {
-        guard let batchInputs = try? tokenizer.buildBatchInputs(
+        let batchInputs = try tokenizer.buildBatchInputs(
             sentences: [sentence],
             sequenceLengthBuckets: Self.sequenceLengthBuckets
-        ), batchInputs.sequenceLength > 0 else { return nil }
+        )
+        guard batchInputs.sequenceLength > 0 else { return nil }
 
         guard let embeddings = try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
@@ -210,11 +211,12 @@ package final class MiniLMEmbeddings {
     ) async throws -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
-        guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
+        let batchInputs = try tokenizer.buildBatchInputsWithReuse(
             sentences: sentences,
             sequenceLengthBuckets: Self.sequenceLengthBuckets,
             reuse: &reuseBuffers
-        ), batchInputs.sequenceLength > 0 else { return [] }
+        )
+        guard batchInputs.sequenceLength > 0 else { return [] }
 
         return try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
@@ -405,6 +407,7 @@ private extension MiniLMEmbeddings {
 
         if shape.count == 1 {
             guard batchSize == 1, shape[0] == outputDimension else { throw fail() }
+            try requirePositiveStride(strides[0], fail)
             return try [readVector(embeddings, offset: 0, count: outputDimension, stride: strides[0], dataType: dataType)]
         }
 
@@ -412,6 +415,8 @@ private extension MiniLMEmbeddings {
             let batch = shape[0]
             let dim = shape[1]
             guard batch == batchSize, dim == outputDimension else { throw fail() }
+            try requirePositiveStride(strides[0], fail)
+            try requirePositiveStride(strides[1], fail)
             return try readRows(
                 embeddings,
                 batch: batch,
@@ -426,6 +431,8 @@ private extension MiniLMEmbeddings {
             let batch = shape[0]
             let dim = shape[2]
             guard batch == batchSize, dim == outputDimension else { throw fail() }
+            try requirePositiveStride(strides[0], fail)
+            try requirePositiveStride(strides[2], fail)
             return try readRows(
                 embeddings,
                 batch: batch,
@@ -440,6 +447,8 @@ private extension MiniLMEmbeddings {
             let batch = shape[0]
             let dim = shape[1]
             guard batch == batchSize, dim == outputDimension else { throw fail() }
+            try requirePositiveStride(strides[0], fail)
+            try requirePositiveStride(strides[1], fail)
             return try readRows(
                 embeddings,
                 batch: batch,
@@ -451,6 +460,10 @@ private extension MiniLMEmbeddings {
         }
 
         throw fail()
+    }
+
+    static func requirePositiveStride(_ stride: Int, _ fail: () -> DecodeError) throws {
+        guard stride > 0 else { throw fail() }
     }
 
     static func describeDataType(_ dataType: MLMultiArrayDataType) -> String {
@@ -517,10 +530,27 @@ private extension MiniLMEmbeddings {
         stride: Int,
         dataType: MLMultiArrayDataType
     ) throws -> [Float] {
-        let capacity = max(
-            embeddings.count,
-            offset + max(0, count - 1) * stride + 1
-        )
+        guard count > 0, offset >= 0, stride > 0 else {
+            throw DecodeError.unexpectedOutput(
+                shape: embeddings.shape.map(\.intValue),
+                strides: embeddings.strides.map(\.intValue),
+                dataType: describeDataType(dataType),
+                expectedBatch: 1,
+                expectedDimension: count
+            )
+        }
+        let span = (count - 1).multipliedReportingOverflow(by: stride)
+        let lastIndex = offset.addingReportingOverflow(span.overflow ? 0 : span.partialValue)
+        guard !span.overflow, !lastIndex.overflow else {
+            throw DecodeError.unexpectedOutput(
+                shape: embeddings.shape.map(\.intValue),
+                strides: embeddings.strides.map(\.intValue),
+                dataType: describeDataType(dataType),
+                expectedBatch: 1,
+                expectedDimension: count
+            )
+        }
+        let capacity = max(embeddings.count, lastIndex.partialValue + 1)
         switch dataType {
         case .float32:
             let floatPtr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: capacity)

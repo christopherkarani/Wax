@@ -4,6 +4,7 @@ import Testing
 #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import CoreML
 import WaxBertTokenizer
+import WaxCore
 import WaxVectorSearchMiniLM
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -78,6 +79,52 @@ func miniLMEmbedderRejectsNonFiniteBatchOutputs() async throws {
 
     await #expect(throws: (any Error).self) {
         _ = try await embedder.embed(batch: ["finite", "bad"])
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderMapsTokenizerFailuresToEncodingError() async throws {
+    let embedder = MiniLMEmbedder(
+        model: StubMiniLMModel(
+            single: nil,
+            batch: nil,
+            error: BertTokenizerError.io("Unknown token in vocabulary: [UNK]")
+        ),
+        batchSize: 1
+    )
+
+    do {
+        _ = try await embedder.embed("hello world")
+        Issue.record("tokenizer failure must throw")
+    } catch let error as WaxError {
+        guard case .encodingError = error else {
+            Issue.record("expected WaxError.encodingError, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected WaxError.encodingError, got \(error)")
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test
+func miniLMEmbedderMapsMissingVectorToEncodingErrorNotIO() async throws {
+    let embedder = MiniLMEmbedder(
+        model: StubMiniLMModel(single: nil, batch: nil, error: nil),
+        batchSize: 1
+    )
+
+    do {
+        _ = try await embedder.embed("hello world")
+        Issue.record("nil encode result must throw")
+    } catch let error as WaxError {
+        guard case .encodingError = error else {
+            Issue.record("expected WaxError.encodingError, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected WaxError.encodingError, got \(error)")
     }
 }
 

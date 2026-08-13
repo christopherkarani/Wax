@@ -217,6 +217,38 @@ struct MiniLMFloat16DecodingTests {
     )
 }
 
+@Test func miniLMDecodingRejectsZeroColumnStride() throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
+    let array = try makeShapeOnlyArray(
+        shape: [1, miniLMDimension],
+        strides: [miniLMDimension, 0],
+        dataType: .float32
+    )
+    try assertDecodeRejected(
+        array,
+        batchSize: 1,
+        outputDimension: miniLMDimension,
+        expectedBatch: 1,
+        expectedDimension: miniLMDimension
+    )
+}
+
+@Test func miniLMDecodingRejectsNegativeColumnStride() throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
+    let array = try makeShapeOnlyArray(
+        shape: [1, miniLMDimension],
+        strides: [miniLMDimension, -1],
+        dataType: .float32
+    )
+    try assertDecodeRejected(
+        array,
+        batchSize: 1,
+        outputDimension: miniLMDimension,
+        expectedBatch: 1,
+        expectedDimension: miniLMDimension
+    )
+}
+
 @Test func miniLMProviderBoundaryRejectsDecodedNaN() throws {
     guard #available(macOS 15.0, iOS 18.0, *) else { return }
     var values = ramp(count: miniLMDimension, scale: 0.01, offset: 0.3)
@@ -233,6 +265,18 @@ struct MiniLMFloat16DecodingTests {
     let array = try makeContiguousArray(shape: [1, miniLMDimension], dataType: .float16, values: values)
     let decoded = try decode(array, batchSize: 1, outputDimension: miniLMDimension)
     try assertInvalidEmbedding(decoded[0])
+}
+
+@Test func miniLMEmbedderProducesFiniteNonZeroVector() async throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
+    let embedder = try MiniLMEmbedder()
+    let vector = try await embedder.embed("hello world")
+    #expect(vector.count == miniLMDimension)
+    let allFinite = vector.allSatisfy(\.isFinite)
+    #expect(allFinite)
+    let magnitudeSquared = vector.reduce(Float.zero) { $0 + $1 * $1 }
+    #expect(magnitudeSquared > 0)
+    #expect(abs(magnitudeSquared - 1) < 0.02)
 }
 
 @Test func embeddingValidationRejectsZeroNormEvenWhenRequireNonZeroIsFalse() throws {
@@ -347,6 +391,24 @@ private func makeContiguousArray(
     }
     write(values: values, to: array, dataType: dataType)
     return array
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+private func makeShapeOnlyArray(
+    shape: [Int],
+    strides: [Int],
+    dataType: MLMultiArrayDataType
+) throws -> MLMultiArray {
+    let byteCount = 64
+    let raw = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+    raw.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+    return try MLMultiArray(
+        dataPointer: raw,
+        shape: shape.map { NSNumber(value: $0) },
+        dataType: dataType,
+        strides: strides.map { NSNumber(value: $0) },
+        deallocator: { $0.deallocate() }
+    )
 }
 
 @available(macOS 15.0, iOS 18.0, *)
