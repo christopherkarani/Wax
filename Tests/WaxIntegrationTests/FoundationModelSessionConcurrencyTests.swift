@@ -289,6 +289,103 @@ struct FoundationModelSessionConcurrencyTests {
     }
 
     @Test
+    func preparePromptDetailedFromToolDuringRespondDoesNotDeadlock() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let memory = try await Memory(at: url) { $0.enableVectorSearch = false }
+            let nestedPrompt = "nested-tool-prepare-\(UUID().uuidString)"
+            let hook = NestedPrepareHook()
+            let generator = ControllableFoundationModelGenerator(delay: .milliseconds(20)) {
+                try await hook.prepareNested(for: nestedPrompt)
+            }
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .never
+            configuration.persistencePolicy = .none
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: generator
+            )
+            hook.setSession(session)
+
+            let reply = try await withBoundedTimeout(description: "respond with nested preparePromptDetailed") {
+                try await session.respond(to: "outer-prompt")
+            }
+            #expect(reply.contains("outer-prompt"))
+            #expect(hook.didPrepare)
+            #expect(await session.lastPreparedPrompt?.prompt.contains(nestedPrompt) == true)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
+    func independentPreparePromptDetailedCallsStillSerialize() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+
+        try await TempFiles.withTempFile { url in
+            let embedder = LatchEmbeddingProvider()
+            let memory = try await Memory(at: url) { config in
+                config.enableVectorSearch = true
+                config.embedding = .custom(embedder)
+                config.requireOnDeviceProviders = true
+            }
+            var configuration = FoundationModelsMemorySessionConfig.default
+            configuration.embeddingPolicy = .always
+            configuration.persistencePolicy = .none
+            configuration.contextStrategy = .promptAugmentation
+
+            let session = WaxFoundationModelSession(
+                memory: memory,
+                configuration: configuration,
+                generator: ControllableFoundationModelGenerator()
+            )
+
+            let firstPrompt = "prep-a-\(UUID().uuidString)"
+            let secondPrompt = "prep-b-\(UUID().uuidString)"
+            let firstTask = Task {
+                try await session.preparePromptDetailed(for: firstPrompt)
+            }
+            try await embedder.waitUntilHolding()
+
+            let secondOutcome = TaskOutcome<PreparedMemoryPrompt>()
+            let secondTask = Task {
+                do {
+                    let prepared = try await session.preparePromptDetailed(for: secondPrompt)
+                    secondOutcome.set(.success(prepared))
+                    return prepared
+                } catch {
+                    secondOutcome.set(.failure(error))
+                    throw error
+                }
+            }
+            try await waitUntilCondition(description: "second prepare queued on generation lease") {
+                await session.generationGateWaiterCount() > 0
+            }
+            #expect(secondOutcome.snapshot() == nil)
+            #expect(embedder.peakInFlight() == 1)
+
+            embedder.releaseHold()
+            let first = try await withBoundedTimeout(description: "first prepare after latch release") {
+                try await firstTask.value
+            }
+            let second = try await withBoundedTimeout(description: "queued second prepare") {
+                try await secondTask.value
+            }
+            #expect(first.prompt.contains(firstPrompt))
+            #expect(second.prompt.contains(secondPrompt))
+            #expect(embedder.peakInFlight() == 1)
+
+            try await session.close()
+            try await memory.close()
+        }
+    }
+
+    @Test
     func waitForGenerationQuiesceTimesOutWhenSessionNeverIdles() async {
         guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
 
@@ -345,6 +442,98 @@ private final class NeverIdleThenClearFlag: @unchecked Sendable {
     var isResponding: Bool {
         get { lock.withLock { responding } }
         set { lock.withLock { responding = newValue } }
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+private final class NestedPrepareHook: @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: WaxFoundationModelSession?
+    private var prepared = false
+
+    var didPrepare: Bool { lock.withLock { prepared } }
+
+    func setSession(_ session: WaxFoundationModelSession) {
+        lock.withLock { self.session = session }
+    }
+
+    func prepareNested(for prompt: String) async throws {
+        let session = lock.withLock { self.session }
+        guard let session else { return }
+        _ = try await session.preparePromptDetailed(for: prompt)
+        lock.withLock { prepared = true }
+    }
+}
+
+/// Holds the first `embed` until `releaseHold()` so two public prepares can be
+/// observed serializing on the generation lease.
+private final class LatchEmbeddingProvider: EmbeddingProvider, @unchecked Sendable {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "test",
+        model: "lease-latch",
+        dimensions: 4,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    private let lock = NSLock()
+    private var inFlight = 0
+    private var peak = 0
+    private var remainingHolds = 1
+    private var holding = false
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func peakInFlight() -> Int { lock.withLock { peak } }
+
+    func waitUntilHolding() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if holding {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                startedContinuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func releaseHold() {
+        let pending: CheckedContinuation<Void, Never>?
+        lock.lock()
+        pending = releaseContinuation
+        releaseContinuation = nil
+        holding = false
+        lock.unlock()
+        pending?.resume()
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        let shouldHold: Bool = lock.withLock {
+            inFlight += 1
+            peak = max(peak, inFlight)
+            let hold = remainingHolds > 0
+            if hold { remainingHolds -= 1 }
+            return hold
+        }
+        defer { lock.withLock { inFlight -= 1 } }
+        guard shouldHold else {
+            return [1, 0, 0, 0]
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            holding = true
+            let started = startedContinuation
+            startedContinuation = nil
+            releaseContinuation = continuation
+            lock.unlock()
+            started?.resume()
+        }
+        return [1, 0, 0, 0]
     }
 }
 #endif

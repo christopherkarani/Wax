@@ -60,6 +60,9 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
     private var lingerReleased = false
     private var lingerContinuation: CheckedContinuation<Void, Never>?
     private var streamTask: Task<Void, Never>?
+    /// Invoked while a generate call is in-flight (lease held). Simulates a
+    /// Foundation Models tool that re-enters the session.
+    private let onGenerate: (@Sendable () async throws -> Void)?
 
     init(
         delay: Duration = .milliseconds(20),
@@ -72,7 +75,8 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         generateErrorCount: Int = 1,
         streamError: Error? = nil,
         streamErrorCount: Int = 1,
-        structuredResult: (any Sendable)? = nil
+        structuredResult: (any Sendable)? = nil,
+        onGenerate: (@Sendable () async throws -> Void)? = nil
     ) {
         self.delay = delay
         self.blockUntilCancelled = blockUntilCancelled
@@ -85,6 +89,7 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         self.remainingFirstChunkHolds = pauseBeforeFirstChunk ? 1 : 0
         self.structuredResult = structuredResult
         self.lingerAfterCancel = lingerAfterCancel
+        self.onGenerate = onGenerate
     }
 
     func maxInFlight() -> Int {
@@ -211,6 +216,10 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
             }
             lock.withLock { observedCancellation = true }
             throw CancellationError()
+        }
+
+        if let onGenerate {
+            try await onGenerate()
         }
 
         try await Task.sleep(for: delay)

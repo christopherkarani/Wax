@@ -218,6 +218,19 @@ package final class LanguageModelSessionBox: @unchecked Sendable {
         lock.withLock { _session = session }
     }
 }
+
+/// Task-local owner of the generation lease. Nested public entry points
+/// (for example ``WaxFoundationModelSession/preparePromptDetailed(for:)`` from a
+/// Foundation Models tool during ``WaxFoundationModelSession/respond(to:options:)``)
+/// reuse the held lease instead of deadlocking on the non-reentrant ``AsyncMutex``.
+/// Independent tasks do not inherit the token and still serialize.
+@available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+enum GenerationLeaseOwnership {
+    @TaskLocal static var owner: ObjectIdentifier?
+}
+
 @available(macOS 26.0, iOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)

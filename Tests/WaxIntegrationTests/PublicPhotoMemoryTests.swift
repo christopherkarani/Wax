@@ -436,7 +436,30 @@ struct PublicPhotoMemoryTests {
                 Issue.record("expected WaxError.invalidEmbedding, got \(error)")
             }
 
+            let duringOpen = try await photos.search(
+                PhotoMemory.Query(text: "receipt", resultLimit: 5)
+            )
+            #expect(duringOpen.items.isEmpty)
+            #expect(duringOpen.items.allSatisfy { $0.assetID != "region-nan" })
+
             try await photos.close()
+
+            var reopenConfig = PhotoRAGConfig.default
+            reopenConfig.enableOCR = true
+            reopenConfig.enableRegionEmbeddings = true
+            reopenConfig.includeThumbnailsInContext = false
+            reopenConfig.includeRegionCropsInContext = false
+            reopenConfig.maxRegionsPerPhoto = 1
+            reopenConfig.vectorEnginePreference = .cpuOnly
+            let orchestrator = try await PhotoRAGOrchestrator(
+                storeURL: storeURL,
+                config: reopenConfig,
+                embedder: DeterministicMultimodalEmbedder()
+            )
+            let metas = await orchestrator.wax.frameMetasIncludingPending()
+            #expect(metas.filter { $0.kind == PhotoFrameKind.root.rawValue }.isEmpty)
+            #expect(metas.filter { $0.kind == PhotoFrameKind.region.rawValue }.isEmpty)
+            try await orchestrator.close()
         }
     }
 

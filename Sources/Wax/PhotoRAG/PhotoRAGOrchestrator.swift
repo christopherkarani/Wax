@@ -679,21 +679,6 @@ package actor PhotoRAGOrchestrator {
         // Global embedding
         let globalEmbedding = try await validatedImageEmbedding(embedImage)
 
-        // Root frame
-        let rootOptions = FrameMetaSubset(
-            kind: FrameKind.root,
-            metadata: baseMeta
-        )
-
-        let rootId = try await session.put(
-            Data(),
-            embedding: globalEmbedding,
-            identity: embedder.identity,
-            options: rootOptions,
-            compression: .plain,
-            timestampMs: frameTimestampMs
-        )
-
         // OCR
         var ocrBlocks: [RecognizedTextBlock] = []
         if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
@@ -716,6 +701,26 @@ package actor PhotoRAGOrchestrator {
         } else {
             captionText = Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
         }
+
+        let preparedRegions = try await prepareRegionEmbeddingsIfNeeded(
+            sourceImage: embedImage,
+            ocrBlocks: ocrBlocks
+        )
+
+        // Root frame
+        let rootOptions = FrameMetaSubset(
+            kind: FrameKind.root,
+            metadata: baseMeta
+        )
+
+        let rootId = try await session.put(
+            Data(),
+            embedding: globalEmbedding,
+            identity: embedder.identity,
+            options: rootOptions,
+            compression: .plain,
+            timestampMs: frameTimestampMs
+        )
 
         let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)
 
@@ -787,84 +792,12 @@ package actor PhotoRAGOrchestrator {
             try await session.indexTextBatch(frameIds: frameIds, texts: texts)
         }
 
-        // Regions (OCR-driven and/or grid)
-        if config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 {
-            let regions = Self.proposeRegions(from: ocrBlocks, maxRegions: config.maxRegionsPerPhoto)
-            if !regions.isEmpty {
-                // Collect all crops first
-                var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
-                crops.reserveCapacity(regions.count)
-                for region in regions {
-                    guard let crop = Self.crop(embedImage, rect: region.bbox) else { continue }
-                    crops.append((crops.count, crop, region))
-                }
-
-                if !crops.isEmpty {
-                    // Embed in parallel with bounded concurrency (4 concurrent tasks)
-                    var regionEmbeddings: [[Float]] = []
-                    var regionContents: [Data] = []
-                    var regionOptions: [FrameMetaSubset] = []
-                    regionEmbeddings.reserveCapacity(crops.count)
-                    regionContents.reserveCapacity(crops.count)
-                    regionOptions.reserveCapacity(crops.count)
-
-                    try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-                        var activeCount = 0
-                        let maxConcurrency = self.config.regionEmbeddingConcurrency
-                        var cropIterator = crops.makeIterator()
-
-                        // Start initial batch
-                        while activeCount < maxConcurrency, let item = cropIterator.next() {
-                            let (index, crop, _) = item
-                            group.addTask {
-                                let vec = try await self.validatedImageEmbedding(crop)
-                                return (index, vec)
-                            }
-                            activeCount += 1
-                        }
-
-                        // Collect results and spawn new tasks
-                        var results: [(Int, [Float])] = []
-                        results.reserveCapacity(crops.count)
-                        for try await result in group {
-                            results.append(result)
-                            if let item = cropIterator.next() {
-                                let (index, crop, _) = item
-                                group.addTask {
-                                    let vec = try await self.validatedImageEmbedding(crop)
-                                    return (index, vec)
-                                }
-                            }
-                        }
-
-                        // Sort results by index to maintain deterministic ordering
-                        results.sort { $0.0 < $1.0 }
-
-                        // Build final arrays in correct order
-                        for (index, vec) in results {
-                            let (_, _, region) = crops[index]
-                            regionEmbeddings.append(vec)
-                            regionContents.append(Data())
-
-                            var meta = baseMeta
-                            Self.writeBBox(into: &meta, rect: region.bbox)
-                            meta.entries[MetaKey.regionType] = region.type
-                            let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
-                            regionOptions.append(subset)
-                        }
-                    }
-
-                    _ = try await session.putBatch(
-                        contents: regionContents,
-                        embeddings: try requireValidRegionEmbeddings(regionEmbeddings),
-                        identity: embedder.identity,
-                        options: regionOptions,
-                        timestampsMs: Array(repeating: frameTimestampMs, count: regionContents.count),
-                        compression: .plain
-                    )
-                }
-            }
-        }
+        try await writePreparedRegionEmbeddings(
+            rootId: rootId,
+            baseMeta: baseMeta,
+            timestampMs: frameTimestampMs,
+            prepared: preparedRegions
+        )
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
@@ -935,15 +868,6 @@ package actor PhotoRAGOrchestrator {
 
         let globalEmbedding = try await validatedImageEmbedding(embedImage)
 
-        let rootId = try await session.put(
-            Data(),
-            embedding: globalEmbedding,
-            identity: embedder.identity,
-            options: FrameMetaSubset(kind: FrameKind.root, metadata: baseMeta),
-            compression: .plain,
-            timestampMs: frameTimestampMs
-        )
-
         var ocrBlocks: [RecognizedTextBlock] = []
         if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
             ocrBlocks = try await ocr.recognizeText(in: ocrImage)
@@ -964,6 +888,20 @@ package actor PhotoRAGOrchestrator {
         } else {
             captionText = Self.weakCaption(metadata: metadata, ocrBlocks: ocrBlocks)
         }
+
+        let preparedRegions = try await prepareRegionEmbeddingsIfNeeded(
+            sourceImage: embedImage,
+            ocrBlocks: ocrBlocks
+        )
+
+        let rootId = try await session.put(
+            Data(),
+            embedding: globalEmbedding,
+            identity: embedder.identity,
+            options: FrameMetaSubset(kind: FrameKind.root, metadata: baseMeta),
+            compression: .plain,
+            timestampMs: frameTimestampMs
+        )
 
         let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)
         var derivedContents: [Data] = []
@@ -1022,12 +960,11 @@ package actor PhotoRAGOrchestrator {
             try await session.indexTextBatch(frameIds: frameIds, texts: texts)
         }
 
-        try await writeRegionEmbeddingsIfNeeded(
+        try await writePreparedRegionEmbeddings(
             rootId: rootId,
             baseMeta: baseMeta,
-            sourceImage: embedImage,
-            ocrBlocks: ocrBlocks,
-            timestampMs: frameTimestampMs
+            timestampMs: frameTimestampMs,
+            prepared: preparedRegions
         )
 
         if let previousRoot {
@@ -1036,16 +973,19 @@ package actor PhotoRAGOrchestrator {
         }
     }
 
-    private func writeRegionEmbeddingsIfNeeded(
-        rootId: UInt64,
-        baseMeta: Metadata,
+    private struct PreparedRegionEmbedding: Sendable {
+        var region: ProposedRegion
+        var embedding: [Float]
+    }
+
+    /// Embed and validate region crops before any live photo-root write.
+    private func prepareRegionEmbeddingsIfNeeded(
         sourceImage: CGImage,
-        ocrBlocks: [RecognizedTextBlock],
-        timestampMs: Int64
-    ) async throws {
-        guard config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 else { return }
+        ocrBlocks: [RecognizedTextBlock]
+    ) async throws -> [PreparedRegionEmbedding] {
+        guard config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 else { return [] }
         let regions = Self.proposeRegions(from: ocrBlocks, maxRegions: config.maxRegionsPerPhoto)
-        guard !regions.isEmpty else { return }
+        guard !regions.isEmpty else { return [] }
 
         var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
         crops.reserveCapacity(regions.count)
@@ -1053,14 +993,10 @@ package actor PhotoRAGOrchestrator {
             guard let crop = Self.crop(sourceImage, rect: region.bbox) else { continue }
             crops.append((crops.count, crop, region))
         }
-        guard !crops.isEmpty else { return }
+        guard !crops.isEmpty else { return [] }
 
-        var regionEmbeddings: [[Float]] = []
-        var regionContents: [Data] = []
-        var regionOptions: [FrameMetaSubset] = []
-        regionEmbeddings.reserveCapacity(crops.count)
-        regionContents.reserveCapacity(crops.count)
-        regionOptions.reserveCapacity(crops.count)
+        var prepared: [PreparedRegionEmbedding] = []
+        prepared.reserveCapacity(crops.count)
 
         try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
             var activeCount = 0
@@ -1091,15 +1027,36 @@ package actor PhotoRAGOrchestrator {
 
             results.sort { $0.0 < $1.0 }
             for (index, vec) in results {
-                let (_, _, region) = crops[index]
-                regionEmbeddings.append(vec)
-                regionContents.append(Data())
-
-                var meta = baseMeta
-                Self.writeBBox(into: &meta, rect: region.bbox)
-                meta.entries[MetaKey.regionType] = region.type
-                regionOptions.append(FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta))
+                prepared.append(PreparedRegionEmbedding(region: crops[index].region, embedding: vec))
             }
+        }
+
+        _ = try requireValidRegionEmbeddings(prepared.map(\.embedding))
+        return prepared
+    }
+
+    private func writePreparedRegionEmbeddings(
+        rootId: UInt64,
+        baseMeta: Metadata,
+        timestampMs: Int64,
+        prepared: [PreparedRegionEmbedding]
+    ) async throws {
+        guard !prepared.isEmpty else { return }
+
+        var regionEmbeddings: [[Float]] = []
+        var regionContents: [Data] = []
+        var regionOptions: [FrameMetaSubset] = []
+        regionEmbeddings.reserveCapacity(prepared.count)
+        regionContents.reserveCapacity(prepared.count)
+        regionOptions.reserveCapacity(prepared.count)
+
+        for item in prepared {
+            regionEmbeddings.append(item.embedding)
+            regionContents.append(Data())
+            var meta = baseMeta
+            Self.writeBBox(into: &meta, rect: item.region.bbox)
+            meta.entries[MetaKey.regionType] = item.region.type
+            regionOptions.append(FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta))
         }
 
         _ = try await session.putBatch(
@@ -1935,7 +1892,7 @@ package actor PhotoRAGOrchestrator {
         return meta
     }
 
-    private struct ProposedRegion {
+    private struct ProposedRegion: Sendable {
         var bbox: PhotoNormalizedRect
         var type: String
     }

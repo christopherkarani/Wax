@@ -101,17 +101,14 @@ func photoRAGRegionCropResultsUseCompactCropIndices() throws {
     )
     let photosIngestStart = try #require(source.range(of: "private func ingestOne(assetID: String)"))
     let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
-    let localHelperStart = try #require(source[localIngestStart.upperBound...].range(of: "private func writeRegionEmbeddingsIfNeeded"))
+    let localHelperStart = try #require(source[localIngestStart.upperBound...].range(of: "private func prepareRegionEmbeddingsIfNeeded"))
     let rebuildIndexStart = try #require(source[localHelperStart.upperBound...].range(of: "private func rebuildIndex"))
 
-    let photosIngestBody = source[photosIngestStart.lowerBound..<localIngestStart.lowerBound]
     let localRegionHelperBody = source[localHelperStart.lowerBound..<rebuildIndexStart.lowerBound]
 
-    for regionEmbeddingBody in [photosIngestBody, localRegionHelperBody] {
-        #expect(regionEmbeddingBody.contains("crops.append((crops.count, crop, region))"))
-        #expect(!regionEmbeddingBody.contains("crops.append((i, crop, region))"))
-        #expect(!regionEmbeddingBody.contains("crops.append((index, crop, region))"))
-    }
+    #expect(localRegionHelperBody.contains("crops.append((crops.count, crop, region))"))
+    #expect(!localRegionHelperBody.contains("crops.append((i, crop, region))"))
+    #expect(!localRegionHelperBody.contains("crops.append((index, crop, region))"))
 }
 
 @Test

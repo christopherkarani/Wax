@@ -259,6 +259,11 @@ public actor WaxFoundationModelSession {
     ///
     /// Serialized with the generation lease so a concurrent prepare cannot
     /// overwrite ``lastPreparedPrompt`` used by an in-flight persist (C-P2-4).
+    ///
+    /// The lease is re-entrant for the task that already holds it: a custom
+    /// Foundation Models tool invoked during ``respond`` / ``streamResponse`` may
+    /// call this method without deadlocking. Callers from a *different* task still
+    /// wait until the in-flight generation (or prepare) releases the lease.
     public func preparePromptDetailed(for userPrompt: String) async throws -> PreparedMemoryPrompt {
         try await withGenerationLease {
             try await self.preparePromptDetailedUngated(for: userPrompt)
@@ -459,30 +464,33 @@ public actor WaxFoundationModelSession {
         do {
             try await acquireGenerationGateCancellably()
             holdsGate = true
-            try Task.checkCancellation()
-            let prepared = try await preparePromptDetailedUngated(for: userPrompt)
-            try checkConversationTurnLimit()
-            let turn = invocationForTurn(prepared: prepared)
-            let inner = generator.streamText(prompt: turn.prompt, options: options)
-            let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
-            let generationPrompt = turn.prompt
-            let lease = GenerationLease(gate: generationGate)
+            let stream = try await withGenerationLeaseOwnership {
+                try Task.checkCancellation()
+                let prepared = try await preparePromptDetailedUngated(for: userPrompt)
+                try checkConversationTurnLimit()
+                let turn = invocationForTurn(prepared: prepared)
+                let inner = generator.streamText(prompt: turn.prompt, options: options)
+                let (stream, continuation) = AsyncThrowingStream<WaxGenerationStream.Event, Error>.makeStream()
+                let generationPrompt = turn.prompt
+                let lease = GenerationLease(gate: generationGate)
+                let producer = Task {
+                    await self.runStreamingProducer(
+                        userPrompt: userPrompt,
+                        prepared: prepared,
+                        prompt: generationPrompt,
+                        options: options,
+                        inner: inner,
+                        continuation: continuation,
+                        lease: lease
+                    )
+                }
+                continuation.onTermination = { _ in
+                    producer.cancel()
+                }
+                return WaxGenerationStream(stream: stream, cancelProducer: { producer.cancel() })
+            }
             holdsGate = false
-            let producer = Task {
-                await self.runStreamingProducer(
-                    userPrompt: userPrompt,
-                    prepared: prepared,
-                    prompt: generationPrompt,
-                    options: options,
-                    inner: inner,
-                    continuation: continuation,
-                    lease: lease
-                )
-            }
-            continuation.onTermination = { _ in
-                producer.cancel()
-            }
-            return WaxGenerationStream(stream: stream, cancelProducer: { producer.cancel() })
+            return stream
         } catch {
             isStreaming = false
             if holdsGate {
@@ -595,17 +603,37 @@ public actor WaxFoundationModelSession {
     /// FIFO generation lease. Actor isolation is reentrant, so overlapping
     /// `respond`/`streamResponse` calls must not rely on it to keep Apple's
     /// ``LanguageModelSession`` single-flight.
+    ///
+    /// Nested calls from the task that already owns the lease reuse it (tools
+    /// during generate). Independent tasks wait on ``AsyncMutex``.
     private func withGenerationLease<T>(
         _ operation: () async throws -> T
     ) async throws -> T {
+        if holdsCurrentGenerationLease {
+            return try await operation()
+        }
         try await generationGate.lock()
         do {
-            let value = try await operation()
+            let value = try await withGenerationLeaseOwnership {
+                try await operation()
+            }
             await generationGate.unlock()
             return value
         } catch {
             await generationGate.unlock()
             throw error
+        }
+    }
+
+    private var holdsCurrentGenerationLease: Bool {
+        GenerationLeaseOwnership.owner == ObjectIdentifier(generationGate)
+    }
+
+    private func withGenerationLeaseOwnership<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await GenerationLeaseOwnership.$owner.withValue(ObjectIdentifier(generationGate)) {
+            try await operation()
         }
     }
 
