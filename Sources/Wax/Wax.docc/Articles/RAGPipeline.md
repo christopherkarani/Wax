@@ -76,7 +76,7 @@ The ``QueryAnalyzer`` detects query intent patterns that influence scoring:
 
 ### Distractor Penalties
 
-Results matching distractor patterns receive a configurable penalty (`answerDistractorPenalty`, default 0.70):
+Results matching distractor patterns receive a configurable penalty (`answerDistractorPenalty`, default 0.30):
 
 - Tentative language ("tentative", "no authoritative")
 - Checklists and reports ("weekly report", "checklist", "signoff")

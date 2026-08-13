@@ -16,7 +16,7 @@ Before:
 let memory = try await Memory(at: storeURL)
 ```
 
-After (same behavior; `.automatic` is the default):
+After (`.automatic` is the default; setup is no longer unbounded):
 
 ```swift compile
 import Foundation
@@ -31,7 +31,9 @@ func migrateAutomatic() async throws {
 }
 ```
 
-On iOS 18/macOS 15+ with the default `MiniLMEmbeddings` trait, `.automatic` wires MiniLM. Otherwise the store runs text-only; check ``Memory/stats()`` or ``RAGContext/diagnostics``.
+On iOS 18/macOS 15+ with the default `MiniLMEmbeddings` trait, `.automatic` wires MiniLM using ``BuiltInEmbeddingProviderOptions/automatic`` (15 second setup bound). If setup times out or the model fails to load, the store falls back to text-only search and ``Memory/stats()`` reports ``EmbeddingStatus/unavailable(reason:)`` with a precise reason. On older OS versions, or when the trait is compiled out, the store also runs text-only; check ``Memory/stats()`` or ``RAGContext/diagnostics``.
+
+``.builtIn(.miniLM)`` still uses ``BuiltInEmbeddingProviderOptions/default`` (120 second timeout) and throws ``BuiltInEmbeddingProviderError/unavailable(_:)`` instead of falling back.
 
 ### `embedding:` argument → `config.embedding = .custom(...)`
 
@@ -130,7 +132,22 @@ func migrateValueForm() async throws {
 }
 ```
 
-The configure closure is `@Sendable`. Do not capture non-Sendable values into it.
+The configure closures on ``Memory/init(at:configure:)`` and ``Memory/search(_:configure:)`` are `@Sendable`. Do not capture non-Sendable values into them.
+
+### `SearchOptions.topK` is a result cap, not candidate depth
+
+Before, `search(_:options:)` passed `options.topK` into FastRAG assembly, so ``Memory/SearchOptions/topK`` (default 10) overrode candidate depth.
+
+After, candidate depth is ``Memory/RAGConfig/searchTopK`` (default 24). ``Memory/SearchOptions/topK`` only truncates the returned item list. ``RAGContext/totalTokens`` is recomputed from the truncated items, so it describes the returned list rather than the pre-truncation assembly.
+
+Set `config.rag.searchTopK` when you need a deeper candidate pool:
+
+```swift
+var config = Memory.Config.default
+config.rag.searchTopK = 24
+let memory = try await Memory(at: storeURL, config: config)
+let results = try await memory.search("query", options: .init(topK: 10))
+```
 
 ### Foundation Models owning factory
 
@@ -149,3 +166,27 @@ Replace “open a session and assume the model is ready” with `makeFoundationM
 `includeMemoryTools` is derived from ``FoundationModelsMemorySessionConfig/contextStrategy`` (tools register for `.tools` and `.hybrid`). `injectionStyle` and `memoryCharacterBudget` write through to ``FoundationModelsMemoryPromptBuilder`` so there is one source of truth. Prepared-prompt overflow is ``WaxFoundationModelsContextPolicy`` (measured characters), not a duplicate token-window field on the session config. ``WaxFMResponse/contextWindowTokens`` and ``WaxFMResponse/remainingContextTokens`` stay `nil` because Apple does not expose a tokenizer window.
 
 Keyword/entity enrichment on ``Memory/Config-swift.struct`` is ``Memory/EnrichmentPolicy`` (`.disabled` / `.builtIn`), not `enableAsyncEnrichment`.
+
+### Removed `WaxMemoryToolExecutor` and `WaxMemoryToolRenderer`
+
+These types were public in 0.1.x and are `package` in 0.2.0. Callers that invoked `WaxMemoryToolExecutor.execute(memory:config:action:...)` or formatted output with `WaxMemoryToolRenderer` will not compile.
+
+Before:
+
+```swift
+let result = await WaxMemoryToolExecutor.execute(
+    memory: memory,
+    config: .default,
+    action: "remember",
+    content: "Prefers Swift"
+)
+let text = WaxMemoryToolRenderer.renderRemember(contentLength: 13)
+```
+
+After: use the public ``WaxMemoryTool`` surface (and the focused remember/recall/search/forget tools) through the owning session APIs. Do not call the executor or renderer.
+
+- ``Memory/foundationModelsTools(kit:config:)`` / ``Memory/foundationModelsMemoryTool(config:)`` — tools bound to an existing ``Memory`` (the handle is not owned by the tools)
+- ``Memory/openFoundationModelsTools(at:config:kit:toolConfig:)`` — owns the store; ``WaxFoundationModelsToolSession/close()`` closes ``Memory``
+- ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)``, ``Memory/makeFoundationModelsSession(model:instructions:additionalTools:configuration:)``, and ``Memory/openFoundationModelsSession(at:config:embedding:model:instructions:additionalTools:sessionConfiguration:)`` — Language Model sessions with memory tools registered according to ``FoundationModelsMemorySessionConfig/contextStrategy``
+
+`WaxMemoryToolKit`, `WaxMemoryToolAction`, `WaxMemoryToolConfig`, `WaxMemoryToolResult`, and the `Tool` types (``WaxMemoryTool``, ``WaxRememberTool``, ``WaxRecallTool``, ``WaxSearchTool``, ``WaxForgetTool``) remain public.

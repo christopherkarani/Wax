@@ -8,17 +8,18 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
-  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the built-in MiniLM embedder is wired on iOS 18/macOS 15+ (requires the default `MiniLMEmbeddings` package trait). On older OS versions or if the model is unavailable, the store runs text-only — check `stats()` or `RAGContext.diagnostics`.
-- `public init(at url: URL, configure: @Sendable (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
+  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the built-in MiniLM embedder is wired on iOS 18/macOS 15+ (requires the default `MiniLMEmbeddings` package trait) using a 15s setup bound (`BuiltInEmbeddingProviderOptions.automatic`). Timeout or load failure falls back to text-only with `stats().embeddingStatus == .unavailable(reason:)`. `.builtIn(.miniLM)` still uses the 120s default and throws. On older OS versions or if the model is unavailable, the store runs text-only — check `stats()` or `RAGContext.diagnostics`.
+- `public init(at url: URL, configure: @Sendable (inout Memory.Config) -> Void) async throws` — convenience closure form of the above. The configure closures on `init(at:configure:)` and `search(_:configure:)` are `@Sendable`.
 - There is no `Memory(at:embedding:)` and no `Memory(at:config:embedding:)`.
 - `public func save(_ text: String, metadata: [String: String] = [:]) async throws`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`
 - `public func search(_ query: String, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
+  - `SearchOptions.topK` (default 10) caps the returned item list and recomputes `totalTokens` from that list. Candidate depth for FastRAG assembly is `Memory.RAGConfig.searchTopK` (default 24), not `topK`.
 - `public func search(_ query: String, configure: @Sendable (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
 - `public func search(_:strategy:options:)` / `search(_:strategy:options:reranker:)` with `SearchStrategy` / `ResultReranker`
 - `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed).
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage. When enrichment is enabled, waits for the pipeline to drain.
-- `public func close() async throws` — flushes, then closes.
+- `public func close() async throws` — flushes with the same enrichment-drain contract as `flush()`, then closes. If the drain times out, `close()` throws and the store remains open.
 - `public func stats() async -> Memory.Stats`
 
 ### Memory.Config
@@ -29,7 +30,7 @@ Source: `Sources/Wax/Memory.swift`
 
 `public enum EmbeddingSource: Sendable` — selects the embedder for a store:
 
-- `.automatic` — built-in MiniLM when the platform/build supports it, text-only fallback otherwise.
+- `.automatic` — built-in MiniLM when the platform/build supports it (15s setup bound); text-only fallback with `EmbeddingStatus.unavailable(reason:)` on timeout or load failure.
 - `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is unavailable on this OS/build.
 - `.custom(any EmbeddingProvider)` — bring your own embedder.
 
@@ -41,7 +42,7 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
-- `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: RetrievalMode` (`.hybrid()`).
+- `public struct SearchOptions` with `topK` (10; result cap only — see `search` above), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: RetrievalMode` (`.hybrid()`).
 - `public enum RetrievalMode { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }`
   - `.hybrid` degrades to the text lane when no embedder is available; `.vectorOnly` throws when vector search is unavailable. Check `RAGContext.diagnostics` for what actually ran.
 - `public struct TimeRange { afterMs: Int64?, beforeMs: Int64? }`

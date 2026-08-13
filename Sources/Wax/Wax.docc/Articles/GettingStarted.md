@@ -152,7 +152,7 @@ Behind the scenes, Wax:
 3. Indexes the text for BM25 full-text search
 4. Writes frames and embeddings to the `.wax` file's write-ahead log
 
-Call ``Memory/flush()`` to force pending writes to durable storage; ``Memory/close()`` flushes automatically.
+Call ``Memory/flush()`` to force pending writes to durable storage. ``Memory/close()`` flushes first — including an enrichment drain when ``Memory/EnrichmentPolicy/builtIn`` is set — then releases the store. If the drain times out, ``Memory/close()`` throws and the store remains open.
 
 ## Search
 
