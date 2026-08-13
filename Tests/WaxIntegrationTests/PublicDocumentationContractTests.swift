@@ -25,6 +25,7 @@ struct PublicDocumentationContractTests {
         "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
         "Sources/Wax/Wax.docc/Articles/VideoRAG.md",
         "Sources/Wax/Wax.docc/Articles/RAGPipeline.md",
+        "Sources/Wax/Wax.docc/Articles/UnifiedSearch.md",
         "Resources/skills/public/wax/SKILL.md",
         "Resources/skills/public/wax/references/public-api.md",
         "Resources/skills/public/wax/references/constraints.md",
@@ -44,6 +45,8 @@ struct PublicDocumentationContractTests {
         "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
         "Sources/Wax/Wax.docc/Articles/VideoRAG.md",
         "Sources/Wax/Wax.docc/Articles/RAGPipeline.md",
+        "Sources/Wax/Wax.docc/Articles/UnifiedSearch.md",
+        "Resources/skills/public/wax/SKILL.md",
         "Resources/skills/public/wax/templates/init-store-embedder.md",
         "Resources/skills/public/wax/templates/remember-recall-lifecycle.md",
         "Resources/skills/public/wax/templates/hybrid-search.md",
@@ -184,6 +187,67 @@ struct PublicDocumentationContractTests {
     }
 
     @Test
+    func compileMarkedFencesHaveNonEmptyBodies() throws {
+        for relativePath in Self.compileRequiredRelativePaths {
+            let fences = Self.swiftCompileFenceBodies(in: try Self.read(relativePath))
+            #expect(
+                !fences.isEmpty,
+                "\(relativePath) must contain at least one ```swift compile fence"
+            )
+            for (offset, body) in fences.enumerated() {
+                let meaningful = body.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { line in
+                        !line.isEmpty && !line.hasPrefix("//") && !line.hasPrefix("/*")
+                    }
+                #expect(
+                    !meaningful.isEmpty,
+                    "\(relativePath) compile fence #\(offset + 1) is comment-only or empty"
+                )
+            }
+        }
+    }
+
+    @Test
+    func skillUnifiedSearchAndFoundationModelsSwiftFencesAreCompileMarked() throws {
+        let paths = [
+            "Resources/skills/public/wax/SKILL.md",
+            "Sources/Wax/Wax.docc/Articles/UnifiedSearch.md",
+            "Sources/Wax/Wax.docc/Articles/FoundationModels.md",
+        ]
+        for relativePath in paths {
+            let unmarked = Self.unmarkedSwiftFenceLines(in: try Self.read(relativePath))
+            #expect(
+                unmarked.isEmpty,
+                "\(relativePath) has unmarked ```swift fences at lines \(unmarked); mark them compile or use a non-swift fence"
+            )
+        }
+    }
+
+    @Test
+    func snippetVerifierCollectsSkillAndDocumentsTraitMarker() throws {
+        let verifier = try Self.read("scripts/verify-public-swift-snippets.swift")
+        #expect(verifier.contains("Resources/skills/public/wax/SKILL.md"))
+        #expect(verifier.contains("trait:MiniLMEmbeddings"))
+        #expect(verifier.contains("canImport(FoundationModels)"))
+        #expect(verifier.contains("traits: []"))
+    }
+
+    @Test
+    func qualifyAndQualityGatesRunSnippetVerifier() throws {
+        let qualify = try Self.read("scripts/qualify-ios-framework.sh")
+        #expect(qualify.contains("verify-public-swift-snippets.swift"))
+        #expect(qualify.contains("WAX_QUALIFY_SKIP_SNIPPETS"))
+        #expect(
+            qualify.contains("snippets"),
+            "qualify-ios-framework.sh must list a snippets step"
+        )
+
+        let gates = try Self.read(".github/workflows/quality-gates.yml")
+        #expect(gates.contains("verify-public-swift-snippets.swift"))
+    }
+
+    @Test
     func publicDocsExposeStructuredPhotoAndVideoFacades() throws {
         let structured = try Self.read("Sources/Wax/Wax.docc/Articles/StructuredMemory.md")
         #expect(structured.contains("upsertEntity"))
@@ -260,5 +324,90 @@ struct PublicDocumentationContractTests {
             contentsOf: repoRoot.appendingPathComponent(relativePath),
             encoding: .utf8
         )
+    }
+
+    /// Bodies of fenced blocks whose info string starts with `swift` and includes `compile`.
+    private static func swiftCompileFenceBodies(in text: String) -> [String] {
+        swiftFences(in: text).compactMap { info, body in
+            let tokens = info.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard tokens.first == "swift", tokens.contains("compile") else { return nil }
+            return body
+        }
+    }
+
+    /// 1-based line numbers of ```swift fences that do not carry a `compile` token.
+    private static func unmarkedSwiftFenceLines(in text: String) -> [Int] {
+        var lines: [Int] = []
+        for (offset, rawLine) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("```") else { continue }
+            var ticks = 0
+            var rest = trimmed[...]
+            while rest.first == "`" {
+                ticks += 1
+                rest = rest.dropFirst()
+            }
+            guard ticks >= 3 else { continue }
+            let tokens = rest.trimmingCharacters(in: .whitespaces)
+                .split(whereSeparator: { $0.isWhitespace })
+                .map(String.init)
+            guard tokens.first == "swift" else { continue }
+            if !tokens.contains("compile") {
+                lines.append(offset + 1)
+            }
+        }
+        return lines
+    }
+
+    private static func swiftFences(in text: String) -> [(info: String, body: String)] {
+        var fences: [(String, String)] = []
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var index = 0
+        while index < lines.count {
+            let line = String(lines[index])
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("```") else {
+                index += 1
+                continue
+            }
+            var ticks = 0
+            var rest = trimmed[...]
+            while rest.first == "`" {
+                ticks += 1
+                rest = rest.dropFirst()
+            }
+            guard ticks >= 3 else {
+                index += 1
+                continue
+            }
+            let info = rest.trimmingCharacters(in: .whitespaces)
+            var bodyLines: [String] = []
+            var cursor = index + 1
+            var closed = false
+            while cursor < lines.count {
+                let candidate = String(lines[cursor])
+                if candidate.hasPrefix("```") {
+                    var closeTicks = 0
+                    var closeRest = candidate[...]
+                    while closeRest.first == "`" {
+                        closeTicks += 1
+                        closeRest = closeRest.dropFirst()
+                    }
+                    if closeTicks >= ticks, closeRest.trimmingCharacters(in: .whitespaces).isEmpty {
+                        closed = true
+                        break
+                    }
+                }
+                bodyLines.append(String(lines[cursor]))
+                cursor += 1
+            }
+            if closed {
+                fences.append((info, bodyLines.joined(separator: "\n")))
+                index = cursor + 1
+            } else {
+                index += 1
+            }
+        }
+        return fences
     }
 }
