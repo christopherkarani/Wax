@@ -235,6 +235,18 @@ struct MiniLMFloat16DecodingTests {
     try assertInvalidEmbedding(decoded[0])
 }
 
+@Test func embeddingValidationRejectsZeroNormEvenWhenRequireNonZeroIsFalse() throws {
+    let zeros = [Float](repeating: 0, count: miniLMDimension)
+    do {
+        try EmbeddingValidation.validate(zeros, dimensions: miniLMDimension, requireNonZero: false)
+        throw DecodeTestError("expected EmbeddingValidation to reject a zero-norm vector")
+    } catch let error as WaxError {
+        guard case .invalidEmbedding = error else {
+            throw DecodeTestError("expected WaxError.invalidEmbedding, got \(error)")
+        }
+    }
+}
+
 }
 
 @available(macOS 15.0, iOS 18.0, *)

@@ -5,6 +5,31 @@ import Testing
 import Wax
 import XCTest
 
+private struct NaNKeyframeEmbedder: MultimodalEmbeddingProvider {
+    let dimensions = 8
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "test",
+        model: "video-nan",
+        dimensions: 8,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func embed(text: String) async throws -> [Float] {
+        _ = text
+        return VectorMath.normalizeL2(Array(repeating: 1, count: dimensions))
+    }
+
+    func embed(imageData: Data, format: WaxImageFormat) async throws -> [Float] {
+        _ = imageData
+        _ = format
+        var vector = [Float](repeating: 0, count: dimensions)
+        vector[0] = .nan
+        return vector
+    }
+}
+
 private struct PublicVideoEmbedder: MultimodalEmbeddingProvider {
     let dimensions = 8
     let normalize = true
@@ -272,6 +297,60 @@ struct PublicVideoMemoryTests {
                 config: Self.testConfig
             )
             try await second.close()
+        }
+    }
+
+    @Test
+    func nanKeyframeEmbeddingThrowsInvalidEmbeddingAndWritesNoRootFrame() async throws {
+        try await TempFiles.withTempFile { storeURL in
+            let dummyURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("wax-public-video-nan-\(UUID().uuidString).bin")
+            try Data("not-a-real-video".utf8).write(to: dummyURL)
+            defer { try? FileManager.default.removeItem(at: dummyURL) }
+
+            let files = [
+                VideoMemory.File(id: "nan-fixture", url: dummyURL, captureDate: Date(timeIntervalSince1970: 10))
+            ]
+            let videos = try await VideoMemory.open(
+                at: storeURL,
+                embedding: NaNKeyframeEmbedder(),
+                transcriptProvider: PublicTranscriptProvider(),
+                keyframeProvider: FixedKeyframeProvider(),
+                config: Self.testConfig
+            )
+            do {
+                try await videos.ingest(files: files)
+                Issue.record("ingest must throw when a keyframe embedding is non-finite")
+            } catch let error as WaxError {
+                guard case .invalidEmbedding = error else {
+                    Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+                    try await videos.close()
+                    return
+                }
+            } catch {
+                Issue.record("expected WaxError.invalidEmbedding, got \(error)")
+                try await videos.close()
+                return
+            }
+            try await videos.close()
+
+            let store = try await FrameStore.open(at: storeURL)
+            let frames = try await store.frames()
+            #expect(frames.isEmpty, "NaN keyframe ingest must not persist a video root or segment frame")
+            try await store.close()
+
+            let reopened = try await VideoMemory.open(
+                at: storeURL,
+                embedding: PublicVideoEmbedder(),
+                transcriptProvider: PublicTranscriptProvider(),
+                keyframeProvider: FixedKeyframeProvider(),
+                config: Self.testConfig
+            )
+            let hits = try await reopened.search(
+                VideoMemory.Query(text: PublicTranscriptProvider.token, resultLimit: 5)
+            )
+            #expect(hits.items.isEmpty, "reopened store must not recall an orphan video root")
+            try await reopened.close()
         }
     }
 

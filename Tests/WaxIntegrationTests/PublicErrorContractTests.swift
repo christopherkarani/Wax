@@ -78,6 +78,20 @@ struct PublicErrorContractTests {
     }
 
     @Test
+    func mismatchedIdentityProviderThrowsInvalidEmbeddingBeforeAnyFrameWrite() async throws {
+        try await expectInvalidEmbeddingOnSave(
+            embedder: MismatchedIdentityTextEmbedder()
+        )
+    }
+
+    @Test
+    func zeroVectorFromUnnormalizedProviderThrowsInvalidEmbeddingDuringSave() async throws {
+        try await expectInvalidEmbeddingOnSave(
+            embedder: ZeroVectorUnnormalizedTextEmbedder()
+        )
+    }
+
+    @Test
     func invalidConfigurationErrorDescriptionIsTyped() {
         let error = WaxError.invalidConfiguration(reason: "WAL size must be greater than zero")
         #expect(error.errorDescription?.contains("Invalid configuration") == true)
@@ -114,6 +128,41 @@ private struct ZeroVectorTextEmbedder: EmbeddingProvider {
         model: "ZeroVector",
         dimensions: 2,
         normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return [0, 0]
+    }
+}
+
+/// Provider width and identity width disagree: orchestrator used to accept the
+/// 4-d vector, write a document frame, then `WaxSession` rejected identity width 2.
+private struct MismatchedIdentityTextEmbedder: EmbeddingProvider {
+    let dimensions = 4
+    let normalize = false
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Mock",
+        model: "MismatchedIdentity",
+        dimensions: 2,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return [1, 0, 0, 0]
+    }
+}
+
+/// Matching identity that opts out of L2 normalize. Zero vectors used to reach the cosine index.
+private struct ZeroVectorUnnormalizedTextEmbedder: EmbeddingProvider {
+    let dimensions = 2
+    let normalize = false
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Mock",
+        model: "ZeroUnnormalized",
+        dimensions: 2,
+        normalized: false
     )
 
     func embed(_ text: String) async throws -> [Float] {
