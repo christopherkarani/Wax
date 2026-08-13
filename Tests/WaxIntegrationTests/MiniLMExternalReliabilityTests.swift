@@ -12,9 +12,14 @@ private let evidenceReportPath = URL(
 struct MiniLMExternalReliabilityTests {
 @Test
 func miniLMFreshProcessReliabilityGate() async throws {
-    let binary = try reliabilityHarnessURL()
-    let warmup = try runReliabilityChild(binary: binary, trial: 0, forced: true)
-    #expect(warmup.embeddingStatus == "active", "warmup status \(warmup.embeddingStatus)")
+    try await MiniLMLoadLock.withExclusiveLock {
+        let binary = try reliabilityHarnessURL()
+        let warmup = try runReliabilityChildAllowingOneOpenTimeoutRetry(
+            binary: binary,
+            trial: 0,
+            forced: true
+        )
+        #expect(warmup.embeddingStatus == "active", "warmup status \(warmup.embeddingStatus)")
 
     var reports: [ReliabilityChildReport] = []
     reports.reserveCapacity(reliabilityTrialCount)
@@ -36,8 +41,9 @@ func miniLMFreshProcessReliabilityGate() async throws {
         )
     }
 
-    try writeEvidenceReport(reports)
-    #expect(reports.count == reliabilityTrialCount)
+        try writeEvidenceReport(reports)
+        #expect(reports.count == reliabilityTrialCount)
+    }
 }
 
 @Test
@@ -56,6 +62,7 @@ func builtInEmbeddingAutomaticOptionsBoundSetupWithoutWeakeningDefault() {
 
 @Test
 func memoryStatsExposeEmbeddingStatusForAutomaticAndDisabled() async throws {
+    try await MiniLMLoadLock.withExclusiveLock {
     try await TempFiles.withTempFile { url in
         let memory = try await Memory(at: url)
         let stats = await memory.stats()
@@ -75,6 +82,7 @@ func memoryStatsExposeEmbeddingStatusForAutomaticAndDisabled() async throws {
         let stats = await memory.stats()
         #expect(stats.embeddingStatus == .disabled)
         try await memory.close()
+    }
     }
 }
 }
@@ -117,18 +125,19 @@ private enum ReliabilityHarnessError: Error, CustomStringConvertible {
 /// on the attempt that counts.
 private func runReliabilityChildAllowingOneOpenTimeoutRetry(
     binary: URL,
-    trial: Int
+    trial: Int,
+    forced: Bool = false
 ) throws -> ReliabilityChildReport {
     let first: ReliabilityChildReport
     do {
-        first = try runReliabilityChild(binary: binary, trial: trial, forced: false)
+        first = try runReliabilityChild(binary: binary, trial: trial, forced: forced)
     } catch let error as ReliabilityHarnessError {
         guard isChildTimeoutFailure(error) else { throw error }
         FileHandle.standardError.write(
             Data("reliability trial \(trial) child timed out under suite load; retrying once\n".utf8)
         )
         try appendRetryEvidence(trial: trial, firstElapsed: nil, reason: "child-timeout")
-        var retry = try runReliabilityChild(binary: binary, trial: trial, forced: false)
+        var retry = try runReliabilityChild(binary: binary, trial: trial, forced: forced)
         retry.openAttempts = 2
         return retry
     }
@@ -143,7 +152,7 @@ private func runReliabilityChildAllowingOneOpenTimeoutRetry(
     FileHandle.standardError.write(Data(message.utf8))
     try appendRetryEvidence(trial: trial, firstElapsed: first.initElapsedSeconds, reason: "open-bound")
 
-    var retry = try runReliabilityChild(binary: binary, trial: trial, forced: false)
+    var retry = try runReliabilityChild(binary: binary, trial: trial, forced: forced)
     retry.openAttempts = 2
     retry.firstOpenElapsedSeconds = first.initElapsedSeconds
     return retry

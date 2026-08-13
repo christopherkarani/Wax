@@ -19,6 +19,7 @@ private let semanticGateDistractors = [
 struct SemanticRetrievalGateTests {
 @Test
 func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async throws {
+    try await MiniLMLoadLock.withExclusiveLock {
     try await TempFiles.withTempFile { url in
         // Default config: enableVectorSearch == true, no explicit embedder.
         // On iOS 18/macOS 15+ with the default MiniLMEmbeddings trait this must
@@ -53,10 +54,12 @@ func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async thr
 
         try await memory.close()
     }
+    }
 }
 
 @Test
 func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
+    try await MiniLMLoadLock.withExclusiveLock {
     try await TempFiles.withTempFile { url in
         let memory = try await Memory(at: url) { $0.embedding = .builtIn(.miniLM) }
 
@@ -84,6 +87,7 @@ func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
         #expect(diagnostics.queryEmbeddingState == .available)
 
         try await memory.close()
+    }
     }
 }
 }

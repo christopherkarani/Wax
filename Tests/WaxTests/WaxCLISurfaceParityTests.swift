@@ -1,33 +1,35 @@
 import Foundation
 import Testing
 
-@Test func waxCLIExposesBrokerParityCommands() throws {
-    let source = try WaxCLISource.load("WaxCLICommand.swift")
+@Suite("WaxCLI broker parity", .serialized)
+struct WaxCLIBrokerParityTests {
+    @Test func waxCLIExposesBrokerParityCommands() throws {
+        let source = try WaxCLISource.load("WaxCLICommand.swift")
 
-    let requiredCommands = [
-        "MemoryAppendCommand.self",
-        "MemorySearchCommand.self",
-        "MemoryGetCommand.self",
-        "MemoryPromoteCommand.self",
-        "PromoteCommand.self",
-        "MemoryHealthCommand.self",
-        "KnowledgeCaptureCommand.self",
-        "SessionStartCommand.self",
-        "SessionResumeCommand.self",
-        "SessionEndCommand.self",
-        "SessionSynthesizeCommand.self",
-        "CompactContextCommand.self",
-        "CorpusSearchCommand.self",
-        "MarkdownExportCommand.self",
-        "MarkdownSyncCommand.self",
-    ]
+        let requiredCommands = [
+            "MemoryAppendCommand.self",
+            "MemorySearchCommand.self",
+            "MemoryGetCommand.self",
+            "MemoryPromoteCommand.self",
+            "PromoteCommand.self",
+            "MemoryHealthCommand.self",
+            "KnowledgeCaptureCommand.self",
+            "SessionStartCommand.self",
+            "SessionResumeCommand.self",
+            "SessionEndCommand.self",
+            "SessionSynthesizeCommand.self",
+            "CompactContextCommand.self",
+            "CorpusSearchCommand.self",
+            "MarkdownExportCommand.self",
+            "MarkdownSyncCommand.self",
+        ]
 
-    for command in requiredCommands {
-        #expect(source.contains(command), "Missing CLI broker parity command \(command)")
+        for command in requiredCommands {
+            #expect(source.contains(command), "Missing CLI broker parity command \(command)")
+        }
     }
-}
 
-@Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
+    @Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("wax-cli-parity-\(UUID().uuidString)")
@@ -37,34 +39,39 @@ import Testing
     let storePath = tempDir.appendingPathComponent("memory.wax").path
     let sessionID = UUID().uuidString
     let baseArgs = ["--store-path", storePath, "--no-embedder", "--format", "json"]
+    let isolated = try WaxCLIProcess.makeIsolatedBrokerEnvironment(root: tempDir)
 
     let start = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"]
+        arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
+        environment: isolated
     )
     #expect(start.status == 0, "session-start failed: \(start.stderr)")
 
     let append = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["memory-append"] + baseArgs + ["--arg", "session_id=\(sessionID)", "session lifecycle smoke"]
+        arguments: ["memory-append"] + baseArgs + ["--arg", "session_id=\(sessionID)", "session lifecycle smoke"],
+        environment: isolated
     )
     #expect(append.status == 0, "memory-append failed: \(append.stderr)")
 
     let search = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["memory-search"] + baseArgs + ["--arg", "session_id=\(sessionID)", "smoke"]
+        arguments: ["memory-search"] + baseArgs + ["--arg", "session_id=\(sessionID)", "smoke"],
+        environment: isolated
     )
     #expect(search.status == 0, "memory-search failed: \(search.stderr)")
     #expect(search.stdout.contains("session lifecycle"))
 
     let end = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["session-end"] + baseArgs + ["--arg", "session_id=\(sessionID)"]
+        arguments: ["session-end"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
+        environment: isolated
     )
     #expect(end.status == 0, "session-end failed: \(end.stderr)")
 }
 
-@Test func waxCLIParityCommandsRejectDirectStore() throws {
+    @Test func waxCLIParityCommandsRejectDirectStore() throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let output = try WaxCLIProcess.run(
         executableURL: executable,
@@ -72,6 +79,7 @@ import Testing
     )
     #expect(output.status != 0)
     #expect(output.stderr.contains("--direct-store is not supported for broker parity commands"))
+}
 }
 
 private enum WaxCLISource {
@@ -110,19 +118,39 @@ private enum WaxCLIProcess {
         throw WaxCLITestError("Build wax-cli before running this test")
     }
 
+    static func makeIsolatedBrokerEnvironment(root: URL) throws -> [String: String] {
+        let brokerDir = root.appendingPathComponent("broker", isDirectory: true)
+        let sessionRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: brokerDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+        return [
+            "WAX_BROKER_DIR": brokerDir.path,
+            "WAX_SESSION_ROOT": sessionRoot.path,
+            "WAX_BROKER_START_TIMEOUT_SECS": "30",
+            "WAX_BROKER_IDLE_TIMEOUT_SECS": "60",
+        ]
+    }
+
     static func run(
         executableURL: URL,
         arguments: [String],
-        timeout: TimeInterval = 150
+        environment: [String: String] = [:],
+        timeout: TimeInterval = 45
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
-        // Broker startup is process-spawn bound; full-suite parallel load can
-        // exceed the 5s default without changing CLI semantics.
-        var environment = ProcessInfo.processInfo.environment
-        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "120"
-        process.environment = environment
+        var merged = ProcessInfo.processInfo.environment
+        for (key, value) in environment {
+            merged[key] = value
+        }
+        if merged["WAX_BROKER_START_TIMEOUT_SECS"] == nil {
+            merged["WAX_BROKER_START_TIMEOUT_SECS"] = "30"
+        }
+        if merged["WAX_BROKER_IDLE_TIMEOUT_SECS"] == nil {
+            merged["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "60"
+        }
+        process.environment = merged
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

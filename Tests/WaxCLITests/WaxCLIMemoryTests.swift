@@ -18,6 +18,19 @@ private let mcpServerTraitEnabled = false
 
 @Suite("WaxCLI Memory Commands", .serialized)
 struct WaxCLIMemoryTests {
+    private let brokerIsolationRoot: URL = {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-broker-iso-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: root.appendingPathComponent("broker", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.createDirectory(
+            at: root.appendingPathComponent("sessions", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        return root
+    }()
 
     // MARK: - Test helper
 
@@ -1328,9 +1341,18 @@ struct WaxCLIMemoryTests {
         process.executableURL = executableURL
         process.arguments = arguments
         var mergedEnvironment = ProcessInfo.processInfo.environment
-        // Broker startup is process-spawn bound; full-suite parallel load can
-        // exceed the 5s default without changing CLI semantics.
-        mergedEnvironment["WAX_BROKER_START_TIMEOUT_SECS"] = "120"
+        if mergedEnvironment["WAX_BROKER_DIR"] == nil {
+            mergedEnvironment["WAX_BROKER_DIR"] = brokerIsolationRoot.appendingPathComponent("broker").path
+        }
+        if mergedEnvironment["WAX_SESSION_ROOT"] == nil {
+            mergedEnvironment["WAX_SESSION_ROOT"] = brokerIsolationRoot.appendingPathComponent("sessions").path
+        }
+        if mergedEnvironment["WAX_BROKER_START_TIMEOUT_SECS"] == nil {
+            mergedEnvironment["WAX_BROKER_START_TIMEOUT_SECS"] = "30"
+        }
+        if mergedEnvironment["WAX_BROKER_IDLE_TIMEOUT_SECS"] == nil {
+            mergedEnvironment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "60"
+        }
         if let environment {
             for (key, value) in environment {
                 mergedEnvironment[key] = value

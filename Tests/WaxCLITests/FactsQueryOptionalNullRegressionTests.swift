@@ -9,21 +9,30 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
         .deletingLastPathComponent() // WaxCLITests
         .deletingLastPathComponent() // Tests
         .deletingLastPathComponent() // repo
-    let binary = repoRoot.appendingPathComponent(".build/debug/wax-cli")
-    try #require(FileManager.default.isExecutableFile(atPath: binary.path))
+    let binaryCandidates = [
+        repoRoot.appendingPathComponent(".build/debug/wax-cli"),
+        repoRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
+    ]
+    let binary = try #require(binaryCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }))
 
-    let store = FileManager.default.temporaryDirectory
-        .appendingPathComponent("facts-null-\(UUID().uuidString).wax")
-    defer { try? FileManager.default.removeItem(at: store) }
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("facts-null-\(UUID().uuidString)", isDirectory: true)
+    let store = root.appendingPathComponent("store.wax")
+    let brokerDir = root.appendingPathComponent("broker", isDirectory: true)
+    let sessionRoot = root.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: brokerDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
 
     func run(_ args: [String]) throws -> (Int32, String) {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
         var environment = ProcessInfo.processInfo.environment
-        // Default broker start timeout is 5s; suite-wide process-spawn
-        // contention can exceed that without changing CLI semantics.
-        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "120"
+        environment["WAX_BROKER_DIR"] = brokerDir.path
+        environment["WAX_SESSION_ROOT"] = sessionRoot.path
+        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "30"
+        environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "60"
         process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
