@@ -3,6 +3,11 @@ import WaxCore
 
 /// Minimal public frame-level facade for packages that need durable payload storage
 /// without depending on WaxCore package internals.
+///
+/// `FrameStore` is the low-level payload API. ``create(at:walSize:)`` defaults
+/// `walSize` to ``defaultWalSize`` (256 MiB) so CLI/MCP stores stay compatible.
+/// The public ``Memory`` facade uses a 4 MiB WAL
+/// (``Memory/Config-swift.struct/defaultWalSizeBytes``) for new files.
 public actor FrameStore {
     public enum Status: Sendable, Equatable {
         case active
@@ -72,6 +77,17 @@ public actor FrameStore {
         return FrameStore(session: session)
     }
 
+    /// Commit pending session state to durable storage.
+    ///
+    /// ``put(_:kind:metadata:)`` and ``delete(frameID:)`` already commit. This is
+    /// the explicit durability barrier required of every public store owner:
+    /// it stages and commits any pending session state. Safe to call more than
+    /// once. Throws if the store is closed.
+    public func flush() async throws {
+        try ensureOpen()
+        try await session.commit()
+    }
+
     /// Close the store and release the exclusive file lock.
     ///
     /// Safe to call multiple times: a second close is a no-op.
@@ -80,6 +96,7 @@ public actor FrameStore {
     /// swallows the failure.
     public func close() async throws {
         guard !isClosed else { return }
+        try await flush()
         await session.close()
         // Must release the underlying exclusive flock; session.close only drops the writer lease.
         try await wax.close()

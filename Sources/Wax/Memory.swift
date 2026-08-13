@@ -261,7 +261,13 @@ public actor Memory {
     }
 
     /// Close the memory handle and release resources.
+    ///
+    /// This flushes first with the same enrichment-drain contract as ``flush()``:
+    /// when ``Config-swift.struct/enrichment`` is ``EnrichmentPolicy/builtIn``,
+    /// pending enrichment is zero after a successful return. If the drain times
+    /// out, this throws and the store remains open.
     public func close() async throws {
+        try await flush()
         try await orchestrator.close()
     }
 
