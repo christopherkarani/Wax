@@ -1,20 +1,66 @@
 # Photo RAG
 
-Understand the package-only Photo RAG pipeline for contributor work.
-
-## Status
-
-Photo RAG is an experimental, package-only implementation. The current `PhotoRAGOrchestrator` actor and related photo types use Swift `package` access, so they are not public API for application or downstream package consumers.
-
-Use this article as internal implementation documentation for Wax contributors. Public integration docs should wait for a stable public facade or an explicit access-level change.
+Index local images or Photos-library assets and search them with ``PhotoMemory``.
 
 ## Overview
 
-The package-scoped pipeline builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and metadata tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
+``PhotoMemory`` is the public, owning facade for on-device photo memory. Open a store with a ``MultimodalEmbeddingProvider`` (byte-oriented `embed(text:)` and `embed(imageData:format:)`). The provider must declare ``ProviderExecutionMode``: `.onDeviceOnly` or `.mayUseNetwork`. Default ``PhotoMemory/Config-swift.struct/requireOnDeviceProviders`` rejects `.mayUseNetwork`.
 
-## Architecture
+`PhotoRAGOrchestrator` and the CGImage pipeline remain package-only internals. Application code should not construct them.
 
-Each photo is represented as a hierarchy of frames:
+## Open, ingest, search
+
+```swift compile
+import Foundation
+import Wax
+
+struct DocsPhotoEmbedder: MultimodalEmbeddingProvider {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "docs",
+        model: "photo",
+        dimensions: 4,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func embed(text: String) async throws -> [Float] {
+        text.localizedCaseInsensitiveContains("receipt")
+            ? [0, 1, 0, 0]
+            : [1, 0, 0, 0]
+    }
+
+    func embed(imageData: Data, format: WaxImageFormat) async throws -> [Float] {
+        _ = imageData
+        _ = format
+        return [0, 1, 0, 0]
+    }
+}
+
+func photoMemoryDemo() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "photos.wax")
+    let photos = try await PhotoMemory.open(
+        at: storeURL,
+        embedding: DocsPhotoEmbedder()
+    )
+    try await photos.ingest(files: [
+        PhotoMemory.File(id: "receipt", url: URL.documentsDirectory.appending(path: "receipt.png"))
+    ])
+    let hits = try await photos.search(.init(text: "receipt", resultLimit: 5))
+    _ = hits.items.first?.assetID
+    _ = hits.items.first?.thumbnail
+    try await photos.close()
+}
+```
+
+``PhotoMemory/Item/thumbnail`` is PNG `Data?` when ``PhotoMemory/Config-swift.struct/includeThumbnailsInContext`` is true and a pixel source is still available. Ingest takes ``PhotoMemory/File`` values (not a separate `IngestItem` type).
+
+Optional OCR and captions use ``PhotoOCRProvider`` and ``PhotoCaptionProvider`` (also byte-oriented, with `executionMode`).
+
+## How photos are stored
+
+Each photo is represented as a hierarchy of frames. This layout is an implementation detail of the package-only orchestrator:
 
 | Frame Kind | Content |
 |------------|---------|
@@ -26,63 +72,4 @@ Each photo is represented as a hierarchy of frames:
 | `region` | Bounding box regions of interest |
 | `syncState` | Library sync checkpoint |
 
-## Internal Components
-
-| Component | Role |
-|-----------|------|
-| `PhotoRAGOrchestrator` | Package-scoped actor that owns photo sync, ingestion, indexing, recall, deletion, and flush flows |
-| `PhotoRAGConfig` | Package-scoped configuration for pixel sizes, OCR, regions, vector search, and context budgets |
-| `MultimodalEmbeddingProvider` | Package-scoped provider requirement for image and text embeddings |
-| `OCRProvider` | Package-scoped provider for image text extraction |
-| `CaptionProvider` | Package-scoped provider for generated image descriptions |
-| `PhotoQuery` | Package-scoped query model for text, metadata, location, and evidence constraints |
-| `PhotoRAGContext` | Package-scoped recall result grouped into photo items and evidence |
-
-## Ingestion
-
-The package-only ingestion path currently supports:
-
-- Photos-library sync for full-library or selected-asset scopes
-- Local image ingestion when the package is compiled with ImageIO support
-- Optional OCR, captions, metadata tags, and region evidence
-- On-device provider enforcement when configured
-
-### Metadata
-
-Each ingested photo stores rich metadata:
-
-| Key | Description |
-|-----|-------------|
-| `assetID` | Photos library asset identifier |
-| `captureMs` | Capture timestamp in milliseconds |
-| `isLocal` | Whether the asset is available locally |
-| `lat`, `lon` | GPS coordinates |
-| `gpsAccuracyM` | GPS accuracy in meters |
-| `cameraMake`, `cameraModel` | Camera hardware |
-| `lensModel` | Lens identification |
-| `width`, `height` | Image dimensions |
-| `orientation` | EXIF orientation |
-| `pipelineVersion` | Ingestion pipeline version |
-
-## Recall Behavior
-
-The package-only recall flow:
-1. Embeds the query text
-2. Searches across OCR text (BM25) and image embeddings (vector similarity)
-3. Fuses results with RRF
-4. Returns ranked photos with surrogates and pixel payloads
-
-## Configuration
-
-``PhotoRAGConfig`` controls internal ingestion and search:
-
-| Parameter | Description |
-|-----------|-------------|
-| `thumbnailSize` | Pixel size for thumbnail extraction |
-| `fullSize` | Pixel size for full-resolution extraction |
-| `enableOCR` | Whether to run OCR on ingested photos |
-| `enableRegions` | Whether to extract bounding box regions |
-| `ingestConcurrency` | Parallel ingestion tasks |
-| `hybridAlpha` | BM25 vs vector blend (0 = vector, 1 = text) |
-| `searchTopK` | Candidates to retrieve |
-| `requireOnDeviceProviders` | Reject network-dependent providers |
+Ingestion supports Photos-library sync, local image files, and optional OCR, captions, metadata tags, and region evidence. Providers that may use the network are rejected when `requireOnDeviceProviders` is true.

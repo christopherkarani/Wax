@@ -38,13 +38,18 @@ Wax is a Swift-native memory engine for AI agents. It stores documents, embeddin
 
 No servers. No API keys. No Docker. Just one file you can AirDrop, sync, or back up like any other document.
 
-```swift
+```swift compile
+import Foundation
 import Wax
 
-let memory = try await Memory(at: url)
-try await memory.save("The user prefers dark mode and uses Vim keybindings.")
-let results = try await memory.search("What editor does the user like?")
-// → "The user prefers dark mode and uses Vim keybindings."
+func readmeHero() async throws {
+    let url = URL.documentsDirectory.appending(path: "agent.wax")
+    let memory = try await Memory(at: url)
+    try await memory.save("The user prefers dark mode and uses Vim keybindings.")
+    let results = try await memory.search("What editor does the user like?")
+    _ = results.items.first?.text
+    try await memory.close()
+}
 ```
 
 <p align="center">
@@ -80,9 +85,17 @@ Wax meets you where you are. Pick the path that matches what you're building:
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8")
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.0")
 ]
 ```
+
+| Consumer | Declaration | Built-in model |
+|----------|-------------|----------------|
+| Default MiniLM (~43 MiB model bundle) | `.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.0")` | all-MiniLM-L6-v2 (`MiniLMEmbeddings` default trait) |
+| Traits-off (no built-in model) | `.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.0", traits: [])` | none — text-only unless you pass a custom `EmbeddingProvider` |
+| Arctic opt-in (~32 MiB model bundle) | `.package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.0", traits: ["ArcticEmbeddings"])` | Snowflake Arctic Embed Small |
+
+GRDB, MetalANNS, swift-crypto, and swift-asn1 remain in the current core graph. SwiftNIO and the MCP SDK are pruned from ordinary Wax consumers (`import Wax`); they belong to the `MCPServer` trait / `wax-mcp` product.
 
 Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
 
@@ -91,32 +104,33 @@ Or in Xcode: **File → Add Package Dependencies →** `https://github.com/chris
 
 ### 2. Copy-paste this into your app
 
-```swift
+```swift compile
 import Foundation
 import Wax
 
-let url = URL.documentsDirectory.appending(path: "agent.wax")
+func readmeQuickStart() async throws {
+    let url = URL.documentsDirectory.appending(path: "agent.wax")
 
-// Open a memory store
-let memory = try await Memory(at: url)
+    // Open a memory store
+    let memory = try await Memory(at: url)
 
-// Save something
-try await memory.save("The user is building a habit tracker in SwiftUI.")
+    // Save something
+    try await memory.save("The user is building a habit tracker in SwiftUI.")
 
-// Recall it later — works even if the app was killed
-let results = try await memory.search("What is the user building?")
-if let best = results.items.first {
-    print("Found: \(best.text)")
-    // → "Found: The user is building a habit tracker in SwiftUI."
+    // Recall it later — works even if the app was killed
+    let results = try await memory.search("What is the user building?")
+    if let best = results.items.first {
+        print("Found: \(best.text)")
+    }
+
+    try await memory.close()
 }
-
-try await memory.close()
 ```
 
 <details>
 <summary><strong>SwiftUI example</strong></summary>
 
-```swift
+```swift compile
 import SwiftUI
 import Wax
 
@@ -148,7 +162,7 @@ struct ContentView: View {
 <details>
 <summary><strong>CLI tool (<code>main.swift</code>)</strong></summary>
 
-```swift
+```swift compile
 import Foundation
 import Wax
 
@@ -172,7 +186,7 @@ struct AgentMemory {
 
 </details>
 
-Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is available today through the MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) described in the [Agent Quick Start](#agent-quick-start). The Swift-level structured memory API is package-internal for now; see [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md) (contributor documentation).
+Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is public on `Memory` when `enableStructuredMemory` is true — see [Structured Memory](Sources/Wax/Wax.docc/Articles/StructuredMemory.md). The MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) remain available for agents in the [Agent Quick Start](#agent-quick-start).
 
 ---
 
@@ -301,8 +315,8 @@ For the full Claude Code setup flow, see [Resources/docs/wax-mcp-setup.md](Resou
 Most RAG setups end up with a database, a vector store, and a file server. Wax keeps the moving pieces smaller by bundling documents, metadata, and indexes into one binary.
 
 - **Less setup** — no Docker stack and no separate database to babysit.
-- **Portable** — move the file with AirDrop, iCloud, or whatever sync layer you already use.
-- **Atomic** — backup, copy, or delete one file instead of chasing state across services.
+- **Portable** — copy the file after closing the store. Do not treat cloud sync as a multi-writer protocol.
+- **Atomic** — backup, copy, or delete one file instead of chasing state across services. Close `Memory` before any file-level copy.
 
 ---
 
@@ -371,7 +385,7 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 
 1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
 2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
-3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning. (Exposed today via the MCP server tools; the Swift-level API is package-internal.)
+3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning. Swift apps use the public `Memory` entity/fact APIs; agents can also use the MCP structured-memory tools.
 
 </details>
 
@@ -415,10 +429,10 @@ wax-repo search "where did we implement the WAL?"
 A: No. Wax is 100% on-device. No cloud APIs, no network calls.
 
 **Q: How big does the `.wax` file get?**  
-A: It depends on your data, but the file stays compact thanks to LZ4 compression. Typical usage: a few MB for thousands of documents.
+A: A default **new** public store is approximately 4 MiB of WAL plus committed data. Logical size (the file's reported length, including the WAL region) and allocated size (bytes actually reserved on disk) are both in that neighborhood for a small store. Stores created before this default may retain 256 MiB logical WAL regions. Payload then grows with your documents and indexes (LZ4-compressed frames).
 
 **Q: Can I sync the `.wax` file across devices?**  
-A: Yes. It's a single file. iCloud Drive, Dropbox, AirDrop — whatever you already use.
+A: It is a single file, but it is not a multi-device sync protocol. Close the `Memory` handle before any file-level copy or backup, and do not run concurrent writers on the same file across devices. iCloud Drive / Dropbox / AirDrop can copy a closed file; they are not a substitute for a single writer.
 
 **Q: What happens if the app crashes during a write?**  
 A: Wax uses a write-ahead log (WAL) and dual headers. The store recovers automatically on the next open.

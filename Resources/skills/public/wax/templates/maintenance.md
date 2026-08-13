@@ -1,13 +1,16 @@
 Template: Persistence Lifecycle (Flush / Close)
 Goal: Safely persist the store.
 
-Placeholders:
-- <STORE_URL>
+Documented fixture tokens (snippet verifier only):
+- `__WAX_STORE_URL__`
 
 Note: Surrogate optimization and index compaction (`optimizeSurrogates`, `compactIndexes`)
 are package-only maintenance APIs and are not available to downstream apps. The public
 lifecycle is `flush()` and `close()`; Wax rewrites indexes automatically during commits
 when needed.
+
+A default new public store is approximately 4 MiB WAL plus committed data. Close before
+any file-level copy or sync. Do not run concurrent writers across devices.
 
 Steps:
 1. Open Memory.
@@ -16,14 +19,14 @@ Steps:
 4. Close (flushes automatically) when done.
 
 Swift Skeleton:
-```swift
+```swift compile
 import Foundation
 import Wax
 
-let memory = try await Memory(at: <STORE_URL>)
-
-// ... save/search ...
-
-try await memory.flush()   // commit pending WAL + indexes now
-try await memory.close()   // flush + close
+func templateMaintenance() async throws {
+    let memory = try await Memory(at: __WAX_STORE_URL__)
+    try await memory.save("Durable note.")
+    try await memory.flush()
+    try await memory.close()
+}
 ```

@@ -4,7 +4,40 @@ Understand the token-budget-aware context assembly with surrogate tiers and inte
 
 ## Status
 
-`FastRAGContextBuilder` and `FastRAGConfig` are package-only implementation details, not public API. Application code assembles context through ``Memory/search(_:options:)``, which runs this pipeline internally and returns a public ``RAGContext``. Use this article as internal implementation documentation for Wax contributors.
+`FastRAGContextBuilder` and `FastRAGConfig` are package-only implementation details, not public API. Application code assembles context through ``Memory/search(_:options:)``, which runs this pipeline internally and returns a public ``RAGContext``. Use the rest of this article as internal implementation documentation for Wax contributors.
+
+## Public configuration
+
+Tune the live pipeline through ``Memory/RAGConfig`` on ``Memory/Config-swift.struct/rag``. Out-of-range values are clamped once while mapping into the package builder; they do not throw ``WaxError/invalidConfiguration(reason:)``.
+
+Keyword/entity enrichment is ``Memory/EnrichmentPolicy`` (`.disabled` by default, or `.builtIn`). ``Memory/Stats-swift.struct/enrichment`` reports `processedCount`, `pendingCount`, and `isRunning` when enrichment is enabled.
+
+```swift compile
+import Foundation
+import Wax
+
+func ragPublicConfig() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "memory.wax")
+    var config = Memory.Config.default
+    config.enableVectorSearch = false
+    config.rag.maxContextTokens = 1_500
+    config.rag.searchTopK = 24
+    config.rag.answerRerankWindow = 12
+    config.rag.answerDistractorPenalty = 0.30
+    config.enrichment = .builtIn
+    let memory = try await Memory(at: storeURL, config: config)
+    try await memory.save("Swift actors isolate mutable state.")
+    let results = try await memory.search("actors", options: .init(mode: .textOnly))
+    _ = results.totalTokens
+    let stats = await memory.stats()
+    _ = stats.enrichment?.processedCount
+    _ = stats.enrichment?.pendingCount
+    _ = stats.enrichment?.isRunning
+    try await memory.close()
+}
+```
+
+``Memory/SearchOptions/topK`` truncates the returned item list. Candidate depth for assembly is ``Memory/RAGConfig/searchTopK`` (default 24).
 
 ## Overview
 

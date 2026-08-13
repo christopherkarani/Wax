@@ -1,15 +1,62 @@
-Template: Video RAG (package-only in v1)
-Goal: Explain the status of video RAG and the supported integration path.
+Template: Video memory with host-supplied transcripts
+Goal: Open `VideoMemory`, ingest a local file, and search. Wax does not transcribe.
 
-The video RAG pipeline (`VideoRAGOrchestrator`, `VideoFile`, `VideoQuery`,
-`VideoTranscriptProvider`) is **package-only** in the current release: downstream Swift
-apps cannot import or construct it. Do not generate client code against it.
+Documented fixture tokens (snippet verifier only):
+- `__WAX_STORE_URL__`
+- `__WAX_VIDEO_URL__`
 
-Supported paths today:
-1. Agent workflows: use the Wax MCP server video tools (`video_*`), which run the
-   pipeline inside the Wax process. Host apps supply transcripts — Wax does not
-   transcribe in v1.
-2. Swift apps: store transcript text and metadata in `Memory` and search it with the
-   standard text/vector lanes.
+`VideoRAGOrchestrator` is package-only. Application code uses `VideoMemory`.
 
-A stable public video facade will be documented here when it ships.
+Swift Skeleton:
+```swift compile
+import Foundation
+import Wax
+
+struct TemplateVideoEmbedder: MultimodalEmbeddingProvider {
+    let dimensions = 8
+    let normalize = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "docs",
+        model: "video",
+        dimensions: 8,
+        normalized: true
+    )
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func embed(text: String) async throws -> [Float] {
+        _ = text
+        return [1, 0, 0, 0, 0, 0, 0, 0]
+    }
+
+    func embed(imageData: Data, format: WaxImageFormat) async throws -> [Float] {
+        _ = imageData
+        _ = format
+        return [0, 1, 0, 0, 0, 0, 0, 0]
+    }
+}
+
+struct TemplateTranscripts: VideoTranscriptProvider {
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func transcript(for request: VideoMemory.TranscriptRequest) async throws -> [VideoMemory.TranscriptChunk] {
+        _ = request
+        return [
+            VideoMemory.TranscriptChunk(startMs: 0, endMs: 1_000, text: "opening scene")
+        ]
+    }
+}
+
+func templateVideoMemory() async throws {
+    let videos = try await VideoMemory.open(
+        at: __WAX_STORE_URL__,
+        embedding: TemplateVideoEmbedder(),
+        transcriptProvider: TemplateTranscripts()
+    )
+    try await videos.ingest(files: [
+        VideoMemory.File(id: "clip-1", url: __WAX_VIDEO_URL__)
+    ])
+    let hits = try await videos.search(.init(text: "opening scene", resultLimit: 5))
+    _ = hits.items.first?.id
+    try await videos.close()
+}
+```

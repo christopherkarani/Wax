@@ -21,23 +21,30 @@ On Apple platforms that ship Foundation Models (macOS 26+, iOS 26+, visionOS 26+
 
 ## Quick start
 
-```swift
+```swift compile
 import Foundation
-import FoundationModels
 import Wax
 
-let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
-let memory = try await Memory(at: storeURL)
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
-// Prefer the throwing factory: it preflights availability before prewarming.
-let session = try await memory.makeFoundationModelsSession(
-    instructions: "You are a helpful assistant with durable memory."
-)
+func foundationModelsQuickStart() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
 
-let answer = try await session.respond(to: "I prefer dark mode and Vim keybindings.")
-// Later sessions can still recall those preferences from the .wax store.
-
-try await session.close()
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        // Prefer the throwing factory: it preflights availability before prewarming.
+        let session = try await memory.makeFoundationModelsSession(
+            instructions: "You are a helpful assistant with durable memory."
+        )
+        _ = try await session.respond(to: "I prefer dark mode and Vim keybindings.")
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ## How the adapter works
@@ -52,22 +59,33 @@ try await session.close()
 
 Configure via ``FoundationModelsMemorySessionConfig``:
 
-```swift
-var configuration = FoundationModelsMemorySessionConfig.default
-configuration.contextStrategy = .hybrid          // .promptAugmentation | .tools | .hybrid
-configuration.persistencePolicy = .userAndAssistant
-configuration.embeddingPolicy = .automatic
-configuration.toolKit = .focused                 // .compact | .combined | .focusedWithForget
-// Injection style and memory budget live on promptBuilder (single source):
-// configuration.promptBuilder.injectionStyle = .instructionsAppendix
-// configuration.promptBuilder.maxMemoryCharacters = 800
-// configuration.contextPolicy.maxPreparedCharacters = 16_000
-// configuration.contextPolicy.overflowPolicy = .fail
+```swift compile
+import Foundation
+import Wax
 
-let session = await memory.foundationModelsSession(
-    instructions: "Be concise.",
-    configuration: configuration
-)
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsConfiguration() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        var configuration = FoundationModelsMemorySessionConfig.default
+        configuration.contextStrategy = .hybrid
+        configuration.persistencePolicy = .userAndAssistant
+        configuration.embeddingPolicy = .automatic
+        configuration.toolKit = .focused
+        let session = await memory.foundationModelsSession(
+            instructions: "Be concise.",
+            configuration: configuration
+        )
+        try await session.close()
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ### `instructionsAppendix` injection
@@ -104,8 +122,25 @@ should **not** auto-persist — only explicit `remember` / tool writes store dur
 | `.combined` | waxMemory (multi-action) |
 | `.focusedWithForget` | focused + waxForget |
 
-```swift
-let tools = memory.foundationModelsTools(kit: .focusedWithForget)
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsTools() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: storeURL)
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let tools = memory.foundationModelsTools(kit: .focusedWithForget)
+        _ = tools.count
+    }
+    #endif
+    try await memory.close()
+}
 ```
 
 ## Detailed responses and streaming
@@ -145,23 +180,32 @@ stored only on normal completion. Cancellation or failure never writes assistant
 
 Check Apple Intelligence / model readiness before generating:
 
-```swift
-switch WaxFoundationModelsAvailability.current() {
-case .available:
-    break
-case .unavailable(.deviceNotEligible):
-    print("This device cannot run Apple Intelligence.")
-case .unavailable(.appleIntelligenceNotEnabled):
-    print("Turn on Apple Intelligence in Settings.")
-case .unavailable(.modelNotReady):
-    print("The on-device model is still downloading.")
-case .unavailable(.unknown(let detail)):
-    print("Foundation Models unavailable: \(detail)")
-}
+```swift compile
+import Foundation
+import Wax
 
-let session = try await memory.makeFoundationModelsSession(
-    instructions: "Be concise."
-)
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsAvailability() async throws {
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        switch WaxFoundationModelsAvailability.current() {
+        case .available:
+            break
+        case .unavailable(.deviceNotEligible):
+            print("This device cannot run Apple Intelligence.")
+        case .unavailable(.appleIntelligenceNotEnabled):
+            print("Turn on Apple Intelligence in Settings.")
+        case .unavailable(.modelNotReady):
+            print("The on-device model is still downloading.")
+        case .unavailable(.unknown(let detail)):
+            print("Foundation Models unavailable: \(detail)")
+        }
+    }
+    #endif
+}
 ```
 
 To clear the in-model transcript while keeping the Wax store:
@@ -175,16 +219,30 @@ let fresh = await session.resetConversationPreservingMemory()
 
 If you already own a `LanguageModelSession`, attach Wax as tools:
 
-```swift
-let toolSession = try await Memory.openFoundationModelsTools(
-    at: storeURL,
-    kit: .focused
-)
-let session = LanguageModelSession(tools: toolSession.tools) {
-    "You have long-term memory via the waxRemember / waxRecall / waxSearch tools."
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsOpenTools() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let toolSession = try await Memory.openFoundationModelsTools(
+            at: storeURL,
+            kit: .focused
+        )
+        let session = LanguageModelSession(tools: toolSession.tools) {
+            "You have long-term memory via the waxRemember / waxRecall / waxSearch tools."
+        }
+        _ = try await session.respond(to: "Remember that I use Swift 6.2.")
+        try await toolSession.close()
+    }
+    #endif
 }
-let response = try await session.respond(to: "Remember that I use Swift 6.2.")
-try await toolSession.close()
 ```
 
 ## Structured generation
@@ -206,12 +264,28 @@ let summary = try await session.respond(
 
 ## Built-in embeddings open helper
 
-```swift
-let session = try await Memory.openFoundationModelsSession(
-    at: storeURL,
-    builtInEmbedding: .miniLM,
-    instructions: "You have durable memory."
-)
+```swift compile
+import Foundation
+import Wax
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+func foundationModelsOpenBuiltIn() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) {
+        let session = try await Memory.openFoundationModelsSession(
+            at: storeURL,
+            builtInEmbedding: .miniLM,
+            instructions: "You have durable memory."
+        )
+        _ = session.ownsMemoryStore
+        try await session.close()
+    }
+    #endif
+}
 ```
 
 ## Design notes

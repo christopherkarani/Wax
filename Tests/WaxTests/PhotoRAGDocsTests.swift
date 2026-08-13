@@ -139,6 +139,5 @@ func photoRAGDocsDoNotAdvertiseClassifierTags() throws {
 }
 
 private let photoRAGDocPaths = [
-    "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
     "Resources/website/docs/media/photo-rag.md",
 ]

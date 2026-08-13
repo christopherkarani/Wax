@@ -12,16 +12,21 @@ The ``Memory`` actor opens, stages, commits, and closes internal sessions as nee
 
 Create one ``Memory`` per store URL and close it when the store is no longer needed:
 
-```swift
-let memory = try await Memory(at: storeURL)
-try await memory.save("New content")
-let results = try await memory.search("content")
-_ = results.items
+```swift compile
+import Foundation
+import Wax
 
-try await memory.close()
+func sessionLifecycle() async throws {
+    let storeURL = URL.documentsDirectory.appending(path: "memory.wax")
+    let memory = try await Memory(at: storeURL)
+    try await memory.save("New content")
+    let results = try await memory.search("content")
+    _ = results.items
+    try await memory.close()
+}
 ```
 
-Call ``Memory/flush()`` when you need to force pending indexes and frame metadata to disk before process shutdown. ``Memory/close()`` flushes automatically.
+Call ``Memory/flush()`` when you need to force pending indexes and frame metadata to disk before process shutdown. ``Memory/close()`` flushes automatically. Close before any file-level copy or sync, and do not run concurrent writers on the same `.wax` file across devices.
 
 ## Writer Behavior
 
@@ -29,7 +34,7 @@ WaxCore allows multiple readers and one writer. ``Memory`` acquires and releases
 
 ## Search Configuration
 
-Configure search behavior through ``Memory/Config``. For text-only usage, set `enableVectorSearch = false`. For semantic recall, keep `enableVectorSearch` enabled — the built-in MiniLM embedder is wired automatically on iOS 18/macOS 15+ (default `MiniLMEmbeddings` trait), or pass a custom `EmbeddingProvider` to ``Memory/init(at:config:embedding:)``.
+Configure search behavior through ``Memory/Config-swift.struct``. For text-only usage, set `enableVectorSearch = false`. For semantic recall, keep `enableVectorSearch` enabled — the built-in MiniLM embedder is wired automatically on iOS 18/macOS 15+ (default `MiniLMEmbeddings` trait), or set ``Memory/Config-swift.struct/embedding`` to `.custom(...)` / `.builtIn(...)` on ``Memory/init(at:config:)``.
 
 Use ``Memory/stats()`` and ``RAGContext/diagnostics`` to verify which retrieval lanes are actually active.
 

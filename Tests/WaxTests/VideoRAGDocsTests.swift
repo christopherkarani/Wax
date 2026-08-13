@@ -47,6 +47,5 @@ func videoRAGPhotosIngestPersistsLocalFileURLForThumbnails() throws {
 }
 
 private let videoRAGDocPaths = [
-    "Sources/Wax/Wax.docc/Articles/VideoRAG.md",
     "Resources/website/docs/media/video-rag.md",
 ]

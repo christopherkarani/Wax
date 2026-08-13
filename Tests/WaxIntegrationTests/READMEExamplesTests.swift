@@ -12,7 +12,7 @@ func readmeQuickStartImportsFoundationBeforeWax() throws {
         .appendingPathComponent("README.md")
     let readme = try String(contentsOf: readmeURL, encoding: .utf8)
 
-    #expect(readme.contains("```swift\nimport Foundation\nimport Wax"))
+    #expect(readme.contains("```swift compile\nimport Foundation\nimport Wax"))
 }
 
 @Test
@@ -24,7 +24,7 @@ func readmePublicMemoryQuickStartDoesNotAdvertiseHybridWithoutEmbedding() throws
         .appendingPathComponent("README.md")
     let readme = try String(contentsOf: readmeURL, encoding: .utf8)
 
-    let quickStartMarker = try #require(readme.range(of: "### 2. Copy-paste this into your app\n\n```swift\n"))
+    let quickStartMarker = try #require(readme.range(of: "### 2. Copy-paste this into your app\n\n```swift compile\n"))
     let quickStartRemainder = readme[quickStartMarker.upperBound...]
     let quickStartEnd = try #require(quickStartRemainder.range(of: "\n```\n\n<details>"))
     let quickStart = quickStartRemainder[..<quickStartEnd.lowerBound]
