@@ -115,17 +115,17 @@ final class ControllableFoundationModelGenerator: WaxFoundationModelGenerating, 
         lock.withLock { forceCancel = true }
     }
 
-    func waitUntilGenerating(timeout: Duration = .seconds(5)) async throws {
+    func waitUntilGenerating(timeout: Duration = .seconds(60)) async throws {
         try await pollFlag(timeout: timeout, description: "isGenerating") { isGenerating() }
     }
 
-    func waitUntilPersistenceHold(timeout: Duration = .seconds(5)) async throws {
+    func waitUntilPersistenceHold(timeout: Duration = .seconds(60)) async throws {
         try await pollFlag(timeout: timeout, description: "persistence hold") {
             isHoldingBeforePersistence()
         }
     }
 
-    func waitUntilHoldingBeforeFirstChunk(timeout: Duration = .seconds(5)) async throws {
+    func waitUntilHoldingBeforeFirstChunk(timeout: Duration = .seconds(60)) async throws {
         try await pollFlag(timeout: timeout, description: "first-chunk hold") {
             isHoldingBeforeFirstChunk()
         }

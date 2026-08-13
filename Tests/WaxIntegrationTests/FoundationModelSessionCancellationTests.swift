@@ -3,7 +3,7 @@ import Testing
 @testable import Wax
 import WaxVectorSearch
 
-@Suite("FoundationModelSessionCancellationTests")
+@Suite("FoundationModelSessionCancellationTests", .serialized)
 struct FoundationModelSessionCancellationTests {
     @Test
     func searchWithFallbackRethrowsCancellationAndDoesNotTextFallback() async throws {

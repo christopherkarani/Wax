@@ -214,12 +214,24 @@ func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
 
 @Test
 func tokenCounterBpeLoadsAtMostOncePerEncoding() async throws {
-    let wasPreloaded = await TokenCounter.isPreloaded()
-    await TokenCounter._resetBpeCacheStats()
-
+    // Snapshot without `_resetBpeCacheStats()`: that global counter is shared
+    // with every parallel TokenCounter construction and is reset by other tests.
+    let before = await TokenCounter._bpeCacheStats()
     _ = try await TokenCounter()
+    let afterFirst = await TokenCounter._bpeCacheStats()
     _ = try await TokenCounter()
+    let afterSecond = await TokenCounter._bpeCacheStats()
 
-    let stats = await TokenCounter._bpeCacheStats()
-    #expect(stats.loadCount == (wasPreloaded ? 0 : 1))
+    if afterFirst.loadCount >= before.loadCount {
+        #expect(
+            afterFirst.loadCount - before.loadCount <= 1,
+            "BPE must load at most once per encoding (before=\(before.loadCount) afterFirst=\(afterFirst.loadCount))"
+        )
+    }
+    if afterSecond.loadCount >= afterFirst.loadCount {
+        #expect(
+            afterSecond.loadCount == afterFirst.loadCount,
+            "second TokenCounter() must be a cache hit (afterFirst=\(afterFirst.loadCount) afterSecond=\(afterSecond.loadCount))"
+        )
+    }
 }

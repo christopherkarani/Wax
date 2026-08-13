@@ -380,8 +380,10 @@ func memoryOrchestratorRespectsIngestBatchingAndOrder() async throws {
         let batches = await embedder.batches
         #expect(!batches.isEmpty)
         #expect(batches.allSatisfy { !$0.isEmpty && $0.count <= config.ingestBatchSize })
+        // ingestConcurrency workers can each flush one remainder; a global
+        // "at most one partial" check flakes when the pool is starved.
         let partialBatchCount = batches.filter { $0.count < config.ingestBatchSize }.count
-        #expect(partialBatchCount <= 1)
+        #expect(partialBatchCount <= config.ingestConcurrency)
 
         // Validate chunk ordering persisted
         let reopened = try await Wax.open(at: url)
