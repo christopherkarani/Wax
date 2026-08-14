@@ -31,6 +31,11 @@ jobs:
       - name: Build wax-cli product
         run: swift build --product wax-cli --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE
 
+      - name: Run wax-cli Linux demo stress
+        run: |
+          BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE)/wax-cli"
+          "$BIN" demo --run --items 4 --rounds 1 --concurrency 2 --volume 8
+
       - name: Build wax-mcp product
         run: swift build --product wax-mcp --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE
 

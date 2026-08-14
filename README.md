@@ -201,6 +201,10 @@ wax-cli search "car service" --mode hybrid --topK 3
 
 # Simple text-only search (no setup required)
 wax-cli search "car service" --mode text
+
+# Linux / cloud TUI demo + public-API stress (text-only; no MiniLM claim)
+wax-cli demo --run
+wax-cli demo --stress --run
 ```
 
 For long-running sessions, start the daemon:
