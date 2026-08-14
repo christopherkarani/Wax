@@ -113,14 +113,72 @@ enum DemoTUI {
     }
 
     private static func pad(_ text: String, _ width: Int) -> String {
-        if text.count >= width {
-            return String(text.prefix(width))
+        let visible = visibleLength(text)
+        if visible >= width {
+            return truncate(text, width)
         }
-        return text + String(repeating: " ", count: width - text.count)
+        return text + String(repeating: " ", count: width - visible)
     }
 
     private static func truncate(_ text: String, _ width: Int) -> String {
-        if text.count <= width { return text }
-        return String(text.prefix(max(width - 1, 0))) + "…"
+        if visibleLength(text) <= width { return text }
+        let budget = max(width - 1, 0)
+        return prefixVisible(text, budget) + "…"
+    }
+
+    /// ANSI CSI sequences are zero-width on a TTY; count only visible glyphs
+    /// so colored PASS/FAIL rows keep the same column layout as WAIT.
+    private static func visibleLength(_ text: String) -> Int {
+        var visible = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            if text[index] == "\u{1B}" {
+                index = text.index(after: index)
+                if index < text.endIndex, text[index] == "[" {
+                    index = text.index(after: index)
+                    while index < text.endIndex {
+                        let character = text[index]
+                        index = text.index(after: index)
+                        if ("A"..."Z").contains(character) || ("a"..."z").contains(character) {
+                            break
+                        }
+                    }
+                }
+                continue
+            }
+            visible += 1
+            index = text.index(after: index)
+        }
+        return visible
+    }
+
+    private static func prefixVisible(_ text: String, _ maxVisible: Int) -> String {
+        var output = ""
+        var visible = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            if text[index] == "\u{1B}" {
+                output.append(text[index])
+                index = text.index(after: index)
+                if index < text.endIndex, text[index] == "[" {
+                    output.append(text[index])
+                    index = text.index(after: index)
+                    while index < text.endIndex {
+                        let character = text[index]
+                        output.append(character)
+                        index = text.index(after: index)
+                        if ("A"..."Z").contains(character) || ("a"..."z").contains(character) {
+                            break
+                        }
+                    }
+                }
+                continue
+            }
+            if visible >= maxVisible { break }
+            output.append(text[index])
+            visible += 1
+            index = text.index(after: index)
+        }
+        return output
     }
 }

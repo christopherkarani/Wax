@@ -42,6 +42,12 @@ struct WaxCLIDemoTests {
         let live = DemoTUI.liveFrame(report, color: false)
         #expect(live.contains("\u{1B}[H"))
         #expect(live.contains("Wax CLI Demo"))
+
+        let colored = DemoTUI.render(report, color: true)
+        #expect(colored.contains("\u{1B}[32mPASS\u{1B}[0m"))
+        let plainLines = board.split(separator: "\n").count
+        let colorLines = colored.split(separator: "\n").count
+        #expect(plainLines == colorLines)
     }
 
     @Test("Default demo profile passes on a temp store")
