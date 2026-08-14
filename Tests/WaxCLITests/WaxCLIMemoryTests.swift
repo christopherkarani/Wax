@@ -1067,7 +1067,19 @@ struct WaxCLIMemoryTests {
         let fixtureRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-build-checksums-\(UUID().uuidString)", isDirectory: true)
         let scriptsDir = fixtureRoot.appendingPathComponent("Resources/scripts", isDirectory: true)
-        let distDir = fixtureRoot.appendingPathComponent("Resources/npm/waxmcp/dist/darwin-arm64", isDirectory: true)
+        // Use the non-native architecture so the helper validates the Mach-O header
+        // without trying to execute this deliberately minimal fixture.
+        #if arch(arm64)
+        let fixturePlatform = "darwin-x64"
+        let fixtureCPUType: UInt32 = 0x01000007
+        #else
+        let fixturePlatform = "darwin-arm64"
+        let fixtureCPUType: UInt32 = 0x0100000c
+        #endif
+        let distDir = fixtureRoot.appendingPathComponent(
+            "Resources/npm/waxmcp/dist/\(fixturePlatform)",
+            isDirectory: true
+        )
         defer { try? FileManager.default.removeItem(at: fixtureRoot) }
 
         try FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
@@ -1078,12 +1090,12 @@ struct WaxCLIMemoryTests {
             to: scriptURL
         )
         try setExecutable(scriptURL)
-        try makeExecutableStub(at: distDir.appendingPathComponent("wax-cli"))
-        try makeExecutableStub(at: distDir.appendingPathComponent("wax-mcp"))
+        try makeMachOStub(at: distDir.appendingPathComponent("wax-cli"), cpuType: fixtureCPUType)
+        try makeMachOStub(at: distDir.appendingPathComponent("wax-mcp"), cpuType: fixtureCPUType)
 
         let output = try runProcess(
             executableURL: scriptURL,
-            arguments: ["darwin-arm64"],
+            arguments: [fixturePlatform],
             currentDirectoryURL: fixtureRoot,
             timeout: 10
         )
@@ -1271,6 +1283,25 @@ struct WaxCLIMemoryTests {
 
     private func makeExecutableStub(at url: URL) throws {
         try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+        try setExecutable(url)
+    }
+
+    private func makeMachOStub(at url: URL, cpuType: UInt32) throws {
+        var data = Data()
+        for value: UInt32 in [
+            0xfeedfacf,
+            cpuType,
+            3,
+            2,
+            0,
+            0,
+            0,
+            0,
+        ] {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        try data.write(to: url)
         try setExecutable(url)
     }
 

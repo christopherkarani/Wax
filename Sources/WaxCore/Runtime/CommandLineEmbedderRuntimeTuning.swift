@@ -31,11 +31,10 @@ package struct CommandLineEmbedderRuntimeTuning: Sendable, Equatable, Codable {
     package static let defaultAllowLowPrecisionGPU = true
     /// Cold CoreML compilation of MiniLM/Arctic can exceed 60s on first process load.
     package static let defaultTimeoutSeconds = 120.0
-    /// Prefer ANE (matching MiniLMEmbeddings' own default). Plain `cpuOnly` has been
-    /// observed to emit non-finite vectors on some Apple Silicon CoreML builds.
+    /// Prefer ANE (matching MiniLMEmbeddings' own default). Plain `cpuOnly` is excluded
+    /// because it has emitted non-finite vectors on some Apple Silicon Core ML builds.
     package static let defaultComputeUnitsOrder: [CommandLineEmbedderComputeUnit] = [
         .cpuAndNeuralEngine,
-        .cpuOnly,
         .cpuAndGPU,
         .all,
     ]

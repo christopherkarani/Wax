@@ -2,6 +2,7 @@
 import Foundation
 import MCP
 import Wax
+import WaxCore
 
 enum WaxMCPTools {
     static func register(

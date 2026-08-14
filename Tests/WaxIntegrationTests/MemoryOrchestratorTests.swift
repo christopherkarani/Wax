@@ -298,7 +298,7 @@ func memoryOrchestratorNonBatchEmbedderDoesNotReceiveConcurrentEmbedCalls() asyn
 }
 
 @Test
-func memoryOrchestratorRememberRequiresEmbedderWhenVectorSearchEnabledAfterReopen() async throws {
+func memoryOrchestratorReopenWithoutEmbedderRemainsWritableInTextOnlyMode() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = true
@@ -314,17 +314,15 @@ func memoryOrchestratorRememberRequiresEmbedderWhenVectorSearchEnabledAfterReope
         try await waxBefore.close()
 
         let reopened = try await MemoryOrchestrator(at: url, config: config, embedder: nil)
-        do {
-            try await reopened.remember("This should fail without an embedder.")
-            #expect(Bool(false))
-        } catch {
-            #expect(Bool(true))
-        }
+        try await reopened.remember("This remains writable without an embedder.")
+        let runtime = await reopened.runtimeStats()
+        #expect(!runtime.vectorSearchEnabled)
+        #expect(!runtime.queryEmbedderConfigured)
         try await reopened.close()
 
         let waxAfter = try await Wax.open(at: url)
         let afterCount = await waxAfter.stats().frameCount
-        #expect(afterCount == beforeCount)
+        #expect(afterCount > beforeCount)
         try await waxAfter.close()
     }
 }

@@ -41,11 +41,12 @@ public actor Memory {
 
     /// Selects the embedding provider that backs vector search for a ``Memory`` store.
     public enum EmbeddingSource: Sendable {
-        /// Wire the built-in MiniLM embedder automatically on iOS 18/macOS 15+ when Wax
-        /// is built with the default `MiniLMEmbeddings` trait. On older OS versions, or
-        /// if the model is unavailable, the store falls back to text-only search;
-        /// inspect ``RAGContext/diagnostics`` on search results or ``Memory/stats()``
-        /// to see which mode is actually in effect.
+        /// Start loading the built-in MiniLM embedder in the background on iOS 18/macOS
+        /// 15+ when Wax is built with the default `MiniLMEmbeddings` trait. Text saves
+        /// and searches remain available during a cold Core ML load; text saved in that
+        /// window is backfilled when the provider becomes ready. On unsupported systems
+        /// the store remains text-only. Inspect ``Memory/stats()`` or await
+        /// ``Memory/prepareEmbeddings()`` for the current state.
         case automatic
         /// Use one of Wax's built-in embedding providers. Store creation throws if the
         /// provider cannot be constructed (trait compiled out, model missing, or
@@ -107,11 +108,16 @@ public actor Memory {
     public typealias Results = RAGContext
     public typealias Error = WaxError
 
-    private let orchestrator: MemoryOrchestrator
+    private var orchestrator: MemoryOrchestrator
+    private var embeddingStatus: EmbeddingStatus
+    private var activationTask: Task<Void, Never>?
+    private var isClosed = false
 
     /// Package-visible wrap of an existing orchestrator for in-module adapters.
     package init(orchestrator: MemoryOrchestrator) {
         self.orchestrator = orchestrator
+        self.embeddingStatus = .disabled
+        self.activationTask = nil
     }
 
     /// Create or open a memory store at the given URL.
@@ -123,11 +129,57 @@ public actor Memory {
     /// text-only search; inspect ``RAGContext/diagnostics`` on search results or
     /// ``stats()`` to see which mode is actually in effect.
     public init(at url: URL, config: Config = .default) async throws {
-        self.orchestrator = try await MemoryOrchestrator(
+        try await self.init(
+            at: url,
+            config: config,
+            automaticEmbeddingLoader: {
+                try await BuiltInEmbeddings.loadWithoutWaitLimit(.miniLM)
+            }
+        )
+    }
+
+    package init(
+        at url: URL,
+        config: Config,
+        automaticEmbeddingLoader: @escaping @Sendable () async throws -> any EmbeddingProvider
+    ) async throws {
+        activationTask = nil
+
+        if config.enableVectorSearch, case .automatic = config.embedding {
+            var initialConfig = Self.makeOrchestratorConfig(config)
+            initialConfig.enableVectorSearch = false
+            orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: initialConfig,
+                embedder: nil
+            )
+            embeddingStatus = .loading
+            activationTask = Task { [weak self] in
+                do {
+                    let provider = try await automaticEmbeddingLoader()
+                    guard !Task.isCancelled else { return }
+                    await self?.finishAutomaticEmbeddingActivation(provider)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    await self?.finishAutomaticEmbeddingFailure(error)
+                }
+            }
+            return
+        }
+
+        let embedder = try await Self.makeEmbedder(for: config)
+        orchestrator = try await MemoryOrchestrator(
             at: url,
             config: Self.makeOrchestratorConfig(config),
-            embedder: try await Self.makeEmbedder(for: config)
+            embedder: embedder
         )
+        if !config.enableVectorSearch {
+            embeddingStatus = .disabled
+        } else if let embedder {
+            embeddingStatus = .active(embedder.identity)
+        } else {
+            embeddingStatus = .unavailable(reason: "Embedding provider is unavailable.")
+        }
     }
 
     /// Create or open a memory store at the given URL with inline configuration.
@@ -228,8 +280,28 @@ public actor Memory {
         try await orchestrator.flush()
     }
 
+    /// Wait for background automatic embedding setup and return its final state.
+    ///
+    /// Explicit custom and built-in providers are already ready when ``Memory`` opens,
+    /// so this returns immediately for those configurations.
+    public func prepareEmbeddings() async -> EmbeddingStatus {
+        if let activationTask {
+            await activationTask.value
+        }
+        if case .disabled = embeddingStatus {
+            let runtime = await orchestrator.runtimeStats()
+            if runtime.queryEmbedderConfigured {
+                embeddingStatus = .active(runtime.embedderIdentity)
+            }
+        }
+        return embeddingStatus
+    }
+
     /// Close the memory handle and release resources.
     public func close() async throws {
+        isClosed = true
+        activationTask?.cancel()
+        activationTask = nil
         try await orchestrator.close()
     }
 
@@ -247,6 +319,8 @@ public actor Memory {
         public var queryEmbeddingCircuitOpen: Bool
         /// Identity of the configured embedding provider, if any.
         public var embedderIdentity: EmbeddingIdentity?
+        /// Lifecycle state of automatic or explicitly configured embeddings.
+        public var embeddingStatus: EmbeddingStatus
 
         public init(
             frameCount: UInt64,
@@ -254,7 +328,8 @@ public actor Memory {
             vectorSearchEnabled: Bool,
             queryEmbedderConfigured: Bool,
             queryEmbeddingCircuitOpen: Bool,
-            embedderIdentity: EmbeddingIdentity?
+            embedderIdentity: EmbeddingIdentity?,
+            embeddingStatus: EmbeddingStatus = .disabled
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -262,6 +337,7 @@ public actor Memory {
             self.queryEmbedderConfigured = queryEmbedderConfigured
             self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.embedderIdentity = embedderIdentity
+            self.embeddingStatus = embeddingStatus
         }
     }
 
@@ -271,14 +347,64 @@ public actor Memory {
     /// opening a store on a platform where the built-in embedder is unavailable.
     public func stats() async -> Stats {
         let runtime = await orchestrator.runtimeStats()
+        let resolvedEmbeddingStatus: EmbeddingStatus
+        if case .disabled = embeddingStatus, runtime.queryEmbedderConfigured {
+            resolvedEmbeddingStatus = .active(runtime.embedderIdentity)
+        } else {
+            resolvedEmbeddingStatus = embeddingStatus
+        }
         return Stats(
             frameCount: runtime.frameCount,
             pendingFrames: runtime.pendingFrames,
             vectorSearchEnabled: runtime.vectorSearchEnabled,
             queryEmbedderConfigured: runtime.queryEmbedderConfigured,
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
-            embedderIdentity: runtime.embedderIdentity
+            embedderIdentity: runtime.embedderIdentity,
+            embeddingStatus: resolvedEmbeddingStatus
         )
+    }
+
+    private func finishAutomaticEmbeddingActivation(_ provider: any EmbeddingProvider) async {
+        guard !isClosed else { return }
+        do {
+            try await orchestrator.activateEmbedder(provider)
+            guard !isClosed else { return }
+            do {
+                _ = try await orchestrator.backfillMissingEmbeddings()
+                guard !isClosed else { return }
+                try await orchestrator.flush()
+                guard !isClosed else { return }
+                embeddingStatus = .active(provider.identity)
+            } catch {
+                guard !isClosed else { return }
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "automatic embedding backfill",
+                    fallback: "new text is vector-enabled; previously saved text may remain text-only"
+                )
+                embeddingStatus = .degraded(provider.identity, reason: error.localizedDescription)
+            }
+        } catch {
+            guard !isClosed else { return }
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "automatic embedding activation",
+                fallback: "text-only search"
+            )
+            embeddingStatus = .unavailable(reason: error.localizedDescription)
+        }
+        activationTask = nil
+    }
+
+    private func finishAutomaticEmbeddingFailure(_ error: any Swift.Error) {
+        guard !isClosed else { return }
+        WaxDiagnostics.logSwallowed(
+            error,
+            context: "automatic MiniLM embedder setup",
+            fallback: "text-only search"
+        )
+        embeddingStatus = .unavailable(reason: error.localizedDescription)
+        activationTask = nil
     }
 
     /// Resolves the embedder for ``Config/embedding``. `.automatic` returns nil

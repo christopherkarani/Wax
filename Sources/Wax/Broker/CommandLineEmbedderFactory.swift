@@ -163,44 +163,32 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
         kind: Kind,
         tuning: CommandLineEmbedderRuntimeTuning
     ) async -> (any EmbeddingProvider)? {
-        await withTaskGroup(of: (any EmbeddingProvider)?.self) { group in
-            group.addTask {
-                do {
-                    switch kind {
-                    case .minilm:
-                        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-                        return try await MiniLMEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: tuning.prewarmBatchSize,
-                            skipPrewarm: true,
-                            tuning: tuning
-                        )
-                        #else
-                        return nil
-                        #endif
-                    case .arctic:
-                        #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-                        return try await ArcticEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: tuning.prewarmBatchSize,
-                            skipPrewarm: true,
-                            tuning: tuning
-                        )
-                        #else
-                        return nil
-                        #endif
-                    }
-                } catch {
-                    brokerWriteStderr("Embedder load failed: \(error.localizedDescription)")
-                    return nil
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: tuning.timeoutDuration)
+        do {
+            switch kind {
+            case .minilm:
+                #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+                return try await MiniLMEmbedder.makeCommandLineEmbedder(
+                    prewarmBatchSize: tuning.prewarmBatchSize,
+                    skipPrewarm: true,
+                    tuning: tuning
+                )
+                #else
                 return nil
+                #endif
+            case .arctic:
+                #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+                return try await ArcticEmbedder.makeCommandLineEmbedder(
+                    prewarmBatchSize: tuning.prewarmBatchSize,
+                    skipPrewarm: true,
+                    tuning: tuning
+                )
+                #else
+                return nil
+                #endif
             }
-
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        } catch {
+            brokerWriteStderr("Embedder load failed: \(error.localizedDescription)")
+            return nil
         }
     }
 }

@@ -160,7 +160,9 @@ func memoryOrchestratorQueryEmbeddingCircuitHalfOpensAfterCooldown() async throw
 
         var config = TestHelpers.defaultMemoryConfig(vector: true)
         config.queryEmbeddingTimeout = .milliseconds(25)
-        config.queryEmbeddingCircuitCooldown = .milliseconds(150)
+        // Keep the window comfortably above scheduler delays in the fully parallel
+        // package suite; the test controls expiry explicitly below.
+        config.queryEmbeddingCircuitCooldown = .seconds(3)
 
         let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
 
@@ -188,7 +190,7 @@ func memoryOrchestratorQueryEmbeddingCircuitHalfOpensAfterCooldown() async throw
 
         // After the cooldown the breaker half-opens and retries instead of latching
         // permanently. (The hanging embedder times out again and re-opens the circuit.)
-        try await Task.sleep(for: .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(3_200))
         let exec3 = try await orchestrator.searchExecution(
             query: "Swift concurrency",
             mode: .hybrid(alpha: 0.5),

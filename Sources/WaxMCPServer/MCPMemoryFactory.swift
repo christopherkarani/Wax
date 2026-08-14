@@ -3,6 +3,7 @@ import Foundation
 import MCP
 import Wax
 import WaxCore
+import WaxVectorSearch
 
 #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import WaxVectorSearchMiniLM
@@ -344,13 +345,12 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
         guard provider == nil, providerTask == nil else { return }
 
         let kind = self.kind
-        let timeout = self.timeout
         let tuning = self.tuning
         let token = UUID()
         writeStderr("Scheduling \(kind.displayName) embedder background warmup...")
 
         let task = Task<any EmbeddingProvider, Error> {
-            try await Self.makeProvider(kind: kind, timeout: timeout, skipPrewarm: true, tuning: tuning)
+            try await Self.makeProvider(kind: kind, skipPrewarm: true, tuning: tuning)
         }
         providerTask = task
         providerTaskToken = token
@@ -370,7 +370,7 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
             return provider
         }
         if let providerTask {
-            let provider = try await providerTask.value
+            let provider = try await waitForProvider(providerTask)
             self.provider = provider
             self.providerTask = nil
             self.providerTaskToken = nil
@@ -378,25 +378,38 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
         }
 
         let kind = self.kind
-        let timeout = self.timeout
         let tuning = self.tuning
         writeStderr("Loading \(kind.displayName) embedder on first vector request...")
         let task = Task<any EmbeddingProvider, Error> {
-            try await Self.makeProvider(kind: kind, timeout: timeout, skipPrewarm: true, tuning: tuning)
+            try await Self.makeProvider(kind: kind, skipPrewarm: true, tuning: tuning)
         }
         providerTask = task
         providerTaskToken = nil
 
         do {
-            let provider = try await task.value
+            let provider = try await waitForProvider(task)
             self.provider = provider
             self.providerTask = nil
             self.providerTaskToken = nil
             return provider
+        } catch let error as AsyncTimeout.TimeoutError {
+            // Keep the non-cancellable Core ML load alive for the next request.
+            throw error
         } catch {
             self.providerTask = nil
             self.providerTaskToken = nil
             throw error
+        }
+    }
+
+    private func waitForProvider(
+        _ task: Task<any EmbeddingProvider, Error>
+    ) async throws -> any EmbeddingProvider {
+        try await AsyncTimeout.run(
+            timeout: timeout,
+            operation: "MCP embedding provider load"
+        ) {
+            try await task.value
         }
     }
 
@@ -422,32 +435,27 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
 
     private static func makeProvider(
         kind: Kind,
-        timeout: Duration,
         skipPrewarm: Bool,
         tuning: CommandLineEmbedderRuntimeTuning
     ) async throws -> any EmbeddingProvider {
         switch kind {
         case .minilm:
             #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-            return try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM embedder init") {
-                try await MiniLMEmbedder.makeCommandLineEmbedder(
-                    prewarmBatchSize: tuning.prewarmBatchSize,
-                    skipPrewarm: skipPrewarm,
-                    tuning: tuning
-                )
-            }
+            return try await MiniLMEmbedder.makeCommandLineEmbedder(
+                prewarmBatchSize: tuning.prewarmBatchSize,
+                skipPrewarm: skipPrewarm,
+                tuning: tuning
+            )
             #else
             throw WaxError.io("MiniLM embeddings are not available in this build.")
             #endif
         case .arctic:
             #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-            return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic embedder init") {
-                try await ArcticEmbedder.makeCommandLineEmbedder(
-                    prewarmBatchSize: tuning.prewarmBatchSize,
-                    skipPrewarm: skipPrewarm,
-                    tuning: tuning
-                )
-            }
+            return try await ArcticEmbedder.makeCommandLineEmbedder(
+                prewarmBatchSize: tuning.prewarmBatchSize,
+                skipPrewarm: skipPrewarm,
+                tuning: tuning
+            )
             #else
             throw WaxError.io("Arctic embeddings are not available in this build.")
             #endif

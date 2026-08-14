@@ -189,12 +189,12 @@ package actor MemoryOrchestrator {
     private static let contentHashMetadataKey = "wax.content.hash"
 
     let wax: Wax
-    let config: OrchestratorConfig
+    private(set) var config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
-    private let embedder: (any EmbeddingProvider)?
-    private let embeddingCache: EmbeddingMemoizer?
+    private var embedder: (any EmbeddingProvider)?
+    private var embeddingCache: EmbeddingMemoizer?
     private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
@@ -266,7 +266,7 @@ package actor MemoryOrchestrator {
         // work out-of-the-box with text-only search instead of throwing an error.
         var resolvedConfig = config
         let existingMemoryBinding = await wax.memoryBinding()
-        if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
+        if resolvedConfig.enableVectorSearch, embedder == nil {
             resolvedConfig.enableVectorSearch = false
             WaxDiagnostics.logSwallowed(
                 WaxError.io("vector search requested but no EmbeddingProvider configured"),
@@ -320,6 +320,106 @@ package actor MemoryOrchestrator {
         if resolvedConfig.enableAccessStatsScoring {
             try await loadPersistedAccessStatsIfNeeded()
         }
+    }
+
+    /// Activates a provider after the text store has already opened.
+    ///
+    /// The session's vector engine is prepared before the provider becomes visible to
+    /// ingestion or queries, so callers never observe a partially activated state.
+    package func activateEmbedder(_ provider: any EmbeddingProvider) async throws {
+        if config.requireOnDeviceProviders {
+            try ProviderValidation.validateOnDevice(
+                [.init(name: "embedding provider", executionMode: provider.executionMode)],
+                orchestratorName: "MemoryOrchestrator"
+            )
+        }
+        if let binding = await wax.memoryBinding(),
+           let identity = provider.identity,
+           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
+            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+            throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+        }
+
+        try await session.activateVectorSearch(
+            dimensions: provider.dimensions,
+            preference: config.vectorEnginePreference
+        )
+        embedder = provider
+        embeddingCache = EmbeddingMemoizer.fromConfig(
+            capacity: config.embeddingCacheCapacity,
+            enabled: true
+        )
+        config.enableVectorSearch = true
+        queryEmbeddingCircuitOpenedAt = nil
+    }
+
+    /// Embeds live text chunks that were persisted before a provider became ready.
+    ///
+    /// Existing vector rows are skipped, making this safe to retry after interruption.
+    @discardableResult
+    package func backfillMissingEmbeddings() async throws -> Int {
+        guard config.enableVectorSearch, let embedder else {
+            throw WaxError.missingEmbedder
+        }
+
+        let existingFrameIds = try await frameIdsWithEmbeddings()
+        let candidates = await wax.frameMetasIncludingPending().filter { frame in
+            frame.role == .chunk
+                && frame.status == .active
+                && frame.supersededBy == nil
+                && frame.searchText?.isEmpty == false
+                && !existingFrameIds.contains(frame.id)
+        }
+        guard !candidates.isEmpty else { return 0 }
+
+        let batchSize = max(1, config.ingestBatchSize)
+        let cache = embeddingCache
+        for start in stride(from: 0, to: candidates.count, by: batchSize) {
+            let end = min(start + batchSize, candidates.count)
+            let batch = Array(candidates[start..<end])
+            let texts = batch.compactMap(\.searchText)
+            let prepared = try await Self.prepareEmbeddings(
+                chunks: texts,
+                embedder: embedder,
+                cache: cache
+            )
+            let vectors = try texts.indices.map { index -> [Float] in
+                guard let vector = prepared[index] else {
+                    throw WaxError.invalidEmbedding(reason: "backfill did not produce vector at index \(index)")
+                }
+                try VectorValidation.validate(vector, dimensions: embedder.dimensions)
+                return vector
+            }
+            try await session.addEmbeddingBatch(
+                frameIds: batch.map(\.id),
+                vectors: vectors
+            )
+        }
+
+        if let identity = embedder.identity {
+            try await ensureMemoryBindingIfNeeded(MemoryBindingCompatibility.binding(from: identity))
+        }
+        return candidates.count
+    }
+
+    private func frameIdsWithEmbeddings() async throws -> Set<UInt64> {
+        var frameIds = Set<UInt64>()
+        let segmentBytes: Data?
+        if let staged = await wax.readStagedVecIndexBytes() {
+            segmentBytes = staged.bytes
+        } else {
+            segmentBytes = try await wax.readCommittedVecIndexBytes()
+        }
+        if let segmentBytes {
+            let payload = try VectorSerializer.decodeVecSegment(from: segmentBytes)
+            switch payload {
+            case .metal(_, _, let persistedFrameIds):
+                frameIds.formUnion(persistedFrameIds)
+            }
+        }
+        let pending = await wax.pendingEmbeddingMutations(since: nil)
+        frameIds.formUnion(pending.embeddings.map(\.frameId))
+        return frameIds
     }
 
 

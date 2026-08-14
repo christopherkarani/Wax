@@ -87,6 +87,44 @@ if [[ -f "$MCP_BIN_PATH" ]]; then
   echo "Created $MCP_BIN_PATH"
 fi
 
+# Reject mislabeled artifacts before checksums make them look trustworthy.
+case "$PLATFORM" in
+  darwin-arm64)
+    EXPECTED_FILE_ARCH="arm64"
+    EXPECTED_HOST_ARCH="arm64"
+    ;;
+  darwin-x64)
+    EXPECTED_FILE_ARCH="x86_64"
+    EXPECTED_HOST_ARCH="x86_64"
+    ;;
+  *)
+    echo "ERROR: unsupported distribution platform '$PLATFORM'." >&2
+    exit 1
+    ;;
+esac
+
+for bin in "$CLI_BIN_PATH" "$MCP_BIN_PATH"; do
+  [[ -f "$bin" ]] || continue
+  binary_description="$(file -b "$bin")"
+  if [[ "$binary_description" != *"$EXPECTED_FILE_ARCH"* ]]; then
+    echo "ERROR: $(basename "$bin") for $PLATFORM has wrong architecture: $binary_description" >&2
+    exit 1
+  fi
+done
+
+if [[ -f "$MCP_BIN_PATH" && "$(uname -m)" == "$EXPECTED_HOST_ARCH" ]]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "ERROR: node is required for wax-mcp version verification." >&2
+    exit 1
+  fi
+  EXPECTED_VERSION="$(node -p "require('$PROJECT_ROOT/Resources/npm/waxmcp/package.json').version")"
+  REPORTED_VERSION="$("$MCP_BIN_PATH" --version)"
+  if [[ "$REPORTED_VERSION" != *"$EXPECTED_VERSION"* ]]; then
+    echo "ERROR: wax-mcp reports '$REPORTED_VERSION', expected version $EXPECTED_VERSION." >&2
+    exit 1
+  fi
+fi
+
 # Generate checksums
 for bin in "$CLI_BIN_PATH" "$MCP_BIN_PATH"; do
   if [[ -f "$bin" ]]; then

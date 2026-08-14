@@ -5,6 +5,12 @@ import WaxVectorSearch
 
 package actor WaxSession {
     private typealias ConcreteVectorEngine = LoadedVectorSearchEngine
+    private struct VectorActivation: Sendable {
+        let id: UUID
+        let dimensions: Int
+        let preference: VectorEnginePreference
+        let task: Task<ConcreteVectorEngine, any Error>
+    }
 
     package enum Mode: Sendable, Equatable {
         case readOnly
@@ -46,11 +52,12 @@ package actor WaxSession {
 
     package let wax: Wax
     package let mode: Mode
-    package let config: Config
+    package private(set) var config: Config
 
     private let textEngine: FTS5SearchEngine?
-    private let vectorEngine: (any VectorSearchEngine)?
-    private let concreteVectorEngine: ConcreteVectorEngine?
+    private var vectorEngine: (any VectorSearchEngine)?
+    private var concreteVectorEngine: ConcreteVectorEngine?
+    private var vectorActivation: VectorActivation?
     private var lastPendingEmbeddingSequence: UInt64?
     /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
     /// Mirrors ``WaxVectorSearchSession`` so pending putEmbedding + remove does not re-stage ghosts.
@@ -195,6 +202,105 @@ package actor WaxSession {
             return
         }
         try await concreteVectorEngine.remove(frameId: frameId)
+    }
+
+    /// Enables vector search on an already-open writable session.
+    ///
+    /// This supports model providers whose cold Core ML setup finishes after the text
+    /// store is usable. Existing vector data is loaded before the session is published
+    /// as vector-enabled.
+    package func activateVectorSearch(
+        dimensions: Int,
+        preference: VectorEnginePreference
+    ) async throws {
+        try ensureWritable()
+        guard dimensions > 0 else {
+            throw WaxError.invalidEmbedding(reason: "embedding dimensions must be greater than zero")
+        }
+        if let configuredDimensions = config.vectorDimensions,
+           configuredDimensions != dimensions {
+            throw WaxError.invalidEmbedding(
+                reason: "dimension mismatch: expected \(configuredDimensions), got \(dimensions)"
+            )
+        }
+        if config.enableVectorSearch, concreteVectorEngine != nil {
+            return
+        }
+
+        let activation: VectorActivation
+        if let existing = vectorActivation {
+            guard existing.dimensions == dimensions else {
+                throw WaxError.invalidEmbedding(
+                    reason: "vector activation dimension mismatch: expected \(existing.dimensions), got \(dimensions)"
+                )
+            }
+            activation = existing
+        } else {
+            let wax = self.wax
+            let metric = config.vectorMetric
+            let task = Task {
+                try await Self.loadVectorEngine(
+                    wax: wax,
+                    metric: metric,
+                    dimensions: dimensions,
+                    preference: preference
+                )
+            }
+            let created = VectorActivation(
+                id: UUID(),
+                dimensions: dimensions,
+                preference: preference,
+                task: task
+            )
+            vectorActivation = created
+            activation = created
+        }
+
+        let loaded: ConcreteVectorEngine
+        do {
+            loaded = try await activation.task.value
+        } catch {
+            if vectorActivation?.id == activation.id {
+                vectorActivation = nil
+            }
+            throw error
+        }
+        if vectorActivation?.id == activation.id {
+            vectorActivation = nil
+        }
+        try ensureWritable()
+        if concreteVectorEngine != nil {
+            return
+        }
+        let snapshot = await wax.pendingEmbeddingMutations(since: nil)
+        try ensureWritable()
+
+        concreteVectorEngine = loaded
+        vectorEngine = loaded.erased
+        lastPendingEmbeddingSequence = snapshot.latestSequence
+        config.enableVectorSearch = true
+        config.vectorDimensions = dimensions
+        config.vectorEnginePreference = activation.preference
+    }
+
+    package func addEmbeddingBatch(
+        frameIds: [UInt64],
+        vectors: [[Float]]
+    ) async throws {
+        try ensureWritable()
+        guard config.enableVectorSearch, let concreteVectorEngine else {
+            throw WaxError.featureDisabled(feature: "vector search")
+        }
+        guard frameIds.count == vectors.count else {
+            throw WaxError.encodingError(reason: "addEmbeddingBatch: frameIds.count != vectors.count")
+        }
+        guard !frameIds.isEmpty else { return }
+
+        try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: vectors)
+        try await syncPendingEmbeddings(into: concreteVectorEngine)
+        for frameId in frameIds {
+            pendingRemovedFrameIds.remove(frameId)
+        }
     }
 
     // MARK: - Structured Memory

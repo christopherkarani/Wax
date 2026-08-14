@@ -18,11 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: macos-14
+          - runs-on: macos-15-intel
             platform: darwin-x64
             triple: x86_64-apple-macosx14.0
             source_build: true
-          - runs-on: macos-14
+          - runs-on: macos-15
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
             source_build: true
@@ -100,6 +100,20 @@ jobs:
         run: |
           set -euo pipefail
           Resources/npm/waxmcp/dist/${{ matrix.platform }}/wax-cli mcp serve --help
+
+      - name: Run packaged MiniLM inference gate
+        if: ${{ matrix.source_build }}
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          STORE_PATH="${RUNNER_TEMP}/waxmcp-release-vector-health.wax"
+          Resources/npm/waxmcp/dist/${{ matrix.platform }}/wax-cli vector-health \
+            --store-path "$STORE_PATH" \
+            --direct-store \
+            --embedder minilm \
+            --require-vector \
+            --format json \
+            --embedder-timeout-secs 300
 
       - uses: actions/upload-artifact@v4
         with:

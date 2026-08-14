@@ -54,7 +54,6 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
         timeoutSeconds: Double = 120.0,
         computeUnitsOrder: [BuiltInEmbeddingComputeUnit] = [
             .cpuAndNeuralEngine,
-            .cpuOnly,
             .cpuAndGPU,
             .all,
         ]
@@ -64,7 +63,7 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
         self.allowLowPrecisionGPU = allowLowPrecisionGPU
         self.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 120.0
         self.computeUnitsOrder = computeUnitsOrder.isEmpty
-            ? [.cpuAndNeuralEngine, .cpuOnly, .cpuAndGPU, .all]
+            ? [.cpuAndNeuralEngine, .cpuAndGPU, .all]
             : computeUnitsOrder
     }
 
@@ -85,6 +84,8 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
 public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
     /// The requested provider is unavailable in the current build or platform.
     case unavailable(BuiltInEmbeddingProvider)
+    /// The caller's wait budget elapsed. The shared model load continues in the background.
+    case timedOut(BuiltInEmbeddingProvider, seconds: Double)
 
     public var errorDescription: String? {
         switch self {
@@ -96,12 +97,16 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
                 "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
+        case .timedOut(let provider, let seconds):
+            return "\(provider.rawValue) embedding setup exceeded \(seconds) seconds; loading continues in the background."
         }
     }
 }
 
 /// Factory for Wax's built-in embedding providers.
 public enum BuiltInEmbeddings {
+    private static let loadCoordinator = EmbeddingLoadCoordinator()
+
     /// Construct a built-in embedding provider using Wax's on-device CoreML runtime.
     ///
     /// The returned provider is eagerly probed so cold CoreML compilation happens here
@@ -110,6 +115,36 @@ public enum BuiltInEmbeddings {
     public static func make(
         _ provider: BuiltInEmbeddingProvider,
         options: BuiltInEmbeddingProviderOptions = .default
+    ) async throws -> any EmbeddingProvider {
+        do {
+            return try await loadCoordinator.provider(
+                for: loadKey(provider, options: options),
+                timeout: .milliseconds(Int64(options.timeoutSeconds * 1_000))
+            ) {
+                try await loadProvider(provider, options: options)
+            }
+        } catch EmbeddingLoadCoordinator.WaitError.timedOut {
+            throw BuiltInEmbeddingProviderError.timedOut(
+                provider,
+                seconds: options.timeoutSeconds
+            )
+        }
+    }
+
+    package static func loadWithoutWaitLimit(
+        _ provider: BuiltInEmbeddingProvider,
+        options: BuiltInEmbeddingProviderOptions = .default
+    ) async throws -> any EmbeddingProvider {
+        try await loadCoordinator.provider(
+            for: loadKey(provider, options: options)
+        ) {
+            try await loadProvider(provider, options: options)
+        }
+    }
+
+    private static func loadProvider(
+        _ provider: BuiltInEmbeddingProvider,
+        options: BuiltInEmbeddingProviderOptions
     ) async throws -> any EmbeddingProvider {
         guard let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
             noEmbedder: false,
@@ -121,5 +156,15 @@ public enum BuiltInEmbeddings {
         // Materialize deferred CLI embedders and verify finite output before handoff.
         _ = try await embedder.embed("wax")
         return embedder
+    }
+
+    private static func loadKey(
+        _ provider: BuiltInEmbeddingProvider,
+        options: BuiltInEmbeddingProviderOptions
+    ) -> EmbeddingLoadKey {
+        EmbeddingLoadKey(
+            provider: provider.rawValue,
+            configuration: options.tuning.brokerCacheKey
+        )
     }
 }

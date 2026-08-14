@@ -23,6 +23,11 @@ func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async thr
         // auto-wire the built-in MiniLM embedder.
         let memory = try await Memory(at: url)
 
+        let embeddingStatus = await memory.prepareEmbeddings()
+        guard case .active = embeddingStatus else {
+            Issue.record("default Memory(at:) did not activate MiniLM: \(embeddingStatus)")
+            return
+        }
         let stats = await memory.stats()
         #expect(
             stats.queryEmbedderConfigured,

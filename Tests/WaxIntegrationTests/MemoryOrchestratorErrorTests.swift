@@ -110,7 +110,7 @@ func memoryOrchestratorStructuredMemoryDisabledThrowsFeatureDisabled() async thr
 }
 
 @Test
-func memoryOrchestratorVectorStoreWithoutEmbedderThrowsMissingEmbedder() async throws {
+func memoryOrchestratorVectorStoreWithoutEmbedderDegradesToTextOnly() async throws {
     try await TempFiles.withTempFile { url in
         let config = TestHelpers.defaultMemoryConfig(vector: true)
         let seeded = try await MemoryOrchestrator(
@@ -121,20 +121,13 @@ func memoryOrchestratorVectorStoreWithoutEmbedderThrowsMissingEmbedder() async t
         try await seeded.remember("Seeded vector store phrase.")
         try await seeded.close()
 
-        // Reopening a store that already has a committed vector index keeps vector
-        // search enabled; writing without an embedder must fail with a typed error.
+        // Reopening without a provider must keep text writes available while making
+        // the disabled vector lane explicit in runtime health.
         let reopened = try await MemoryOrchestrator(at: url, config: config)
-        do {
-            try await reopened.remember("This write needs an embedder but none is configured.")
-            #expect(Bool(false), "remember without embedder on a vector store must throw")
-        } catch let error as WaxError {
-            guard case .missingEmbedder = error else {
-                #expect(Bool(false), "expected WaxError.missingEmbedder, got \(error)")
-                return
-            }
-        } catch {
-            #expect(Bool(false))
-        }
+        try await reopened.remember("This write remains available in text-only mode.")
+        let runtime = await reopened.runtimeStats()
+        #expect(!runtime.vectorSearchEnabled)
+        #expect(!runtime.queryEmbedderConfigured)
         try await reopened.close()
     }
 }
