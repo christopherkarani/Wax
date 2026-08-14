@@ -214,6 +214,8 @@ swift build --product wax-cli --traits default,MCPServer
 BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)/wax-cli"
 "$BIN" demo --run
 "$BIN" demo --stress --run
+# Hold each TUI frame for a recording or live walkthrough
+"$BIN" demo --run --pace-ms 1500 --hold-ms 4000
 ```
 
 For long-running sessions, start the daemon:

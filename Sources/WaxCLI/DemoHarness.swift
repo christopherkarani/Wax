@@ -9,6 +9,7 @@ struct DemoConfig: Sendable, Equatable {
     var volume: Int
     var storeURL: URL?
     var keepStore: Bool
+    var paceMs: Int
 
     static let demo = DemoConfig(
         items: 16,
@@ -16,7 +17,8 @@ struct DemoConfig: Sendable, Equatable {
         concurrency: 4,
         volume: 48,
         storeURL: nil,
-        keepStore: false
+        keepStore: false,
+        paceMs: 0
     )
 
     static let stress = DemoConfig(
@@ -25,7 +27,8 @@ struct DemoConfig: Sendable, Equatable {
         concurrency: 8,
         volume: 200,
         storeURL: nil,
-        keepStore: false
+        keepStore: false,
+        paceMs: 0
     )
 
     func validated() throws -> DemoConfig {
@@ -38,6 +41,7 @@ struct DemoConfig: Sendable, Equatable {
         try require(1...20, rounds, name: "rounds")
         try require(1...32, concurrency, name: "concurrency")
         try require(1...2_000, volume, name: "volume")
+        try require(0...60_000, paceMs, name: "pace-ms")
         return self
     }
 }
@@ -143,11 +147,11 @@ struct DemoHarness: Sendable {
             }
         }
 
-        await onEvent?(report)
+        await emit(report, onEvent: onEvent, config: config)
 
         for id in DemoScenarioID.allCases {
             report = mutating(report, id: id, status: .running, detail: "running")
-            await onEvent?(report)
+            await emit(report, onEvent: onEvent, config: config)
             let started = ContinuousClock.now
             do {
                 let detail: String
@@ -181,12 +185,22 @@ struct DemoHarness: Sendable {
                     durationMs: ms
                 )
             }
-            await onEvent?(report)
+            await emit(report, onEvent: onEvent, config: config)
         }
 
         report.passed = report.scenarios.allSatisfy { $0.status == .passed || $0.status == .skipped }
-        await onEvent?(report)
+        await emit(report, onEvent: onEvent, config: config)
         return report
+    }
+
+    private func emit(
+        _ report: DemoReport,
+        onEvent: (@Sendable (DemoReport) async -> Void)?,
+        config: DemoConfig
+    ) async {
+        await onEvent?(report)
+        guard config.paceMs > 0 else { return }
+        try? await Task.sleep(for: .milliseconds(config.paceMs))
     }
 
     private func runMemory(storeURL: URL, config: DemoConfig) async throws -> String {
