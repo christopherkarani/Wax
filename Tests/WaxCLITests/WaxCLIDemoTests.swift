@@ -85,5 +85,14 @@ struct WaxCLIDemoTests {
         } catch {
             #expect(String(describing: error).contains("items"))
         }
+
+        var paced = DemoConfig.demo
+        paced.paceMs = 90_000
+        do {
+            _ = try await DemoHarness(config: paced, profile: "demo").run()
+            Issue.record("expected pace-ms validation failure")
+        } catch {
+            #expect(String(describing: error).contains("pace-ms"))
+        }
     }
 }

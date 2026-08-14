@@ -44,6 +44,12 @@ struct DemoCommand: AsyncParsableCommand {
     @Option(name: .customLong("format"), help: "Output format: text (default) or json")
     var format: OutputFormat = .text
 
+    @Option(name: .customLong("pace-ms"), help: "Hold each TUI frame this many milliseconds (for recordings)")
+    var paceMs: Int = 0
+
+    @Option(name: .customLong("hold-ms"), help: "Hold the final board this many milliseconds")
+    var holdMs: Int = 0
+
     func runAsync() async throws {
         if interactive && runOnce {
             throw CLIError("Use either --interactive or --run, not both")
@@ -58,11 +64,15 @@ struct DemoCommand: AsyncParsableCommand {
         if let concurrency { config.concurrency = concurrency }
         if let volume { config.volume = volume }
         config.keepStore = keep
+        config.paceMs = paceMs
         if let storePath {
             config.storeURL = try StoreSession.resolveURL(storePath)
             config.keepStore = true
         }
         config = try config.validated()
+        if holdMs < 0 || holdMs > 60_000 {
+            throw CLIError("hold-ms must be between 0 and 60000")
+        }
 
         let wantsInteractive = interactive || (!runOnce && DemoTUI.isInteractiveTerminal() && format == .text)
         if wantsInteractive {
@@ -96,6 +106,10 @@ struct DemoCommand: AsyncParsableCommand {
         case .text:
             // Live TTY and non-TTY callbacks already drew the last board.
             print(report.passed ? "WAX_DEMO_OK profile=\(report.profile)" : "WAX_DEMO_FAIL profile=\(report.profile)")
+        }
+
+        if holdMs > 0 {
+            try await Task.sleep(for: .milliseconds(holdMs))
         }
 
         if !report.passed {
