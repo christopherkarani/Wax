@@ -220,9 +220,20 @@ struct DemoHarness: Sendable {
                 options.mode = .textOnly
             }
             try require(!durable.items.isEmpty, "reopen search empty — durability failed")
-            let durableText = durable.items.map(\.text).joined(separator: "\n")
-            try require(durableText.contains(token), "reopen missed token")
-            try require(durableText.localizedCaseInsensitiveContains("Linux"), "reopen missed Linux fact")
+            try require(
+                durable.items.contains(where: { $0.text.contains(token) }),
+                "reopen missed token"
+            )
+            let linuxHits = try await reopened.search("Deploy target Linux \(token)") { options in
+                options.topK = 5
+                options.mode = .textOnly
+            }
+            try require(
+                linuxHits.items.contains(where: {
+                    $0.text.localizedCaseInsensitiveContains("Linux") && $0.text.contains(token)
+                }),
+                "reopen missed Linux fact"
+            )
             try await reopened.close()
         }
 
