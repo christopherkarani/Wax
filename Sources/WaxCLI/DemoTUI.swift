@@ -42,7 +42,14 @@ enum DemoTUI {
             "frames \(report.frameCount)",
         ].compactMap { $0 }.joined(separator: "   ")
         lines.append(row(pad(" \(latency)", width - 2), width: width))
-        let footer = report.passed ? " ALL SCENARIOS PASSED" : " IN PROGRESS / FAILED"
+        let footer: String
+        if report.passed {
+            footer = " ALL SCENARIOS PASSED"
+        } else if report.scenarios.contains(where: { $0.status == .failed }) {
+            footer = " FAILED"
+        } else {
+            footer = " IN PROGRESS"
+        }
         lines.append(row(pad(footer, width - 2), width: width))
         lines.append(bar(width, left: "└", fill: "─", right: "┘"))
         return lines.joined(separator: "\n")

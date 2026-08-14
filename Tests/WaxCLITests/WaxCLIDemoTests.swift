@@ -31,8 +31,14 @@ struct WaxCLIDemoTests {
         #expect(board.contains("errors"))
         #expect(board.contains("lock"))
         #expect(board.contains("ALL SCENARIOS PASSED"))
+        #expect(!board.contains("IN PROGRESS"))
         #expect(!board.contains("MiniLM proven"))
         #expect(!board.contains("airplane"))
+
+        var pending = DemoReport.blank(profile: "demo", storePath: "/tmp/demo.wax")
+        pending.textOnly = true
+        #expect(DemoTUI.render(pending, color: false).contains("IN PROGRESS"))
+        #expect(!DemoTUI.render(pending, color: false).contains("FAILED"))
         let live = DemoTUI.liveFrame(report, color: false)
         #expect(live.contains("\u{1B}[H"))
         #expect(live.contains("Wax CLI Demo"))

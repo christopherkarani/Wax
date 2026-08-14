@@ -94,9 +94,7 @@ struct DemoCommand: AsyncParsableCommand {
         case .json:
             printJSON(DemoTUI.jsonDictionary(report))
         case .text:
-            if !live {
-                print(DemoTUI.render(report, color: false))
-            }
+            // Live TTY and non-TTY callbacks already drew the last board.
             print(report.passed ? "WAX_DEMO_OK profile=\(report.profile)" : "WAX_DEMO_FAIL profile=\(report.profile)")
         }
 
