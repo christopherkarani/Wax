@@ -27,6 +27,11 @@ import Testing
     }
 }
 
+@Test func waxCLIExposesLinuxDemoCommand() throws {
+    let source = try WaxCLISource.load("WaxCLICommand.swift")
+    #expect(source.contains("DemoCommand.self"))
+}
+
 @Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -38,6 +38,7 @@ struct WaxCLI: ParsableCommand {
             FactAssertCommand.self,
             FactRetractCommand.self,
             FactsQueryCommand.self,
+            DemoCommand.self,
             MCP.self,
         ]
     )
