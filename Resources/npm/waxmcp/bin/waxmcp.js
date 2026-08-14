@@ -334,9 +334,7 @@ while (i < forwardedArgs.length) {
 
 // Auto-detect if we should add default embedder
 if (!mcpFlags.includes("--no-embedder") && !mcpFlags.some(f => f.startsWith("--embedder"))) {
-  // Default to arctic (most reliable across builds)
-  // MiniLM can produce non-finite embeddings in some release builds
-  mcpFlags.unshift("--embedder", "arctic");
+  mcpFlags.unshift("--embedder", "minilm");
 }
 
 runBinary("wax-mcp", mcpFlags);

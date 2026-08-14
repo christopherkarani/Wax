@@ -51,6 +51,12 @@ build_line="$(grep -n 'name: Build binaries' "$WORKFLOW" | head -n 1 | cut -d: -
 
 grep -Fq './Resources/scripts/sync-waxmcp-version.sh' "$WORKFLOW" \
   || fail "release workflow must use the shared waxmcp version sync helper"
+grep -Fq 'Wax_WaxVectorSearchArctic.bundle' "$WORKFLOW" \
+  || fail "release workflow must require the Arctic model bundle"
+grep -Fq 'wax-cli vector-health' "$WORKFLOW" \
+  || fail "release workflow must run packaged MiniLM inference"
+grep -Fq 'macos-15-intel' "$WORKFLOW" \
+  || fail "release workflow must build x64 artifacts on a native Intel runner"
 
 grep -Fq 'Resources/scripts/sync-waxmcp-version.sh' "$CANONICAL_RELEASE_SCRIPT" \
   || fail "canonical release script must use the shared waxmcp version sync helper"

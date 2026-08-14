@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 WAXMCP_PACKAGE="$ROOT_DIR/Resources/npm/waxmcp/package.json"
 WAXMCP_VERIFY="$ROOT_DIR/Resources/npm/waxmcp/scripts/verify-dist.mjs"
+WAXMCP_LAUNCHER="$ROOT_DIR/Resources/npm/waxmcp/bin/waxmcp.js"
+WAX_HOMEBREW_FORMULA="$ROOT_DIR/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
 OPENCLAW_PACKAGE="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/package.json"
 OPENCLAW_PLUGIN="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/openclaw.plugin.json"
 OPENCLAW_DIST="$ROOT_DIR/Resources/openclaw/wax-memory-plugin/dist/index.js"
@@ -22,6 +24,13 @@ if (pkg.scripts?.prepack !== "node scripts/verify-dist.mjs") process.exit(1);
 [[ -f "$WAXMCP_VERIFY" ]] || fail "waxmcp dist verifier is missing"
 grep -Fq 'darwin-arm64' "$WAXMCP_VERIFY" || fail "waxmcp verifier must check darwin-arm64"
 grep -Fq 'darwin-x64' "$WAXMCP_VERIFY" || fail "waxmcp verifier must check darwin-x64"
+grep -Fq 'Wax_WaxVectorSearchArctic.bundle' "$WAXMCP_VERIFY" \
+  || fail "waxmcp verifier must require the Arctic model bundle"
+grep -Fq 'mcpFlags.unshift("--embedder", "minilm")' "$WAXMCP_LAUNCHER" \
+  || fail "waxmcp launcher must default to the repaired MiniLM provider"
+if grep -Fq '.cpuOnly' "$WAX_HOMEBREW_FORMULA"; then
+  fail "Homebrew formula must not rewrite MiniLM to the known-broken cpuOnly path"
+fi
 
 node -e '
 const fs = require("fs");

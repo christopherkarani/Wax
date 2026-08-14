@@ -88,6 +88,8 @@ jobs:
           fi
           test -d "$PLATFORM_DIR/Wax_WaxVectorSearchMiniLM.bundle"
           echo "MiniLM bundle present"
+          test -d "$PLATFORM_DIR/Wax_WaxVectorSearchArctic.bundle"
+          echo "Arctic bundle present"
 
       - name: Smoke check MCP server
         if: ${{ matrix.source_build }}

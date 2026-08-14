@@ -59,19 +59,30 @@ for (const [platform, expectedCpuType] of platforms) {
     }
   }
 
-  const miniLMRoot = path.join(
-    dir,
-    "Wax_WaxVectorSearchMiniLM.bundle",
-    "all-MiniLM-L6-v2.mlmodelc",
-  );
-  for (const required of [
-    "model.mil",
-    "coremldata.bin",
-    path.join("weights", "weight.bin"),
-  ]) {
-    const modelFile = path.join(miniLMRoot, required);
-    if (!fs.existsSync(modelFile) || fs.statSync(modelFile).size === 0) {
-      failures.push(`${path.relative(root, modelFile)} (missing or empty)`);
+  const compiledModels = [
+    path.join(
+      dir,
+      "Wax_WaxVectorSearchMiniLM.bundle",
+      "all-MiniLM-L6-v2.mlmodelc",
+    ),
+    path.join(
+      dir,
+      "Wax_WaxVectorSearchArctic.bundle",
+      "snowflake-arctic-embed-s.mlmodelc",
+    ),
+  ];
+  for (const modelRoot of compiledModels) {
+    for (const required of [
+      "model.mil",
+      "coremldata.bin",
+      "metadata.json",
+      path.join("analytics", "coremldata.bin"),
+      path.join("weights", "weight.bin"),
+    ]) {
+      const modelFile = path.join(modelRoot, required);
+      if (!fs.existsSync(modelFile) || fs.statSync(modelFile).size === 0) {
+        failures.push(`${path.relative(root, modelFile)} (missing or empty)`);
+      }
     }
   }
 

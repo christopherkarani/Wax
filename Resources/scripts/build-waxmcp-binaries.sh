@@ -59,6 +59,7 @@ if [[ -n "$TRIPLE" ]]; then
   # Copy resource bundles required for vector search and runtime.
   # Scan both bin paths defensively (they're usually identical but may diverge).
   echo "Copying resource bundles..."
+  rm -rf "$DIST_DIR"/*.bundle
   for dir in "$LOCAL_BIN_PATH" "$MCP_LOCAL_BIN_PATH"; do
     for bundle in "$dir"/*.bundle; do
       [[ -d "$bundle" ]] || continue
