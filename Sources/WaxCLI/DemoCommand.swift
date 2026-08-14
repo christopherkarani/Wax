@@ -83,10 +83,10 @@ struct DemoCommand: AsyncParsableCommand {
             if live {
                 FileHandle.standardOutput.write(Data(DemoTUI.liveFrame(snapshot, color: color).utf8))
             } else {
-                let running = snapshot.scenarios.first(where: { $0.status == .running })
-                if let running {
-                    print("RUN  \(running.title)")
-                }
+                // Cloud / CI has no TTY. Reprint the same board so logs still
+                // look like the dashboard instead of a bare RUN line.
+                print(DemoTUI.render(snapshot, color: false))
+                print()
             }
         }
 

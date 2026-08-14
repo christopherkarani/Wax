@@ -207,6 +207,15 @@ wax-cli demo --run
 wax-cli demo --stress --run
 ```
 
+On Linux, build `wax-cli` **without** `-DGRDBCUSTOMSQLITE` (that flag breaks GRDB's system SQLite overlay):
+
+```bash
+swift build --product wax-cli --traits default,MCPServer
+BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)/wax-cli"
+"$BIN" demo --run
+"$BIN" demo --stress --run
+```
+
 For long-running sessions, start the daemon:
 
 ```bash

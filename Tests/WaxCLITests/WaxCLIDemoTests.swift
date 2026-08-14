@@ -33,6 +33,9 @@ struct WaxCLIDemoTests {
         #expect(board.contains("ALL SCENARIOS PASSED"))
         #expect(!board.contains("MiniLM proven"))
         #expect(!board.contains("airplane"))
+        let live = DemoTUI.liveFrame(report, color: false)
+        #expect(live.contains("\u{1B}[H"))
+        #expect(live.contains("Wax CLI Demo"))
     }
 
     @Test("Default demo profile passes on a temp store")
