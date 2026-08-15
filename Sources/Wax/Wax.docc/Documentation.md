@@ -28,7 +28,7 @@ import FoundationModels
 import Wax
 
 let memory = try await Memory(at: storeURL)
-let session = await memory.foundationModelsSession(
+let session = memory.foundationModelsSession(
     instructions: "You are a helpful assistant with durable memory."
 )
 let answer = try await session.respond(to: "What did Alice say about Q4?")

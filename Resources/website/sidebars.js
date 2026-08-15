@@ -2,55 +2,36 @@
 const sidebars = {
   docs: [
     "intro",
+    {
+      type: "category",
+      label: "iOS apps",
+      collapsed: false,
+      items: [
+        "ios/getting-started",
+        "ios/foundation-models",
+        "ios/memory-api",
+      ],
+    },
     "architecture",
     {
       type: "category",
-      label: "Orchestrator",
+      label: "Internals (contributors)",
+      collapsed: true,
       items: [
         "orchestrator/memory-orchestrator",
         "orchestrator/rag-pipeline",
         "orchestrator/unified-search",
         "orchestrator/session-management",
-      ],
-    },
-    {
-      type: "category",
-      label: "Media RAG",
-      items: [
         "media/photo-rag",
         "media/video-rag",
-      ],
-    },
-    {
-      type: "category",
-      label: "WaxCore",
-      items: [
         "core/getting-started",
         "core/file-format",
         "core/wal-crash-recovery",
         "core/structured-memory",
         "core/concurrency-model",
-      ],
-    },
-    {
-      type: "category",
-      label: "Text Search",
-      items: [
         "text-search/text-search-engine",
-      ],
-    },
-    {
-      type: "category",
-      label: "Vector Search",
-      items: [
         "vector-search/vector-search-engines",
         "vector-search/embedding-providers",
-      ],
-    },
-    {
-      type: "category",
-      label: "MiniLM Embedder",
-      items: [
         "mini-lm/mini-lm-embedder",
       ],
     },
