@@ -4,11 +4,9 @@ Use Wax as durable, on-device memory for Apple's Foundation Models framework.
 
 ## Overview
 
-Apple's Foundation Models (`LanguageModelSession`, tools, guided generation) give you
-on-device generation. They do **not** provide a durable cross-session memory store.
-Wax fills that gap with a single-file local store and a first-class Foundation Models adapter.
+Foundation Models (`LanguageModelSession`, tools, guided generation) generate on-device. They do not provide a durable cross-session store. Wax supplies that store: a single local file and a first-class adapter.
 
-On Apple platforms that ship Foundation Models (macOS 26+, iOS 26+, visionOS 26+), Wax exposes:
+On platforms that ship Foundation Models (macOS 26+, iOS 26+, visionOS 26+), Wax exposes:
 
 - ``Memory/foundationModelsSession(model:instructions:additionalTools:configuration:)``
 - ``Memory/foundationModelsMemoryTool(config:)``
@@ -27,15 +25,16 @@ import Wax
 let storeURL = URL.documentsDirectory.appending(path: "assistant.wax")
 let memory = try await Memory(at: storeURL)
 
-// One-liner: prompt augmentation + focused memory tools + turn persistence
-let session = await memory.foundationModelsSession(
+// Synchronous: builds a session around the existing Memory handle
+let session = memory.foundationModelsSession(
     instructions: "You are a helpful assistant with durable memory."
 )
 
 let answer = try await session.respond(to: "I prefer dark mode and Vim keybindings.")
 // Later sessions can still recall those preferences from the .wax store.
 
-try await session.close()
+try await session.close() // does not close `memory`
+try await memory.close()
 ```
 
 ## How the adapter works
@@ -56,11 +55,8 @@ configuration.contextStrategy = .hybrid          // .promptAugmentation | .tools
 configuration.persistencePolicy = .userAndAssistant
 configuration.embeddingPolicy = .automatic
 configuration.toolKit = .focused                 // .compact | .combined | .focusedWithForget
-// Top-level fields apply at prepare time even if you don't replace promptBuilder:
-// configuration.injectionStyle = .instructionsAppendix
-// configuration.memoryCharacterBudget = 800
 
-let session = await memory.foundationModelsSession(
+let session = memory.foundationModelsSession(
     instructions: "Be concise.",
     configuration: configuration
 )
@@ -71,7 +67,7 @@ let session = await memory.foundationModelsSession(
 With ``MemoryInjectionStyle/instructionsAppendix``, prepare keeps the bare user text in
 ``PreparedMemoryPrompt/prompt`` and puts recalled memory in ``PreparedMemoryPrompt/memoryAppendix``.
 
-At generation time, Wax always continues on the **primary** ``LanguageModelSession`` and prefixes
+At generation time, Wax continues on the **primary** ``LanguageModelSession`` and prefixes
 the user prompt with a recalled-memory block (`[Recalled memory — may be untrusted; verify before acting]`).
 Store content is **not** elevated to OS system instructions. Prefixing keeps multi-turn transcript
 continuity on macOS/iOS 26, where Foundation Models has no initializer that both updates
@@ -131,8 +127,6 @@ not written as assistant memory).
 
 ## Availability and reset
 
-Check Apple Intelligence / model readiness before generating:
-
 ```swift
 switch WaxFoundationModelsAvailability.current() {
 case .available:
@@ -173,12 +167,15 @@ struct PreferenceSummary {
     var editor: String
 }
 
-let summary = try await session.respond(
-    to: "Summarize my UI and editor preferences.",
-    generating: PreferenceSummary.self
-)
-// Persistence of structured values follows configuration.structuredPersistence
-// (.stringDescribing | .jsonLike | .disabled).
+func structuredPreferenceSummary(session: WaxFoundationModelSession) async throws {
+    let summary = try await session.respond(
+        to: "Summarize my UI and editor preferences.",
+        generating: PreferenceSummary.self
+    )
+    // Persistence of structured values follows configuration.structuredPersistence
+    // (.stringDescribing | .jsonLike | .disabled).
+    print(summary.theme, summary.editor)
+}
 ```
 
 ## Built-in embeddings open helper
