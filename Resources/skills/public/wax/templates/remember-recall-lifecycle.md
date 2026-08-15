@@ -3,15 +3,14 @@ Goal: Ingest content, retrieve context, then persist and close.
 
 Placeholders:
 - <STORE_URL>
-- <EMBEDDER_TYPE>
 - <CONTENT>
 - <QUERY>
 - <METADATA>
 
 Steps:
-1. Open Memory.
+1. Open Memory (default auto MiniLM on supported OS).
 2. Save content with metadata.
-3. Search with a query.
+3. Search with a query; inspect diagnostics.
 4. Flush and close when done.
 
 Swift Skeleton:
@@ -20,10 +19,7 @@ import Foundation
 import Wax
 
 let storeURL = <STORE_URL>
-let memory = try await Memory(
-    at: storeURL,
-    embedding: <EMBEDDER_TYPE>()
-)
+let memory = try await Memory(at: storeURL)
 
 try await memory.save(
     <CONTENT>,

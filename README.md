@@ -66,8 +66,8 @@ Wax meets you where you are. Pick the path that matches what you're building:
 
 | 🛠️ Swift Developer | ⌨️ CLI Power User | 🤖 AI Agent Setup |
 |:--------------------|:------------------|:------------------|
-| **You want:** Embed memory in your iOS/macOS app or Swift tool. | **You want:** A command-line memory store you can script against. | **You want:** Your AI assistant (Claude Code, Cursor, etc.) to remember context across sessions. |
-| **Get started:** [Swift Quick Start](#swift-quick-start) ↓ | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Agent Quick Start](#agent-quick-start) ↓ |
+| **You want:** Embed memory in your iOS/iPadOS/macOS app or Swift tool. | **You want:** A command-line memory store you can script against. | **You want:** Your AI assistant (Claude Code, Cursor, etc.) to remember context across sessions. |
+| **Get started:** [Swift Quick Start](#swift-quick-start) ↓ · [Agent skill](https://github.com/christopherkarani/wax-skill) | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Agent Quick Start](#agent-quick-start) ↓ |
 
 ---
 
@@ -172,6 +172,23 @@ struct AgentMemory {
 
 </details>
 
+### 3. Coding-agent skill (Cursor, Claude Code, Codex, …)
+
+If an AI coding agent is adding Wax to your Apple app, install the dedicated Swift skill so it follows the public `Memory` API:
+
+```bash
+# Works across Cursor, Claude Code, Codex, and other Agent Skills hosts
+npx skills add christopherkarani/wax-skill
+```
+
+Or with Claude Code:
+
+```bash
+claude install-skill https://github.com/christopherkarani/wax-skill/tree/main/skills/wax
+```
+
+Full install notes: [Resources/docs/wax-swift-skill.md](Resources/docs/wax-swift-skill.md) · skill repo: [christopherkarani/wax-skill](https://github.com/christopherkarani/wax-skill)
+
 Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is available today through the MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) described in the [Agent Quick Start](#agent-quick-start). The Swift-level structured memory API is package-internal for now; see [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md) (contributor documentation).
 
 ---
@@ -251,8 +268,10 @@ claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resource
 
 This is the **agent operator** skill (session lifecycle, remember/recall, handoffs).
 
-> Writing Swift apps with the Wax framework? That is a different skill:
-> `claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax`
+> Writing Swift / iOS / macOS apps with the Wax framework? Install the dedicated Apple-apps skill instead:
+> `npx skills add christopherkarani/wax-skill`
+> or `claude install-skill https://github.com/christopherkarani/wax-skill/tree/main/skills/wax`
+> ([wax-skill](https://github.com/christopherkarani/wax-skill) · [docs](Resources/docs/wax-swift-skill.md))
 
 ### 3. Or paste project rules into CLAUDE.md / AGENTS.md
 

@@ -4,8 +4,9 @@ description: >
   Operator playbook for the Wax MCP memory server. Use whenever Wax MCP tools are
   available (remember, recall, search, handoff, session_start/end, structured
   memory), when installing or configuring waxmcp, or when an agent should keep
-  durable cross-session memory. Prefer this skill over the Swift framework skill
-  unless the task is writing Wax Swift code.
+  durable cross-session memory.   Prefer this skill over the Swift / Apple-apps skill
+  unless the task is adding Wax to an iOS, iPadOS, or macOS app
+  (`npx skills add christopherkarani/wax-skill`).
 ---
 
 # Wax MCP (Agent Memory Operator)
@@ -14,8 +15,8 @@ description: >
 
 Teach agents how to **use** the Wax MCP server correctly every session.
 
-This is not the Swift framework skill. For embedding Wax in Swift apps, use the
-`wax` skill under `Resources/skills/public/wax`.
+This is not the Swift / Apple-apps skill. For embedding Wax in iOS, iPadOS, or
+macOS apps, install `christopherkarani/wax-skill` (`npx skills add christopherkarani/wax-skill`).
 
 ## Session Lifecycle (required)
 

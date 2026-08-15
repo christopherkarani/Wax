@@ -35,12 +35,12 @@ Wax teaches agents at three layers:
 
 You usually only need step 1. Use the skill or project rules when the host ignores MCP instructions or you want stronger always-on enforcement.
 
-### Skill: agent operator vs Swift framework
+### Skill: agent operator vs Swift / Apple apps
 
-| Skill | Path | Audience |
-|-------|------|----------|
-| `wax-mcp` | `Resources/skills/public/wax-mcp` | Agents *using* MCP memory tools |
-| `wax` | `Resources/skills/public/wax` | Developers writing Swift Wax code |
+| Skill | Install | Audience |
+|-------|---------|----------|
+| `wax-mcp` | staged by `mcp install`, or monorepo tree | Agents *using* MCP memory tools |
+| `wax` | dedicated repo [`christopherkarani/wax-skill`](https://github.com/christopherkarani/wax-skill) | Agents *adding* Wax to iOS / iPadOS / macOS apps |
 
 ```bash
 # Operator skill (MCP tools)
@@ -48,11 +48,13 @@ claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 # or
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
 
-# Swift framework skill (optional, separate)
-claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax
+# Swift / Apple apps skill (separate repo)
+npx skills add christopherkarani/wax-skill
+# or
+claude install-skill https://github.com/christopherkarani/wax-skill/tree/main/skills/wax
 ```
 
-The published `waxmcp` npm package also ships `skills/wax-mcp` so installs do not require cloning this monorepo.
+The published `waxmcp` npm package also ships `skills/wax-mcp` so operator installs do not require cloning this monorepo. The Apple-apps skill is published from [`Resources/skills/public/wax`](../skills/public/wax) to [wax-skill](https://github.com/christopherkarani/wax-skill) via `Resources/scripts/publish-wax-skill.sh`. See [wax-swift-skill.md](wax-swift-skill.md).
 
 ## Recommended project rules
 

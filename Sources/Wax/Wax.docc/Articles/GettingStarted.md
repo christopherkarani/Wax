@@ -27,6 +27,14 @@ Then add it to your target:
 
 Wax builds for iOS 17/macOS 14 and later. The built-in MiniLM embedder requires iOS 18/macOS 15 and the default `MiniLMEmbeddings` package trait; Foundation Models tools require iOS 26/macOS 26.
 
+If a coding agent (Cursor, Claude Code, Codex, …) is integrating Wax for you, install the Apple-apps skill first:
+
+```bash
+npx skills add christopherkarani/wax-skill
+```
+
+See <doc:GettingStarted> companion notes in `Resources/docs/wax-swift-skill.md` and https://github.com/christopherkarani/wax-skill.
+
 ## Create a Memory Store
 
 ```swift
