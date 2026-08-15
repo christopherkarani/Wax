@@ -6,9 +6,11 @@ description: >
   semantic search, search notes offline, build on-device RAG in SwiftUI/UIKit/
   AppKit, add the Wax Swift package in Xcode/SPM, open a .wax store, wire
   MiniLM or a custom EmbeddingProvider, tune hybrid vs text-only search,
-  flush on background, or debug why recall looks lexical-only. Not for Wax MCP
-  tools (remember, recall, handoff, session_start) — use wax-mcp. Not for
-  package-only PhotoRAG/VideoRAG orchestrators — those are not app APIs.
+  flush on background, debug lexical-only recall, or integrate Apple
+  Foundation Models (LanguageModelSession, waxRemember/waxRecall tools,
+  iOS 26 / macOS 26). Not for Wax MCP tools (remember, recall, handoff,
+  session_start) — use wax-mcp. Not for package-only PhotoRAG/VideoRAG
+  orchestrators — those are not app APIs.
 license: Apache-2.0
 metadata:
   author: christopherkarani
@@ -41,7 +43,8 @@ Product: `Wax`. Toolchain: **Swift 6.1+ / Xcode 16.4+**. Platforms: iOS 17 / mac
 
 Before naming types not shown below → `references/public-api.md`.  
 Before App Store / multi-target builds → `references/app-integration.md`.  
-When search/save misbehaves or you need limits → `references/constraints.md`.
+When search/save misbehaves or you need limits → `references/constraints.md`.  
+**Foundation Models (iOS 26 / macOS 26+)** → `references/foundation-models.md`.
 
 ## Integration checklist
 
@@ -53,6 +56,7 @@ When search/save misbehaves or you need limits → `references/constraints.md`.
 - [ ] Check `diagnostics.effectiveMode` — hybrid may run as `"text"`
 - [ ] Gate writes if a vector-backed store lost its embedder (see Gotchas)
 - [ ] `flush()` on iOS `.background`; `close()` only on controlled teardown
+- [ ] (Optional, OS 26+) `foundationModelsSession` or `foundationModelsTools` — see `references/foundation-models.md`
 
 ## Core workflow
 
@@ -173,9 +177,18 @@ After search: `diagnostics.effectiveMode` is `"hybrid(alpha=0.500)"` or `"text"`
 2. Hybrid search with no lexical overlap → `effectiveMode` has prefix `hybrid` and some `item.sources.contains(.vector)` on iOS 18+.
 3. Text-only / iOS 17 path → hybrid reports `"text"`; forced `.vectorOnly` throws.
 
+## Foundation Models (iOS 26 / macOS 26+)
+
+Default: `await memory.foundationModelsSession(instructions:)` → `respond(to:)`.
+Tools-only: `memory.foundationModelsTools(kit: .focused)` on your `LanguageModelSession`.
+Check `WaxFoundationModelsAvailability.current()` first.
+
+Full recipes, kits, presets, streaming → `references/foundation-models.md`.
+
 ## References
 
 - `references/public-api.md` — signatures, nested types, errors
 - `references/app-integration.md` — size, traits, locking, backup, extensions
 - `references/constraints.md` — offline / ingest / persistence limits
+- `references/foundation-models.md` — Apple Foundation Models session + tools
 - `templates/custom-embedder.swift` — custom `EmbeddingProvider` only

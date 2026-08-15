@@ -62,11 +62,14 @@
       ]
     },
     {
-      "id": 7,
-      "prompt": "implement PhotoRAGOrchestrator in my shipping iOS app",
-      "expected_output": "Refuse package-only orchestrator; explain not an app API.",
+      "id": 8,
+      "prompt": "Wire Apple Foundation Models so my iOS 26 assistant remembers preferences across launches with Wax.",
+      "expected_output": "Uses Memory.foundationModelsSession or foundationModelsTools; checks availability; iOS 26 gate; no orchestrators.",
       "assertions": [
-        "Does not generate PhotoRAGOrchestrator client code"
+        "Uses foundationModelsSession and/or foundationModelsTools",
+        "Mentions iOS 26 / macOS 26 or canImport(FoundationModels)",
+        "Checks WaxFoundationModelsAvailability or documents availability",
+        "Does not use MemoryOrchestrator"
       ]
     }
   ]

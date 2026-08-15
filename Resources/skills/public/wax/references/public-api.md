@@ -65,7 +65,14 @@ Many search-path failures surface as `WaxError.io(String)`.
 
 ## Foundation Models (iOS 26 / macOS 26+)
 
-`foundationModelsMemoryTool()`, `foundationModelsTools(kit:)`, `foundationModelsCombinedTools()`, related helpers.
+See `references/foundation-models.md` for full integration.
+
+- `Memory.foundationModelsSession(model:instructions:additionalTools:configuration:)` → `WaxFoundationModelSession`
+- `Memory.foundationModelsTools(kit:config:)` / `foundationModelsMemoryTool(config:)` / `foundationModelsCombinedTools(config:)`
+- `Memory.openFoundationModelsSession(at:…)` (session owns store; `close()` closes `Memory`)
+- `WaxFoundationModelsAvailability.current()`
+- Config: `FoundationModelsMemorySessionConfig` (`.default`, `.hybridBalanced`, `.toolsOnlyCompact`, `.promptOnlyLight`)
+- Kits: `WaxMemoryToolKit` — `.focused`, `.compact`, `.combined`, `.focusedWithForget`
 
 ## Package-only (not for apps)
 

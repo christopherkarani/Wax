@@ -74,6 +74,7 @@ skills/
       public-api.md             # Signatures / nested types
       app-integration.md        # Size, locks, backup, embedder swaps
       constraints.md            # Limits / ingest quirks
+      foundation-models.md      # Apple Foundation Models session + tools
     templates/
       custom-embedder.swift     # Custom EmbeddingProvider only
     evals/
@@ -81,7 +82,8 @@ skills/
 ```
 
 **API pin:** the skill documents `Memory.Config.embedding` + `RAGContext.diagnostics` on Wax `main`. Until a release includes that surface, agents should use `branch: "main"` (not `from: "0.1.25"`).
-## Maintaining this skill
+
+**Foundation Models:** iOS 26 / macOS 26 recipes live in `skills/wax/references/foundation-models.md` (`foundationModelsSession`, tool kits, availability).## Maintaining this skill
 
 | Role | Location |
 |------|----------|

@@ -52,7 +52,9 @@ Read before the first App Store–bound or multi-target build.
 
 ## Foundation Models (iOS 26 / macOS 26+)
 
-Optional `Memory` helpers for on-device model tools — skip unless deployment target is 26+. See `public-api.md`.
+Full how-to: `references/foundation-models.md`.
+
+Optional `Memory` helpers for on-device model tools/sessions — skip unless deployment target is 26+. Still obey store locking and flush-on-background rules.
 
 ## Photo / video / structured memory
 
