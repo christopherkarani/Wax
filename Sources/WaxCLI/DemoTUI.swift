@@ -36,12 +36,8 @@ enum DemoTUI {
         }
 
         lines.append(bar(width, left: "├", fill: "─", right: "┤"))
-        let latency = [
-            report.recallP50Ms.map { "p50 \(formatMs($0))" },
-            report.recallP95Ms.map { "p95 \(formatMs($0))" },
-            "frames \(report.frameCount)",
-        ].compactMap { $0 }.joined(separator: "   ")
-        lines.append(row(pad(" \(latency)", width - 2), width: width))
+        lines.append(row(pad(" \(retrievalLine(report))", width - 2), width: width))
+        lines.append(row(pad(" frames \(report.frameCount)", width - 2), width: width))
         let footer: String
         if report.passed {
             footer = " ALL SCENARIOS PASSED"
@@ -63,6 +59,8 @@ enum DemoTUI {
             "textOnly": report.textOnly,
             "passed": report.passed,
             "frameCount": report.frameCount,
+            "retrievalLastMs": report.retrievalLastMs.map { $0 as Any } ?? NSNull(),
+            "retrievalCount": report.retrievalCount,
             "recallP50Ms": report.recallP50Ms.map { $0 as Any } ?? NSNull(),
             "recallP95Ms": report.recallP95Ms.map { $0 as Any } ?? NSNull(),
             "scenarios": report.scenarios.map { scenario in
@@ -79,6 +77,13 @@ enum DemoTUI {
 
     static func liveFrame(_ report: DemoReport, color: Bool) -> String {
         "\u{1B}[?25l\u{1B}[H\u{1B}[2J" + render(report, color: color) + "\n"
+    }
+
+    private static func retrievalLine(_ report: DemoReport) -> String {
+        let last = report.retrievalLastMs.map(formatMs) ?? "—"
+        let p50 = report.recallP50Ms.map(formatMs) ?? "—"
+        let p95 = report.recallP95Ms.map(formatMs) ?? "—"
+        return "retrieval  last \(last)  p50 \(p50)  p95 \(p95)  n=\(report.retrievalCount)"
     }
 
     private static func subtitle(_ report: DemoReport) -> String {

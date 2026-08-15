@@ -19,8 +19,10 @@ struct WaxCLIDemoTests {
         report.platform = "linux"
         report.passed = true
         report.frameCount = 12
+        report.retrievalLastMs = 1.8
         report.recallP50Ms = 1.5
         report.recallP95Ms = 4.2
+        report.retrievalCount = 9
         let board = DemoTUI.render(report, color: false)
         #expect(board.contains("Wax CLI Demo"))
         #expect(board.contains("text-only index"))
@@ -30,6 +32,7 @@ struct WaxCLIDemoTests {
         #expect(board.contains("volume"))
         #expect(board.contains("errors"))
         #expect(board.contains("lock"))
+        #expect(board.contains("retrieval  last 1.8ms  p50 1.5ms  p95 4.2ms  n=9"))
         #expect(board.contains("ALL SCENARIOS PASSED"))
         #expect(!board.contains("IN PROGRESS"))
         #expect(!board.contains("MiniLM proven"))
@@ -37,8 +40,10 @@ struct WaxCLIDemoTests {
 
         var pending = DemoReport.blank(profile: "demo", storePath: "/tmp/demo.wax")
         pending.textOnly = true
-        #expect(DemoTUI.render(pending, color: false).contains("IN PROGRESS"))
-        #expect(!DemoTUI.render(pending, color: false).contains("FAILED"))
+        let pendingBoard = DemoTUI.render(pending, color: false)
+        #expect(pendingBoard.contains("IN PROGRESS"))
+        #expect(pendingBoard.contains("retrieval  last —  p50 —  p95 —  n=0"))
+        #expect(!pendingBoard.contains("FAILED"))
         let live = DemoTUI.liveFrame(report, color: false)
         #expect(live.contains("\u{1B}[H"))
         #expect(live.contains("Wax CLI Demo"))
@@ -59,7 +64,10 @@ struct WaxCLIDemoTests {
         #expect(report.scenarios.count == DemoScenarioID.allCases.count)
         #expect(report.scenarios.allSatisfy { $0.status == .passed })
         #expect(report.frameCount > 0)
+        #expect(report.retrievalCount > 0)
+        #expect(report.retrievalLastMs != nil)
         #expect(report.recallP50Ms != nil)
+        #expect(report.recallP95Ms != nil)
     }
 
     @Test("Tiny stress-shaped config still proves durability")
