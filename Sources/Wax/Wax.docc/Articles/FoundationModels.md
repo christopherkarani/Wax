@@ -167,12 +167,15 @@ struct PreferenceSummary {
     var editor: String
 }
 
-let summary = try await session.respond(
-    to: "Summarize my UI and editor preferences.",
-    generating: PreferenceSummary.self
-)
-// Persistence of structured values follows configuration.structuredPersistence
-// (.stringDescribing | .jsonLike | .disabled).
+func structuredPreferenceSummary(session: WaxFoundationModelSession) async throws {
+    let summary = try await session.respond(
+        to: "Summarize my UI and editor preferences.",
+        generating: PreferenceSummary.self
+    )
+    // Persistence of structured values follows configuration.structuredPersistence
+    // (.stringDescribing | .jsonLike | .disabled).
+    print(summary.theme, summary.editor)
+}
 ```
 
 ## Built-in embeddings open helper
