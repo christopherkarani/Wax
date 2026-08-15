@@ -113,7 +113,7 @@ func documentationQuickStartSaveSearchRoundTrip() async throws {
 
         let results = try await memory.search(
             "What is the user building?",
-            options: .init(mode: .textOnly, topK: 5)
+            options: .init(topK: 5, mode: .textOnly)
         )
         #expect(!results.items.isEmpty)
         let joined = results.items.map(\.text).joined(separator: "\n")
