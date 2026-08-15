@@ -1,31 +1,41 @@
-# Constraints, Quirks, and Limits
+# Constraints and limits
 
-## Offline-Only and Single-File Persistence
-- Wax is on-device and makes no network calls. Source: `README.md`.
-- A single `.wax` file stores data, indexes, metadata, and WAL. Source: `README.md`.
-- Wax is not a cloud sync service. Source: `README.md`.
+Read when search/save results look wrong, the store is large, or you need hard limits.
 
-## Public API Surface
-- The public Swift API is the `Memory` facade (`import Wax`). `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `WaxSession`, and the `Wax` actor are package-only internals. Source: `Sources/Wax/Memory.swift`.
-- Structured memory (entities/facts) and photo/video memory are exposed to agents via the Wax MCP server tools, not via `import Wax`. Source: `README.md`.
+## Offline and single-file persistence
 
-## Vector Search and Embeddings
-- Built-in embedders (MiniLM, Arctic) require iOS 18/macOS 15+ and their package traits (`MiniLMEmbeddings` on by default, `ArcticEmbeddings` opt-in). Source: `Sources/Wax/BuiltInEmbeddings.swift`.
-- `Memory(at:)` auto-wires the built-in MiniLM embedder when vector search is enabled and the platform supports it; otherwise the store runs text-only. Source: `Sources/Wax/Memory.swift`.
-- On a fresh store with vector search enabled but no embedder, vector search is auto-disabled (text-only); `memory.stats().vectorSearchEnabled` reports the effective state. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
-- `RetrievalMode.hybrid` (default) falls back to the text lane when the vector lane is unavailable; `RetrievalMode.vectorOnly` throws. `RAGContext.diagnostics` reports requested vs. effective mode. Source: `Sources/Wax/Memory.swift`.
-- If query embedding times out, a circuit breaker pauses query embedding for a cooldown (default 60s), then half-opens and retries; a success closes it. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
-- The Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index. Source: `Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift`.
+- On-device only — no network calls from Wax itself.
+- One `.wax` file: data, indexes, metadata, WAL.
+- Not a cloud sync service.
 
-## Video RAG Constraints (package-only pipeline)
-- Video RAG requires host-supplied transcripts; Wax does not transcribe in v1. Source: `README.md`, `Sources/Wax/VideoRAG/VideoRAGProtocols.swift`.
-- Video RAG stores text and metadata only; it does not store video/audio clip bytes. Source: `README.md`.
-- The video pipeline requires normalized embeddings when `vectorEnginePreference != .cpuOnly` (Metal-backed search). Source: `Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift`.
-- Photos sync is offline-only; iCloud-only assets are indexed as metadata-only and marked degraded. Source: `README.md`.
+## Public API boundary
 
-## Determinism and Token Budgets
-- Deterministic retrieval and strict token budgets (cl100k_base) are documented. Source: `README.md`.
+- Apps: `Memory` only.
+- Structured / photo / video memory: MCP/agent surfaces, not app imports.
 
-## Persistence Lifecycle
-- `Memory.save(...)` writes to the WAL; `Memory.flush()` commits pending writes to durable storage; `Memory.close()` flushes and closes. Source: `Sources/Wax/Memory.swift`.
-- `Memory.delete(frameID:)` soft-deletes the frame and removes it from the text and vector indexes, committed immediately. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
+## Vector search and embeddings
+
+- MiniLM / Arctic: iOS 18 / macOS 15+ + traits (`MiniLMEmbeddings` default-on).
+- `.hybrid` degrades to text without a usable vector lane; `.vectorOnly` throws `WaxError.io`.
+- `RAGContext.diagnostics` reports requested vs effective mode.
+- Query embedding timeout (~10s) can open a ~60s circuit breaker.
+- Metal HNSW ~10,000+ vectors; smaller stores use exact CPU index.
+
+## Persistence lifecycle
+
+- `save` → WAL; `flush` → durable commit; `close` → flush + close.
+- Unflushed WAL is recovered on the next successful open; still flush before iOS suspension.
+- `delete(frameID:)` updates indexes immediately. One frame only — chunk siblings from the same `save` may remain; filter recall against your transcript for “delete message” UX.
+
+## Ingest behavior
+
+- One `save` may create a document frame plus chunk frames — dedupe UI by metadata id.
+- Content-hash dedup can collapse identical text without a unique metadata key.
+- Variadic `save` has no metadata channel.
+- Existing vector index + no embedder → `save` throws `missingEmbedder` (see `app-integration.md`).
+
+## What Wax cannot do for apps
+
+- Enumerate/page all frames without a search query.
+- Be the sole ordered transcript store.
+- Expose photo/video orchestrators to downstream apps.

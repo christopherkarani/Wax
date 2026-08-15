@@ -128,7 +128,8 @@ let textOnly = try await memory.search("sprint velocity", options: .init(mode: .
 // Vector only — semantic similarity
 let semantic = try await memory.search("roadmap discussion", options: .init(mode: .vectorOnly))
 
-// Hybrid (default) — RRF fusion of both lanes; alpha weights the vector lane
+// Hybrid (default) — RRF fusion of both lanes; alpha weights the text lane
+// (higher alpha → more lexical; lower → more semantic / vector)
 let hybrid = try await memory.search("Alice roadmap", options: .init(mode: .hybrid(alpha: 0.7)))
 ```
 

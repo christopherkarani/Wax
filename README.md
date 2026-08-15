@@ -181,6 +181,8 @@ If an AI coding agent is adding Wax to your Apple app, install the dedicated Swi
 npx skills add christopherkarani/wax-skill
 ```
 
+The skill teaches the public `Memory` API on current Wax `main` (`Config.embedding` + search `diagnostics`). Until that surface is in a tagged release, agents following the skill should depend on `branch: "main"`.
+
 Or with Claude Code:
 
 ```bash

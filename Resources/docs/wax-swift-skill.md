@@ -68,12 +68,19 @@ The agent should load this skill and follow the public `Memory` API — not pack
 ```text
 skills/
   wax/
-    SKILL.md              # Agent instructions
-    agents/openai.yaml    # Host display metadata
-    references/           # Public API + constraints
-    templates/            # Copy-ready Swift skeletons
+    SKILL.md                    # Agent instructions (progressive disclosure)
+    agents/openai.yaml          # Host display metadata
+    references/
+      public-api.md             # Signatures / nested types
+      app-integration.md        # Size, locks, backup, embedder swaps
+      constraints.md            # Limits / ingest quirks
+    templates/
+      custom-embedder.swift     # Custom EmbeddingProvider only
+    evals/
+      evals.json                # Regression prompts / assertions
 ```
 
+**API pin:** the skill documents `Memory.Config.embedding` + `RAGContext.diagnostics` on Wax `main`. Until a release includes that surface, agents should use `branch: "main"` (not `from: "0.1.25"`).
 ## Maintaining this skill
 
 | Role | Location |

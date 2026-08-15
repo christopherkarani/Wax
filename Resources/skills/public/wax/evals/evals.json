@@ -1,0 +1,73 @@
+{
+  "skill_name": "wax",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add Wax on-device memory to my iOS SwiftUI chat app so messages persist across launches and I can semantic-search past chats.",
+      "expected_output": "SPM branch main (not from: 0.1.25 for this API), Memory actor, separate transcript, unique metadata id, diagnostics, flush on background.",
+      "assertions": [
+        "Uses import Wax and Memory (not MemoryOrchestrator)",
+        "Uses actor (or MainActor) for the shared Memory owner under Swift 6",
+        "Creates parent directory before opening the store",
+        "Keeps an ordered transcript outside Wax",
+        "Puts a unique id in save metadata",
+        "Checks diagnostics or stats",
+        "Flushes on background rather than closing every background",
+        "Dependency uses branch main (or documents why), not a from: pin that resolves to pre-diagnostics tags"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Wire hybrid search so 'what did we talk about last week?' works in my notes app.",
+      "expected_output": "Memory.TimeRange with hybrid; alpha = text-lane weight.",
+      "assertions": [
+        "Uses Memory.TimeRange / SearchOptions.timeRange",
+        "Does not use date-in-text as the primary time filter",
+        "States higher alpha favors lexical/text results"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Set up wax mcp remember/recall for Claude Code.",
+      "expected_output": "Defer to wax-mcp; do not treat this skill as MCP operator docs.",
+      "assertions": [
+        "Does not implement MCP remember/recall setup from this skill"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Fix hybrid search alpha — vector results are too weak in our macOS app.",
+      "expected_output": "Lower alpha to favor vectors.",
+      "assertions": [
+        "States alpha weights the text lane",
+        "Suggests lowering alpha to favor semantic/vector results"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "My widget extension and app both need the same .wax file.",
+      "expected_output": "Warn about exclusive flock / lockUnavailable; recommend separate stores or a single owner process.",
+      "assertions": [
+        "Mentions lockUnavailable or exclusive lock",
+        "Does not recommend concurrent Memory opens on one URL"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "I swapped embedders and my old store won't open / saves fail on iOS 17 after building without MiniLM.",
+      "expected_output": "Explain binding mismatch throw and/or missingEmbedder on save when vector index exists without embedder; suggest new file, re-ingest, or enableVectorSearch false.",
+      "assertions": [
+        "Does not claim embedder swaps silently skip vectors",
+        "Mentions open-time binding mismatch and/or save-time missingEmbedder"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "implement PhotoRAGOrchestrator in my shipping iOS app",
+      "expected_output": "Refuse package-only orchestrator; explain not an app API.",
+      "assertions": [
+        "Does not generate PhotoRAGOrchestrator client code"
+      ]
+    }
+  ]
+}

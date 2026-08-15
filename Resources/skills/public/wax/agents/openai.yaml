@@ -1,4 +1,4 @@
 interface:
   display_name: "Wax (Apple Apps)"
   short_description: "Add on-device Memory/RAG to iOS, iPadOS, and macOS apps"
-  default_prompt: "Use $wax to integrate the public Memory facade (SPM, save/search/flush) into this Apple app. For MCP agent memory tools, use $wax-mcp instead."
+  default_prompt: "Use $wax to integrate the public Memory facade into this Apple app (SPM, save/search/flush, diagnostics). For MCP agent memory tools, use $wax-mcp instead."
