@@ -118,7 +118,7 @@ func retrievalModeExamples(memory: Memory) async throws {
 
     let hybrid = try await memory.search(
         "Alice roadmap",
-        options: .init(mode: .hybrid(alpha: 0.7), topK: 12)
+        options: .init(topK: 12, mode: .hybrid(alpha: 0.7))
     )
     print("hybrid hits:", hybrid.items.count)
 }

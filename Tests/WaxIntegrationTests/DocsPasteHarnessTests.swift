@@ -89,7 +89,7 @@ func docsPaste_memoryAPIRoundTrip(storeURL: URL) async throws -> Int {
 
     let hybrid = try await memory.search(
         "Alice roadmap",
-        options: .init(mode: .hybrid(alpha: 0.7), topK: 12)
+        options: .init(topK: 12, mode: .hybrid(alpha: 0.7))
     )
     #expect(hybrid.items.count >= 0)
 
@@ -133,7 +133,7 @@ func docsPaste_customEmbedderRoundTrip(storeURL: URL) async throws -> Int {
     try await memory.save("User prefers Vim keybindings.")
     let results = try await memory.search(
         "editor preferences",
-        options: .init(mode: .hybrid(alpha: 0.5), topK: 5)
+        options: .init(topK: 5, mode: .hybrid(alpha: 0.5))
     )
     try await memory.close()
     return results.items.count
