@@ -4,7 +4,7 @@ const { themes: prismThemes } = require("prism-react-renderer");
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: "Wax",
-  tagline: "On-device RAG for Swift. One file. Zero servers.",
+  tagline: "On-device memory for Swift apps. One file. No servers.",
   favicon: "img/favicon.ico",
   url: "https://christopherkarani.github.io",
   baseUrl: "/Wax/",
@@ -37,7 +37,8 @@ const config = {
       ({
         docs: {
           sidebarPath: "./sidebars.js",
-          editUrl: "https://github.com/christopherkarani/Wax/tree/main/website/",
+          editUrl:
+            "https://github.com/christopherkarani/Wax/tree/main/Resources/website/",
         },
         blog: false,
         theme: {
@@ -65,8 +66,8 @@ const config = {
             label: "Docs",
           },
           {
-            label: "install →",
-            href: "/docs/intro",
+            label: "iOS docs →",
+            href: "/docs/ios/getting-started",
             position: "right",
           },
           {
@@ -82,8 +83,12 @@ const config = {
           {
             title: "Docs",
             items: [
-              { label: "Getting Started", to: "/docs/intro" },
-              { label: "Architecture", to: "/docs/architecture" },
+              { label: "Overview", to: "/docs/intro" },
+              { label: "iOS get started", to: "/docs/ios/getting-started" },
+              {
+                label: "Foundation Models",
+                to: "/docs/ios/foundation-models",
+              },
             ],
           },
           {

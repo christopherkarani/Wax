@@ -47,7 +47,7 @@ extension WaxMemoryToolResult: PromptRepresentable {
 ///
 /// ```swift
 /// let memory = try await Memory(at: storeURL)
-/// let tools = await memory.foundationModelsTools()
+/// let tools = memory.foundationModelsTools()
 /// let session = LanguageModelSession(tools: tools) {
 ///     "You have long-term memory. Use waxRemember / waxRecall / waxSearch when needed."
 /// }
