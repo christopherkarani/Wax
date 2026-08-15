@@ -78,8 +78,10 @@ struct DemoReport: Sendable, Equatable {
     var platform: String
     var scenarios: [DemoScenarioResult]
     var frameCount: UInt64
+    var retrievalLastMs: Double?
     var recallP50Ms: Double?
     var recallP95Ms: Double?
+    var retrievalCount: Int
     var passed: Bool
 
     static func blank(profile: String, storePath: String) -> DemoReport {
@@ -98,10 +100,61 @@ struct DemoReport: Sendable, Equatable {
                 )
             },
             frameCount: 0,
+            retrievalLastMs: nil,
             recallP50Ms: nil,
             recallP95Ms: nil,
+            retrievalCount: 0,
             passed: false
         )
+    }
+
+    mutating func recordRetrieval(_ snapshot: (last: Double, p50: Double, p95: Double, count: Int)) {
+        retrievalLastMs = snapshot.last
+        recallP50Ms = snapshot.p50
+        recallP95Ms = snapshot.p95
+        retrievalCount = snapshot.count
+    }
+}
+
+/// Accumulates every successful `Memory.search` so the dashboard can show
+/// last / p50 / p95 retrieval time as the run progresses.
+private final class RetrievalSamples: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Double] = []
+
+    func record(_ milliseconds: Double) -> (last: Double, p50: Double, p95: Double, count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        values.append(milliseconds)
+        return (
+            milliseconds,
+            DemoStats.percentile(values, 0.50) ?? milliseconds,
+            DemoStats.percentile(values, 0.95) ?? milliseconds,
+            values.count
+        )
+    }
+}
+
+private final class LiveReport: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: DemoReport
+
+    init(_ value: DemoReport) {
+        self.value = value
+    }
+
+    @discardableResult
+    func update(_ body: (inout DemoReport) -> Void) -> DemoReport {
+        lock.lock()
+        defer { lock.unlock() }
+        body(&value)
+        return value
+    }
+
+    func snapshot() -> DemoReport {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 
@@ -140,6 +193,8 @@ struct DemoHarness: Sendable {
             ?? workDir.appendingPathComponent("demo.wax")
         var report = DemoReport.blank(profile: profile, storePath: storeURL.path)
         report.textOnly = true
+        let live = LiveReport(report)
+        let samples = RetrievalSamples()
 
         defer {
             if !config.keepStore, config.storeURL == nil {
@@ -147,26 +202,39 @@ struct DemoHarness: Sendable {
             }
         }
 
-        await emit(report, onEvent: onEvent, config: config)
+        await emit(live.snapshot(), onEvent: onEvent, config: config)
+
+        let record: @Sendable (Double) async -> Void = { milliseconds in
+            let next = live.update { current in
+                current.recordRetrieval(samples.record(milliseconds))
+            }
+            await onEvent?(next)
+        }
 
         for id in DemoScenarioID.allCases {
-            report = mutating(report, id: id, status: .running, detail: "running")
-            await emit(report, onEvent: onEvent, config: config)
+            live.update { current in
+                current = mutating(current, id: id, status: .running, detail: "running")
+            }
+            await emit(live.snapshot(), onEvent: onEvent, config: config)
             let started = ContinuousClock.now
             do {
                 let detail: String
                 switch id {
                 case .memory:
-                    detail = try await runMemory(storeURL: storeURL, config: config)
+                    detail = try await runMemory(storeURL: storeURL, config: config, record: record)
                 case .framestore:
                     detail = try await runFrameStore(workDir: workDir)
                 case .concurrency:
-                    detail = try await runConcurrency(storeURL: storeURL, config: config)
+                    detail = try await runConcurrency(storeURL: storeURL, config: config, record: record)
                 case .volume:
-                    let volume = try await runVolume(storeURL: storeURL, config: config)
-                    report.recallP50Ms = volume.p50
-                    report.recallP95Ms = volume.p95
-                    report.frameCount = volume.frames
+                    let volume = try await runVolume(
+                        storeURL: storeURL,
+                        config: config,
+                        record: record
+                    )
+                    live.update { current in
+                        current.frameCount = volume.frames
+                    }
                     detail = volume.detail
                 case .errors:
                     detail = try await runErrors(workDir: workDir)
@@ -174,23 +242,29 @@ struct DemoHarness: Sendable {
                     detail = try await runLock(workDir: workDir)
                 }
                 let ms = elapsedMs(since: started)
-                report = mutating(report, id: id, status: .passed, detail: detail, durationMs: ms)
+                live.update { current in
+                    current = mutating(current, id: id, status: .passed, detail: detail, durationMs: ms)
+                }
             } catch {
                 let ms = elapsedMs(since: started)
-                report = mutating(
-                    report,
-                    id: id,
-                    status: .failed,
-                    detail: error.localizedDescription,
-                    durationMs: ms
-                )
+                live.update { current in
+                    current = mutating(
+                        current,
+                        id: id,
+                        status: .failed,
+                        detail: error.localizedDescription,
+                        durationMs: ms
+                    )
+                }
             }
-            await emit(report, onEvent: onEvent, config: config)
+            await emit(live.snapshot(), onEvent: onEvent, config: config)
         }
 
-        report.passed = report.scenarios.allSatisfy { $0.status == .passed || $0.status == .skipped }
-        await emit(report, onEvent: onEvent, config: config)
-        return report
+        let finished = live.update { current in
+            current.passed = current.scenarios.allSatisfy { $0.status == .passed || $0.status == .skipped }
+        }
+        await emit(finished, onEvent: onEvent, config: config)
+        return finished
     }
 
     private func emit(
@@ -203,7 +277,11 @@ struct DemoHarness: Sendable {
         try? await Task.sleep(for: .milliseconds(config.paceMs))
     }
 
-    private func runMemory(storeURL: URL, config: DemoConfig) async throws -> String {
+    private func runMemory(
+        storeURL: URL,
+        config: DemoConfig,
+        record: @Sendable (Double) async -> Void
+    ) async throws -> String {
         let token = "WAX_DEMO_\(UUID().uuidString.prefix(8))"
         var lastHitCount = 0
 
@@ -216,10 +294,7 @@ struct DemoHarness: Sendable {
                 )
             }
             try await memory.save("Deploy target is Linux cloud for project \(token).")
-            let hits = try await memory.search(token) { options in
-                options.topK = 8
-                options.mode = .textOnly
-            }
+            let hits = try await timedSearch(memory, token, topK: 8, record: record)
             try require(!hits.items.isEmpty, "memory search empty after save in round \(round)")
             let joined = hits.items.map(\.text).joined(separator: "\n")
             try require(joined.localizedCaseInsensitiveContains("Helix"), "search missed Helix")
@@ -229,19 +304,18 @@ struct DemoHarness: Sendable {
             try await memory.close()
 
             let reopened = try await openTextMemory(at: storeURL)
-            let durable = try await reopened.search(token) { options in
-                options.topK = 10
-                options.mode = .textOnly
-            }
+            let durable = try await timedSearch(reopened, token, topK: 10, record: record)
             try require(!durable.items.isEmpty, "reopen search empty — durability failed")
             try require(
                 durable.items.contains(where: { $0.text.contains(token) }),
                 "reopen missed token"
             )
-            let linuxHits = try await reopened.search("Deploy target Linux \(token)") { options in
-                options.topK = 5
-                options.mode = .textOnly
-            }
+            let linuxHits = try await timedSearch(
+                reopened,
+                "Deploy target Linux \(token)",
+                topK: 5,
+                record: record
+            )
             try require(
                 linuxHits.items.contains(where: {
                     $0.text.localizedCaseInsensitiveContains("Linux") && $0.text.contains(token)
@@ -279,7 +353,11 @@ struct DemoHarness: Sendable {
         return "put/read/delete/reopen frame \(frameID)"
     }
 
-    private func runConcurrency(storeURL: URL, config: DemoConfig) async throws -> String {
+    private func runConcurrency(
+        storeURL: URL,
+        config: DemoConfig,
+        record: @Sendable (Double) async -> Void
+    ) async throws -> String {
         let token = "WAX_CONCUR_\(UUID().uuidString.prefix(8))"
         let memory = try await openTextMemory(at: storeURL, ingestConcurrency: config.concurrency)
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -294,10 +372,7 @@ struct DemoHarness: Sendable {
             try await group.waitForAll()
         }
         try await memory.flush()
-        let hits = try await memory.search(token) { options in
-            options.topK = 8
-            options.mode = .textOnly
-        }
+        let hits = try await timedSearch(memory, token, topK: 8, record: record)
         try require(
             hits.items.contains(where: { $0.text.contains(token) }),
             "concurrent remember missed token"
@@ -306,10 +381,12 @@ struct DemoHarness: Sendable {
         return "\(config.concurrency) workers · hit \(hits.items.count)"
     }
 
-    private func runVolume(storeURL: URL, config: DemoConfig) async throws -> (
+    private func runVolume(
+        storeURL: URL,
+        config: DemoConfig,
+        record: @Sendable (Double) async -> Void
+    ) async throws -> (
         detail: String,
-        p50: Double,
-        p95: Double,
         frames: UInt64
     ) {
         let token = "WAX_VOL_\(UUID().uuidString.prefix(8))"
@@ -327,7 +404,9 @@ struct DemoHarness: Sendable {
                 options.topK = 5
                 options.mode = .textOnly
             }
-            latencies.append(elapsedMs(since: started))
+            let milliseconds = elapsedMs(since: started)
+            latencies.append(milliseconds)
+            await record(milliseconds)
             try require(!hits.items.isEmpty, "volume recall empty")
         }
         let stats = await memory.stats()
@@ -336,10 +415,23 @@ struct DemoHarness: Sendable {
         let p95 = DemoStats.percentile(latencies, 0.95) ?? 0
         return (
             "\(config.volume) facts · p50 \(formatMs(p50)) · p95 \(formatMs(p95))",
-            p50,
-            p95,
             stats.frameCount
         )
+    }
+
+    private func timedSearch(
+        _ memory: Memory,
+        _ query: String,
+        topK: Int,
+        record: @Sendable (Double) async -> Void
+    ) async throws -> Memory.Results {
+        let started = ContinuousClock.now
+        let hits = try await memory.search(query) { options in
+            options.topK = topK
+            options.mode = .textOnly
+        }
+        await record(elapsedMs(since: started))
+        return hits
     }
 
     private func runErrors(workDir: URL) async throws -> String {

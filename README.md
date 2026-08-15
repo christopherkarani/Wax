@@ -48,7 +48,7 @@ let results = try await memory.search("What editor does the user like?")
 ```
 
 <p align="center">
-  <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
+  <img src="Resources/docs/assets/wax-cli-demo.gif" width="720" alt="Wax CLI demo TUI — live retrieval time, memory, FrameStore, concurrency, volume, errors, and exclusive lock">
 </p>
 
 ### What you can build
@@ -206,6 +206,8 @@ wax-cli search "car service" --mode text
 wax-cli demo --run
 wax-cli demo --stress --run
 ```
+
+The dashboard tracks **retrieval time** live (`last` / `p50` / `p95` / `n`) on every successful `Memory.search`.
 
 On Linux, build `wax-cli` **without** `-DGRDBCUSTOMSQLITE` (that flag breaks GRDB's system SQLite overlay):
 
