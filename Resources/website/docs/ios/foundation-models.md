@@ -6,9 +6,13 @@ sidebar_label: "Foundation Models"
 
 Apple's Foundation Models give you on-device generation (`LanguageModelSession`, tools, `@Generable`). They do not keep a durable store across launches. Wax is that store: one `.wax` file plus adapters that inject recalled text, register memory tools, and optionally write turns back.
 
-Requires **iOS 26 / iPadOS 26** (and Apple Intelligence where the model is available). Guard with `#if canImport(FoundationModels)` and availability checks.
+Requires **iOS 26 / iPadOS 26** (and Apple Intelligence where the model is available). Use a package checkout of **`main`** (see [Get started](./getting-started)); tag `0.1.24` keeps these adapters `package`-internal.
+
+Guard production code with `#if canImport(FoundationModels)` and availability checks. On a device without Apple Intelligence, `respond` will fail even if the code compiles — check availability first.
 
 ## Quick path: memory-backed session
+
+Paste into an iOS 26 app target:
 
 ```swift
 import Foundation
@@ -24,12 +28,16 @@ func chatWithMemory() async throws {
         instructions: "You are a helpful assistant with durable on-device memory."
     )
 
-    let answer = try await session.respond(
-        to: "I prefer dark mode and Vim keybindings."
-    )
-    print(answer)
+    switch WaxFoundationModelsAvailability.current() {
+    case .available:
+        let answer = try await session.respond(
+            to: "I prefer dark mode and Vim keybindings."
+        )
+        print(answer)
+    case .unavailable(let reason):
+        print("Foundation Models unavailable: \(reason)")
+    }
 
-    // Later launches can still recall those preferences from the same file.
     try await session.close() // does not close `memory`
     try await memory.close()
 }
@@ -50,18 +58,25 @@ Default config is **hybrid**:
 ### Config presets
 
 ```swift
-var configuration = FoundationModelsMemorySessionConfig.default
-// or: .hybridBalanced / .toolsOnlyCompact / .promptOnlyLight
+import Foundation
+import FoundationModels
+import Wax
 
-configuration.contextStrategy = .hybrid          // .promptAugmentation | .tools | .hybrid
-configuration.persistencePolicy = .userAndAssistant
-configuration.embeddingPolicy = .automatic
-configuration.toolKit = .focused                 // .compact | .combined | .focusedWithForget
+@available(iOS 26.0, *)
+func makeConfiguredSession(memory: Memory) -> WaxFoundationModelSession {
+    var configuration = FoundationModelsMemorySessionConfig.default
+    // or: .hybridBalanced / .toolsOnlyCompact / .promptOnlyLight
 
-let session = memory.foundationModelsSession(
-    instructions: "Be concise.",
-    configuration: configuration
-)
+    configuration.contextStrategy = .hybrid          // .promptAugmentation | .tools | .hybrid
+    configuration.persistencePolicy = .userAndAssistant
+    configuration.embeddingPolicy = .automatic
+    configuration.toolKit = .focused                 // .compact | .combined | .focusedWithForget
+
+    return memory.foundationModelsSession(
+        instructions: "Be concise.",
+        configuration: configuration
+    )
+}
 ```
 
 Use `.durableFactsOnly` when chat turns should not auto-persist — only explicit `remember` / tool writes land in the store.
@@ -76,17 +91,29 @@ Use `.durableFactsOnly` when chat turns should not auto-persist — only explici
 | `.focusedWithForget` | focused + waxForget |
 
 ```swift
-let tools = memory.foundationModelsTools(kit: .focusedWithForget)
+import FoundationModels
+import Wax
+
+@available(iOS 26.0, *)
+func makeForgetCapableTools(memory: Memory) -> [any Tool] {
+    memory.foundationModelsTools(kit: .focusedWithForget)
+}
 ```
 
 ## Availability
 
 ```swift
-switch WaxFoundationModelsAvailability.current() {
-case .available:
-    break
-case .unavailable(let reason):
-    print("Foundation Models unavailable: \(reason)")
+import FoundationModels
+import Wax
+
+@available(iOS 26.0, *)
+func printFoundationModelsAvailability() {
+    switch WaxFoundationModelsAvailability.current() {
+    case .available:
+        print("ready")
+    case .unavailable(let reason):
+        print("Foundation Models unavailable: \(reason)")
+    }
 }
 ```
 
@@ -95,66 +122,107 @@ Reasons map from `SystemLanguageModel.Availability` (`deviceNotEligible`, `apple
 ## Detailed responses and streaming
 
 ```swift
-let detailed = try await session.respondDetailed(to: "What theme do I prefer?")
-print(detailed.content)
-print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
-print(detailed.didPersistUser, detailed.didPersistAssistant)
-```
+import Foundation
+import FoundationModels
+import Wax
 
-```swift
-let collected = try await session.streamResponseAndCollect(to: "Summarize my prefs.")
-// Full assistant text; both sides persist per policy.
+@available(iOS 26.0, *)
+func detailedAndStreamingExamples(session: WaxFoundationModelSession) async throws {
+    let detailed = try await session.respondDetailed(to: "What theme do I prefer?")
+    print(detailed.content)
+    print(detailed.recalledItemCount, detailed.includedItemCount, detailed.truncatedByBudget)
+    print(detailed.didPersistUser, detailed.didPersistAssistant)
+
+    let collected = try await session.streamResponseAndCollect(to: "Summarize my prefs.")
+    print(collected.content)
+}
 ```
 
 Raw `streamResponse(to:)` still persists the user turn only when configured — partial tokens are not written as assistant memory. Prefer `streamResponseAndCollect` when you want a complete turn on disk.
 
 ## Attach tools to your own session
 
-If you already own a `LanguageModelSession`:
-
 ```swift
-let memory = try await Memory(at: url)
-let tools = memory.foundationModelsTools(kit: .focused)
+import Foundation
+import FoundationModels
+import Wax
 
-let session = LanguageModelSession(tools: tools) {
-    "You have long-term memory via waxRemember / waxRecall / waxSearch."
+@available(iOS 26.0, *)
+func attachWaxTools(storeURL: URL) async throws {
+    let memory = try await Memory(at: storeURL)
+    let tools = memory.foundationModelsTools(kit: .focused)
+
+    let session = LanguageModelSession(tools: tools) {
+        "You have long-term memory via waxRemember / waxRecall / waxSearch."
+    }
+
+    guard case .available = WaxFoundationModelsAvailability.current() else {
+        try await memory.close()
+        return
+    }
+
+    let response = try await session.respond(to: "Remember that I use Swift 6.2.")
+    print(response.content)
+    try await memory.close()
 }
-
-let response = try await session.respond(to: "Remember that I use Swift 6.2.")
 ```
 
 ## Structured generation
 
 ```swift
-@Generable
-struct PreferenceSummary {
-    var theme: String
-    var editor: String
-}
+import Foundation
+import FoundationModels
+import Wax
 
-let summary = try await session.respond(
-    to: "Summarize my UI and editor preferences.",
-    generating: PreferenceSummary.self
-)
-// Persistence of structured values follows configuration.structuredPersistence
+@available(iOS 26.0, *)
+func structuredPreferenceSummary(session: WaxFoundationModelSession) async throws {
+    @Generable
+    struct PreferenceSummary {
+        var theme: String
+        var editor: String
+    }
+
+    let summary = try await session.respond(
+        to: "Summarize my UI and editor preferences.",
+        generating: PreferenceSummary.self
+    )
+    print(summary.theme, summary.editor)
+}
 ```
+
+Persistence of structured values follows `configuration.structuredPersistence`.
 
 ## One-liner that owns the store
 
 ```swift
-let session = try await Memory.openFoundationModelsSession(
-    at: url,
-    builtInEmbedding: .miniLM,
-    instructions: "You have durable memory."
-)
-// session.close() also closes the underlying Memory
+import Foundation
+import FoundationModels
+import Wax
+
+@available(iOS 26.0, *)
+func openOwnedFoundationModelsSession(storeURL: URL) async throws -> WaxFoundationModelSession {
+    try await Memory.openFoundationModelsSession(
+        at: storeURL,
+        builtInEmbedding: .miniLM,
+        instructions: "You have durable memory."
+    )
+    // session.close() also closes the underlying Memory
+}
 ```
+
+Built-in MiniLM needs iOS 18+ and the default `MiniLMEmbeddings` trait. If the model cannot load, this initializer throws.
 
 ## Reset chat, keep the file
 
 ```swift
-let fresh = await session.resetConversationPreservingMemory()
-// Replace your handle with `fresh`; both share the same Memory store.
+import FoundationModels
+import Wax
+
+@available(iOS 26.0, *)
+func resetChatKeepingStore(session: WaxFoundationModelSession) async -> WaxFoundationModelSession {
+    await session.resetConversationPreservingMemory()
+    // Replace your handle with the returned session; both share the same Memory store.
+}
 ```
 
 ## Practical notes
@@ -162,3 +230,4 @@ let fresh = await session.resetConversationPreservingMemory()
 - Always enter through `Memory`. Do not construct package-only orchestrators from app code.
 - Keep secrets out of the store. Wax holds durable text, not credentials.
 - Prefixed recalled memory is treated as untrusted context for the model, not as elevated system instructions.
+- Generation samples need a real iOS 26 device (or supported simulator) with Apple Intelligence enabled. Compilation only proves the API surface.
