@@ -4,11 +4,11 @@ title: "Architecture"
 sidebar_label: "Architecture"
 ---
 
-Understand the module dependency graph, actor model, and end-to-end data flow.
+How Wax layers fit together. App code still enters through `Memory`; the actors below are mostly package-internal.
 
 ## Overview
 
-Wax is organized as a stack of Swift Package Manager library targets. Each layer adds capability while depending only on the layers below it.
+Wax is a stack of Swift package targets. Each layer adds capability and depends only on the layers beneath it.
 
 ## Architecture
 

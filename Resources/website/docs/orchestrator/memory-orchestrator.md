@@ -4,11 +4,15 @@ title: "Memory Orchestrator"
 sidebar_label: "Memory Orchestrator"
 ---
 
-Configure and use the primary text RAG orchestrator for ingestion and retrieval.
+:::warning App targets: use `Memory`
+`MemoryOrchestrator` is **package-internal**. Downstream iOS/macOS apps cannot construct it. Use [`Memory`](../ios/memory-api) from `import Wax`. This page is contributor documentation for the code behind that facade.
+:::
+
+Configure and understand the package-only text RAG orchestrator that backs `Memory`.
 
 ## Overview
 
-`MemoryOrchestrator` is the main entry point for text-based memory applications. It coordinates chunking, embedding, indexing, search, and RAG context assembly into a single actor with a high-level API.
+`MemoryOrchestrator` coordinates chunking, embedding, indexing, search, and RAG context assembly inside the Wax package. App code should call `Memory.save` / `Memory.search` instead.
 
 ## Initialization
 
