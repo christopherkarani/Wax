@@ -172,7 +172,42 @@ struct AgentMemory {
 
 </details>
 
+Prefer a checked-in harness over pasting snippets? [Run the demo](#run-the-demo) — `Resources/WaxDemo` exercises the public `Memory` APIs on macOS 26.
+
 Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is available today through the MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) described in the [Agent Quick Start](#agent-quick-start). The Swift-level structured memory API is package-internal for now; see [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md) (contributor documentation).
+
+---
+
+## Run the demo
+
+`Resources/WaxDemo` is a small Swift package that stress-tests the public Wax APIs (save/search durability, embeddings, Foundation Models, error paths).
+
+**Requires macOS 26** (the demo package declares that platform; Foundation Models mode needs Apple Intelligence where available).
+
+```bash
+cd Resources/WaxDemo
+swift run WaxDemo --mode all
+```
+
+Useful modes:
+
+| Mode | What it runs |
+|:-----|:-------------|
+| `memory` | Save → search → close → reopen → search |
+| `framestore` | Low-level frame create/put/read/delete |
+| `embeddings` | Built-in MiniLM + hybrid/vector search |
+| `fm` | Foundation Models memory session (or a clear unavailable message) |
+| `errors` | Validation / `WaxError` paths |
+| `all` | Everything above (default) |
+
+```bash
+swift run WaxDemo --mode memory
+swift run WaxDemo --mode fm --keep --store /tmp/wax-demo.wax
+```
+
+`--keep` leaves the `.wax` file on disk; `--store PATH` picks the file location.
+
+Source: [`Resources/WaxDemo`](Resources/WaxDemo).
 
 ---
 
