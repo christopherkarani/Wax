@@ -175,13 +175,14 @@ import FoundationModels
 import Wax
 
 @available(iOS 26.0, *)
-func structuredPreferenceSummary(session: WaxFoundationModelSession) async throws {
-    @Generable
-    struct PreferenceSummary {
-        var theme: String
-        var editor: String
-    }
+@Generable
+struct PreferenceSummary {
+    var theme: String
+    var editor: String
+}
 
+@available(iOS 26.0, *)
+func structuredPreferenceSummary(session: WaxFoundationModelSession) async throws {
     let summary = try await session.respond(
         to: "Summarize my UI and editor preferences.",
         generating: PreferenceSummary.self
