@@ -18,23 +18,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: macos-14
+          # Use macos-15 + Xcode Swift (not the OSS toolchain). GRDB 7 requires
+          # Apple SDK Sendable conformances for DispatchQoS / DispatchSpecificKey
+          # that the open-source Swift 6.2 snapshot on macos-14 does not provide.
+          - runs-on: macos-15
             platform: darwin-x64
             triple: x86_64-apple-macosx14.0
             source_build: true
-          - runs-on: macos-14
+          - runs-on: macos-15
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
             source_build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
-          swift-version: "6.2"
+          xcode-version: latest-stable
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Show Swift / Xcode toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
 
       - name: Set release version
         run: |
