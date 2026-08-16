@@ -17,7 +17,9 @@ enum MCPAgentInstructions {
 
         Tool selection:
         - recall: assembled RAG context (preferred read path)
-        - search: raw ranked hits; prefer mode hybrid unless a lexical text search is requested
+        - search: raw ranked hits; default mode hybrid; use mode text for lexical lookup
+        - remember / memory_promote: primary write and promotion verbs
+        - memory_append / promote: OpenClaw wire aliases — prefer remember / memory_promote
         - corpus_search: cross-session history with provenance
         - entity_*/fact_*: stable structured knowledge, not transient debug notes
         - stats: health / embedder / store check

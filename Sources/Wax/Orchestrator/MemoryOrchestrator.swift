@@ -796,16 +796,6 @@ package actor MemoryOrchestrator {
 
         return results
     }
-    
-    /// Legacy method for backward compatibility
-    private static func prepareEmbeddingsBatch(
-        chunks: [String],
-        embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?,
-        timeout: Duration? = nil
-    ) async throws -> [[Float]] {
-        try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache, timeout: timeout)
-    }
 
     // MARK: - Recall (Fast RAG)
 

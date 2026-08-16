@@ -108,6 +108,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("session_start"))
     #expect(text.contains("session_end"))
     #expect(text.contains("session_id"))
+    #expect(text.contains("default mode hybrid"))
+    #expect(text.contains("OpenClaw wire aliases"))
     #expect(text.contains("Do not manage SESSION_STORE"))
 }
 
@@ -120,7 +122,12 @@ func coreToolDescriptionsIncludeOperatorHints() {
     #expect(tools["session_start"]?.contains("handoff_latest") == true)
     #expect(tools["remember"]?.contains("session_id") == true)
     #expect(tools["recall"]?.contains("Preferred read path") == true)
+    #expect(tools["search"]?.contains("Default mode is hybrid") == true)
     #expect(tools["handoff"]?.contains("end-of-session") == true)
+    #expect(tools["memory_append"]?.contains("OpenClaw wire alias") == true)
+    #expect(tools["promote"]?.contains("OpenClaw wire alias") == true)
+    #expect(tools["memory_append"]?.contains("Prefer remember") == true)
+    #expect(tools["promote"]?.contains("Prefer memory_promote") == true)
 }
 
 @Test
@@ -329,6 +336,28 @@ func compatibilityPathRejectsRenamedToolAliases() async throws {
         #expect(firstText(in: result).contains("has been renamed to 'remember'"))
         let payload = try parseJSONResource(in: result, uriSuffix: "tool_renamed")
         #expect(payload["code"] as? String == "tool_renamed")
+    }
+}
+
+@Test
+func brokerSearchDefaultsToHybridModeWhenOmitted() async throws {
+    try await withAgentBrokerService { service, _ in
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("HYBRID_DEFAULT_SEARCH_ANCHOR unique fact")]
+        ))
+        #expect(remember.ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("HYBRID_DEFAULT_SEARCH_ANCHOR"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true)
+        let payload = try #require(search.payload?.objectValue)
+        #expect(payload["requested_mode"]?.stringValue?.hasPrefix("hybrid") == true)
     }
 }
 

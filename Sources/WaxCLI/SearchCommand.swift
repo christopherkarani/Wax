@@ -13,8 +13,8 @@ struct SearchCommand: AsyncParsableCommand {
     @Argument(help: "Search query")
     var query: String
 
-    @Option(name: .customLong("mode"), help: "Search mode: text, vector, or hybrid (default: text)")
-    var mode: String = "text"
+    @Option(name: .customLong("mode"), help: "Search mode: text, vector, or hybrid (default: hybrid)")
+    var mode: String = "hybrid"
 
     @Option(name: .customLong("top-k"), help: "Maximum results to return (1-200, default 10)")
     var topK: Int = 10

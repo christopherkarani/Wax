@@ -8,19 +8,21 @@ struct WaxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-cli",
         abstract: "Wax developer CLI",
+        discussion: """
+            Primary memory commands forward through the local agent broker by default \
+            (same wire surface as MCP). Pass --direct-store only for low-level store debugging.
+            """,
         subcommands: [
+            // Primary broker-forward surface
             RememberCommand.self,
             RecallCommand.self,
             SearchCommand.self,
-            MemoryAppendCommand.self,
             MemorySearchCommand.self,
             MemoryGetCommand.self,
             MemoryPromoteCommand.self,
-            PromoteCommand.self,
             MemoryHealthCommand.self,
             KnowledgeCaptureCommand.self,
             CorpusSearchCommand.self,
-            DaemonCommand.self,
             StatsCommand.self,
             VectorHealthCommand.self,
             FlushCommand.self,
@@ -38,6 +40,10 @@ struct WaxCLI: ParsableCommand {
             FactAssertCommand.self,
             FactRetractCommand.self,
             FactsQueryCommand.self,
+            DaemonCommand.self,
+            // OpenClaw wire aliases — prefer remember / memory-promote
+            MemoryAppendCommand.self,
+            PromoteCommand.self,
             MCP.self,
         ]
     )
@@ -754,9 +760,10 @@ enum WaxMCPAgentPlaybook {
         Workflow rules:
         - At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
         - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-        - Use `recall` for assembled context and `search` for raw ranked hits.
-        - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-        - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
+- Use `recall` for assembled context and `search` for raw ranked hits.
+- `search` / `memory_search` default to `mode: "hybrid"` when omitted. Use `mode: "text"` for fast or deterministic lexical lookup.
+- Prefer `remember` / `memory_promote`. OpenClaw wire aliases `memory_append` / `promote` remain for compatibility.
+- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
         - Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
         - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
         - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.

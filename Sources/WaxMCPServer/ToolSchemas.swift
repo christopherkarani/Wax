@@ -10,21 +10,6 @@ enum ToolSchemas {
     static func tools(structuredMemoryEnabled: Bool) -> [Tool] {
         var tools: [Tool] = [
         Tool(
-            name: "memory_append",
-            description: "OpenClaw-compatible alias for remember that appends memory into Wax as the source of truth.",
-            inputSchema: waxMemoryAppend
-        ),
-        Tool(
-            name: "memory_search",
-            description: "Search working, episodic, and durable memory horizons with stable memory IDs for follow-up reads.",
-            inputSchema: waxMemorySearch
-        ),
-        Tool(
-            name: "memory_get",
-            description: "Read a specific memory item by stable memory_id returned from memory_search or compact_context.",
-            inputSchema: waxMemoryGet
-        ),
-        Tool(
             name: "remember",
             description: "Store concise durable text memory (decisions, preferences, facts). For session-scoped writes pass session_id as a top-level argument — never put session_id inside metadata.",
             inputSchema: waxRemember
@@ -36,7 +21,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "search",
-            description: "Raw ranked search hits (not assembled RAG). Prefer mode hybrid for semantic retrieval; use mode text for lexical/deterministic lookup.",
+            description: "Raw ranked search hits (not assembled RAG). Default mode is hybrid; use mode text for lexical/deterministic lookup. Prefer recall for agent answers.",
             inputSchema: waxSearch
         ),
         Tool(
@@ -50,14 +35,19 @@ enum ToolSchemas {
             inputSchema: waxMemoryPromote
         ),
         Tool(
-            name: "promote",
-            description: "OpenClaw-compatible alias for durable promotion; writes approved durable memory by default.",
-            inputSchema: waxPromote
-        ),
-        Tool(
             name: "memory_health",
             description: "Inspect long-term memory quality including stale items, duplicates, and contradiction signals.",
             inputSchema: waxMemoryHealth
+        ),
+        Tool(
+            name: "memory_search",
+            description: "Search working, episodic, and durable memory horizons with stable memory IDs for follow-up reads.",
+            inputSchema: waxMemorySearch
+        ),
+        Tool(
+            name: "memory_get",
+            description: "Read a specific memory item by stable memory_id returned from memory_search or compact_context.",
+            inputSchema: waxMemoryGet
         ),
         Tool(
             name: "corpus_search",
@@ -108,6 +98,17 @@ enum ToolSchemas {
             name: "markdown_sync",
             description: "Import and reconcile managed Markdown projections like MEMORY.md, daily notes, and DREAMS.md back into Wax.",
             inputSchema: waxMarkdownSync
+        ),
+        // OpenClaw wire aliases — kept for compatibility; prefer remember / memory_promote.
+        Tool(
+            name: "memory_append",
+            description: "OpenClaw wire alias for remember. Prefer remember in new integrations.",
+            inputSchema: waxMemoryAppend
+        ),
+        Tool(
+            name: "promote",
+            description: "OpenClaw wire alias for memory_promote. Prefer memory_promote in new integrations.",
+            inputSchema: waxPromote
         ),
         ]
 
@@ -259,7 +260,7 @@ enum ToolSchemas {
             ],
             "mode": [
                 "type": "string",
-                "description": "Search mode.",
+                "description": "Search mode. Default: hybrid. Use text for lexical/deterministic lookup.",
                 "enum": ["text", "vector", "hybrid"],
             ],
             "topK": [
@@ -305,7 +306,6 @@ enum ToolSchemas {
         required: ["memory_id"]
     )
 
-    static let waxFlush: Value = emptyObjectSchema()
     static let waxStats: Value = emptyObjectSchema()
     static let waxSessionSynthesize: Value = objectSchema(
         properties: [

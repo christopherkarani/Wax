@@ -136,7 +136,10 @@ private func printJSONObject(_ object: Any, pretty: Bool) {
 }
 
 struct MemoryAppendCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "memory-append", abstract: "Append memory through the broker-compatible surface")
+    static let configuration = CommandConfiguration(
+        commandName: "memory-append",
+        abstract: "OpenClaw wire alias for remember (prefer remember)"
+    )
     @OptionGroup var store: VectorStoreOptions
     @OptionGroup var forwarded: BrokerForwardOptions
     @Argument var content: String
@@ -190,7 +193,10 @@ struct MemoryPromoteCommand: AsyncParsableCommand {
 }
 
 struct PromoteCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "promote", abstract: "Alias for memory-promote")
+    static let configuration = CommandConfiguration(
+        commandName: "promote",
+        abstract: "OpenClaw wire alias for memory-promote (prefer memory-promote)"
+    )
     @OptionGroup var store: VectorStoreOptions
     @OptionGroup var forwarded: BrokerForwardOptions
     func runAsync() async throws { try await runBrokerForwardedCommand("promote", store: store, forwarded: forwarded) }

@@ -43,7 +43,8 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 
 Search mode guidance:
 
-- Prefer `mode: "hybrid"` when semantic recall helps.
+- Default for `search` / `memory_search` when `mode` is omitted: `hybrid` (matches the Swift `Memory.SearchOptions` default).
+- Prefer `recall` for assembled agent context; use `search` for raw ranked hits / debugging.
 - Use `mode: "text"` for fast or deterministic lexical lookup.
 
 ## Write Path
@@ -69,6 +70,7 @@ Write quality rules:
 - Do not invent a `session_id`; only use values returned by `session_start` / `session_resume`.
 - Do not put `session_id` inside `metadata`.
 - Do not treat `search` as the default when `recall` is enough.
+- Prefer `remember` / `memory_promote` over OpenClaw wire aliases `memory_append` / `promote` (aliases remain for compatibility).
 - Do not use structured fact tools for transient debug notes.
 
 ## Behavior Expectations

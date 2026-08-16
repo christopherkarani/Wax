@@ -105,6 +105,8 @@ public actor Memory {
     }
 
     public typealias Results = RAGContext
+    /// Convenience alias for ``WaxError``. Prefer catching ``WaxError`` in new code;
+    /// this alias remains supported for existing call sites.
     public typealias Error = WaxError
 
     private let orchestrator: MemoryOrchestrator
@@ -195,6 +197,10 @@ public actor Memory {
         return try await search(query, options: options)
     }
 
+    /// Search using a ``SearchStrategy`` that mutates ``SearchOptions`` before retrieval.
+    ///
+    /// Supported extension point: strategies are thin option configurators, not alternate
+    /// retrieval engines. Prefer ``search(_:options:)`` unless you need reusable presets.
     public func search<S: SearchStrategy>(
         _ query: String,
         strategy: S,
@@ -205,6 +211,10 @@ public actor Memory {
         return try await search(query, options: resolved)
     }
 
+    /// Search with a ``SearchStrategy`` and post-retrieval ``ResultReranker``.
+    ///
+    /// Supported extension point: rerankers run after Wax retrieval and may reorder or
+    /// filter ``Results``. They do not replace the text/vector/hybrid lanes.
     public func search<S: SearchStrategy, R: ResultReranker>(
         _ query: String,
         strategy: S,
@@ -328,10 +338,16 @@ public actor Memory {
     }
 }
 
+/// Public extension point for reusable ``Memory/SearchOptions`` presets.
+///
+/// Implementations only configure options; retrieval still uses Wax's text/vector/hybrid lanes.
 public protocol SearchStrategy: Sendable {
     func configure(_ options: inout Memory.SearchOptions)
 }
 
+/// Public extension point for post-retrieval reordering or filtering of ``Memory/Results``.
+///
+/// Rerankers do not replace Wax retrieval; they transform already-ranked context.
 public protocol ResultReranker: Sendable {
     func rerank(query: String, results: Memory.Results) async throws -> Memory.Results
 }

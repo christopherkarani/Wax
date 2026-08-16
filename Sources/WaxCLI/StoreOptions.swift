@@ -7,7 +7,7 @@ struct StoreOptions: ParsableArguments {
     @Option(name: .customLong("store-path"), help: "Path to Wax memory store (.wax)")
     var storePath: String = StoreSession.defaultStorePath
 
-    @Flag(name: .customLong("direct-store"), help: "Bypass the local broker and open the store file directly")
+    @Flag(name: .customLong("direct-store"), help: "Escape hatch: bypass the local broker and open the store file directly (prefer broker-forward default)")
     var directStore: Bool = false
 
     @Flag(name: .customLong("no-embedder"), help: "Disable MiniLM embedder (text-only search)")

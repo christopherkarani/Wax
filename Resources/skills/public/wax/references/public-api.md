@@ -14,7 +14,7 @@ Source: `Sources/Wax/Memory.swift`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`
 - `public func search(_ query: String, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
 - `public func search(_ query: String, configure: (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
-- `public func search(_:strategy:options:)` / `search(_:strategy:options:reranker:)` with `SearchStrategy` / `ResultReranker`
+- `public func search(_:strategy:options:)` / `search(_:strategy:options:reranker:)` — supported extension points. `SearchStrategy` only configures `SearchOptions` (not an alternate engine); `ResultReranker` post-processes ranked `Results`.
 - `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed).
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage.
 - `public func close() async throws` — flushes, then closes.
@@ -77,7 +77,7 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 ## Errors
 
-- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
+- `public enum WaxError` (WaxCore) — catchable store/API errors. `Memory.Error` is a supported convenience typealias for the same type. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
 
 ## Foundation Models Tools (iOS 26/macOS 26+)
 

@@ -2429,7 +2429,9 @@ extension AgentBrokerService {
         alpha: Double?
     ) throws -> MemoryOrchestrator.DirectSearchMode {
         let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
-        switch modeRaw ?? "text" {
+        // Default hybrid matches Memory.SearchOptions and the MCP/CLI search primary.
+        // Pass mode=text for lexical/deterministic lookup.
+        switch modeRaw ?? "hybrid" {
         case "text":
             return .text
         case "vector":
