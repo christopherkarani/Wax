@@ -3,7 +3,12 @@ import Testing
 @testable import WaxCore
 
 @Test func embeddingIdentityMetadataWritesCanonicalWaxKeysOnly() {
-    var entries: [String: String] = [:]
+    var entries: [String: String] = [
+        EmbeddingIdentityMetadata.legacyProviderKey: "Stale",
+        EmbeddingIdentityMetadata.legacyModelKey: "StaleModel",
+        EmbeddingIdentityMetadata.legacyDimensionKey: "1",
+        EmbeddingIdentityMetadata.legacyNormalizedKey: "false",
+    ]
     EmbeddingIdentityMetadata.write(
         into: &entries,
         provider: "Wax",

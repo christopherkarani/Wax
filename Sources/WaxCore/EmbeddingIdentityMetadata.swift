@@ -23,6 +23,13 @@ package enum EmbeddingIdentityMetadata {
         dimensions: Int?,
         normalized: Bool?
     ) {
+        // Canonical writes must not leave conflicting legacy keys behind when
+        // callers merge identity onto metadata that already carried memvid.*.
+        entries.removeValue(forKey: legacyProviderKey)
+        entries.removeValue(forKey: legacyModelKey)
+        entries.removeValue(forKey: legacyDimensionKey)
+        entries.removeValue(forKey: legacyNormalizedKey)
+
         if let provider {
             entries[providerKey] = provider
         }
