@@ -21,10 +21,10 @@ jobs:
           # Use macos-15 + Xcode Swift (not the OSS toolchain). GRDB 7 requires
           # Apple SDK Sendable conformances for DispatchQoS / DispatchSpecificKey
           # that the open-source Swift 6.2 snapshot on macos-14 does not provide.
-          - runs-on: macos-15
-            platform: darwin-x64
-            triple: x86_64-apple-macosx14.0
-            source_build: true
+          #
+          # darwin-x64 is intentionally omitted: MetalANNS Float16 paths require
+          # Apple Silicon and fail when cross-compiling to x86_64. Published
+          # waxmcp packages have effectively been arm64-only since 0.1.21.
           - runs-on: macos-15
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
@@ -126,12 +126,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore darwin-x64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: waxmcp-darwin-x64
-          path: Resources/npm/waxmcp/dist/darwin-x64
-
       - name: Restore darwin-arm64 binary
         uses: actions/download-artifact@v4
         with:
@@ -154,33 +148,27 @@ jobs:
           set -euo pipefail
           chmod +x Resources/npm/waxmcp/dist/darwin-arm64/wax-cli
           test -x Resources/npm/waxmcp/dist/darwin-arm64/wax-cli
-          chmod +x Resources/npm/waxmcp/dist/darwin-x64/wax-cli
-          test -x Resources/npm/waxmcp/dist/darwin-x64/wax-cli
           # Make wax-mcp executable if present
-          for arch in darwin-arm64 darwin-x64; do
-            if [[ -f "Resources/npm/waxmcp/dist/$arch/wax-mcp" ]]; then
-              chmod +x "Resources/npm/waxmcp/dist/$arch/wax-mcp"
-              test -x "Resources/npm/waxmcp/dist/$arch/wax-mcp"
-            fi
-          done
+          if [[ -f "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp" ]]; then
+            chmod +x "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp"
+            test -x "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp"
+          fi
 
       - name: Verify package integrity
         run: |
           set -euo pipefail
-          for arch in darwin-arm64 darwin-x64; do
-            for bin in wax-cli wax-mcp; do
-              chk="Resources/npm/waxmcp/dist/$arch/$bin.sha256"
-              if [[ -f "$chk" ]]; then
-                (
-                  cd "Resources/npm/waxmcp/dist/$arch"
-                  if command -v shasum >/dev/null 2>&1; then
-                    shasum -a 256 -c "$bin.sha256"
-                  else
-                    sha256sum -c "$bin.sha256"
-                  fi
-                )
-              fi
-            done
+          for bin in wax-cli wax-mcp; do
+            chk="Resources/npm/waxmcp/dist/darwin-arm64/$bin.sha256"
+            if [[ -f "$chk" ]]; then
+              (
+                cd "Resources/npm/waxmcp/dist/darwin-arm64"
+                if command -v shasum >/dev/null 2>&1; then
+                  shasum -a 256 -c "$bin.sha256"
+                else
+                  sha256sum -c "$bin.sha256"
+                fi
+              )
+            fi
           done
 
       - name: Verify version consistency

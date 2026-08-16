@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Pipeline:
 #   1. Bump all version surfaces (scripts/bump-version.sh)
-#   2. Build darwin-arm64 + darwin-x64 binaries
+#   2. Build darwin-arm64 binaries
 #   3. Validate version congruency
 #   4. Generate commit message
 #   5. Print next steps

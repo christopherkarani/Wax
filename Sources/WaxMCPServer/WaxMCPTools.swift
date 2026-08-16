@@ -2,6 +2,7 @@
 import Foundation
 import MCP
 import Wax
+import WaxCore
 
 enum WaxMCPTools {
     static func register(
@@ -1700,29 +1701,30 @@ private extension WaxMCPTools {
         )
         let effectiveSystemAsOfMs = systemAsOfMs ?? asOfMs
         let effectiveValidAsOfMs = validAsOfMs ?? asOfMs
+        let hits: [Value] = result.hits.map { hit in
+            .object([
+                "fact_id": .int(Int(hit.factId.rawValue)),
+                "span_id": .int(Int(hit.spanId)),
+                "subject": .string(hit.fact.subject.rawValue),
+                "predicate": .string(hit.fact.predicate.rawValue),
+                "object": compatFactValuePayload(hit.fact.object),
+                "relation": .string(hit.relation.wireName),
+                "valid_from_ms": .int(Int(hit.valid.fromMs)),
+                "valid_to_ms": hit.valid.toMs.map { Value.int(Int($0)) } ?? .null,
+                "system_from_ms": .int(Int(hit.system.fromMs)),
+                "system_to_ms": hit.system.toMs.map { Value.int(Int($0)) } ?? .null,
+                "is_open_ended": .bool(hit.isOpenEnded),
+                "evidence_count": .int(hit.evidence.count),
+                "evidence": .array(hit.evidence.map(compatStructuredEvidencePayload)),
+            ])
+        }
         return jsonResult([
             "count": .int(result.hits.count),
             "truncated": .bool(result.wasTruncated),
             "as_of": .int(Int(asOfMs)),
             "system_as_of": .int(Int(effectiveSystemAsOfMs)),
             "valid_as_of": .int(Int(effectiveValidAsOfMs)),
-            "hits": .array(result.hits.map { hit in
-                [
-                    "fact_id": .int(Int(hit.factId.rawValue)),
-                    "span_id": .int(Int(hit.spanId)),
-                    "subject": .string(hit.fact.subject.rawValue),
-                    "predicate": .string(hit.fact.predicate.rawValue),
-                    "object": compatFactValuePayload(hit.fact.object),
-                    "relation": .string(hit.relation.wireName),
-                    "valid_from_ms": .int(Int(hit.valid.fromMs)),
-                    "valid_to_ms": hit.valid.toMs.map { .int(Int($0)) } ?? .null,
-                    "system_from_ms": .int(Int(hit.system.fromMs)),
-                    "system_to_ms": hit.system.toMs.map { .int(Int($0)) } ?? .null,
-                    "is_open_ended": .bool(hit.isOpenEnded),
-                    "evidence_count": .int(hit.evidence.count),
-                    "evidence": .array(hit.evidence.map(compatStructuredEvidencePayload)),
-                ]
-            }),
+            "hits": .array(hits),
         ])
     }
 
@@ -1988,10 +1990,10 @@ private extension WaxMCPTools {
             "extractor_version": .string(evidence.extractorVersion),
             "asserted_at_ms": .int(Int(evidence.assertedAtMs)),
         ]
-        object["chunk_index"] = evidence.chunkIndex.map { .int(Int($0)) } ?? .null
-        object["span_start_utf8"] = evidence.spanUTF8.map { .int($0.lowerBound) } ?? .null
-        object["span_end_utf8"] = evidence.spanUTF8.map { .int($0.upperBound) } ?? .null
-        object["confidence"] = evidence.confidence.map { .double($0) } ?? .null
+        object["chunk_index"] = evidence.chunkIndex.map { Value.int(Int($0)) } ?? .null
+        object["span_start_utf8"] = evidence.spanUTF8.map { Value.int($0.lowerBound) } ?? .null
+        object["span_end_utf8"] = evidence.spanUTF8.map { Value.int($0.upperBound) } ?? .null
+        object["confidence"] = evidence.confidence.map { Value.double($0) } ?? .null
         return .object(object)
     }
 
