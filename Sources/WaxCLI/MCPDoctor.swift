@@ -143,7 +143,7 @@ extension WaxCLI.MCP {
     }
 }
 
-func lowDiskWarning(forStorePath rawPath: String) -> String? {
+private func lowDiskWarning(forStorePath rawPath: String) -> String? {
     let path = Pathing.normalizePath(rawPath)
     let fileURL = URL(fileURLWithPath: path)
     let directoryURL = fileURL.deletingLastPathComponent()

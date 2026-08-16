@@ -40,7 +40,7 @@ func resolveToolPath(_ tool: String) throws -> String {
 }
 
 @available(*, deprecated, renamed: "resolveToolPath")
-func ensureToolExists(_ tool: String) throws {
+private func ensureToolExists(_ tool: String) throws {
     try resolveToolPath(tool)
 }
 

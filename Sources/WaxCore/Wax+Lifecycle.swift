@@ -34,7 +34,7 @@ extension Wax {
         max(1, minPendingBytes)
     }
 
-    static func applyDataProtectionIfSupported(at url: URL) throws {
+    private static func applyDataProtectionIfSupported(at url: URL) throws {
         #if os(iOS) || os(watchOS) || os(tvOS) || os(visionOS)
         try FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.complete],

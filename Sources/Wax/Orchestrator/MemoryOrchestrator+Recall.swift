@@ -49,7 +49,7 @@ package extension MemoryOrchestrator {
     /// Shared recall implementation: builds the RAG context and records frame accesses.
     /// All package recall() overloads funnel through here so that `ragConfigForRecall()` and
     /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
-    func buildRecallContext(
+    private func buildRecallContext(
         query: String,
         embedding: [Float]?,
         frameFilter: FrameFilter? = nil,
@@ -224,7 +224,7 @@ package extension MemoryOrchestrator {
         await accessStatsManager.snapshot()
     }
 
-    func dedupedExplanations(_ reasons: [String]) -> [String] {
+    private func dedupedExplanations(_ reasons: [String]) -> [String] {
         var seen = Set<String>()
         var ordered: [String] = []
         ordered.reserveCapacity(reasons.count)
@@ -329,7 +329,7 @@ package extension MemoryOrchestrator {
         )
     }
 
-    func ragConfigForRecall() -> FastRAGConfig {
+    private func ragConfigForRecall() -> FastRAGConfig {
         var recallConfig = config.rag
         if recallConfig.deterministicNowMs == nil {
             recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
@@ -337,7 +337,7 @@ package extension MemoryOrchestrator {
         return recallConfig
     }
 
-    func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> SearchTimeRange? {
+    private func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> SearchTimeRange? {
         guard let anchorMs else { return nil }
         let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
         let normalizer = TemporalNormalizer(anchor: anchor)
@@ -360,7 +360,7 @@ package extension MemoryOrchestrator {
         return nil
     }
 
-    func executeRecall(
+    private func executeRecall(
         query: String,
         embeddingPolicy: QueryEmbeddingPolicy,
         frameFilter: FrameFilter?,
@@ -404,12 +404,12 @@ package extension MemoryOrchestrator {
         )
     }
 
-    struct QueryEmbeddingResult {
+    private struct QueryEmbeddingResult {
         let embedding: [Float]?
         let state: QueryEmbeddingState
     }
 
-    static func searchMode(from mode: DirectSearchMode) -> SearchMode {
+    private static func searchMode(from mode: DirectSearchMode) -> SearchMode {
         switch mode {
         case .text:
             .textOnly
@@ -420,7 +420,7 @@ package extension MemoryOrchestrator {
         }
     }
 
-    static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
+    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
         switch requested {
         case .textOnly:
             .textOnly
@@ -435,7 +435,7 @@ package extension MemoryOrchestrator {
         }
     }
 
-    static func modeSummary(_ mode: SearchMode) -> String {
+    private static func modeSummary(_ mode: SearchMode) -> String {
         switch mode {
         case .textOnly:
             return "text"
@@ -446,7 +446,7 @@ package extension MemoryOrchestrator {
         }
     }
 
-    static func modeSummary(_ mode: DirectSearchMode) -> String {
+    private static func modeSummary(_ mode: DirectSearchMode) -> String {
         switch mode {
         case .text:
             return "text"
@@ -457,11 +457,11 @@ package extension MemoryOrchestrator {
         }
     }
 
-    func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
+    private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
         try await queryEmbeddingResult(for: query, policy: policy).embedding
     }
 
-    func queryEmbeddingResult(
+    private func queryEmbeddingResult(
         for query: String,
         policy: QueryEmbeddingPolicy
     ) async throws -> QueryEmbeddingResult {
@@ -571,7 +571,7 @@ package extension MemoryOrchestrator {
         return vector
     }
 
-    static func prepareEmbeddings(
+    private static func prepareEmbeddings(
         chunks: [String],
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?

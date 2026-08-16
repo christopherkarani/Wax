@@ -286,7 +286,7 @@ package extension MemoryOrchestrator {
         }
     }
 
-    static func rememberDedupEmbeddingIdentity(
+    private static func rememberDedupEmbeddingIdentity(
         from identity: EmbeddingIdentity?
     ) -> RememberDedupEmbeddingIdentity? {
         guard let identity else { return nil }
@@ -329,7 +329,7 @@ package extension MemoryOrchestrator {
         )
     }
 
-    static func renderEnrichmentResult(_ result: EnrichmentResult) -> String {
+    private static func renderEnrichmentResult(_ result: EnrichmentResult) -> String {
         var lines: [String] = []
         if !result.keywords.isEmpty {
             lines.append("keywords: \(result.keywords.joined(separator: ", "))")
@@ -341,7 +341,7 @@ package extension MemoryOrchestrator {
         return lines.joined(separator: "\n")
     }
 
-    func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
+    private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
         guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
         hasEnsuredMemoryBinding = true
 #if DEBUG
@@ -357,7 +357,7 @@ package extension MemoryOrchestrator {
 
     /// Optimized batch embedding preparation with cache-aware batching.
     /// Minimizes cache lookups and maximizes batch embedding efficiency.
-    static func prepareEmbeddingsBatchOptimized(
+    private static func prepareEmbeddingsBatchOptimized(
         chunks: [String],
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?,
@@ -462,7 +462,7 @@ package extension MemoryOrchestrator {
     }
     
     /// Legacy method for backward compatibility
-    static func prepareEmbeddingsBatch(
+    private static func prepareEmbeddingsBatch(
         chunks: [String],
         embedder: some EmbeddingProvider,
         cache: EmbeddingMemoizer?,

@@ -159,8 +159,8 @@ package actor Wax {
 
     let url: URL
     let io: BlockingIOExecutor
-    let opLock = AsyncReadWriteLock()
-    var writerLeaseId: UUID?
+    private let opLock = AsyncReadWriteLock()
+    private var writerLeaseId: UUID?
     var file: FDFile
     var lock: FileLock
 
@@ -190,12 +190,12 @@ package actor Wax {
     let walProactiveCommitMinPendingBytes: UInt64
     let walReplayStateSnapshotEnabled: Bool
 
-    struct WriterWaiter {
+    private struct WriterWaiter {
         let id: UUID
         let continuation: CheckedContinuation<UUID, Error>
     }
 
-    var writerWaiters: [WriterWaiter] = []
+    private var writerWaiters: [WriterWaiter] = []
 
     init(
         url: URL,
@@ -276,17 +276,17 @@ package actor Wax {
         }
     }
 
-    func canAutoCommitForWalPressureLocked() -> Bool {
+    private func canAutoCommitForWalPressureLocked() -> Bool {
         !(pendingMutationSummary.hasPendingEmbedding && stagedVecIndex == nil)
     }
 
-    func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
+    private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
         guard payloadSize > 0 else { return nil }
         guard payloadSize <= Int(UInt32.max) else { return nil }
         return UInt64(WALRecord.headerSize) + UInt64(payloadSize)
     }
 
-    func estimatedWalBytesForAppendBatch(payloadSizes: [Int]) -> UInt64? {
+    private func estimatedWalBytesForAppendBatch(payloadSizes: [Int]) -> UInt64? {
         guard !payloadSizes.isEmpty else { return nil }
 
         let headerSize = UInt64(WALRecord.headerSize)
@@ -302,7 +302,7 @@ package actor Wax {
         return total
     }
 
-    func maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: UInt64) async throws {
+    private func maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: UInt64) async throws {
         guard let thresholdBytes = walProactiveCommitThresholdBytes else { return }
         guard estimatedIncomingWalBytes > 0 else { return }
         guard canAutoCommitForWalPressureLocked() else { return }
@@ -397,7 +397,7 @@ package actor Wax {
         next.continuation.resume(returning: nextLeaseId)
     }
 
-    func enqueueWriterWaiter(timeout: Duration?) async throws -> UUID {
+    private func enqueueWriterWaiter(timeout: Duration?) async throws -> UUID {
         let waiterId = UUID()
         return try await withCheckedThrowingContinuation { continuation in
             writerWaiters.append(WriterWaiter(id: waiterId, continuation: continuation))
@@ -409,7 +409,7 @@ package actor Wax {
         }
     }
 
-    func timeoutWriterWaiter(id: UUID, duration: Duration) async {
+    private func timeoutWriterWaiter(id: UUID, duration: Duration) async {
         do {
             try await Task.sleep(for: duration)
         } catch {
@@ -565,7 +565,7 @@ package actor Wax {
         )
     }
 
-    struct DataRange {
+    private struct DataRange {
         var start: UInt64
         var end: UInt64
         var label: String
@@ -656,7 +656,7 @@ package actor Wax {
         return encodedCommittedFramePayloadCache ?? Data()
     }
 
-    static func encodeFramePayloads(_ frames: [FrameMeta]) throws -> Data {
+    private static func encodeFramePayloads(_ frames: [FrameMeta]) throws -> Data {
         guard !frames.isEmpty else { return Data() }
 
         var encoder = BinaryEncoder()
@@ -679,7 +679,7 @@ package actor Wax {
         )
     }
 
-    static func collectFramePayloadRanges(
+    private static func collectFramePayloadRanges(
         _ frames: [FrameMeta],
         dataStart: UInt64,
         dataEnd: UInt64
@@ -721,7 +721,7 @@ package actor Wax {
         return ranges
     }
 
-    static func collectSegmentRanges(
+    private static func collectSegmentRanges(
         _ entries: [SegmentCatalogEntry],
         dataStart: UInt64,
         dataEnd: UInt64
@@ -747,7 +747,7 @@ package actor Wax {
         return ranges
     }
 
-    static func validateNoOverlap(_ ranges: [DataRange]) throws {
+    private static func validateNoOverlap(_ ranges: [DataRange]) throws {
         let sorted = ranges.sorted { $0.start < $1.start }
         for idx in sorted.indices.dropFirst() {
             let prev = sorted[idx - 1]
@@ -758,7 +758,7 @@ package actor Wax {
         }
     }
 
-    static func validateSegmentCatalogMatchesManifests(
+    private static func validateSegmentCatalogMatchesManifests(
         segmentCatalog: SegmentCatalog,
         indexes: IndexManifests,
         timeIndex: TimeIndexManifest?

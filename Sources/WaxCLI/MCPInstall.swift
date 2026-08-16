@@ -217,7 +217,7 @@ enum WaxMCPAgentPlaybook {
         "https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp"
 }
 
-func printWaxMCPSkillGuidance(_ skillInstall: MCPSkillInstall, dryRun: Bool) {
+private func printWaxMCPSkillGuidance(_ skillInstall: MCPSkillInstall, dryRun: Bool) {
     print("")
     print("## Wax agent skill (recommended)")
     if skillInstall.skipped {
@@ -262,7 +262,7 @@ func printWaxMCPSkillGuidance(_ skillInstall: MCPSkillInstall, dryRun: Bool) {
     printProjectRulesFallback()
 }
 
-func printProjectRulesFallback() {
+private func printProjectRulesFallback() {
     print("")
     print("## Project rules fallback (CLAUDE.md / AGENTS.md / Cursor rules)")
     print("Paste this block if your host does not load skills automatically:")
@@ -272,7 +272,7 @@ func printProjectRulesFallback() {
     print("```")
 }
 
-func installWaxMCPSkillWithClaudeIfPossible(
+private func installWaxMCPSkillWithClaudeIfPossible(
     claudePath: String,
     skillInstall: MCPSkillInstall
 ) throws {

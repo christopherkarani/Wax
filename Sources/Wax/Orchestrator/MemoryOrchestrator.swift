@@ -182,10 +182,10 @@ package actor MemoryOrchestrator {
         var tokenEstimate: Int
     }
 
-    static let accessStatsFrameKind = "wax.internal.access_stats"
-    static let accessStatsLabel = "wax.internal"
-    static let accessStatsMarkerKey = "wax.internal.kind"
-    static let accessStatsMarkerValue = "access_stats"
+    private static let accessStatsFrameKind = "wax.internal.access_stats"
+    private static let accessStatsLabel = "wax.internal"
+    private static let accessStatsMarkerKey = "wax.internal.kind"
+    private static let accessStatsMarkerValue = "access_stats"
     static let contentHashMetadataKey = "wax.content.hash"
 
     let wax: Wax
@@ -197,7 +197,7 @@ package actor MemoryOrchestrator {
     let embeddingCache: EmbeddingMemoizer?
     let enrichmentPipeline: EnrichmentPipeline?
     let accessStatsManager = AccessStatsManager()
-    var accessStatsFrameId: UInt64?
+    private var accessStatsFrameId: UInt64?
     var hasEnsuredMemoryBinding = false
     var queryEmbeddingCircuitOpenedAt: ContinuousClock.Instant?
 
@@ -209,7 +209,7 @@ package actor MemoryOrchestrator {
         return ContinuousClock.now - openedAt < config.queryEmbeddingCircuitCooldown
     }
     var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
-    var lastStructuredSystemMs: Int64?
+    private var lastStructuredSystemMs: Int64?
 
     var currentSessionId: UUID?
     var flushCount: UInt64 = 0
@@ -476,7 +476,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    func nextStructuredSystemMs() throws -> Int64 {
+    private func nextStructuredSystemMs() throws -> Int64 {
         let wallNow = Int64(Date().timeIntervalSince1970 * 1000)
         guard wallNow < Int64.max else {
             throw WaxError.encodingError(reason: "structured system timestamp must be less than Int64.max")
@@ -631,7 +631,7 @@ package actor MemoryOrchestrator {
         lastScheduledLiveSetMaintenanceReport
     }
 
-    func enqueueScheduledLiveSetMaintenance() {
+    private func enqueueScheduledLiveSetMaintenance() {
         guard config.liveSetRewriteSchedule.enabled else { return }
         scheduledLiveSetMaintenanceQueued = true
         guard scheduledLiveSetMaintenanceTask == nil else { return }
@@ -641,7 +641,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    func drainScheduledLiveSetMaintenanceQueue() async {
+    private func drainScheduledLiveSetMaintenanceQueue() async {
         while scheduledLiveSetMaintenanceQueued {
             scheduledLiveSetMaintenanceQueued = false
             let triggerFlushCount = flushCount
@@ -675,7 +675,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
+    private func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
         let schedule = config.liveSetRewriteSchedule
         guard schedule.enabled else {
             if let task = scheduledLiveSetMaintenanceTask {
@@ -727,7 +727,7 @@ package actor MemoryOrchestrator {
         return min(1, max(0, alpha))
     }
 
-    static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
+    private static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
         var data = Data()
         data.reserveCapacity(8 + embeddings.reduce(0) { $0 + ($1.count * 4) })
 
@@ -749,7 +749,7 @@ package actor MemoryOrchestrator {
         try data.write(to: url, options: .atomic)
     }
 
-    static func readEmbeddings(from url: URL) throws -> [[Float]] {
+    private static func readEmbeddings(from url: URL) throws -> [[Float]] {
         let data = try Data(contentsOf: url)
         var offset = 0
 
@@ -806,7 +806,7 @@ package actor MemoryOrchestrator {
         var memoryBindingEnsureCallCounts: [String: Int] = [:]
     }
 
-    static let debugCounterState = DebugCounterState()
+    private static let debugCounterState = DebugCounterState()
     @TaskLocal private static var activeDebugCounterScopeKey: String?
 
     package static func _recordBatchPreparationPathCallForTests() {
@@ -872,7 +872,7 @@ package actor MemoryOrchestrator {
     #endif
 
 
-    func ensureStructuredMemoryEnabled() throws {
+    private func ensureStructuredMemoryEnabled() throws {
         guard config.enableStructuredMemory else {
             throw WaxError.featureDisabled(feature: "structured memory")
         }
@@ -883,7 +883,7 @@ package actor MemoryOrchestrator {
         await accessStatsManager.recordAccesses(frameIds: frameIds)
     }
 
-    func loadPersistedAccessStatsIfNeeded() async throws {
+    private func loadPersistedAccessStatsIfNeeded() async throws {
         guard let latest = await wax.latestCommittedActiveSystemFrameMeta(
             kind: Self.accessStatsFrameKind,
             fallbackMetadataKey: Self.accessStatsMarkerKey,
@@ -906,7 +906,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    func persistAccessStatsIfNeeded() async throws {
+    private func persistAccessStatsIfNeeded() async throws {
         guard let exported = await accessStatsManager.exportStatsIfDirty() else {
             return
         }

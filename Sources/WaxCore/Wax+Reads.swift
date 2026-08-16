@@ -504,19 +504,19 @@ extension Wax {
         }
     }
 
-    func frameStoredContentUnlocked(frameId: UInt64) async throws -> Data {
+    private func frameStoredContentUnlocked(frameId: UInt64) async throws -> Data {
         let frame = try frameMetaUnlocked(frameId: frameId)
         let stored = try await readStoredPayloadFromMeta(frame)
         _ = try Self.validateStoredPayloadChecksum(stored, frame: frame)
         return stored
     }
 
-    func frameContentUnlocked(frameId: UInt64) async throws -> Data {
+    private func frameContentUnlocked(frameId: UInt64) async throws -> Data {
         let frame = try frameMetaUnlocked(frameId: frameId)
         return try await frameContentFromMeta(frame)
     }
 
-    func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
+    private func frameContentFromMeta(_ frame: FrameMeta) async throws -> Data {
         let stored = try await readStoredPayloadFromMeta(frame)
         if frame.payloadLength == 0 { return stored }
 
@@ -546,11 +546,11 @@ extension Wax {
         return canonical
     }
 
-    func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
+    private func frameContentFromMetaUnlocked(_ frame: FrameMeta) async throws -> Data {
         try await frameContentFromMeta(frame)
     }
 
-    func readStoredPayloadFromMeta(_ frame: FrameMeta) async throws -> Data {
+    private func readStoredPayloadFromMeta(_ frame: FrameMeta) async throws -> Data {
         if frame.payloadLength == 0 { return Data() }
         guard frame.payloadLength <= UInt64(Int.max) else {
             throw WaxError.io("payload too large: \(frame.payloadLength)")
@@ -561,7 +561,7 @@ extension Wax {
         }
     }
 
-    static func validateStoredPayloadChecksum(_ stored: Data, frame: FrameMeta) throws -> Data {
+    private static func validateStoredPayloadChecksum(_ stored: Data, frame: FrameMeta) throws -> Data {
         if frame.payloadLength == 0 { return Data() }
         guard let expectedStoredChecksum = frame.storedChecksum else {
             throw WaxError.invalidToc(reason: "frame \(frame.id) missing stored_checksum")
@@ -597,7 +597,7 @@ extension Wax {
         }
     }
 
-    func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
+    private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
         guard frameId < UInt64(toc.frames.count) else {
             throw WaxError.frameNotFound(frameId: frameId)
         }
@@ -671,7 +671,7 @@ extension Wax {
         return metas
     }
 
-    func frameIdsTouchedByCommittedOrPendingFramesUnlocked() -> [UInt64] {
+    private func frameIdsTouchedByCommittedOrPendingFramesUnlocked() -> [UInt64] {
         var frameIds = Set(toc.frames.map(\.id))
         for mutation in pendingMutations {
             switch mutation.entry {
@@ -728,7 +728,7 @@ extension Wax {
         }
     }
 
-    func buildSurrogateIndexUnlocked() -> [UInt64: UInt64] {
+    private func buildSurrogateIndexUnlocked() -> [UInt64: UInt64] {
         var index: [UInt64: UInt64] = [:]
         for frame in toc.frames {
             guard frame.status == .active else { continue }

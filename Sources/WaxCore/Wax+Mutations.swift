@@ -8,17 +8,17 @@ import Glibc
 extension Wax {
     // MARK: - Mutations
 
-    func currentTimestampMs() -> Int64 {
+    private func currentTimestampMs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1000)
     }
 
-    func appendPendingMutation(sequence: UInt64, entry: WALEntry) {
+    private func appendPendingMutation(sequence: UInt64, entry: WALEntry) {
         let mutation = PendingMutation(sequence: sequence, entry: entry)
         pendingMutations.append(mutation)
         pendingMutationSummary.record(mutation)
     }
 
-    func clearPendingMutations() {
+    private func clearPendingMutations() {
         pendingMutations.removeAll(keepingCapacity: true)
         pendingMutationSummary = PendingMutationSummary()
     }
@@ -30,7 +30,7 @@ extension Wax {
         return pendingMutations.sorted { $0.sequence < $1.sequence }
     }
 
-    func putLocked(
+    private func putLocked(
         _ content: Data,
         options: FrameMetaSubset,
         timestampMs: Int64?,
@@ -110,7 +110,7 @@ extension Wax {
         }
     }
 
-    func putBatchLocked(
+    private func putBatchLocked(
         _ contents: [Data],
         options: [FrameMetaSubset],
         timestampsMs: [Int64]?,
@@ -520,7 +520,7 @@ extension Wax {
         }
     }
 
-    func validateKnownFrameForMutationLocked(_ frameId: UInt64) throws {
+    private func validateKnownFrameForMutationLocked(_ frameId: UInt64) throws {
         let committedCount = UInt64(toc.frames.count)
         let maxKnown = committedCount.addingReportingOverflow(pendingMutationSummary.putFrameCount)
         guard !maxKnown.overflow else {
@@ -696,7 +696,7 @@ extension Wax {
         }
     }
 
-    static func validateVecIndexSegment(
+    private static func validateVecIndexSegment(
         _ data: Data,
         vectorCount expectedVectorCount: UInt64,
         dimension expectedDimension: UInt32,
@@ -807,7 +807,7 @@ extension Wax {
         }
     }
 
-    static func validateUniqueVecFrameIds(in data: Data, offset: Int, byteCount: Int) throws {
+    private static func validateUniqueVecFrameIds(in data: Data, offset: Int, byteCount: Int) throws {
         var seen = Set<UInt64>()
         seen.reserveCapacity(byteCount / MemoryLayout<UInt64>.stride)
         try data.withUnsafeBytes { rawBuffer in
@@ -1004,7 +1004,7 @@ extension Wax {
         commitSucceeded = true
     }
 
-    struct CommitRollbackState {
+    private struct CommitRollbackState {
         var header: WaxHeaderPage
         var selectedHeaderPageIndex: Int
         var toc: WaxTOC
