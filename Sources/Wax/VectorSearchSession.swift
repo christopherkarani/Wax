@@ -71,10 +71,13 @@ package actor WaxVectorSearchSession {
                 throw WaxError.invalidEmbedding(reason: "dimension mismatch: expected \(expectedDims), got \(embedding.count)")
             }
             var metadata = merged.metadata ?? Metadata()
-            if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
-            if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
-            if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
-            if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
+            EmbeddingIdentityMetadata.write(
+                into: &metadata.entries,
+                provider: identity.provider,
+                model: identity.model,
+                dimensions: identity.dimensions,
+                normalized: identity.normalized
+            )
             merged.metadata = metadata
         }
 
@@ -113,10 +116,13 @@ package actor WaxVectorSearchSession {
                     throw WaxError.invalidEmbedding(reason: "dimension mismatch: expected \(expectedDims), got \(embeddings[index].count)")
                 }
                 var metadata = mergedOptions[index].metadata ?? Metadata()
-                if let provider = identity.provider { metadata.entries["memvid.embedding.provider"] = provider }
-                if let model = identity.model { metadata.entries["memvid.embedding.model"] = model }
-                if let dims = identity.dimensions { metadata.entries["memvid.embedding.dimension"] = String(dims) }
-                if let normalized = identity.normalized { metadata.entries["memvid.embedding.normalized"] = String(normalized) }
+                EmbeddingIdentityMetadata.write(
+                    into: &metadata.entries,
+                    provider: identity.provider,
+                    model: identity.model,
+                    dimensions: identity.dimensions,
+                    normalized: identity.normalized
+                )
                 mergedOptions[index].metadata = metadata
             }
         }

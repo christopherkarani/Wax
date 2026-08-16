@@ -583,10 +583,13 @@ package actor WaxSession {
 
         var merged = options
         var metadata = merged.metadata ?? Metadata()
-        if let provider = identity.provider { metadata.entries["wax.embedding.provider"] = provider }
-        if let model = identity.model { metadata.entries["wax.embedding.model"] = model }
-        if let dims = identity.dimensions { metadata.entries["wax.embedding.dimension"] = String(dims) }
-        if let normalized = identity.normalized { metadata.entries["wax.embedding.normalized"] = String(normalized) }
+        EmbeddingIdentityMetadata.write(
+            into: &metadata.entries,
+            provider: identity.provider,
+            model: identity.model,
+            dimensions: identity.dimensions,
+            normalized: identity.normalized
+        )
         merged.metadata = metadata
         return merged
     }

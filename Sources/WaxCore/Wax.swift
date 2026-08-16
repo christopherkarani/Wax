@@ -106,17 +106,20 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
         self.normalized = normalized
     }
 
-    fileprivate func matches(metadataEntries: [String: String]) -> Bool {
-        if let provider, metadataEntries["wax.embedding.provider"] != provider {
+    /// Returns true when metadata carries a compatible embedding identity.
+    /// Canonical ``wax.embedding.*`` keys win; legacy ``memvid.embedding.*`` is
+    /// accepted when the canonical keys are absent.
+    package func matches(metadataEntries: [String: String]) -> Bool {
+        if let provider, EmbeddingIdentityMetadata.provider(from: metadataEntries) != provider {
             return false
         }
-        if let model, metadataEntries["wax.embedding.model"] != model {
+        if let model, EmbeddingIdentityMetadata.model(from: metadataEntries) != model {
             return false
         }
-        if let dimensions, metadataEntries["wax.embedding.dimension"] != String(dimensions) {
+        if let dimensions, EmbeddingIdentityMetadata.dimension(from: metadataEntries) != String(dimensions) {
             return false
         }
-        if let normalized, metadataEntries["wax.embedding.normalized"] != String(normalized) {
+        if let normalized, EmbeddingIdentityMetadata.normalized(from: metadataEntries) != String(normalized) {
             return false
         }
         return true
