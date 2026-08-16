@@ -6,7 +6,7 @@ import Testing
     #expect(SearchTimeRange.fromClosedDateRange(nil) == nil)
 }
 
-@Test func fromClosedDateRangeConvertsInclusiveBoundsToExclusiveBefore() {
+@Test func fromClosedDateRangeConvertsInclusiveBoundsToExclusiveBefore() throws {
     let start = Date(timeIntervalSince1970: 1_700_000_000)
     let end = Date(timeIntervalSince1970: 1_700_000_100)
     let range = try #require(SearchTimeRange.fromClosedDateRange(start...end))
@@ -18,7 +18,7 @@ import Testing
     #expect(!range.contains(1_700_000_100_000 + 1))
 }
 
-@Test func fromClosedDateRangeDistantFutureKeepsFiniteExclusiveBefore() {
+@Test func fromClosedDateRangeDistantFutureKeepsFiniteExclusiveBefore() throws {
     let start = Date(timeIntervalSince1970: 0)
     let range = try #require(SearchTimeRange.fromClosedDateRange(start...Date.distantFuture))
     let beforeInclusive = Int64(Date.distantFuture.timeIntervalSince1970 * 1000)
