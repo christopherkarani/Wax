@@ -34,8 +34,9 @@ claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 > `wax-mcp` skill = agent operator playbook for MCP tools.
 > `wax` skill (separate, in the monorepo) = Swift framework integration guidance.
 
-> Note: the bundled npm runtime currently ships `darwin-arm64` and `darwin-x64` artifacts. The underlying
-> `wax-mcp` server itself now supports local Swift builds on macOS and Linux, including
+> Note: the bundled npm runtime currently ships `darwin-arm64` artifacts (Apple Silicon).
+> Intel Mac (`darwin-x64`) builds are not packaged because MetalANNS Float16 requires Apple Silicon.
+> The underlying `wax-mcp` server itself supports local Swift builds on macOS and Linux, including
 > `--transport http` for gateway deployments.
 
 To publish a new version:

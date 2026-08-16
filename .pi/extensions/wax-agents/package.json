@@ -1,6 +1,6 @@
 {
   "name": "wax-agents",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "description": "Wax-specific multi-agent orchestration for pi",
   "dependencies": {
     "typebox": "^1.0.0"
