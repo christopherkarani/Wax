@@ -288,7 +288,7 @@ enum ToolSchemas {
             "query": ["type": "string", "description": "Search query text."],
             "topK": ["type": "integer", "description": "Max hit count. Default: 10.", "minimum": 1, "maximum": 200],
             "session_id": ["type": "string", "description": "Optional active session UUID for current working-memory retrieval."],
-            "mode": ["type": "string", "enum": ["text", "vector", "hybrid"]],
+            "mode": ["type": "string", "description": "Search mode. Default: hybrid.", "enum": ["text", "vector", "hybrid"]],
             "alpha": ["type": "number", "minimum": 0.0, "maximum": 1.0],
             "include_working": ["type": "boolean"],
             "include_episodic": ["type": "boolean"],
@@ -419,7 +419,7 @@ enum ToolSchemas {
             ],
             "mode": [
                 "type": "string",
-                "description": "Search mode for the shared corpus.",
+                "description": "Search mode for the shared corpus. Default: hybrid.",
                 "enum": ["text", "vector", "hybrid"],
             ],
             "alpha": [
