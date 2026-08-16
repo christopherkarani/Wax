@@ -95,7 +95,18 @@ read_hermes_version() {
 
 # Read current SHA from Homebrew formula
 read_homebrew_sha() {
-  grep -oE 'sha256 "[a-f0-9]+"' "$HOMEBREW_FORMULA" | grep -oE '[a-f0-9]+' || echo "NOT_FOUND"
+  sed -nE 's/.*sha256 "([a-f0-9]+)".*/\1/p' "$HOMEBREW_FORMULA" | head -n1 || echo "NOT_FOUND"
+}
+
+# Portable in-place sed (-i '' on BSD/macOS, -i on GNU/Linux)
+sed_inplace() {
+  local expr="$1"
+  local file="$2"
+  if sed --version >/dev/null 2>&1; then
+    sed -i -E "$expr" "$file"
+  else
+    sed -i '' -E "$expr" "$file"
+  fi
 }
 
 # Print a nice table row
@@ -240,13 +251,13 @@ fi
 # Use sed -E (BSD/macOS + GNU) — basic sed \+ is not portable on macOS.
 if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
   # Update URL
-  sed -i '' -E \
+  sed_inplace \
     "s|archive/refs/tags/waxmcp-v[0-9]+\\.[0-9]+\\.[0-9]+|archive/refs/tags/waxmcp-v${TARGET_VERSION}|g" \
     "$HOMEBREW_FORMULA"
 
   # Compute SHA from local git archive of the working tree index when possible.
   # GitHub source archives use: git archive --format=tar.gz --prefix=Wax-<tag>/ <tag>
-  TMP_ARCHIVE=$(mktemp -t wax-homebrew-sha.XXXXXX.tar.gz)
+  TMP_ARCHIVE=$(mktemp "${TMPDIR:-/tmp}/wax-homebrew-sha.XXXXXX.tar.gz")
   git -C "$ROOT" archive --format=tar.gz \
     --prefix="Wax-waxmcp-v${TARGET_VERSION}/" \
     HEAD > "$TMP_ARCHIVE" 2>/dev/null || {
@@ -254,10 +265,14 @@ if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
       fail "git archive failed — cannot compute Homebrew SHA"
     }
 
-  NEW_SHA=$(shasum -a 256 "$TMP_ARCHIVE" | awk '{print $1}')
+  if command -v shasum >/dev/null 2>&1; then
+    NEW_SHA=$(shasum -a 256 "$TMP_ARCHIVE" | awk '{print $1}')
+  else
+    NEW_SHA=$(sha256sum "$TMP_ARCHIVE" | awk '{print $1}')
+  fi
   rm -f "$TMP_ARCHIVE"
 
-  sed -i '' -E \
+  sed_inplace \
     "s|sha256 \"[a-f0-9]+\"|sha256 \"${NEW_SHA}\"|" \
     "$HOMEBREW_FORMULA"
 
@@ -269,10 +284,10 @@ fi
 # Surface 8: Hermes README
 if [[ -f "$HERMES_README" ]]; then
   # Update version references in Hermes README
-  sed -i '' -E \
+  sed_inplace \
     "s|waxmcp-v[0-9]+\\.[0-9]+\\.[0-9]+|waxmcp-v${TARGET_VERSION}|g" \
     "$HERMES_README"
-  sed -i '' -E \
+  sed_inplace \
     "s|waxmcp@[0-9]+\\.[0-9]+\\.[0-9]+|waxmcp@${TARGET_VERSION}|g" \
     "$HERMES_README"
   info "Hermes README → $TARGET_VERSION"
@@ -280,7 +295,7 @@ fi
 
 # Surface 9: Hermes plugin
 if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]] && [[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]]; then
-  sed -i '' -E \
+  sed_inplace \
     "s|^version: [0-9]+\\.[0-9]+\\.[0-9]+|version: ${TARGET_VERSION}|" \
     "$HERMES_PLUGIN/plugin.yaml"
   info "Hermes plugin → $TARGET_VERSION"
