@@ -8,6 +8,13 @@ enum MCPAgentInstructions {
         """
         Wax MCP durable agent memory (server v\(version)).
 
+        Verb map (agent tools vs public Swift Memory API):
+        - remember = write durable text (public app API: Memory.save)
+        - recall = assembled RAG context, preferred agent read (public apps: Memory.search then format)
+        - search / memory_search = raw ranked hits (public app API: Memory.search)
+        - corpus_search = cross-session history with provenance (not on public Memory)
+        Do not emit public Memory.save/search calls when using MCP tools, and do not invent remember/recall on import Wax.
+
         Session lifecycle (required):
         1) Call handoff_latest first (optional project) to resume prior context.
         2) Call session_start once and keep the returned session_id for the session.

@@ -2,6 +2,20 @@
 
 This reference lists the **actually public** API surface of the Wax Swift package (`import Wax`). Types marked *package-only* are internal implementation details — they use Swift `package` access and cannot be named or constructed by downstream apps. Do not generate client code against package-only types.
 
+## Verb map (public app API vs agent/MCP tools)
+
+One vocabulary, two surfaces. Do not mix them in generated client code.
+
+| Intent | Public Swift (`import Wax` / `Memory`) | Agent / MCP / broker tools |
+|--------|------------------------------------------|----------------------------|
+| Write durable text | `save(_:metadata:)` | `remember` (aliases: `memory_append`) |
+| Read assembled context | — (use `search`, then format) | `recall` (preferred agent read) |
+| Ranked retrieval | `search(_:options:)` | `search` / `memory_search` (raw hits) |
+| Cross-session history | — (not on `Memory`) | `corpus_search` |
+| Durability / lifecycle | `flush()` / `close()` | broker-owned; agents should not manage `flush` / store paths in normal flows |
+
+`Memory.save` / `Memory.search` are the app-facing verbs. Agent-facing tools use `remember` / `recall` (and related session tools). Package-only `MemoryOrchestrator.remember` / `.recall` back the agent path; they are not public API.
+
 ## Memory (public facade)
 
 Source: `Sources/Wax/Memory.swift`

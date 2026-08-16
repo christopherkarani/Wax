@@ -176,42 +176,42 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private struct SessionRuntimeStatsCacheEntry: Sendable, Equatable {
+    struct SessionRuntimeStatsCacheEntry: Sendable, Equatable {
         var generation: UInt64
         var frameIds: [UInt64]
         var tokenEstimate: Int
     }
 
-    private static let accessStatsFrameKind = "wax.internal.access_stats"
-    private static let accessStatsLabel = "wax.internal"
-    private static let accessStatsMarkerKey = "wax.internal.kind"
-    private static let accessStatsMarkerValue = "access_stats"
-    private static let contentHashMetadataKey = "wax.content.hash"
+    static let accessStatsFrameKind = "wax.internal.access_stats"
+    static let accessStatsLabel = "wax.internal"
+    static let accessStatsMarkerKey = "wax.internal.kind"
+    static let accessStatsMarkerValue = "access_stats"
+    static let contentHashMetadataKey = "wax.content.hash"
 
     let wax: Wax
     let config: OrchestratorConfig
-    private let ragBuilder: FastRAGContextBuilder
+    let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
-    private let embedder: (any EmbeddingProvider)?
-    private let embeddingCache: EmbeddingMemoizer?
-    private let enrichmentPipeline: EnrichmentPipeline?
-    private let accessStatsManager = AccessStatsManager()
-    private var accessStatsFrameId: UInt64?
-    private var hasEnsuredMemoryBinding = false
-    private var queryEmbeddingCircuitOpenedAt: ContinuousClock.Instant?
+    let embedder: (any EmbeddingProvider)?
+    let embeddingCache: EmbeddingMemoizer?
+    let enrichmentPipeline: EnrichmentPipeline?
+    let accessStatsManager = AccessStatsManager()
+    var accessStatsFrameId: UInt64?
+    var hasEnsuredMemoryBinding = false
+    var queryEmbeddingCircuitOpenedAt: ContinuousClock.Instant?
 
     /// Stays open for `config.queryEmbeddingCircuitCooldown` after a query-embedding
     /// timeout, then allows one half-open probe; probe success closes the circuit,
     /// another timeout re-opens it for a fresh cooldown window.
-    private var queryEmbeddingCircuitOpen: Bool {
+    var queryEmbeddingCircuitOpen: Bool {
         guard let openedAt = queryEmbeddingCircuitOpenedAt else { return false }
         return ContinuousClock.now - openedAt < config.queryEmbeddingCircuitCooldown
     }
-    private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
-    private var lastStructuredSystemMs: Int64?
+    var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
+    var lastStructuredSystemMs: Int64?
 
-    private var currentSessionId: UUID?
+    var currentSessionId: UUID?
     var flushCount: UInt64 = 0
     var lastWriteActivityAt: ContinuousClock.Instant = .now
     var lastScheduledLiveSetMaintenanceReport: ScheduledLiveSetMaintenanceReport?
@@ -339,862 +339,6 @@ package actor MemoryOrchestrator {
         currentSessionId
     }
 
-    // MARK: - Ingestion
-
-    /// Ingest text content into the memory store, chunking and embedding as configured.
-    ///
-    /// Content is split into chunks and written in batches. Each batch is committed
-    /// independently to the underlying store.
-    ///
-    /// - Important: Batch writes are **not atomic**. If a failure occurs mid-ingest
-    ///   (e.g., embedding provider error, I/O failure), earlier batches may already be
-    ///   committed while later batches are lost. The committed state remains consistent
-    ///   (WAL guarantees crash safety), but the ingested content may be incomplete.
-    ///   Callers requiring all-or-nothing semantics should validate post-ingest or
-    ///   implement their own rollback by superseding the document frame on failure.
-    package func remember(_ content: String, metadata: [String: String] = [:]) async throws {
-        lastWriteActivityAt = .now
-        let contentData = Data(content.utf8)
-        let contentHash = ContentHasher.hash(contentData).hexString
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
-        let localEmbedder = embedder
-
-        var docMeta = Metadata(metadata)
-        docMeta.entries[Self.contentHashMetadataKey] = contentHash
-        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
-            docMeta.entries["session_id"] = session.uuidString
-        }
-        let effectiveSessionId = docMeta.entries["session_id"]
-        if let existingProbe = await wax.rememberDedupProbe(
-            contentHash: contentHash,
-            metadata: docMeta.entries,
-            expectedChunkCount: chunks.count,
-            embeddingIdentity: Self.rememberDedupEmbeddingIdentity(from: localEmbedder?.identity)
-        ), existingProbe.isComplete {
-            return
-        }
-
-        let chunkCount = chunks.count
-        let localSession = session
-        let cache = embeddingCache
-        let batchSize = max(1, config.ingestBatchSize)
-        let useVectorSearch = config.enableVectorSearch
-        let bindingForEmbedderIdentity: MemoryBinding?
-        if let identity = localEmbedder?.identity {
-            bindingForEmbedderIdentity = MemoryBindingCompatibility.binding(from: identity)
-        } else {
-            bindingForEmbedderIdentity = nil
-        }
-
-        guard !chunks.isEmpty else {
-            _ = try await localSession.put(
-                contentData,
-                options: FrameMetaSubset(
-                    role: .document,
-                    metadata: docMeta
-                )
-            )
-            return
-        }
-
-        if useVectorSearch, localEmbedder == nil {
-            throw WaxError.missingEmbedder
-        }
-
-        if chunkCount == 1 {
-            let chunk = chunks[0]
-            let chunkData = Data(chunk.utf8)
-
-            var chunkMeta = Metadata(metadata)
-            if let effectiveSessionId {
-                chunkMeta.entries["session_id"] = effectiveSessionId
-            }
-
-            let chunkEmbedding: [Float]?
-            if useVectorSearch {
-                guard let localEmbedder else {
-                    throw WaxError.missingEmbedder
-                }
-                chunkEmbedding = try await Self.embedOne(
-                    chunk,
-                    embedder: localEmbedder,
-                    cache: cache,
-                    timeout: config.ingestEmbeddingTimeout
-                )
-            } else {
-                chunkEmbedding = nil
-            }
-
-            let docId = try await localSession.put(
-                contentData,
-                options: FrameMetaSubset(
-                    role: .document,
-                    metadata: docMeta
-                )
-            )
-
-            var option = FrameMetaSubset()
-            option.role = .chunk
-            option.parentId = docId
-            option.chunkIndex = 0
-            option.chunkCount = 1
-            option.searchText = chunk
-            option.metadata = chunkMeta
-
-            if let chunkEmbedding {
-                guard let localEmbedder else {
-                    throw WaxError.missingEmbedder
-                }
-                let frameId = try await localSession.put(
-                    chunkData,
-                    embedding: chunkEmbedding,
-                    identity: localEmbedder.identity,
-                    options: option
-                )
-                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
-                if config.enableTextSearch {
-                    try await localSession.indexText(frameId: frameId, text: chunk)
-                }
-                if let enrichmentPipeline {
-                    try await enrichmentPipeline.enqueue(
-                        EnrichmentTask(frameId: frameId, text: chunk)
-                    )
-                }
-            } else {
-                let frameId = try await localSession.put(chunkData, options: option)
-                if config.enableTextSearch {
-                    try await localSession.indexText(frameId: frameId, text: chunk)
-                }
-                if let enrichmentPipeline {
-                    try await enrichmentPipeline.enqueue(
-                        EnrichmentTask(frameId: frameId, text: chunk)
-                    )
-                }
-            }
-            return
-        }
-
-        struct IngestBatchResult {
-            let index: Int
-            let embeddings: [[Float]]?
-        }
-
-        let batchRanges: [(index: Int, range: Range<Int>)] = stride(from: 0, to: chunkCount, by: batchSize)
-            .enumerated()
-            .map { idx, start in
-                let end = min(start + batchSize, chunkCount)
-                return (idx, start..<end)
-            }
-
-        let parallelism = max(1, config.ingestConcurrency)
-        let ingestTimeout = config.ingestEmbeddingTimeout
-
-        var preparedEmbeddingsByBatch: [Int: [[Float]]] = [:]
-        preparedEmbeddingsByBatch.reserveCapacity(batchRanges.count)
-        var preparedBatchCount = 0
-
-        try await withThrowingTaskGroup(of: IngestBatchResult.self) { group in
-            func enqueue(_ entry: (index: Int, range: Range<Int>)) {
-                group.addTask {
-                    let batchChunks = Array(chunks[entry.range])
-
-                    if let localEmbedder = localEmbedder, useVectorSearch {
-                        let embeddings = try await Self.prepareEmbeddingsBatchOptimized(
-                            chunks: batchChunks,
-                            embedder: localEmbedder,
-                            cache: cache,
-                            timeout: ingestTimeout
-                        )
-                        return IngestBatchResult(
-                            index: entry.index,
-                            embeddings: embeddings
-                        )
-                    }
-
-                    return IngestBatchResult(
-                        index: entry.index,
-                        embeddings: nil
-                    )
-                }
-            }
-
-            var iterator = batchRanges.makeIterator()
-            let initial = min(parallelism, batchRanges.count)
-            var inFlight = 0
-            for _ in 0..<initial {
-                if let next = iterator.next() {
-                    enqueue(next)
-                    inFlight += 1
-                }
-            }
-
-            while inFlight > 0 {
-                guard let result = try await group.next() else { break }
-                inFlight -= 1
-
-                if let embeddings = result.embeddings {
-                    preparedEmbeddingsByBatch[result.index] = embeddings
-                }
-                preparedBatchCount += 1
-
-                if let next = iterator.next() {
-                    enqueue(next)
-                    inFlight += 1
-                }
-            }
-        }
-
-        guard preparedBatchCount == batchRanges.count else {
-            throw WaxError.io(
-                "ingest batching incomplete: expected \(batchRanges.count) prepared batches, got \(preparedBatchCount)"
-            )
-        }
-        if useVectorSearch, preparedEmbeddingsByBatch.count != batchRanges.count {
-            throw WaxError.io(
-                "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
-            )
-        }
-        let docId = try await localSession.put(
-            contentData,
-            options: FrameMetaSubset(
-                role: .document,
-                metadata: docMeta
-            )
-        )
-
-        for entry in batchRanges {
-            let batchChunks = Array(chunks[entry.range])
-            let batchContents = batchChunks.map { Data($0.utf8) }
-            var options: [FrameMetaSubset] = []
-            options.reserveCapacity(batchChunks.count)
-            for (localIdx, globalIdx) in entry.range.enumerated() {
-                var option = FrameMetaSubset()
-                option.role = .chunk
-                option.parentId = docId
-                option.chunkIndex = UInt32(globalIdx)
-                option.chunkCount = UInt32(chunkCount)
-                option.searchText = batchChunks[localIdx]
-
-                var chunkMeta = Metadata(metadata)
-                if let effectiveSessionId {
-                    chunkMeta.entries["session_id"] = effectiveSessionId
-                }
-                option.metadata = chunkMeta
-                options.append(option)
-            }
-
-            if useVectorSearch {
-                guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
-                    throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
-                }
-                let frameIds = try await localSession.putBatch(
-                    contents: batchContents,
-                    embeddings: embeddings,
-                    identity: localEmbedder?.identity,
-                    options: options
-                )
-                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
-                    }
-                }
-            } else {
-                let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    private static func rememberDedupEmbeddingIdentity(
-        from identity: EmbeddingIdentity?
-    ) -> RememberDedupEmbeddingIdentity? {
-        guard let identity else { return nil }
-        return RememberDedupEmbeddingIdentity(
-            provider: identity.provider,
-            model: identity.model,
-            dimensions: identity.dimensions,
-            normalized: identity.normalized
-        )
-    }
-
-    private static func persistEnrichmentResult(
-        _ result: EnrichmentResult,
-        in session: WaxSession
-    ) async throws {
-        guard !result.keywords.isEmpty || !result.entities.isEmpty else {
-            return
-        }
-
-        var metadata = Metadata()
-        metadata.entries["wax.enrichment.source_frame_id"] = String(result.frameId)
-        if !result.keywords.isEmpty {
-            metadata.entries["wax.enrichment.keywords"] = result.keywords.joined(separator: ",")
-        }
-        if !result.entities.isEmpty {
-            metadata.entries["wax.enrichment.entities"] = result.entities
-                .map { "\($0.subject)|\($0.predicate)|\($0.object)" }
-                .joined(separator: "\n")
-        }
-
-        _ = try await session.put(
-            Data(renderEnrichmentResult(result).utf8),
-            options: FrameMetaSubset(
-                kind: "enrichment",
-                role: .system,
-                parentId: result.frameId,
-                searchText: result.keywords.joined(separator: " "),
-                metadata: metadata
-            )
-        )
-    }
-
-    private static func renderEnrichmentResult(_ result: EnrichmentResult) -> String {
-        var lines: [String] = []
-        if !result.keywords.isEmpty {
-            lines.append("keywords: \(result.keywords.joined(separator: ", "))")
-        }
-        if !result.entities.isEmpty {
-            lines.append("entities:")
-            lines.append(contentsOf: result.entities.map { "- \($0.subject) \($0.predicate) \($0.object)" })
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
-        guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
-        hasEnsuredMemoryBinding = true
-#if DEBUG
-        Self._recordMemoryBindingEnsureCallForTests()
-#endif
-        do {
-            try await wax.setMemoryBindingIfMissing(binding)
-        } catch {
-            hasEnsuredMemoryBinding = false
-            throw error
-        }
-    }
-
-    /// Optimized batch embedding preparation with cache-aware batching.
-    /// Minimizes cache lookups and maximizes batch embedding efficiency.
-    private static func prepareEmbeddingsBatchOptimized(
-        chunks: [String],
-        embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?,
-        timeout: Duration? = nil
-    ) async throws -> [[Float]] {
-#if DEBUG
-        Self._recordBatchPreparationPathCallForTests()
-#endif
-        var results: [[Float]] = Array(repeating: [], count: chunks.count)
-        let cacheKeys: [UInt64]? = if cache != nil {
-            chunks.map {
-                EmbeddingKey.make(
-                    text: $0,
-                    identity: embedder.identity,
-                    dimensions: embedder.dimensions,
-                    normalized: embedder.normalize
-                )
-            }
-        } else {
-            nil
-        }
-        var missingIndices: [Int] = []
-        var missingTexts: [String] = []
-        missingIndices.reserveCapacity(chunks.count)
-        missingTexts.reserveCapacity(chunks.count)
-
-        if let cache, let cacheKeys {
-            let cachedValues = await cache.getBatch(cacheKeys)
-            for (index, key) in cacheKeys.enumerated() {
-                if let cached = cachedValues[key] {
-                    results[index] = cached
-                } else {
-                    missingIndices.append(index)
-                    missingTexts.append(chunks[index])
-                }
-            }
-        } else {
-            missingIndices = Array(0..<chunks.count)
-            missingTexts = chunks
-        }
-
-        // Compute missing embeddings using batch API when available
-        if !missingTexts.isEmpty {
-            let vectors: [[Float]]
-            let textsToEmbed = missingTexts // let-bind for @Sendable capture
-
-            // Prefer batch embedding for significantly better throughput
-            if let batchEmbedder = embedder as? any BatchEmbeddingProvider {
-                if let timeout {
-                    vectors = try await AsyncTimeout.run(timeout: timeout, operation: "batch ingest embed") {
-                        try await batchEmbedder.embed(batch: textsToEmbed)
-                    }
-                } else {
-                    vectors = try await batchEmbedder.embed(batch: textsToEmbed)
-                }
-            } else {
-                var sequentialVectors: [[Float]] = []
-                sequentialVectors.reserveCapacity(textsToEmbed.count)
-                for text in textsToEmbed {
-                    let vector: [Float]
-                    if let timeout {
-                        let textCopy = text
-                        vector = try await AsyncTimeout.run(timeout: timeout, operation: "ingest embed") {
-                            try await embedder.embed(textCopy)
-                        }
-                    } else {
-                        vector = try await embedder.embed(text)
-                    }
-                    sequentialVectors.append(vector)
-                }
-                vectors = sequentialVectors
-            }
-
-            guard vectors.count == missingIndices.count else {
-                throw WaxError.encodingError(
-                    reason: "batch embedding returned \(vectors.count) vectors for \(missingIndices.count) inputs"
-                )
-            }
-
-            // Normalize (if needed) and cache results
-            let shouldNormalize = embedder.normalize
-            var cacheItems: [(key: UInt64, value: [Float])] = []
-            cacheItems.reserveCapacity(missingIndices.count)
-            for (localIdx, globalIdx) in missingIndices.enumerated() {
-                var vec = vectors[localIdx]
-                if shouldNormalize && !vec.isEmpty {
-                    vec = normalizedL2(vec)
-                }
-                results[globalIdx] = vec
-
-                if let cacheKeys {
-                    cacheItems.append((key: cacheKeys[globalIdx], value: vec))
-                }
-            }
-
-            if let cache, !cacheItems.isEmpty {
-                await cache.setBatch(cacheItems)
-            }
-        }
-
-        return results
-    }
-    
-    /// Legacy method for backward compatibility
-    private static func prepareEmbeddingsBatch(
-        chunks: [String],
-        embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?,
-        timeout: Duration? = nil
-    ) async throws -> [[Float]] {
-        try await prepareEmbeddingsBatchOptimized(chunks: chunks, embedder: embedder, cache: cache, timeout: timeout)
-    }
-
-    // MARK: - Recall (Fast RAG)
-
-    package func recall(query: String) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: .ifAvailable,
-            frameFilter: nil,
-            timeRange: nil,
-            topK: nil,
-            requestedMode: nil
-        ).context
-    }
-
-    package func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: .ifAvailable,
-            frameFilter: frameFilter,
-            timeRange: nil,
-            topK: nil,
-            requestedMode: nil
-        ).context
-    }
-
-    package func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        return try await buildRecallContext(query: query, embedding: embedding)
-    }
-
-    package func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: embeddingPolicy,
-            frameFilter: nil,
-            timeRange: nil,
-            topK: nil,
-            requestedMode: nil
-        ).context
-    }
-
-    package func recall(
-        query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
-    ) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: embeddingPolicy,
-            frameFilter: frameFilter,
-            timeRange: timeRange,
-            topK: topK,
-            requestedMode: mode
-        ).context
-    }
-
-    package func recallExecution(
-        query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
-    ) async throws -> RecallExecution {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: embeddingPolicy,
-            frameFilter: frameFilter,
-            timeRange: timeRange,
-            topK: topK,
-            requestedMode: mode
-        )
-    }
-
-    /// Shared recall implementation: builds the RAG context and records frame accesses.
-    /// All package recall() overloads funnel through here so that `ragConfigForRecall()` and
-    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
-    private func buildRecallContext(
-        query: String,
-        embedding: [Float]?,
-        frameFilter: FrameFilter? = nil,
-        timeRange: SearchTimeRange? = nil,
-        searchTopK: Int? = nil,
-        searchMode: SearchMode? = nil
-    ) async throws -> RAGContext {
-        let preference = config.vectorEnginePreference
-        var recallConfig = ragConfigForRecall()
-        if let searchTopK {
-            recallConfig.searchTopK = max(1, searchTopK)
-        }
-        if let searchMode {
-            recallConfig.searchMode = searchMode
-        }
-        let resolvedTimeRange = timeRange ?? extractTemporalTimeRange(from: query, anchorMs: recallConfig.deterministicNowMs)
-        let context = try await ragBuilder.build(
-            query: query,
-            embedding: embedding,
-            vectorEnginePreference: preference,
-            wax: wax,
-            session: session,
-            frameFilter: frameFilter,
-            timeRange: resolvedTimeRange,
-            scopeContext: config.defaultScopeContext,
-            accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
-            config: recallConfig
-        )
-        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: context.items.map(\.frameId))
-        } else {
-            [:]
-        }
-        let enrichedItems = context.items.map { item in
-            var item = item
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId]).reasons
-            if !accessReasons.isEmpty {
-                item.explanations = dedupedExplanations(item.explanations + accessReasons)
-            }
-            return item
-        }
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
-        return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
-    }
-
-    /// Performs direct search without context assembly.
-    ///
-    /// - Parameters:
-    ///   - query: Query text.
-    ///   - mode: Text-only or hybrid retrieval.
-    ///   - topK: Maximum number of hits to return.
-    /// - Returns: Ranked raw hits.
-    package func search(
-        query: String,
-        mode: DirectSearchMode = .default,
-        topK: Int = 10,
-        frameFilter: FrameFilter? = nil,
-        timeRange: SearchTimeRange? = nil
-    ) async throws -> [MemorySearchHit] {
-        try await searchExecution(
-            query: query,
-            mode: mode,
-            topK: topK,
-            frameFilter: frameFilter,
-            timeRange: timeRange
-        ).hits
-    }
-
-    package func searchExecution(
-        query: String,
-        mode: DirectSearchMode = .default,
-        topK: Int = 10,
-        frameFilter: FrameFilter? = nil,
-        timeRange: SearchTimeRange? = nil
-    ) async throws -> SearchExecution {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestedModeSummary = Self.modeSummary(mode)
-        guard !trimmed.isEmpty else {
-            return SearchExecution(
-                hits: [],
-                requestedModeSummary: requestedModeSummary,
-                effectiveModeSummary: "text",
-                queryEmbeddingState: .notRequested
-            )
-        }
-        guard topK > 0 else {
-            return SearchExecution(
-                hits: [],
-                requestedModeSummary: requestedModeSummary,
-                effectiveModeSummary: "text",
-                queryEmbeddingState: .notRequested
-            )
-        }
-
-        let preference = config.vectorEnginePreference
-
-        let policy: QueryEmbeddingPolicy = switch mode {
-        case .text:
-            .never
-        case .vector:
-            .always
-        case .hybrid:
-            .ifAvailable
-        }
-        let queryEmbedding = try await queryEmbeddingResult(for: trimmed, policy: policy)
-        let searchMode = Self.resolveSearchMode(
-            requested: Self.searchMode(from: mode),
-            embeddingAvailable: queryEmbedding.embedding != nil
-        )
-
-        let request = SearchRequest(
-            query: trimmed,
-            embedding: queryEmbedding.embedding,
-            vectorEnginePreference: preference,
-            vectorSearchTimeout: config.vectorSearchTimeout,
-            mode: searchMode,
-            topK: topK,
-            timeRange: timeRange,
-            frameFilter: frameFilter,
-            scopeContext: config.defaultScopeContext,
-            previewMaxBytes: config.rag.previewMaxBytes
-        )
-        let response = try await session.search(request)
-
-        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: response.results.map(\.frameId))
-        } else {
-            [:]
-        }
-        let hits = response.results.map { result in
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[result.frameId]).reasons
-            return MemorySearchHit(
-                frameId: result.frameId,
-                score: result.score,
-                previewText: result.previewText,
-                sources: result.sources,
-                metadata: result.metadata,
-                explanations: dedupedExplanations(result.explanations + accessReasons)
-            )
-        }
-        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
-        return SearchExecution(
-            hits: hits,
-            requestedModeSummary: requestedModeSummary,
-            effectiveModeSummary: Self.modeSummary(searchMode),
-            queryEmbeddingState: queryEmbedding.state
-        )
-    }
-
-    /// Returns lightweight store/runtime stats useful for operators and MCP tools.
-    package func runtimeStats() async -> RuntimeStats {
-        let stats = await wax.stats()
-        let walStats = await wax.walStats()
-        let storeURL = await wax.fileURL()
-
-        return RuntimeStats(
-            frameCount: stats.frameCount,
-            pendingFrames: stats.pendingFrames,
-            generation: stats.generation,
-            wal: walStats,
-            storeURL: storeURL,
-            vectorSearchEnabled: config.enableVectorSearch,
-            queryEmbedderConfigured: embedder != nil,
-            queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
-            structuredMemoryEnabled: config.enableStructuredMemory,
-            accessStatsScoringEnabled: config.enableAccessStatsScoring,
-            embedderIdentity: embedder?.identity
-        )
-    }
-
-    package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
-        await accessStatsManager.snapshot()
-    }
-
-    private func dedupedExplanations(_ reasons: [String]) -> [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        ordered.reserveCapacity(reasons.count)
-        for reason in reasons {
-            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
-            ordered.append(normalized)
-        }
-        return ordered
-    }
-
-    package func sessionRuntimeStats() async throws -> SessionRuntimeStats {
-        try await sessionRuntimeStats(sessionId: currentSessionId)
-    }
-
-    package func sessionRuntimeStats(sessionId: UUID?) async throws -> SessionRuntimeStats {
-        let storeStats = await wax.stats()
-        let pendingFramesStoreWide = storeStats.pendingFrames
-        guard let sessionId else {
-            return SessionRuntimeStats(
-                active: false,
-                sessionId: nil,
-                sessionFrameCount: 0,
-                sessionTokenEstimate: 0,
-                pendingFramesStoreWide: pendingFramesStoreWide,
-                countsIncludePending: false
-            )
-        }
-
-        let frameIds = await wax.activeFrameIDs(
-            matchingMetadataKey: "session_id",
-            value: sessionId.uuidString
-        )
-
-        guard !frameIds.isEmpty else {
-            sessionRuntimeStatsCache[sessionId] = nil
-            return SessionRuntimeStats(
-                active: true,
-                sessionId: sessionId,
-                sessionFrameCount: 0,
-                sessionTokenEstimate: 0,
-                pendingFramesStoreWide: pendingFramesStoreWide,
-                countsIncludePending: false
-            )
-        }
-
-        if let cached = sessionRuntimeStatsCache[sessionId],
-           cached.generation == storeStats.generation,
-           cached.frameIds == frameIds {
-            return SessionRuntimeStats(
-                active: true,
-                sessionId: sessionId,
-                sessionFrameCount: frameIds.count,
-                sessionTokenEstimate: cached.tokenEstimate,
-                pendingFramesStoreWide: pendingFramesStoreWide,
-                countsIncludePending: false
-            )
-        }
-
-        let frameMetas = await wax.frameMetas(frameIds: frameIds)
-        var textsByFrameID: [UInt64: String] = [:]
-        textsByFrameID.reserveCapacity(frameIds.count)
-        var missingSearchTextFrameIDs: [UInt64] = []
-        missingSearchTextFrameIDs.reserveCapacity(frameIds.count)
-
-        for frameId in frameIds {
-            if let searchText = frameMetas[frameId]?.searchText {
-                textsByFrameID[frameId] = searchText
-            } else {
-                missingSearchTextFrameIDs.append(frameId)
-            }
-        }
-
-        if !missingSearchTextFrameIDs.isEmpty {
-            let contentMap = try await wax.frameContents(frameIds: missingSearchTextFrameIDs)
-            for frameId in missingSearchTextFrameIDs {
-                guard let data = contentMap[frameId],
-                      let text = String(data: data, encoding: .utf8) else {
-                    continue
-                }
-                textsByFrameID[frameId] = text
-            }
-        }
-
-        let texts = frameIds.compactMap { textsByFrameID[$0] }
-        let tokenCounter = try await TokenCounter.shared()
-        let tokenCounts = await tokenCounter.countBatch(texts)
-        let totalTokens = tokenCounts.reduce(0, +)
-        sessionRuntimeStatsCache[sessionId] = SessionRuntimeStatsCacheEntry(
-            generation: storeStats.generation,
-            frameIds: frameIds,
-            tokenEstimate: totalTokens
-        )
-
-        return SessionRuntimeStats(
-            active: true,
-            sessionId: sessionId,
-            sessionFrameCount: frameIds.count,
-            sessionTokenEstimate: totalTokens,
-            pendingFramesStoreWide: pendingFramesStoreWide,
-            countsIncludePending: false
-        )
-    }
-
-    private func ragConfigForRecall() -> FastRAGConfig {
-        var recallConfig = config.rag
-        if recallConfig.deterministicNowMs == nil {
-            recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        }
-        return recallConfig
-    }
-
-    private func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> SearchTimeRange? {
-        guard let anchorMs else { return nil }
-        let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
-        let normalizer = TemporalNormalizer(anchor: anchor)
-        let words = query
-            .lowercased()
-            .split(whereSeparator: \.isWhitespace)
-            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
-            .filter { !$0.isEmpty }
-        guard !words.isEmpty else { return nil }
-
-        for window in stride(from: min(4, words.count), through: 1, by: -1) {
-            guard words.count >= window else { continue }
-            for i in 0...(words.count - window) {
-                let candidate = words[i..<(i + window)].joined(separator: " ")
-                guard let resolution = try? normalizer.resolve(candidate) else { continue }
-                let range = resolution.asTimeRange
-                return SearchTimeRange(after: range.afterMs, before: range.beforeMs)
-            }
-        }
-        return nil
-    }
 
     package func rememberHandoff(
         content: String,
@@ -1332,7 +476,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func nextStructuredSystemMs() throws -> Int64 {
+    func nextStructuredSystemMs() throws -> Int64 {
         let wallNow = Int64(Date().timeIntervalSince1970 * 1000)
         guard wallNow < Int64.max else {
             throw WaxError.encodingError(reason: "structured system timestamp must be less than Int64.max")
@@ -1350,102 +494,6 @@ package actor MemoryOrchestrator {
         return next.partialValue
     }
 
-    private func executeRecall(
-        query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        requestedMode: DirectSearchMode?
-    ) async throws -> RecallExecution {
-        let recallConfig = ragConfigForRecall()
-        let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else {
-            let modeSummary = Self.modeSummary(requestedSearchMode)
-            return RecallExecution(
-                context: RAGContext(query: query, items: [], totalTokens: 0),
-                requestedModeSummary: modeSummary,
-                effectiveModeSummary: modeSummary,
-                queryEmbeddingState: .notRequested
-            )
-        }
-
-        let queryEmbedding = try await queryEmbeddingResult(for: trimmedQuery, policy: embeddingPolicy)
-        let effectiveSearchMode = Self.resolveSearchMode(
-            requested: requestedSearchMode,
-            embeddingAvailable: queryEmbedding.embedding != nil
-        )
-
-        let context = try await buildRecallContext(
-            query: trimmedQuery,
-            embedding: queryEmbedding.embedding,
-            frameFilter: frameFilter,
-            timeRange: timeRange,
-            searchTopK: topK,
-            searchMode: effectiveSearchMode
-        )
-
-        return RecallExecution(
-            context: context,
-            requestedModeSummary: requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode),
-            effectiveModeSummary: Self.modeSummary(effectiveSearchMode),
-            queryEmbeddingState: queryEmbedding.state
-        )
-    }
-
-    private struct QueryEmbeddingResult {
-        let embedding: [Float]?
-        let state: QueryEmbeddingState
-    }
-
-    private static func searchMode(from mode: DirectSearchMode) -> SearchMode {
-        switch mode {
-        case .text:
-            .textOnly
-        case .vector:
-            .vectorOnly
-        case .hybrid(let alpha):
-            .hybrid(alpha: clampHybridAlpha(alpha))
-        }
-    }
-
-    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
-        switch requested {
-        case .textOnly:
-            .textOnly
-        case .vectorOnly where !embeddingAvailable:
-            .textOnly
-        case .vectorOnly:
-            .vectorOnly
-        case .hybrid where !embeddingAvailable:
-            .textOnly
-        case .hybrid(let alpha):
-            .hybrid(alpha: clampHybridAlpha(alpha))
-        }
-    }
-
-    private static func modeSummary(_ mode: SearchMode) -> String {
-        switch mode {
-        case .textOnly:
-            return "text"
-        case .vectorOnly:
-            return "vector"
-        case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
-        }
-    }
-
-    private static func modeSummary(_ mode: DirectSearchMode) -> String {
-        switch mode {
-        case .text:
-            return "text"
-        case .vector:
-            return "vector"
-        case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
-        }
-    }
 
     package func facts(
         about subject: EntityKey? = nil,
@@ -1583,7 +631,7 @@ package actor MemoryOrchestrator {
         lastScheduledLiveSetMaintenanceReport
     }
 
-    private func enqueueScheduledLiveSetMaintenance() {
+    func enqueueScheduledLiveSetMaintenance() {
         guard config.liveSetRewriteSchedule.enabled else { return }
         scheduledLiveSetMaintenanceQueued = true
         guard scheduledLiveSetMaintenanceTask == nil else { return }
@@ -1593,7 +641,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func drainScheduledLiveSetMaintenanceQueue() async {
+    func drainScheduledLiveSetMaintenanceQueue() async {
         while scheduledLiveSetMaintenanceQueued {
             scheduledLiveSetMaintenanceQueued = false
             let triggerFlushCount = flushCount
@@ -1627,7 +675,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
+    func closeTimeLiveSetMaintenanceReport() async -> ScheduledLiveSetMaintenanceReport? {
         let schedule = config.liveSetRewriteSchedule
         guard schedule.enabled else {
             if let task = scheduledLiveSetMaintenanceTask {
@@ -1669,17 +717,17 @@ package actor MemoryOrchestrator {
 
     /// L2 normalization using Accelerate framework for optimal SIMD performance.
     @inline(__always)
-    private static func normalizedL2(_ vector: [Float]) -> [Float] {
+    static func normalizedL2(_ vector: [Float]) -> [Float] {
         VectorMath.normalizeL2(vector)
     }
 
     @inline(__always)
-    private static func clampHybridAlpha(_ alpha: Float) -> Float {
+    static func clampHybridAlpha(_ alpha: Float) -> Float {
         guard alpha.isFinite else { return 0.5 }
         return min(1, max(0, alpha))
     }
 
-    private static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
+    static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
         var data = Data()
         data.reserveCapacity(8 + embeddings.reduce(0) { $0 + ($1.count * 4) })
 
@@ -1701,7 +749,7 @@ package actor MemoryOrchestrator {
         try data.write(to: url, options: .atomic)
     }
 
-    private static func readEmbeddings(from url: URL) throws -> [[Float]] {
+    static func readEmbeddings(from url: URL) throws -> [[Float]] {
         let data = try Data(contentsOf: url)
         var offset = 0
 
@@ -1752,13 +800,13 @@ package actor MemoryOrchestrator {
     }
 
     #if DEBUG
-    private final class DebugCounterState: @unchecked Sendable {
+    final class DebugCounterState: @unchecked Sendable {
         let lock = NSLock()
         var batchPreparationPathCallCounts: [String: Int] = [:]
         var memoryBindingEnsureCallCounts: [String: Int] = [:]
     }
 
-    private static let debugCounterState = DebugCounterState()
+    static let debugCounterState = DebugCounterState()
     @TaskLocal private static var activeDebugCounterScopeKey: String?
 
     package static func _recordBatchPreparationPathCallForTests() {
@@ -1823,194 +871,19 @@ package actor MemoryOrchestrator {
     }
     #endif
 
-    private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
-        try await queryEmbeddingResult(for: query, policy: policy).embedding
-    }
 
-    private func queryEmbeddingResult(
-        for query: String,
-        policy: QueryEmbeddingPolicy
-    ) async throws -> QueryEmbeddingResult {
-        switch policy {
-        case .never:
-            return QueryEmbeddingResult(embedding: nil, state: .notRequested)
-        case .ifAvailable:
-            guard config.enableVectorSearch else {
-                return QueryEmbeddingResult(embedding: nil, state: .vectorDisabled)
-            }
-            guard let embedder else {
-                return QueryEmbeddingResult(embedding: nil, state: .noEmbedder)
-            }
-            guard !queryEmbeddingCircuitOpen else {
-                return QueryEmbeddingResult(embedding: nil, state: .circuitOpen)
-            }
-            do {
-                let embedding = try await Self.embedOne(
-                    query,
-                    embedder: embedder,
-                    cache: embeddingCache,
-                    timeout: config.queryEmbeddingTimeout,
-                    isQuery: true
-                )
-                queryEmbeddingCircuitOpenedAt = nil
-                return QueryEmbeddingResult(embedding: embedding, state: .available)
-            } catch {
-                if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpenedAt = .now
-                    return QueryEmbeddingResult(embedding: nil, state: .timeout)
-                }
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "query embedding",
-                    fallback: "text-only search for this query"
-                )
-                return QueryEmbeddingResult(embedding: nil, state: .failed)
-            }
-        case .always:
-            guard config.enableVectorSearch else {
-                throw WaxError.io("query embedding requested but vector search is disabled")
-            }
-            guard let embedder else {
-                throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
-            }
-            guard !queryEmbeddingCircuitOpen else {
-                throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")
-            }
-            do {
-                let embedding = try await Self.embedOne(
-                    query,
-                    embedder: embedder,
-                    cache: embeddingCache,
-                    timeout: config.queryEmbeddingTimeout,
-                    isQuery: true
-                )
-                queryEmbeddingCircuitOpenedAt = nil
-                return QueryEmbeddingResult(embedding: embedding, state: .available)
-            } catch {
-                if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpenedAt = .now
-                }
-                throw error
-            }
-        }
-    }
-
-    private static func embedOne(
-        _ text: String,
-        embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?,
-        timeout: Duration? = nil,
-        isQuery: Bool = false
-    ) async throws -> [Float] {
-        // Use query-aware embedding when available and this is a recall/query path.
-        let useQueryEmbed = isQuery && (embedder is any QueryAwareEmbeddingProvider)
-        let key = EmbeddingKey.make(
-            text: text,
-            identity: embedder.identity,
-            dimensions: embedder.dimensions,
-            normalized: embedder.normalize,
-            queryAware: useQueryEmbed
-        )
-        if let cached = await cache?.get(key) {
-            return cached
-        }
-
-        var vector: [Float]
-        if let timeout {
-            vector = try await AsyncTimeout.run(timeout: timeout, operation: "embedder.embed") {
-                if useQueryEmbed, let qa = embedder as? any QueryAwareEmbeddingProvider {
-                    return try await qa.embedQuery(text)
-                }
-                return try await embedder.embed(text)
-            }
-        } else {
-            if useQueryEmbed, let qa = embedder as? any QueryAwareEmbeddingProvider {
-                vector = try await qa.embedQuery(text)
-            } else {
-                vector = try await embedder.embed(text)
-            }
-        }
-        if embedder.normalize {
-            vector = normalizedL2(vector)
-        }
-        await cache?.set(key, value: vector)
-        return vector
-    }
-
-    private static func prepareEmbeddings(
-        chunks: [String],
-        embedder: some EmbeddingProvider,
-        cache: EmbeddingMemoizer?
-    ) async throws -> [Int: [Float]] {
-        var out: [Int: [Float]] = [:]
-        out.reserveCapacity(chunks.count)
-
-        var missingTexts: [String] = []
-        var missingIndices: [Int] = []
-        missingTexts.reserveCapacity(chunks.count)
-        missingIndices.reserveCapacity(chunks.count)
-
-        for (idx, chunk) in chunks.enumerated() {
-            let key = EmbeddingKey.make(
-                text: chunk,
-                identity: embedder.identity,
-                dimensions: embedder.dimensions,
-                normalized: embedder.normalize
-            )
-            if let cached = await cache?.get(key) {
-                out[idx] = cached
-            } else {
-                missingTexts.append(chunk)
-                missingIndices.append(idx)
-            }
-        }
-
-        if missingTexts.isEmpty {
-            return out
-        }
-
-        if let batch = embedder as? any BatchEmbeddingProvider {
-            let vectors = try await batch.embed(batch: missingTexts)
-            guard vectors.count == missingTexts.count else {
-                throw WaxError.io("batch embedding count mismatch: expected \(missingTexts.count), got \(vectors.count)")
-            }
-            for (position, idx) in missingIndices.enumerated() {
-                var vector = vectors[position]
-                if embedder.normalize {
-                    vector = normalizedL2(vector)
-                }
-                out[idx] = vector
-                let key = EmbeddingKey.make(
-                    text: chunks[idx],
-                    identity: embedder.identity,
-                    dimensions: embedder.dimensions,
-                    normalized: embedder.normalize
-                )
-                await cache?.set(key, value: vector)
-            }
-        } else {
-            for (position, idx) in missingIndices.enumerated() {
-                let chunk = missingTexts[position]
-                let vector = try await embedOne(chunk, embedder: embedder, cache: cache)
-                out[idx] = vector
-            }
-        }
-
-        return out
-    }
-
-    private func ensureStructuredMemoryEnabled() throws {
+    func ensureStructuredMemoryEnabled() throws {
         guard config.enableStructuredMemory else {
             throw WaxError.featureDisabled(feature: "structured memory")
         }
     }
 
-    private func recordAccessesIfEnabled(frameIds: [UInt64]) async {
+    func recordAccessesIfEnabled(frameIds: [UInt64]) async {
         guard config.enableAccessStatsScoring, !frameIds.isEmpty else { return }
         await accessStatsManager.recordAccesses(frameIds: frameIds)
     }
 
-    private func loadPersistedAccessStatsIfNeeded() async throws {
+    func loadPersistedAccessStatsIfNeeded() async throws {
         guard let latest = await wax.latestCommittedActiveSystemFrameMeta(
             kind: Self.accessStatsFrameKind,
             fallbackMetadataKey: Self.accessStatsMarkerKey,
@@ -2033,7 +906,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func persistAccessStatsIfNeeded() async throws {
+    func persistAccessStatsIfNeeded() async throws {
         guard let exported = await accessStatsManager.exportStatsIfDirty() else {
             return
         }
