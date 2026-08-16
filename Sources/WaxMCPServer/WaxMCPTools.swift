@@ -700,6 +700,9 @@ private extension WaxMCPTools {
         ]
     }
 
+    // Intentionally not shared with AgentBrokerService.parseSearchFilters:
+    // CompatArguments / ToolValidationError diverge from broker types, and this
+    // path injects session_id into metadata filters for MCP session scoping.
     static func compatParseSearchFilters(_ args: CompatArguments) throws -> CompatParsedFilters {
         let sessionID = try compatParseSessionID(args)
         let filters = try args.optionalObject("filters")

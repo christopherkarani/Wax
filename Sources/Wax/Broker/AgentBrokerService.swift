@@ -2273,6 +2273,9 @@ extension AgentBrokerService {
         let summary: AgentBrokerValue
     }
 
+    // Intentionally not shared with WaxMCPTools.compatParseSearchFilters:
+    // BrokerArguments / BrokerValidationError / AgentBrokerValue diverge from the
+    // MCP Compat* types, and MCP injects session_id into metadata filters.
     func parseSearchFilters(_ args: BrokerArguments) throws -> ParsedSearchFilters {
         let sessionID = try parseOptionalSessionID(args)
         let filters = try args.optionalObject("filters")
