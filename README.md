@@ -14,8 +14,8 @@
 <div style="height: 16px;"></div>
 
 <p align="center">
-  <strong>Give your AI agent a memory that never forgets.</strong><br/>
-  One file. Zero cloud. Blazing fast recall on Apple Silicon.
+  <strong>On-device memory for AI agents in a single file.</strong><br/>
+  Documents, embeddings, and indexes in one <code>.wax</code> store. No cloud required.
 </p>
 
 <p align="center">
@@ -60,14 +60,11 @@ let results = try await memory.search("What editor does the user like?")
 
 ---
 
-## Choose Your Path
+## Get started
 
-Wax meets you where you are. Pick the path that matches what you're building:
-
-| 🛠️ Swift Developer | ⌨️ CLI Power User | 🤖 AI Agent Setup |
-|:--------------------|:------------------|:------------------|
-| **You want:** Embed memory in your iOS/macOS app or Swift tool. | **You want:** A command-line memory store you can script against. | **You want:** Your AI assistant (Claude Code, Cursor, etc.) to remember context across sessions. |
-| **Get started:** [Swift Quick Start](#swift-quick-start) ↓ | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Agent Quick Start](#agent-quick-start) ↓ |
+- **Swift apps / tools** → [Swift Quick Start](#swift-quick-start)
+- **Command-line store** → [CLI Quick Start](#cli-quick-start)
+- **AI coding agents (MCP)** → [Agent Quick Start](#agent-quick-start)
 
 ---
 
@@ -324,12 +321,11 @@ For the full Claude Code setup flow, see [Resources/docs/wax-mcp-setup.md](Resou
 | Feature          | Wax                    | SQLite (FTS5)          | Cloud Vector DBs       |
 |:-----------------|:-----------------------|:-----------------------|:-----------------------|
 | **Search**       | Hybrid (Text + Vector) | Text Only*             | Vector Only*           |
-| **Latency**      | **~6ms (p95)**         | ~10ms (p95)            | 150ms - 500ms+         |
-| **Privacy**      | 100% Local             | 100% Local             | Cloud-hosted           |
-| **Setup**        | Zero Config¹           | Low                    | Complex (API Keys)     |
-| **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
+| **Privacy**      | On-device               | On-device               | Cloud-hosted           |
+| **Setup**        | Minimal¹               | Low                    | API keys / services    |
+| **Packaging**    | Single `.wax` file     | DB + files             | Hosted stack           |
 
-¹ Text search works out of the box everywhere. Semantic (vector) search auto-configures the on-device MiniLM embedder on iOS 18/macOS 15+; on older OS versions, pass a custom `EmbeddingProvider` or search text-only. `results.diagnostics` and `memory.stats()` always report which retrieval mode actually ran — Wax never silently pretends a text-only result is semantic.
+¹ Text search works out of the box everywhere. Semantic (vector) search auto-configures the on-device MiniLM embedder on iOS 18/macOS 15+ when the default `MiniLMEmbeddings` trait is enabled; on older OS versions, pass a custom `EmbeddingProvider` or search text-only. `results.diagnostics` and `memory.stats()` always report which retrieval mode actually ran — Wax does not silently treat a text-only result as semantic.
 
 ### Why a single `.wax` file?
 
@@ -339,83 +335,15 @@ Most RAG setups end up with a database, a vector store, and a file server. Wax k
 - **Portable** — move the file with AirDrop, iCloud, or whatever sync layer you already use.
 - **Atomic** — backup, copy, or delete one file instead of chasing state across services.
 
----
-
-## Performance
-
-Wax is tuned for M-series hardware and local recall.
-
-### Recall Latency (p95)
-*Lower is better. Measured in milliseconds.*
-
-```text
-Wax (Hybrid)  |██ 6.1ms
-SQLite (Text) |████ 12ms
-Cloud RAG     |██████████████████████████████████████████████████ 150ms+
-```
-
-### Cold Open Time (p95)
-*Lower is better. Measured in milliseconds.*
-
-```text
-Wax           |███ 9.2ms
-Traditional   |██████████████████████████████████████ 120ms+
-```
-
-> Cold open measures store open only. The built-in embedder's first-ever CoreML compile is a separate one-time cost; later launches reuse the cached compiled model.
-
-> [!TIP]
-> **Ingest Throughput:** Wax handles **85.9 docs/s** with full hybrid indexing on an M3 Max.
-> Full benchmark report: [Resources/docs/benchmarks/2026-03-06-performance-results.md](Resources/docs/benchmarks/2026-03-06-performance-results.md)
-
----
-
-## Architecture
-
-<details>
-<summary><strong>How Wax works under the hood (click to expand)</strong></summary>
-
-Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors. The Metal HNSW engine activates automatically once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with identical recall.
-
-### Internal File Layout
-
-```text
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          Dual Header Pages (A/B)                         │
-│   (Magic, Version, Generation, Pointers to WAL & TOC, Checksums)         │
-├──────────────────────────────────────────────────────────────────────────┤
-│                          WAL (Write-Ahead Log)                           │
-│   (Atomic ring buffer for crash-resilient uncommitted mutations)         │
-├──────────────────────────────────────────────────────────────────────────┤
-│                          Compressed Data Frames                          │
-│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐       │
-│   │ Frame 0 (LZ4)    │  │ Frame 1 (LZ4)    │  │ Frame 2 (LZ4)    │ ...   │
-│   │ [Raw Document]   │  │ [Metadata/JSON]  │  │ [System Info]    │       │
-│   └──────────────────┘  └──────────────────┘  └──────────────────┘       │
-├──────────────────────────────────────────────────────────────────────────┤
-│                          Hybrid Search Indices                           │
-│   ┌──────────────────────────────┐  ┌──────────────────────────────┐     │
-│   │ SQLite FTS5 Blob             │  │ Metal HNSW Index             │     │
-│   │ (Text Search + EAV Facts)    │  │ (Vector Search)              │     │
-│   └──────────────────────────────┘  └──────────────────────────────┘     │
-├──────────────────────────────────────────────────────────────────────────┤
-│                          TOC (Table of Contents)                         │
-│   (Index of all frames, parent-child relations, and engine manifests)    │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
-2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
-3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning. (Exposed today via the MCP server tools; the Swift-level API is package-internal.)
-
-</details>
+Measured latency, cold-open, and ingest numbers (plus methodology) live under [Resources/docs/benchmarks/](Resources/docs/benchmarks/). Prefer those reports over marketing comparisons.
 
 ---
 
 ## Ecosystem Tools
 
-### 🤖 MCP Server
-Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your local memory to Claude Code or any MCP-compatible agent.
+### MCP Server
+
+Wax ships a **Model Context Protocol (MCP)** server so local memory can connect to Claude Code or other MCP-compatible agents.
 
 ```bash
 npx -y waxmcp@latest mcp install --scope user
@@ -425,7 +353,7 @@ For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-m
 For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
 For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
 
-The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`, including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync` also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on `session_synthesize` / `memory_promote` or via environment variables.
+The MCP surface supports managed Markdown round-trips with `markdown_export` / `markdown_sync`, including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync` also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on `session_synthesize` / `memory_promote` or via environment variables.
 
 For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport:
 
@@ -433,14 +361,44 @@ For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport:
 ./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
 ```
 
-### 🔍 WaxRepo
-A semantic search TUI for your git history. Index any repository and find code or commits using natural language.
+### WaxRepo (macOS only)
+
+WaxRepo is an optional semantic search TUI for git history. It is **macOS-only**, gated behind the `WaxRepo` package trait (see `Package.swift`), and is not built by default.
 
 ```bash
-# From within any git repo
-wax-repo index
-wax-repo search "where did we implement the WAL?"
+# From the Wax package root (macOS)
+swift run --traits WaxRepo WaxRepo -- index
+swift run --traits WaxRepo WaxRepo -- search "where did we implement the WAL?"
 ```
+
+Or build the executable once:
+
+```bash
+swift build --traits WaxRepo --product WaxRepo
+.build/debug/WaxRepo index
+.build/debug/WaxRepo search "where did we implement the WAL?"
+```
+
+Without `--traits WaxRepo`, the binary exits with a message to enable the trait.
+
+---
+
+<details>
+<summary><strong>Architecture (optional)</strong></summary>
+
+Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors. The Metal HNSW engine activates automatically once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with identical recall.
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Dual Header Pages (A/B) · WAL · LZ4 frames · FTS5 + HNSW · TOC         │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
+2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
+3. **Structured knowledge:** built-in EAV storage handles durable facts. Exposed today via MCP tools; the Swift-level API is package-internal.
+
+</details>
 
 ---
 
