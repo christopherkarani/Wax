@@ -12,7 +12,7 @@ import Testing
     let range = try #require(SearchTimeRange.fromClosedDateRange(start...end))
 
     #expect(range.after == 1_700_000_000_000)
-    #expect(range.before == 1_700_000_100_000 + 1)
+    #expect(range.before == Optional(1_700_000_100_000 + 1))
     #expect(range.contains(1_700_000_000_000))
     #expect(range.contains(1_700_000_100_000))
     #expect(!range.contains(1_700_000_100_000 + 1))
@@ -25,7 +25,7 @@ import Testing
 
     #expect(range.after == 0)
     #expect(beforeInclusive < Int64.max)
-    #expect(range.before == beforeInclusive + 1)
+    #expect(range.before == Optional(beforeInclusive + 1))
 }
 
 @Test func fromClosedMillisecondBoundsSaturatedUpperBoundIsUnbounded() {
