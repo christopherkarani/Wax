@@ -2,129 +2,87 @@
 
 Native Hermes memory provider backed by [Wax](https://github.com/christopherkarani/Wax) MCP over HTTP.
 
-## Quick Start (3 steps)
+## Quick Start
 
 ```bash
-# 1. Build Wax MCP with vector search
-swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
-swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings"
+# 1. Start Wax MCP with vector search
+npx waxmcp --embedder minilm --transport http
 
-# 2. Copy plugin to Hermes
-cp -r /path/to/wax-memory-plugin ~/.hermes/plugins/wax-memory
+# 2. Install the plugin into the active Hermes profile
+npx waxmcp install-hermes-plugin
+# or: cp -r Resources/hermes/wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"
 
-# 3. Enable in Hermes config
+# 3. Select Wax as the exclusive memory provider
 hermes config set memory.provider wax-memory
 ```
 
-That's it. Start `hermes` and Wax memory works — including **vector/semantic search**.
+Do not add `wax-memory` to `plugins.enabled`. Memory providers are selected only by `memory.provider`.
 
-## Prerequisites
-
-A Wax MCP HTTP server must be running:
+## Pip install
 
 ```bash
-# Terminal 1 — start Wax MCP
-.build/debug/wax-mcp --embedder minilm --transport http --http-host 127.0.0.1 --http-port 3000
+pip install ./Resources/hermes/wax-memory-plugin
+hermes config set memory.provider wax-memory
 ```
 
-Or use the npm wrapper (if installed):
-
-```bash
-npx waxmcp --embedder minilm --transport http
-```
-
-## Vector Search
-
-Vector search is **automatic** when the Wax MCP server is built and started with an embedder:
-
-```bash
-# Build with embedders (both wax-cli broker + wax-mcp server)
-swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings"
-swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
-
-# Start with an embedder
-.build/debug/wax-mcp --embedder minilm --transport http
-```
-
-### Verify Vector Search
-
-```bash
-# Via npm wrapper
-npx waxmcp vector-health
-
-# Or via the plugin's stats tool inside Hermes
-# The plugin will log vector search status on startup
-```
-
-### Common Issue: "Vector search is disabled"
-
-This happens when `wax-mcp` spawns a `wax-cli` broker that wasn't built with embedders. **Both binaries need embedder support.**
-
-**Fix:**
-```bash
-# Rebuild BOTH binaries with embedders
-swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings"
-swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
-```
+The package registers under `hermes_agent.memory_providers`.
 
 ## Configuration
 
-Add to `~/.hermes/config.yaml`:
+`hermes memory setup` writes non-secret settings to `$HERMES_HOME/wax-memory.json`.
+
+Resolution order for the MCP endpoint:
+
+1. `WAX_MCP_HTTP_ENDPOINT`
+2. `$HERMES_HOME/wax-memory.json` `endpoint`
+3. `http://127.0.0.1:3000/mcp`
+
+| Variable | Description |
+|----------|-------------|
+| `WAX_MCP_HTTP_ENDPOINT` | Wax MCP HTTP endpoint |
+| `WAX_MCP_AUTO_START` | Set to `1` to auto-start `wax-mcp` during `initialize()` |
+| `WAX_STRUCTURED_MEMORY` | Enable structured memory tools (`1` default) |
+| `WAX_HERMES_EXTENDED_TOOLS` | Expose session/markdown/compact tools to the model |
+| `WAX_STORE_PATH` | Extra path included in `hermes backup` |
+| `HERMES_HOME` | Profile directory used by install and config |
 
 ```yaml
 memory:
   provider: wax-memory
-
-plugins:
-  enabled:
-  - wax-memory
 ```
 
-### Environment Variables
+## Tools
 
-| Variable | Description |
-|----------|-------------|
-| `WAX_MCP_HTTP_ENDPOINT` | Wax MCP HTTP endpoint (default: `http://127.0.0.1:3000/mcp`) |
-| `WAX_MCP_AUTO_START` | Set to `1` to auto-start wax-mcp if not running |
-| `WAX_STRUCTURED_MEMORY` | Enable structured memory tools (`1` or `0`, default `1`) |
-
-## Tools Exposed
+Default tools stay small to avoid schema bloat:
 
 | Tool | Description |
 |------|-------------|
-| `wax_remember` | Store memory (text + optional metadata) |
-| `wax_recall` | RAG-based context recall with `mode: vector/hybrid/text` |
-| `wax_search` | Direct ranked search |
-| `wax_handoff` | Write cross-session handoff note |
-| `wax_handoff_latest` | Read latest handoff |
-| `wax_compact_context` | Token-budgeted memory checkpoint |
-| `wax_markdown_export` | Export MEMORY.md / daily notes |
-| `wax_markdown_sync` | Import/reconcile Markdown |
+| `wax_remember` | Store memory (`memory_type`: note, task_state, user_preference, decision, lesson, handoff, constraint, fact) |
+| `wax_recall` | RAG context recall |
+| `wax_search` | Ranked raw hits |
+| `wax_handoff` / `wax_handoff_latest` | Cross-session handoff |
 | `wax_stats` | Runtime diagnostics |
-| `wax_session_start` / `wax_session_end` | Session lifecycle |
-| `wax_entity_upsert` | Upsert typed entity (structured memory) |
-| `wax_fact_assert` | Assert fact triple (structured memory) |
-| `wax_facts_query` | Query triplestore (structured memory) |
+
+Structured tools (`wax_entity_*`, `wax_fact_*`) are on by default. Session lifecycle stays inside the provider unless `WAX_HERMES_EXTENDED_TOOLS=1`.
+
+## CLI
+
+When this provider is active:
+
+```bash
+hermes wax-memory status
+hermes wax-memory doctor
+hermes wax-memory config
+```
 
 ## Architecture
 
 ```
 Hermes Agent
-  └── WaxMemoryProvider (this plugin)
-        └── HTTP SSE ──► wax-mcp (MCP server)
-              └── Unix socket ──► wax-cli daemon (broker)
-                    └── ~/.wax/memory.wax (SQLite + vector index)
+  └── WaxMemoryProvider
+        └── HTTP MCP ──► wax-mcp
+              └── Unix socket ──► wax-cli broker
+                    └── ~/.wax/memory.wax
 ```
 
-The plugin handles:
-- SSE session management with Wax MCP
-- Auto-detection of vector search capability
-- Clear diagnostics when things go wrong
-- Optional auto-start of wax-mcp
-
-## Files
-
-- `plugin.yaml` — Hermes plugin manifest
-- `hermes_wax_memory.py` — MemoryProvider + SSE client + MCP manager
-- `__init__.py` — Plugin entrypoint
-- `pyproject.toml` — Pip distributable
+The provider implements the current Hermes `MemoryProvider` contract: local `is_available()`, background `sync_turn` / `queue_prefetch`, `on_session_switch`, `on_memory_write`, `recall_status`, and `backup_paths`.

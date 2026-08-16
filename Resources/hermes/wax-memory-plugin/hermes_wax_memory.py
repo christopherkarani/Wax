@@ -1,41 +1,109 @@
-"""Wax Memory Plugin — Native Hermes MemoryProvider backed by Wax MCP over HTTP.
-
-Zero-config setup for Hermes Agent. The plugin auto-detects a running Wax MCP
-server or can auto-start one. Provides clear diagnostics when vector search is
-unavailable and guides the user to fix it.
-
-Quick start:
-    1. Install Wax MCP:  npx waxmcp install --build
-    2. Enable plugin:    hermes config set memory.provider wax-memory
-    3. Done — vector search works automatically when available.
-
-Configuration chain (highest priority first):
-  1. Environment: WAX_MCP_HTTP_ENDPOINT
-  2. Hermes config: wax_memory.endpoint
-  3. Default: http://127.0.0.1:3000/mcp
-
-Install as directory plugin:
-  cp -r /path/to/wax-memory-plugin ~/.hermes/plugins/wax-memory
-"""
+"""Wax Memory Plugin — native Hermes MemoryProvider backed by Wax MCP."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import subprocess
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from itertools import count
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Hermes MemoryProvider ABC — runtime import so standalone tests work
-# ---------------------------------------------------------------------------
+PLUGIN_VERSION = "0.1.26"
+DEFAULT_ENDPOINT = "http://127.0.0.1:3000/mcp"
+CONFIG_FILENAME = "wax-memory.json"
+MCP_PROTOCOL_VERSION = "2024-11-05"
+WAX_MEMORY_TYPES = [
+    "note",
+    "task_state",
+    "user_preference",
+    "decision",
+    "lesson",
+    "handoff",
+    "constraint",
+    "fact",
+]
+CORE_TOOL_NAMES = {
+    "wax_remember",
+    "wax_recall",
+    "wax_search",
+    "wax_handoff",
+    "wax_handoff_latest",
+    "wax_stats",
+}
+STRUCTURED_TOOL_NAMES = {
+    "wax_entity_upsert",
+    "wax_entity_resolve",
+    "wax_fact_assert",
+    "wax_fact_retract",
+    "wax_facts_query",
+}
+EXTENDED_TOOL_NAMES = {
+    "wax_compact_context",
+    "wax_markdown_export",
+    "wax_markdown_sync",
+    "wax_session_start",
+    "wax_session_end",
+    "wax_session_resume",
+    "wax_session_synthesize",
+    "wax_knowledge_capture",
+    "wax_corpus_search",
+    "wax_promote",
+}
+TOOLS_WITH_SESSION_ID = {
+    "remember",
+    "recall",
+    "search",
+    "handoff",
+    "compact_context",
+    "markdown_export",
+    "session_start",
+    "session_end",
+    "session_resume",
+    "session_synthesize",
+    "memory_append",
+    "memory_search",
+    "memory_get",
+    "memory_promote",
+    "promote",
+    "knowledge_capture",
+    "corpus_search",
+}
+
 try:
-    from agent.memory_provider import MemoryProvider
+    from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
 except ImportError:
     from abc import ABC, abstractmethod
+
+    @dataclass(frozen=True)
+    class RecallStatus:
+        provider_label: str
+        count: int
+        glyph: str = "🧠"
+
+    _TRIVIAL_PROMPT_RE = re.compile(
+        r"^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|"
+        r"hi|hey|hello|yo|sup|"
+        r"continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)"
+        r"""[\s!?.:;,\"'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$""",
+        re.IGNORECASE,
+    )
+
+    def is_trivial_prompt(text: Optional[str]) -> bool:
+        if not text or not text.strip():
+            return True
+        stripped = text.strip()
+        if stripped.startswith("/"):
+            return True
+        return bool(_TRIVIAL_PROMPT_RE.match(stripped))
 
     class MemoryProvider(ABC):
         @property
@@ -51,13 +119,29 @@ except ImportError:
         def initialize(self, session_id: str, **kwargs) -> None:
             pass
 
+        def unavailable_reason(self) -> str:
+            return ""
+
         def system_prompt_block(self) -> str:
             return ""
 
         def prefetch(self, query: str, *, session_id: str = "") -> str:
             return ""
 
-        def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+            return None
+
+        def recall_status(self) -> Optional[RecallStatus]:
+            return None
+
+        def sync_turn(
+            self,
+            user_content: str,
+            assistant_content: str,
+            *,
+            session_id: str = "",
+            messages: Optional[List[Dict[str, Any]]] = None,
+        ) -> None:
             pass
 
         @abstractmethod
@@ -70,6 +154,35 @@ except ImportError:
         def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
             pass
 
+        def on_session_switch(
+            self,
+            new_session_id: str,
+            *,
+            parent_session_id: str = "",
+            reset: bool = False,
+            rewound: bool = False,
+            **kwargs,
+        ) -> None:
+            pass
+
+        def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+            return ""
+
+        def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+            pass
+
+        def on_memory_write(
+            self,
+            action: str,
+            target: str,
+            content: str,
+            metadata: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            pass
+
+        def backup_paths(self) -> List[str]:
+            return []
+
         def shutdown(self) -> None:
             pass
 
@@ -80,124 +193,200 @@ except ImportError:
             pass
 
 
-# ---------------------------------------------------------------------------
-# HTTP client — Wax MCP SSE transport
-# ---------------------------------------------------------------------------
 try:
     import requests
     _HAS_REQUESTS = True
 except ImportError:
     _HAS_REQUESTS = False
 
+try:
+    import httpx
+    _HAS_HTTPX = True
+except ImportError:
+    _HAS_HTTPX = False
+
+_HAS_HTTP = _HAS_REQUESTS or _HAS_HTTPX
+
+_INTERNAL_GATEWAY_TURN_RE = re.compile(
+    r"^\s*(?:"
+    r"\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE[^\]]*\]|"
+    r"\[CONTEXT COMPACTION[^\]]*\]|"
+    r"\[CONTEXT SUMMARY\]:?|"
+    r"\[PRIOR CONTEXT[^\]]*\]|"
+    r"\[Your active task list was preserved across context compression\]|"
+    r"\[IMPORTANT: Background process \d+ matched watch pattern[^\n]*|"
+    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
+    r"A background subagent you dispatched earlier has finished\."
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_internal_gateway_turn(text: str) -> bool:
+    return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_plugin_config(hermes_home: Optional[str] = None) -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    path = Path(home) / CONFIG_FILENAME
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                config.update(loaded)
+        except Exception as exc:
+            logger.debug("Wax config load failed: %s", exc)
+    return config
+
+
+def resolve_endpoint(config: Optional[Dict[str, Any]] = None) -> str:
+    if env := os.environ.get("WAX_MCP_HTTP_ENDPOINT"):
+        return env.rstrip("/")
+    if config and isinstance(config.get("endpoint"), str) and config["endpoint"].strip():
+        return config["endpoint"].rstrip("/")
+    return DEFAULT_ENDPOINT
+
+
+def _jsonrpc_error_message(data: Dict[str, Any]) -> str:
+    error = data.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message") or "Unknown MCP error")
+    return "Unknown MCP error"
+
+
+class WaxMCPError(Exception):
+    """Raised when the Wax MCP server returns an error."""
+
 
 class _WaxHTTPClient:
-    """Stateful HTTP client for Wax MCP SSE transport."""
+    """Stateful HTTP client for Wax MCP streamable HTTP / SSE transport."""
 
     def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
         self._session_id: Optional[str] = None
         self._initialized = False
+        self._ids = count(1)
+        self._lock = threading.Lock()
 
-    def _request(self, payload: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+    def _next_id(self) -> int:
+        return next(self._ids)
+
+    def _headers(self, include_session: bool = True) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
-        if self._session_id:
+        if include_session and self._session_id:
             headers["MCP-Session-Id"] = self._session_id
+        return headers
 
+    def _parse_sse_or_json(self, body: str) -> Dict[str, Any]:
+        for line in body.splitlines():
+            if line.startswith("data: "):
+                data_str = line[6:]
+                if data_str.strip():
+                    return json.loads(data_str)
+        if body.strip():
+            return json.loads(body)
+        raise WaxMCPError("Empty MCP response")
+
+    def _post(self, payload: Dict[str, Any], timeout: float, expect_body: bool = True) -> Dict[str, Any]:
+        headers = self._headers()
         if _HAS_REQUESTS:
             resp = requests.post(
-                self.endpoint, json=payload, headers=headers,
-                timeout=timeout, stream=True,
+                self.endpoint, json=payload, headers=headers, timeout=timeout, stream=True,
             )
             resp.raise_for_status()
+            session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+            if session:
+                self._session_id = session
+            if not expect_body:
+                return {}
             for line in resp.iter_lines(decode_unicode=True):
                 if line and line.startswith("data: "):
                     data_str = line[6:]
                     if data_str.strip():
                         return json.loads(data_str)
+            text = resp.text or ""
+            if text.strip():
+                return self._parse_sse_or_json(text)
             raise WaxMCPError("Empty SSE response")
-        else:
-            import urllib.request
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                self.endpoint, data=data, headers=headers, method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read().decode("utf-8")
-                for line in body.splitlines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str.strip():
-                            return json.loads(data_str)
-                return json.loads(body)
+        if _HAS_HTTPX:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(self.endpoint, json=payload, headers=headers)
+                resp.raise_for_status()
+                session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+                if session:
+                    self._session_id = session
+                if not expect_body:
+                    return {}
+                return self._parse_sse_or_json(resp.text)
+        import urllib.request
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(self.endpoint, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+            if session:
+                self._session_id = session
+            body = resp.read().decode("utf-8")
+            if not expect_body:
+                return {}
+            return self._parse_sse_or_json(body)
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
             return
-
         payload = {
-            "jsonrpc": "2.0", "id": 0,
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "hermes-wax-memory", "version": "0.1.24"},
+                "clientInfo": {"name": "hermes-wax-memory", "version": PLUGIN_VERSION},
             },
         }
-        if _HAS_REQUESTS:
-            resp = requests.post(
-                self.endpoint, json=payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                timeout=30.0, stream=True,
+        data = self._post(payload, timeout=30.0)
+        if "error" in data:
+            raise WaxMCPError(_jsonrpc_error_message(data))
+        try:
+            self._post(
+                {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+                timeout=10.0,
+                expect_body=False,
             )
-            resp.raise_for_status()
-            self._session_id = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
-            for line in resp.iter_lines(decode_unicode=True):
-                if line and line.startswith("data: ") and len(line) > 6:
-                    data = json.loads(line[6:])
-                    if "error" in data:
-                        raise WaxMCPError(data["error"].get("message", "Initialize failed"))
-                    break
-        else:
-            import urllib.request
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                self.endpoint, data=data,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=30.0) as resp:
-                self._session_id = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
-                body = resp.read().decode("utf-8")
-                for line in body.splitlines():
-                    if line.startswith("data: ") and len(line) > 6:
-                        data = json.loads(line[6:])
-                        if "error" in data:
-                            raise WaxMCPError(data["error"].get("message", "Initialize failed"))
-                        break
-
+        except Exception as exc:
+            logger.debug("Wax initialized notification skipped: %s", exc)
         self._initialized = True
         logger.debug("Wax HTTP session initialized: %s", self._session_id)
 
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        self._ensure_initialized()
-        payload = {
-            "jsonrpc": "2.0",
-            "id": hash(f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"),
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        }
-        data = self._request(payload)
+        with self._lock:
+            self._ensure_initialized()
+            payload = {
+                "jsonrpc": "2.0",
+                "id": self._next_id(),
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+            data = self._post(payload, timeout=30.0)
         if "error" in data:
-            raise WaxMCPError(data["error"].get("message", "Unknown MCP error"))
-
+            raise WaxMCPError(_jsonrpc_error_message(data))
         result = data.get("result", {})
         content = result.get("content", [])
         text_parts = [
             block["text"] for block in content
-            if block.get("type") == "text" and "text" in block
+            if isinstance(block, dict) and block.get("type") == "text" and "text" in block
         ]
         return {
             "ok": not result.get("isError", False),
@@ -219,30 +408,13 @@ class _WaxHTTPClient:
         self._initialized = False
 
 
-class WaxMCPError(Exception):
-    """Raised when the Wax MCP server returns an error."""
-
-
-# ---------------------------------------------------------------------------
-# MCP lifecycle manager — auto-start + diagnostics
-# ---------------------------------------------------------------------------
-
 class _WaxMCPManager:
-    """Manages the Wax MCP server lifecycle for Hermes integration.
-
-    - Probes if a Wax MCP server is already running
-    - Optionally auto-starts one if configured
-    - Provides clear diagnostics about vector search capability
-    """
-
     def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
         self._auto_started = False
         self._process: Optional[subprocess.Popen] = None
-        self._vector_search_available: Optional[bool] = None
 
     def probe(self) -> Dict[str, Any]:
-        """Probe the Wax MCP endpoint and return capability info."""
         try:
             client = _WaxHTTPClient(self.endpoint)
             result = client.call_tool("stats", {})
@@ -256,58 +428,45 @@ class _WaxMCPManager:
                     "embedder": stats.get("embedder"),
                     "frame_count": stats.get("frameCount", 0),
                 }
-        except Exception as e:
-            logger.debug("Wax MCP probe failed: %s", e)
+        except Exception as exc:
+            logger.debug("Wax MCP probe failed: %s", exc)
         return {"reachable": False}
 
     def auto_start(self, timeout: float = 10.0) -> bool:
-        """Try to auto-start wax-mcp if not running. Returns True if started."""
-        # Check if already running
-        info = self.probe()
-        if info["reachable"]:
+        if self.probe().get("reachable"):
             return False
-
-        # Try to find wax-mcp binary
         binary = self._find_wax_mcp_binary()
         if not binary:
             logger.warning(
-                "Wax MCP binary not found. Install with:\n"
-                "  npx waxmcp install --build\n"
-                "Or build from source:\n"
-                "  swift build --product wax-mcp --traits MCPServer"
+                "Wax MCP binary not found. Install with: npx waxmcp install --build"
             )
             return False
-
-        # Start wax-mcp with default settings
+        parsed = urlparse(self.endpoint)
+        host = parsed.hostname or "127.0.0.1"
+        port = str(parsed.port or 3000)
         cmd = [
             binary,
             "--transport", "http",
-            "--http-host", "127.0.0.1",
-            "--http-port", "3000",
+            "--http-host", host,
+            "--http-port", port,
             "--embedder", "minilm",
         ]
         logger.info("Auto-starting Wax MCP: %s", " ".join(cmd))
         try:
             self._process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            # Wait for it to be ready
             deadline = time.time() + timeout
             while time.time() < deadline:
                 time.sleep(0.2)
-                info = self.probe()
-                if info["reachable"]:
+                if self.probe().get("reachable"):
                     self._auto_started = True
-                    logger.info("Wax MCP auto-started successfully")
                     return True
-        except Exception as e:
-            logger.error("Failed to auto-start Wax MCP: %s", e)
+        except Exception as exc:
+            logger.error("Failed to auto-start Wax MCP: %s", exc)
         return False
 
     def shutdown(self) -> None:
-        """Shutdown auto-started Wax MCP server."""
         if self._auto_started and self._process:
             try:
                 self._process.terminate()
@@ -321,80 +480,62 @@ class _WaxMCPManager:
             self._auto_started = False
 
     def _find_wax_mcp_binary(self) -> Optional[str]:
-        """Find wax-mcp binary in common locations."""
         candidates = [
             os.environ.get("WAX_MCP_BIN"),
             os.path.expanduser("~/.local/bin/wax-mcp"),
             "/usr/local/bin/wax-mcp",
             "/opt/homebrew/bin/wax-mcp",
-            "wax-mcp",  # PATH
+            "wax-mcp",
         ]
-        # Also check next to current plugin
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        wax_repo = os.path.join(plugin_dir, "..", "..", "..", "..", "..", "..", ".build", "debug", "wax-mcp")
-        candidates.insert(0, os.path.normpath(wax_repo))
-
+        wax_repo = os.path.normpath(
+            os.path.join(plugin_dir, "..", "..", "..", "..", "..", "..", ".build", "debug", "wax-mcp")
+        )
+        candidates.insert(0, wax_repo)
         for candidate in candidates:
             if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
         return None
 
     def diagnose_vector_search(self) -> str:
-        """Return a human-readable diagnosis of vector search status."""
         info = self.probe()
-        if not info["reachable"]:
+        if not info.get("reachable"):
             return (
-                "❌ Wax MCP server is not running.\n"
-                "   Start it manually:  npx waxmcp --transport http\n"
-                "   Or build from source: swift build --product wax-mcp --traits MCPServer"
+                "Wax MCP server is not running. "
+                "Start it with: npx waxmcp --transport http"
             )
-
         if info.get("vector_search_enabled"):
             embedder = info.get("embedder", {})
             model = embedder.get("model", "unknown") if isinstance(embedder, dict) else "unknown"
-            return f"✅ Vector search is active ({model})"
-
+            return f"Vector search is active ({model})"
         return (
-            "⚠️  Vector search is DISABLED — running in text-only mode.\n"
-            "   The broker was built or started without an embedder.\n"
-            "   Fix:\n"
-            "     1. Build with embedders:\n"
-            "        swift build --product wax-cli --traits 'MiniLMEmbeddings,ArcticEmbeddings'\n"
-            "        swift build --product wax-mcp --traits 'MiniLMEmbeddings,ArcticEmbeddings,MCPServer'\n"
-            "     2. Restart with embedder: npx waxmcp --embedder minilm --transport http\n"
-            "   Text search still works fine — this is only about semantic/vector search."
+            "Vector search is disabled — text search still works. "
+            "Restart with: npx waxmcp --embedder minilm --transport http"
         )
 
 
-# ---------------------------------------------------------------------------
-# Configuration helpers
-# ---------------------------------------------------------------------------
+def _schema(name: str, description: str, properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+            "additionalProperties": False,
+        },
+    }
 
-def _get_endpoint(config: Optional[Dict[str, Any]] = None) -> str:
-    if env := os.environ.get("WAX_MCP_HTTP_ENDPOINT"):
-        return env.rstrip("/")
-    if config and isinstance(config.get("endpoint"), str):
-        return config["endpoint"].rstrip("/")
-    return "http://127.0.0.1:3000/mcp"
 
-
-# ---------------------------------------------------------------------------
-# Tool schemas
-# ---------------------------------------------------------------------------
-
-_REMEMBER_SCHEMA = {
-    "name": "wax_remember",
-    "description": (
-        "Store durable or working memory in Wax. Use for facts, decisions, "
-        "lessons, and anything the agent should recall later."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
+_TOOL_SCHEMAS = {
+    "wax_remember": _schema(
+        "wax_remember",
+        "Store durable or working memory in Wax. Use for facts, decisions, lessons, and preferences.",
+        {
             "content": {"type": "string", "description": "Text content to store."},
-            "session_id": {"type": "string", "description": "Optional session UUID."},
-            "metadata": {"type": "object", "description": "Optional metadata.", "additionalProperties": True},
-            "memory_type": {"type": "string", "enum": ["working", "episodic", "durable", "knowledge"]},
+            "session_id": {"type": "string"},
+            "metadata": {"type": "object", "additionalProperties": True},
+            "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
             "durability": {"type": "string", "enum": ["ephemeral", "working", "durable", "locked"]},
             "project": {"type": "string"},
             "repo": {"type": "string"},
@@ -403,186 +544,69 @@ _REMEMBER_SCHEMA = {
             "reviewed": {"type": "boolean"},
             "locked": {"type": "boolean"},
         },
-        "required": ["content"],
-        "additionalProperties": False,
-    },
-}
-
-_RECALL_SCHEMA = {
-    "name": "wax_recall",
-    "description": (
-        "Recall context from Wax memory using RAG assembly. Returns ranked "
-        "memory excerpts. Use 'mode: vector' for semantic search, 'mode: text' "
-        "for keyword search, or 'mode: hybrid' for both (default)."
+        ["content"],
     ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Recall query text."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max context items. Default: 5."},
+    "wax_recall": _schema(
+        "wax_recall",
+        "Recall context from Wax using RAG assembly. Prefer hybrid mode unless a lexical search is required.",
+        {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             "session_id": {"type": "string"},
-            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"], "description": "Search mode. Default: hybrid."},
-            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Hybrid blend (0=text, 1=vector)."},
+            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
+            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-}
-
-_SEARCH_SCHEMA = {
-    "name": "wax_search",
-    "description": (
-        "Run direct Wax search and return ranked raw hits with previews. "
-        "Cheaper than recall — use when you just want to find matching memories."
+        ["query"],
     ),
-    "parameters": {
-        "type": "object",
-        "properties": {
+    "wax_search": _schema(
+        "wax_search",
+        "Run direct Wax search and return ranked raw hits.",
+        {
             "query": {"type": "string"},
             "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
-            "topK": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Max hit count. Default: 10."},
+            "topK": {"type": "integer", "minimum": 1, "maximum": 200},
             "session_id": {"type": "string"},
             "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-}
-
-_HANDOFF_SCHEMA = {
-    "name": "wax_handoff",
-    "description": "Store a cross-session handoff note for later retrieval.",
-    "parameters": {
-        "type": "object",
-        "properties": {
+        ["query"],
+    ),
+    "wax_handoff": _schema(
+        "wax_handoff",
+        "Store a cross-session handoff note for later retrieval.",
+        {
             "content": {"type": "string"},
             "session_id": {"type": "string"},
             "project": {"type": "string"},
             "pending_tasks": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["content"],
-        "additionalProperties": False,
-    },
-}
-
-_HANDOFF_LATEST_SCHEMA = {
-    "name": "wax_handoff_latest",
-    "description": "Fetch the latest handoff note, optionally scoped by project.",
-    "parameters": {
-        "type": "object",
-        "properties": {"project": {"type": "string"}},
-        "required": [],
-        "additionalProperties": False,
-    },
-}
-
-_COMPACT_CONTEXT_SCHEMA = {
-    "name": "wax_compact_context",
-    "description": (
-        "Assemble short, medium, and long-horizon memory into a token-budgeted "
-        "checkpoint for long-running agents."
+        ["content"],
     ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            "session_id": {"type": "string"},
-            "token_budget": {"type": "integer", "minimum": 128, "maximum": 32000},
-            "max_items": {"type": "integer", "minimum": 1, "maximum": 64},
-            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
-            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-}
-
-_MARKDOWN_EXPORT_SCHEMA = {
-    "name": "wax_markdown_export",
-    "description": "Export Markdown projections (MEMORY.md, daily notes) from Wax.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "output_dir": {"type": "string"},
-            "session_id": {"type": "string"},
-        },
-        "required": ["output_dir"],
-        "additionalProperties": False,
-    },
-}
-
-_MARKDOWN_SYNC_SCHEMA = {
-    "name": "wax_markdown_sync",
-    "description": "Import and reconcile Markdown projections back into Wax.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "root_dir": {"type": "string"},
-            "dry_run": {"type": "boolean"},
-        },
-        "required": ["root_dir"],
-        "additionalProperties": False,
-    },
-}
-
-_STATS_SCHEMA = {
-    "name": "wax_stats",
-    "description": "Return Wax runtime and storage statistics.",
-    "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    },
-}
-
-_SESSION_START_SCHEMA = {
-    "name": "wax_session_start",
-    "description": "Create a broker-managed virtual session.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "session_id": {"type": "string"},
-            "agent_id": {"type": "string"},
-            "run_id": {"type": "string"},
-        },
-        "required": [],
-        "additionalProperties": False,
-    },
-}
-
-_SESSION_END_SCHEMA = {
-    "name": "wax_session_end",
-    "description": "End an active broker-managed virtual session.",
-    "parameters": {
-        "type": "object",
-        "properties": {"session_id": {"type": "string"}},
-        "required": [],
-        "additionalProperties": False,
-    },
-}
-
-_ENTITY_UPSERT_SCHEMA = {
-    "name": "wax_entity_upsert",
-    "description": "Upsert a structured-memory entity by key.",
-    "parameters": {
-        "type": "object",
-        "properties": {
+    "wax_handoff_latest": _schema(
+        "wax_handoff_latest",
+        "Fetch the latest handoff note, optionally scoped by project.",
+        {"project": {"type": "string"}},
+    ),
+    "wax_stats": _schema("wax_stats", "Return Wax runtime and storage statistics.", {}),
+    "wax_entity_upsert": _schema(
+        "wax_entity_upsert",
+        "Upsert a structured-memory entity by key.",
+        {
             "key": {"type": "string"},
             "kind": {"type": "string"},
             "aliases": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["key", "kind"],
-        "additionalProperties": False,
-    },
-}
-
-_FACT_ASSERT_SCHEMA = {
-    "name": "wax_fact_assert",
-    "description": "Assert a structured-memory fact (S-P-O triple).",
-    "parameters": {
-        "type": "object",
-        "properties": {
+        ["key", "kind"],
+    ),
+    "wax_entity_resolve": _schema(
+        "wax_entity_resolve",
+        "Resolve a structured-memory entity by alias.",
+        {"alias": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+        ["alias"],
+    ),
+    "wax_fact_assert": _schema(
+        "wax_fact_assert",
+        "Assert a structured-memory fact (S-P-O triple).",
+        {
             "subject": {"type": "string"},
             "predicate": {"type": "string"},
             "object": {"description": "Fact value: string, number, boolean, or typed object."},
@@ -590,17 +614,18 @@ _FACT_ASSERT_SCHEMA = {
             "valid_from": {"type": "integer"},
             "valid_to": {"type": "integer"},
         },
-        "required": ["subject", "predicate", "object"],
-        "additionalProperties": False,
-    },
-}
-
-_FACTS_QUERY_SCHEMA = {
-    "name": "wax_facts_query",
-    "description": "Query structured-memory facts by subject, predicate, or time.",
-    "parameters": {
-        "type": "object",
-        "properties": {
+        ["subject", "predicate", "object"],
+    ),
+    "wax_fact_retract": _schema(
+        "wax_fact_retract",
+        "Retract a structured-memory fact by id.",
+        {"fact_id": {"type": "integer", "minimum": 0}, "at_ms": {"type": "integer"}},
+        ["fact_id"],
+    ),
+    "wax_facts_query": _schema(
+        "wax_facts_query",
+        "Query structured-memory facts by subject, predicate, or time.",
+        {
             "subject": {"type": "string"},
             "predicate": {"type": "string"},
             "as_of": {"type": "integer"},
@@ -608,92 +633,181 @@ _FACTS_QUERY_SCHEMA = {
             "valid_as_of": {"type": "integer"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 500},
         },
-        "required": [],
-        "additionalProperties": False,
-    },
+    ),
+    "wax_compact_context": _schema(
+        "wax_compact_context",
+        "Assemble short, medium, and long-horizon memory into a token-budgeted checkpoint.",
+        {
+            "query": {"type": "string"},
+            "session_id": {"type": "string"},
+            "token_budget": {"type": "integer", "minimum": 128, "maximum": 32000},
+            "max_items": {"type": "integer", "minimum": 1, "maximum": 64},
+            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
+            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        },
+        ["query"],
+    ),
+    "wax_markdown_export": _schema(
+        "wax_markdown_export",
+        "Export Markdown projections (MEMORY.md, daily notes) from Wax.",
+        {"output_dir": {"type": "string"}, "session_id": {"type": "string"}},
+        ["output_dir"],
+    ),
+    "wax_markdown_sync": _schema(
+        "wax_markdown_sync",
+        "Import and reconcile Markdown projections back into Wax.",
+        {"root_dir": {"type": "string"}, "dry_run": {"type": "boolean"}},
+        ["root_dir"],
+    ),
+    "wax_session_start": _schema(
+        "wax_session_start",
+        "Create a broker-managed virtual session.",
+        {"session_id": {"type": "string"}, "agent_id": {"type": "string"}, "run_id": {"type": "string"}},
+    ),
+    "wax_session_end": _schema(
+        "wax_session_end",
+        "End an active broker-managed virtual session.",
+        {"session_id": {"type": "string"}},
+    ),
+    "wax_session_resume": _schema(
+        "wax_session_resume",
+        "Resume an existing broker-managed virtual session.",
+        {"session_id": {"type": "string"}},
+        ["session_id"],
+    ),
+    "wax_session_synthesize": _schema(
+        "wax_session_synthesize",
+        "Summarize the active session into handoff, lessons, and promotion candidates.",
+        {"session_id": {"type": "string"}, "max_candidates": {"type": "integer", "minimum": 1, "maximum": 12}},
+    ),
+    "wax_knowledge_capture": _schema(
+        "wax_knowledge_capture",
+        "Capture durable knowledge from a natural statement.",
+        {
+            "content": {"type": "string"},
+            "session_id": {"type": "string"},
+            "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
+            "kind": {"type": "string"},
+        },
+        ["content"],
+    ),
+    "wax_corpus_search": _schema(
+        "wax_corpus_search",
+        "Search broker-managed session history with provenance.",
+        {"query": {"type": "string"}, "session_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+        ["query"],
+    ),
+    "wax_promote": _schema(
+        "wax_promote",
+        "Promote a working memory into durable memory.",
+        {"session_id": {"type": "string"}, "frame_id": {"type": "integer"}},
+    ),
 }
 
-
-# ---------------------------------------------------------------------------
-# WaxMemoryProvider
-# ---------------------------------------------------------------------------
 
 class WaxMemoryProvider(MemoryProvider):
     """Hermes MemoryProvider that delegates to Wax MCP over HTTP."""
 
-    def __init__(self) -> None:
-        self.endpoint = _get_endpoint()
-        self._client = _WaxHTTPClient(self.endpoint)
+    def __init__(self, client: Any = None, config: Optional[Dict[str, Any]] = None) -> None:
+        self._injected_client = client is not None
+        self._config = dict(config or {})
+        self.endpoint = resolve_endpoint(self._config)
+        self._client = client or _WaxHTTPClient(self.endpoint)
         self._manager = _WaxMCPManager(self.endpoint)
-        self._structured_memory = os.environ.get("WAX_STRUCTURED_MEMORY", "1") == "1"
         self._session_id: Optional[str] = None
         self._hermes_home: str = ""
+        self._platform: str = "cli"
         self._vector_search_available = False
-        logger.info("WaxMemoryProvider initialized — endpoint: %s", self.endpoint)
-
-    # -- MemoryProvider ABC ------------------------------------------------
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_text = ""
+        self._prefetch_query = ""
+        self._prefetch_count = 0
+        self._prefetch_thread: Optional[threading.Thread] = None
+        self._sync_thread: Optional[threading.Thread] = None
+        self._write_threads: List[threading.Thread] = []
 
     @property
     def name(self) -> str:
         return "wax-memory"
 
+    def _structured_memory_enabled(self) -> bool:
+        if "WAX_STRUCTURED_MEMORY" in os.environ:
+            return _truthy(os.environ.get("WAX_STRUCTURED_MEMORY"), True)
+        return _truthy(self._config.get("structured_memory"), True)
+
+    def _extended_tools_enabled(self) -> bool:
+        if "WAX_HERMES_EXTENDED_TOOLS" in os.environ:
+            return _truthy(os.environ.get("WAX_HERMES_EXTENDED_TOOLS"), False)
+        return _truthy(self._config.get("extended_tools"), False)
+
+    def _auto_start_enabled(self) -> bool:
+        if "WAX_MCP_AUTO_START" in os.environ:
+            return _truthy(os.environ.get("WAX_MCP_AUTO_START"), False)
+        return _truthy(self._config.get("auto_start"), False)
+
     def is_available(self) -> bool:
-        """Check if Wax MCP is reachable (auto-start if configured)."""
-        info = self._manager.probe()
-        if info["reachable"]:
-            self._vector_search_available = info.get("vector_search_enabled", False)
+        if self._injected_client:
             return True
+        return _HAS_HTTP
 
-        # Auto-start if WAX_MCP_AUTO_START is set
-        if os.environ.get("WAX_MCP_AUTO_START", "0") == "1":
-            if self._manager.auto_start():
-                info = self._manager.probe()
-                self._vector_search_available = info.get("vector_search_enabled", False)
-                return True
-
-        logger.warning(
-            "Wax MCP not available at %s.\n%s",
-            self.endpoint,
-            self._manager.diagnose_vector_search(),
-        )
-        return False
+    def unavailable_reason(self) -> str:
+        if _HAS_HTTP or self._injected_client:
+            return ""
+        return "Install the requests package (pip install requests>=2.28) so Wax can reach the MCP broker."
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._hermes_home = kwargs.get("hermes_home", "")
-        platform = kwargs.get("platform", "cli")
+        self._hermes_home = kwargs.get("hermes_home") or self._hermes_home
+        self._platform = kwargs.get("platform", "cli")
         agent_context = kwargs.get("agent_context", "primary")
-
         if agent_context != "primary":
             logger.debug("Wax skipping init for non-primary context: %s", agent_context)
             return
 
-        # Log vector search status on first init
-        if not self._vector_search_available:
-            info = self._manager.probe()
-            self._vector_search_available = info.get("vector_search_enabled", False)
-            if not self._vector_search_available and info["reachable"]:
-                logger.warning(
-                    "Vector search is disabled. Text search still works.\n"
-                    "To enable vector search, rebuild with embedders.\n"
-                    "Run: npx waxmcp vector-health  (for full diagnostics)"
-                )
+        if self._hermes_home:
+            self._config.update(load_plugin_config(self._hermes_home))
+            endpoint = resolve_endpoint(self._config)
+            if endpoint != self.endpoint and not self._injected_client:
+                self.endpoint = endpoint
+                self._client = _WaxHTTPClient(self.endpoint)
+                self._manager = _WaxMCPManager(self.endpoint)
 
+        if not self._injected_client and self._auto_start_enabled():
+            self._manager.auto_start()
+
+        if not self._injected_client:
+            info = self._manager.probe()
+            self._vector_search_available = bool(info.get("vector_search_enabled"))
+            if info.get("reachable") and not self._vector_search_available:
+                logger.warning("%s", self._manager.diagnose_vector_search())
+
+        self._start_session(session_id)
+
+    def _start_session(self, session_id: str, resume: bool = False) -> None:
+        tool = "session_resume" if resume else "session_start"
+        args: Dict[str, Any] = {"session_id": session_id}
+        if not resume:
+            args["agent_id"] = f"hermes-{self._platform}"
         try:
-            result = self._client.call_tool(
-                "session_start",
-                {"session_id": session_id, "agent_id": f"hermes-{platform}"},
-            )
+            result = self._client.call_tool(tool, args)
             if result["ok"]:
                 try:
-                    payload = json.loads(result["text"])
+                    payload = json.loads(result["text"]) if result["text"] else {}
                     self._session_id = payload.get("session_id", session_id)
                 except Exception:
                     self._session_id = session_id
-                logger.info("Wax session started: %s", self._session_id)
             else:
-                logger.error("Wax session_start failed: %s", result.get("text", "unknown"))
-        except Exception as e:
-            logger.error("Wax initialize failed: %s", e)
+                if resume:
+                    self._start_session(session_id, resume=False)
+                    return
+                logger.error("Wax %s failed: %s", tool, result.get("text", "unknown"))
+                self._session_id = session_id
+        except Exception as exc:
+            if resume:
+                logger.debug("Wax session_resume failed, starting new session: %s", exc)
+                self._start_session(session_id, resume=False)
+                return
+            logger.error("Wax initialize failed: %s", exc)
+            self._session_id = session_id
 
     def system_prompt_block(self) -> str:
         search_modes = "text, vector, and hybrid" if self._vector_search_available else "text"
@@ -702,131 +816,318 @@ class WaxMemoryProvider(MemoryProvider):
             f"with {search_modes} search.\n"
             "Use wax_remember to save important facts, decisions, and lessons.\n"
             "Use wax_recall to retrieve prior context when needed.\n"
-            "Use wax_handoff to capture session state for future sessions."
+            "Use wax_handoff to capture session state for future sessions.\n"
+            "Built-in MEMORY.md writes are mirrored into Wax automatically."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not query or len(query) < 3:
-            return ""
-        try:
-            result = self._client.call_tool(
-                "recall",
-                {"query": query, "limit": 5, "session_id": session_id or self._session_id},
-            )
-            if result["ok"] and result["text"]:
-                return f"\n[Wax Memory Context]\n{result['text']}\n"
-        except Exception as e:
-            logger.debug("Wax prefetch failed: %s", e)
+    def _active_session(self, session_id: str = "") -> Optional[str]:
+        return session_id or self._session_id
+
+    def _set_prefetch(self, query: str, text: str) -> None:
+        count = 0
+        if text:
+            count = max(1, text.count("\n") + 1) if text.strip() else 0
+        with self._prefetch_lock:
+            self._prefetch_query = query
+            self._prefetch_text = f"\n[Wax Memory Context]\n{text}\n" if text else ""
+            self._prefetch_count = count
+
+    def _tool_args(self, base: Dict[str, Any], session_id: str = "") -> Dict[str, Any]:
+        args = dict(base)
+        active = self._active_session(session_id)
+        if active:
+            args["session_id"] = active
+        return args
+
+    def _recall_text(self, query: str, session_id: str = "") -> str:
+        result = self._client.call_tool(
+            "recall",
+            self._tool_args({"query": query, "limit": 5, "mode": "hybrid"}, session_id),
+        )
+        if result["ok"] and result["text"]:
+            return result["text"]
         return ""
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
+            return
+
+        def _warm() -> None:
+            try:
+                text = self._recall_text(query, session_id)
+                self._set_prefetch(query, text)
+            except Exception as exc:
+                logger.debug("Wax queue_prefetch failed: %s", exc)
+
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=2.0)
+        self._prefetch_thread = threading.Thread(target=_warm, daemon=True)
+        self._prefetch_thread.start()
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
+            return ""
+        with self._prefetch_lock:
+            cached_query = self._prefetch_query
+            cached_text = self._prefetch_text
+        if cached_text and cached_query == query:
+            return cached_text
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=1.0)
+            with self._prefetch_lock:
+                if self._prefetch_text and self._prefetch_query == query:
+                    return self._prefetch_text
+        try:
+            text = self._recall_text(query, session_id)
+            self._set_prefetch(query, text)
+            return self._prefetch_text
+        except Exception as exc:
+            logger.debug("Wax prefetch failed: %s", exc)
+            return ""
+
+    def recall_status(self) -> Optional[RecallStatus]:
+        with self._prefetch_lock:
+            if not self._prefetch_text:
+                return None
+            return RecallStatus(provider_label="Wax", count=self._prefetch_count, glyph="🧠")
+
+    def _spawn(self, target: Callable[[], None]) -> None:
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
+        self._sync_thread = threading.Thread(target=target, daemon=True)
+        self._sync_thread.start()
+        self._write_threads.append(self._sync_thread)
+
+    def _join_background(self, timeout: float = 2.0) -> None:
+        threads = [self._sync_thread, self._prefetch_thread, *self._write_threads]
+        for thread in threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=timeout)
+
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         if not user_content or not assistant_content:
             return
-        try:
-            summary = f"User: {user_content[:500]}\nAssistant: {assistant_content[:500]}"
-            self._client.call_tool(
-                "remember",
-                {
-                    "content": summary,
-                    "session_id": session_id or self._session_id,
-                    "memory_type": "working",
-                    "durability": "working",
-                    "metadata": {"source": "hermes_sync_turn", "platform": "cli"},
-                },
-            )
-        except Exception as e:
-            logger.debug("Wax sync_turn failed: %s", e)
+        if is_trivial_prompt(user_content) or _is_internal_gateway_turn(user_content):
+            return
+
+        def _sync() -> None:
+            try:
+                summary = f"User: {user_content[:500]}\nAssistant: {assistant_content[:500]}"
+                self._client.call_tool(
+                    "remember",
+                    self._tool_args(
+                        {
+                            "content": summary,
+                            "memory_type": "note",
+                            "durability": "working",
+                            "metadata": {"source": "hermes_sync_turn", "platform": self._platform},
+                        },
+                        session_id,
+                    ),
+                )
+            except Exception as exc:
+                logger.debug("Wax sync_turn failed: %s", exc)
+
+        self._spawn(_sync)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        tools = [
-            _REMEMBER_SCHEMA,
-            _RECALL_SCHEMA,
-            _SEARCH_SCHEMA,
-            _HANDOFF_SCHEMA,
-            _HANDOFF_LATEST_SCHEMA,
-            _COMPACT_CONTEXT_SCHEMA,
-            _MARKDOWN_EXPORT_SCHEMA,
-            _MARKDOWN_SYNC_SCHEMA,
-            _STATS_SCHEMA,
-            _SESSION_START_SCHEMA,
-            _SESSION_END_SCHEMA,
-        ]
-        if self._structured_memory:
-            tools.extend([
-                _ENTITY_UPSERT_SCHEMA,
-                _FACT_ASSERT_SCHEMA,
-                _FACTS_QUERY_SCHEMA,
-            ])
-        return tools
-
-    _TOOLS_WITH_SESSION_ID = {
-        "remember", "recall", "search", "handoff", "handoff_latest",
-        "compact_context", "markdown_export", "markdown_sync",
-        "session_start", "session_end", "session_resume",
-        "session_synthesize", "memory_append", "memory_search",
-        "memory_get", "memory_promote", "promote",
-        "knowledge_capture", "corpus_search",
-    }
+        names = set(CORE_TOOL_NAMES)
+        if self._structured_memory_enabled():
+            names.update(STRUCTURED_TOOL_NAMES)
+        if self._extended_tools_enabled():
+            names.update(EXTENDED_TOOL_NAMES)
+        return [_TOOL_SCHEMAS[name] for name in _TOOL_SCHEMAS if name in names]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         wax_tool = tool_name.replace("wax_", "", 1)
+        forwarded = dict(args or {})
+        if (
+            self._session_id
+            and "session_id" not in forwarded
+            and wax_tool in TOOLS_WITH_SESSION_ID
+        ):
+            forwarded["session_id"] = self._session_id
         try:
-            if (self._session_id
-                    and "session_id" not in args
-                    and wax_tool in self._TOOLS_WITH_SESSION_ID):
-                args = {**args, "session_id": self._session_id}
-            result = self._client.call_tool(wax_tool, args)
-            return json.dumps(result)
-        except Exception as e:
-            logger.error("Wax tool %s failed: %s", tool_name, e)
-            return json.dumps({"error": str(e), "ok": False})
+            result = self._client.call_tool(wax_tool, forwarded)
+            if result["ok"]:
+                return result["text"] or json.dumps({"ok": True})
+            return json.dumps({"ok": False, "error": result["text"] or "Wax tool failed"})
+        except Exception as exc:
+            logger.error("Wax tool %s failed: %s", tool_name, exc)
+            return json.dumps({"error": str(exc), "ok": False})
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        rewound: bool = False,
+        **kwargs,
+    ) -> None:
+        if rewound and new_session_id == (self._session_id or ""):
+            with self._prefetch_lock:
+                self._prefetch_text = ""
+                self._prefetch_query = ""
+                self._prefetch_count = 0
+            return
+        old = self._session_id
+        if reset and old:
+            try:
+                self._client.call_tool("session_end", {"session_id": old})
+            except Exception as exc:
+                logger.debug("Wax session_end during reset failed: %s", exc)
+            self._start_session(new_session_id, resume=False)
+        else:
+            self._start_session(new_session_id, resume=True)
+        with self._prefetch_lock:
+            self._prefetch_text = ""
+            self._prefetch_query = ""
+            self._prefetch_count = 0
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         logger.info("Wax on_session_end triggered")
         try:
-            summary_parts = []
-            for msg in messages[-6:]:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if content and len(content) < 500:
-                    summary_parts.append(f"{role}: {content[:200]}")
-            if summary_parts:
-                summary = "\n".join(summary_parts)
+            content = ""
+            try:
+                result = self._client.call_tool(
+                    "session_synthesize",
+                    {"session_id": self._session_id} if self._session_id else {},
+                )
+                if result["ok"] and result["text"]:
+                    try:
+                        payload = json.loads(result["text"])
+                        content = (
+                            payload.get("handoff")
+                            or payload.get("content")
+                            or payload.get("summary")
+                            or result["text"]
+                        )
+                    except Exception:
+                        content = result["text"]
+            except Exception as exc:
+                logger.debug("Wax session_synthesize failed: %s", exc)
+            if not content:
+                parts = []
+                for msg in messages[-6:]:
+                    role = msg.get("role", "")
+                    text = msg.get("content", "")
+                    if text and len(str(text)) < 500:
+                        parts.append(f"{role}: {str(text)[:200]}")
+                content = "\n".join(parts)
+            if content:
                 self._client.call_tool(
                     "handoff",
-                    {"content": summary, "session_id": self._session_id, "pending_tasks": []},
+                    self._tool_args({"content": content, "pending_tasks": []}),
                 )
             if self._session_id:
                 self._client.call_tool("session_end", {"session_id": self._session_id})
-                logger.info("Wax session ended: %s", self._session_id)
-        except Exception as e:
-            logger.error("Wax on_session_end failed: %s", e)
+        except Exception as exc:
+            logger.error("Wax on_session_end failed: %s", exc)
         finally:
             self._session_id = None
             self._client.close()
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         try:
-            user_msgs = [m.get("content", "") for m in messages if m.get("role") == "user"]
+            user_msgs = [str(m.get("content", "")) for m in messages if m.get("role") == "user"]
             if not user_msgs:
                 return ""
             query = " ".join(user_msgs[-3:])[:200]
             result = self._client.call_tool(
                 "compact_context",
-                {"query": query, "session_id": self._session_id, "token_budget": 800},
+                self._tool_args({"query": query, "token_budget": 800}),
             )
             if result["ok"]:
                 return result["text"]
-        except Exception as e:
-            logger.debug("Wax on_pre_compress failed: %s", e)
+        except Exception as exc:
+            logger.debug("Wax on_pre_compress failed: %s", exc)
         return ""
 
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        if not task or not result:
+            return
+
+        def _write() -> None:
+            try:
+                self._client.call_tool(
+                    "remember",
+                    self._tool_args(
+                        {
+                            "content": f"Delegated: {task[:400]}\nResult: {result[:400]}",
+                            "memory_type": "note",
+                            "durability": "working",
+                            "metadata": {
+                                "source": "hermes_delegation",
+                                "child_session_id": child_session_id or "",
+                            },
+                        }
+                    ),
+                )
+            except Exception as exc:
+                logger.debug("Wax on_delegation failed: %s", exc)
+
+        self._spawn(_write)
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if action not in {"add", "replace"} or not content:
+            return
+        memory_type = "user_preference" if target == "user" else "note"
+
+        def _write() -> None:
+            try:
+                self._client.call_tool(
+                    "remember",
+                    self._tool_args(
+                        {
+                            "content": content,
+                            "memory_type": memory_type,
+                            "durability": "durable",
+                            "metadata": {
+                                "source": "hermes_memory_write",
+                                "target": target,
+                                "action": action,
+                            },
+                        }
+                    ),
+                )
+            except Exception as exc:
+                logger.debug("Wax on_memory_write failed: %s", exc)
+
+        self._spawn(_write)
+
+    def backup_paths(self) -> List[str]:
+        candidates = [
+            os.environ.get("WAX_STORE_PATH"),
+            os.path.expanduser("~/.wax/memory.wax"),
+            os.path.expanduser("~/.local/share/waxmcp"),
+        ]
+        paths: List[str] = []
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                paths.append(os.path.abspath(candidate))
+        return paths
+
     def shutdown(self) -> None:
+        self._join_background()
         if self._session_id:
             try:
                 self._client.call_tool("session_end", {"session_id": self._session_id})
-            except Exception as e:
-                logger.debug("Wax shutdown cleanup failed: %s", e)
+            except Exception as exc:
+                logger.debug("Wax shutdown cleanup failed: %s", exc)
             finally:
                 self._session_id = None
         self._client.close()
@@ -838,39 +1139,43 @@ class WaxMemoryProvider(MemoryProvider):
                 "key": "endpoint",
                 "description": "Wax MCP HTTP endpoint URL",
                 "required": False,
-                "default": "http://127.0.0.1:3000/mcp",
+                "default": DEFAULT_ENDPOINT,
                 "env_var": "WAX_MCP_HTTP_ENDPOINT",
             },
             {
                 "key": "auto_start",
-                "description": "Auto-start Wax MCP if not running (set WAX_MCP_AUTO_START=1)",
+                "description": "Auto-start Wax MCP if it is not already running",
                 "required": False,
                 "default": False,
+                "type": "boolean",
                 "choices": [True, False],
-            },
-            {
-                "key": "structured_memory",
-                "description": "Enable structured memory tools",
-                "required": False,
-                "default": True,
-                "choices": [True, False],
-                "env_var": "WAX_STRUCTURED_MEMORY",
+                "env_var": "WAX_MCP_AUTO_START",
             },
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-        config_path = os.path.join(hermes_home, "wax-memory.json")
+        config_path = Path(hermes_home) / CONFIG_FILENAME
+        existing = load_plugin_config(hermes_home)
+        existing.update(values)
         try:
-            with open(config_path, "w") as f:
-                json.dump(values, f, indent=2)
-        except Exception as e:
-            logger.warning("Wax save_config failed: %s", e)
+            config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+            self._config.update(existing)
+            self.endpoint = resolve_endpoint(self._config)
+        except Exception as exc:
+            logger.warning("Wax save_config failed: %s", exc)
 
-
-# ---------------------------------------------------------------------------
-# Plugin entry point
-# ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
     """Register Wax as a Hermes memory provider plugin."""
     ctx.register_memory_provider(WaxMemoryProvider())
+    skills_dir = Path(__file__).resolve().parent / "skills" / "maintenance" / "SKILL.md"
+    register_skill = getattr(ctx, "register_skill", None)
+    if callable(register_skill) and skills_dir.is_file():
+        try:
+            register_skill(
+                "maintenance",
+                skills_dir,
+                "Maintain the Wax memory store used by Hermes",
+            )
+        except Exception as exc:
+            logger.debug("Wax skill registration skipped: %s", exc)
