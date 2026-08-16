@@ -200,12 +200,11 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Authenticate to npm
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "${HOME}/.npmrc"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Ensures subsequent steps can authenticate with secrets.NPM_TOKEN
+          # via NODE_AUTH_TOKEN (required by the registry-url .npmrc template).
 
       - name: Publish package
         working-directory: Resources/npm/waxmcp
         run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
