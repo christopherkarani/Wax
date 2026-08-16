@@ -19,21 +19,43 @@ This will:
 3. Configure default store paths under `~/.wax`
 4. Stage the **wax-mcp operator skill** under `~/.local/share/waxmcp/skills/wax-mcp`
 5. Attempt `claude install-skill` for that staged skill (best-effort)
-6. Print a pasteable `CLAUDE.md` / `AGENTS.md` project-rules block as fallback
+6. Print a pasteable project-rules block as fallback (same text as `Resources/skills/public/wax-mcp/references/project-rules.md`)
 
 Skip skill staging with `--skip-skill` if you only want the MCP server.
 
-## How agents learn the playbook
+## Operator playbook (single source of truth)
 
-Wax teaches agents at three layers:
+**Do not maintain a second conflicting essay of the session lifecycle.** The canonical
+host-facing playbook is embedded in MCP connections from:
+
+`Sources/WaxMCPServer/AgentInstructions.swift` (`MCPAgentInstructions`)
+
+That text is what every connected agent receives as server `instructions`. Expand or
+correct the lifecycle there first; then keep the skill and pasteable project-rules
+aligned with it.
 
 | Layer | When it applies | What it teaches |
 |-------|-----------------|-----------------|
-| MCP `instructions` + tool descriptions | Every connected host | Session lifecycle, anti-patterns |
-| `wax-mcp` skill | Hosts that load skills | Full operator playbook + install notes |
-| Project rules (`CLAUDE.md` / `AGENTS.md`) | Always-on project instructions | Same workflow rules as a paste block |
+| MCP `instructions` (`AgentInstructions.swift`) | Every connected host | **SoT** session lifecycle + tool selection |
+| `wax-mcp` skill | Hosts that load skills | Install notes + same playbook (must match SoT) |
+| Project rules paste block | Always-on project instructions | Same workflow rules for `CLAUDE.md` / app `AGENTS.md` |
 
-You usually only need step 1. Use the skill or project rules when the host ignores MCP instructions or you want stronger always-on enforcement.
+> Root repo `AGENTS.md` is for **public-repo hygiene** for contributors — do not overwrite
+> it with the memory operator playbook.
+
+You usually only need the MCP install. Use the skill or project rules when the host
+ignores MCP instructions or you want stronger always-on enforcement.
+
+### Intended primary search path
+
+Per `AgentInstructions.swift` and tool descriptions:
+
+- Prefer **`recall`** for assembled RAG context (default read path).
+- Use **`search`** for raw ranked hits; prefer `mode: "hybrid"` unless a lexical text search is requested.
+
+> Note: some wire paths currently default omitted `search` mode to `"text"`. Treat
+> **hybrid as the intended primary** when semantic recall helps; aligning code defaults
+> is tracked in Phase 4 ([#94](https://github.com/christopherkarani/Wax/issues/94)).
 
 ### Skill: agent operator vs Swift framework
 
@@ -56,28 +78,9 @@ The published `waxmcp` npm package also ships `skills/wax-mcp` so installs do no
 
 ## Recommended project rules
 
-Paste this into your repo prompt, `CLAUDE.md`, or `AGENTS.md` after installing Wax:
-
-```text
-Use the Wax MCP server for persistent memory in this repo.
-
-Workflow rules:
-- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
-- Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits.
-- Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-- Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
-- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
-- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
-
-Behavior expectations:
-- Read existing handoffs and recall results before asking me to restate prior context.
-- Keep memory writes concise, factual, and scoped to the task.
-- When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
-```
-
-The same text ships in `Resources/skills/public/wax-mcp/references/project-rules.md`.
+Paste the block in `Resources/skills/public/wax-mcp/references/project-rules.md` into
+your repo prompt, `CLAUDE.md`, or app-level `AGENTS.md` after installing Wax. Keep that
+file aligned with `AgentInstructions.swift` — do not fork a third copy here.
 
 ## Run doctor
 
@@ -104,6 +107,8 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## MCP tool highlights
 
+Canonical list: `Sources/WaxMCPServer/ToolSchemas.swift` (no `photo_*` / `video_*` tools).
+
 - Session lifecycle: `session_start`, `session_end`
 - Session scoping on reads: `recall` and `search` accept `session_id`
 - Explicit session scoping on writes: `remember` and `handoff` accept `session_id`
@@ -113,7 +118,7 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## npx launcher
 
-The npm launcher is at `npm/waxmcp` (package name `waxmcp`).
+The npm launcher is at `Resources/npm/waxmcp` (package name `waxmcp`).
 
 ```bash
 npx -y waxmcp@latest mcp serve
@@ -133,9 +138,9 @@ Running `npx -y waxmcp@latest mcp install --scope user` stages those bundled art
 stable local runtime directory and registers the staged `wax-mcp` binary, so steady-state
 Claude/Codex sessions do not depend on raw `npx`.
 
-For local development:
+For local development from a Wax checkout:
 
 ```bash
-export WAX_CLI_BIN=/Users/chriskarani/CodingProjects/AIStack/Wax/.build/debug/wax-cli
-npx --yes /Users/chriskarani/CodingProjects/AIStack/Wax/npm/waxmcp mcp doctor
+export WAX_CLI_BIN="$(pwd)/.build/debug/wax-cli"
+npx --yes ./Resources/npm/waxmcp mcp doctor
 ```

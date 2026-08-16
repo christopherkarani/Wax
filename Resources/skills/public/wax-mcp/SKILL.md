@@ -17,34 +17,45 @@ Teach agents how to **use** the Wax MCP server correctly every session.
 This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 `wax` skill under `Resources/skills/public/wax`.
 
+## Source of truth
+
+The host-facing lifecycle playbook is defined in
+`Sources/WaxMCPServer/AgentInstructions.swift` (`MCPAgentInstructions`) and shipped
+as MCP server `instructions` on every tools connection. **Edit that file when the
+playbook changes.** This skill and `references/project-rules.md` must stay aligned
+with it — do not invent a conflicting second essay.
+
+Root repo `AGENTS.md` is contributor hygiene only; do not overwrite it with this
+memory playbook.
+
 ## Session Lifecycle (required)
 
-1. **Start**
-   - Call `handoff_latest` first (optionally with `project`) to load prior context.
-   - Call `session_start` once.
-   - Keep the returned `session_id` for the rest of the session.
-2. **Work**
-   - Before answering from memory, call `recall` (default) or `search` (raw hits).
-   - When you learn something durable, call `remember` with concise factual text.
-   - For session-scoped writes, pass `session_id` as a **top-level** argument.
-   - Never put `session_id` inside `metadata`.
-3. **End**
-   - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
-   - Call `session_end` (pass `session_id` when multiple sessions may be active).
+Matches `AgentInstructions.swift`:
 
-## Read Path
+1. Call `handoff_latest` first (optional `project`) to resume prior context.
+2. Call `session_start` once and keep the returned `session_id`.
+3. Before answering from memory, call `recall` (default) or `search` (raw ranked hits).
+4. When you learn durable facts, call `remember` with concise factual content. Pass
+   `session_id` as a **top-level** argument for session-scoped writes — never put
+   `session_id` inside `metadata`.
+5. Near session end, call `handoff` (`content`, optional `project` / `pending_tasks` /
+   `session_id`), then `session_end`.
 
-| Goal | Tool |
-|------|------|
-| Assembled RAG context for the current question | `recall` |
-| Raw ranked hits / debugging retrieval | `search` |
+## Intended primary search path
+
+| Goal | Tool / mode |
+|------|-------------|
+| Assembled RAG context (preferred read) | `recall` |
+| Raw ranked hits | `search` with `mode: "hybrid"` unless lexical-only is requested |
 | Cross-session history with provenance | `corpus_search` |
-| Health / embedder / store stats | `stats` |
+| Health / embedder / store | `stats` |
 
-Search mode guidance:
+> Code note: some `search` call paths still default omitted `mode` to `"text"`.
+> Prefer hybrid in agent calls; aligning wire defaults is Phase 4 (#94).
 
-- Prefer `mode: "hybrid"` when semantic recall helps.
-- Use `mode: "text"` for fast or deterministic lexical lookup.
+There are **no** `photo_*` or `video_*` MCP tools. Store transcript / photo-derived
+text with `remember` until multimodal MCP tools exist. Tool list:
+`Sources/WaxMCPServer/ToolSchemas.swift`.
 
 ## Write Path
 
@@ -80,8 +91,6 @@ Write quality rules:
 
 ## Install / Host Setup (for humans and setup agents)
 
-MCP server:
-
 ```bash
 npx -y waxmcp@latest mcp install --scope user
 ```
@@ -90,16 +99,15 @@ That command stages the runtime, registers the MCP server, and stages this skill
 under `~/.local/share/waxmcp/skills/wax-mcp` (or `$WAX_MCP_INSTALL_ROOT/../skills`
 when the install root is overridden).
 
-Skill install (Claude Code):
-
 ```bash
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 # or from source
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
 ```
 
-Project rules fallback: paste `references/project-rules.md` into `CLAUDE.md` or
-`AGENTS.md` when the host does not load skills automatically.
+Project rules fallback: paste `references/project-rules.md` into `CLAUDE.md` or an
+**app** `AGENTS.md` when the host does not load skills automatically. Full setup:
+`Resources/docs/wax-mcp-setup.md`.
 
 ## Quick Tool Map
 
@@ -110,7 +118,7 @@ Project rules fallback: paste `references/project-rules.md` into `CLAUDE.md` or
 | `session_resume` | Resume a known session after restart |
 | `remember` | Store durable free-text memory |
 | `recall` | Default read / RAG assembly |
-| `search` | Raw ranked hits |
+| `search` | Raw ranked hits (prefer hybrid) |
 | `handoff` | End-of-session summary + pending tasks |
 | `corpus_search` | Cross-session search with provenance |
 | `stats` | Health check |
@@ -118,5 +126,6 @@ Project rules fallback: paste `references/project-rules.md` into `CLAUDE.md` or
 
 ## References
 
-- `references/project-rules.md` — pasteable project instruction block
+- SoT: `Sources/WaxMCPServer/AgentInstructions.swift`
+- `references/project-rules.md` — pasteable project instruction block (must match SoT)
 - Repo setup doc: `Resources/docs/wax-mcp-setup.md`

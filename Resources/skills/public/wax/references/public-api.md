@@ -92,4 +92,8 @@ The following are `package`-access internals. They are used by Wax's own CLI/MCP
 - `WaxSession`, `Wax` actor, `SearchRequest`, `SearchResponse`, `FrameFilter`, structured-memory types (`EntityKey`, facts)
 - `MiniLMEmbedder` (use `BuiltInEmbeddings.make(.miniLM)` or `Memory.Config.embedding = .builtIn(.miniLM)` instead)
 
-Agent-facing access to structured memory, photo, and video memory is available through the Wax MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, `photo_*`, `video_*`), not through `import Wax`.
+Agent-facing structured memory is available through Wax MCP tools (`entity_upsert`,
+`fact_assert`, `facts_query`, `entity_resolve`, …), not through `import Wax`. Photo and
+video pipelines remain package-only; there are no `photo_*` / `video_*` MCP tools. Store
+transcripts or photo-derived text with MCP `remember` / `Memory.save` until a public
+multimodal surface exists. Canonical MCP tool list: `Sources/WaxMCPServer/ToolSchemas.swift`.

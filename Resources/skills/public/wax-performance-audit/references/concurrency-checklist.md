@@ -1,6 +1,8 @@
 # Concurrency Checklist
 
-Use this guide when a change triggers Swift 6.2 warnings, actor-isolation failures, or suspicious parallelism.
+Use this guide when a change triggers Swift 6 concurrency warnings, actor-isolation failures, or suspicious parallelism.
+
+Wax packages with `swift-tools-version: 6.1` (`Package.swift`). CI commonly builds with Swift 6.2; treat Swift 6 concurrency rules as required either way.
 
 ## First Questions
 

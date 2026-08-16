@@ -24,14 +24,15 @@ That install flow:
 4. Attempts `claude install-skill` when available and prints project-rules fallback text
 
 So regular MCP sessions do not keep launching through raw `npx`, and agents get a
-session lifecycle playbook (also embedded in MCP server instructions).
+session lifecycle playbook from MCP server `instructions`
+(`Sources/WaxMCPServer/AgentInstructions.swift` — source of truth; skill must match).
 
 ```bash
 # If skill auto-install did not run:
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 ```
 
-> `wax-mcp` skill = agent operator playbook for MCP tools.
+> `wax-mcp` skill = agent operator playbook for MCP tools (defer to `AgentInstructions.swift`).
 > `wax` skill (separate, in the monorepo) = Swift framework integration guidance.
 
 > Note: the bundled npm runtime currently ships `darwin-arm64` and `darwin-x64` artifacts. The underlying

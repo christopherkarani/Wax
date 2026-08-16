@@ -1,6 +1,6 @@
 ---
 name: wax-performance-audit
-description: Benchmarking and performance auditing for the Wax repo. Use when running or interpreting Wax benchmarks, diagnosing CPU, memory, or I/O bottlenecks, or investigating Swift 6.2 concurrency issues such as Sendable, actor isolation, `@unchecked Sendable`, task-group fan-out, and data races.
+description: Benchmarking and performance auditing for the Wax repo. Use when running or interpreting Wax benchmarks, diagnosing CPU, memory, or I/O bottlenecks, or investigating Swift 6 concurrency issues such as Sendable, actor isolation, `@unchecked Sendable`, task-group fan-out, and data races.
 ---
 
 # Wax Performance Audit
@@ -9,7 +9,7 @@ description: Benchmarking and performance auditing for the Wax repo. Use when ru
 
 Use this skill to benchmark Wax changes, isolate the hottest code path, and separate real regressions from noisy samples.
 
-The repo builds with Swift 6.1 and `StrictConcurrency` enabled, so audit for Swift 6.2 concurrency risks without assuming 6.2-only language mode.
+The package uses `swift-tools-version: 6.1` with `StrictConcurrency` enabled. CI often builds with Swift 6.2 — audit for Swift 6 concurrency risks either way without assuming a 6.2-only language mode.
 
 ## Workflow
 
@@ -55,7 +55,7 @@ Prefer these repo entry points when they match the symptom:
 - Harness plumbing: `measureAsync` in `RAGBenchmarkSupport.swift` uses `DispatchSemaphore` plus `Task` because XCTest measurement is synchronous; do not confuse that with production concurrency.
 - ANE/GPU: CPU-only benchmark paths are intentional in some suites, and warm p95/p99 values can be noisy when `ANECompilerService` or similar background work is active.
 
-## Swift 6.2 Concurrency
+## Swift 6 Concurrency
 
 Use [`references/concurrency-checklist.md`](references/concurrency-checklist.md) when the change touches actors, task groups, `Sendable`, or `@unchecked Sendable`.
 

@@ -9,16 +9,17 @@ description: >
 # Wax (Swift Framework)
 
 ## Overview
-Use this skill to design and implement correct Wax-based on-device memory flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
+Use this skill to design and implement correct Wax-based on-device memory flows with Swift 6.1+ (`swift-tools-version: 6.1`; CI often builds with Swift 6.2), emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
 
 If you need the agent memory operator playbook for MCP tools (`remember`, `recall`,
-`handoff`, `session_start`), use the `wax-mcp` skill instead of this one.
+`handoff`, `session_start`), use the `wax-mcp` skill instead of this one. That playbook’s
+source of truth is `Sources/WaxMCPServer/AgentInstructions.swift`.
 
 ## Choose The API Surface
 1. Use `Memory` (public actor) for all text memory and retrieval. It is the only supported entry point for apps.
 2. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, and `WaxSession` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
-3. Photo/video memory and structured memory (entities/facts) are exposed to agents through the Wax MCP server tools, not through `import Wax`.
-4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
+3. Structured memory (entities/facts) is available to agents through Wax MCP tools (`entity_*`, `fact_*`). Photo/video pipelines are **package-only** today — there are no `photo_*` / `video_*` MCP tools. Swift apps store transcripts or photo-derived text via `Memory` until a public multimodal facade ships.
+4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`). Apps select embedders through `Memory.Config.embedding` / `BuiltInEmbeddings` — do not construct `MiniLMEmbedder` from app code.
 
 ## Core Workflow
 1. Choose a `.wax` store URL.

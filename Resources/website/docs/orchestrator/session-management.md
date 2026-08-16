@@ -1,39 +1,45 @@
 ---
 sidebar_position: 4
-title: "Session Management"
+title: "Session Management (internal)"
 sidebar_label: "Session Management"
 ---
 
-Understand how public orchestrators manage persistence sessions.
+:::warning App targets: use `Memory`
+`WaxSession`, `MemoryOrchestrator`, `PhotoRAGOrchestrator`, and `VideoRAGOrchestrator` are **package-internal**. Downstream iOS/macOS apps cannot construct them. Use [`Memory`](../ios/memory-api) from `import Wax`. This page is contributor documentation for the code behind that facade.
+:::
+
+Understand how package-internal orchestrators manage persistence sessions.
 
 ## Overview
 
-`WaxSession` is a package-only implementation detail, not public API. Application code should use `MemoryOrchestrator` for text memory, `PhotoRAGOrchestrator` for photo RAG, or `VideoRAGOrchestrator` for video RAG.
+`WaxSession` is a package-only implementation detail, not public API. Application code should use `Memory`, which manages sessions internally.
 
-The orchestrators open, stage, commit, and close internal sessions as needed. They also coordinate writer access with the underlying WaxCore store so callers do not construct lower-level sessions directly.
+Package orchestrators open, stage, commit, and close internal sessions as needed. They also coordinate writer access with the underlying WaxCore store so callers do not construct lower-level sessions directly.
 
-## Public Lifecycle
+## App-facing lifecycle
 
-Create one orchestrator per store URL and close it when the store is no longer needed:
+Create one `Memory` per store URL and close it when the store is no longer needed:
 
 ```swift
-let memory = try await MemoryOrchestrator(at: storeURL)
-try await memory.remember("New content")
-let context = try await memory.recall(query: "content")
-_ = context.items
+let memory = try await Memory(at: storeURL)
+try await memory.save("New content")
+let results = try await memory.search("content")
+_ = results.items
 
 try await memory.close()
 ```
 
-Call `MemoryOrchestrator.flush()` when you need to force pending indexes and frame metadata to disk before process shutdown.
+Call `Memory.flush()` when you need to force pending indexes and frame metadata to disk before process shutdown. `close()` flushes automatically.
 
 ## Writer Behavior
 
-WaxCore allows multiple readers and one writer. Public orchestrators acquire and release writer access internally during write operations. If an application needs external coordination, serialize writes at the orchestrator boundary instead of constructing package-only session types.
+WaxCore allows multiple readers and one writer. `Memory` acquires and releases writer access internally during write operations. If an application needs external coordination, serialize writes at the `Memory` boundary instead of constructing package-only session types.
 
 ## Search Configuration
 
-Configure public search behavior through `OrchestratorConfig` and `FastRAGConfig`. For text-only usage, disable vector search. For semantic recall, provide an `EmbeddingProvider` and keep `OrchestratorConfig.enableVectorSearch` enabled.
+Configure search behavior through `Memory.Config`. For text-only usage, set `enableVectorSearch = false`. For semantic recall, keep `enableVectorSearch` enabled — the built-in MiniLM embedder is wired automatically on iOS 18/macOS 15+ (default `MiniLMEmbeddings` trait), or select a custom provider via `Memory.Config.embedding = .custom(...)` on `Memory(at:config:)` / `Memory(at:configure:)`.
+
+Use `Memory.stats()` and `RAGContext.diagnostics` to verify which retrieval lanes are actually active.
 
 ## Lower-Level Internals
 

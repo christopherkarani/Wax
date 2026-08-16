@@ -4,26 +4,22 @@ On-device sentence embeddings via CoreML with the all-MiniLM-L6-v2 transformer m
 
 ## Overview
 
-WaxVectorSearchMiniLM provides a production-ready `EmbeddingProvider` that runs entirely on-device using Apple's Neural Engine. It produces 384-dimensional, L2-normalized embeddings optimized for semantic similarity search.
-
-The module wraps the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) sentence transformer as a compiled CoreML model with a full BERT WordPiece tokenizer.
+WaxVectorSearchMiniLM provides the package-internal CoreML MiniLM stack used by Wax’s built-in embeddings. Application code should **not** import this module or construct ``MiniLMEmbedder``. Use the public Wax facade instead:
 
 ```swift
-import WaxVectorSearchMiniLM
+import Wax
 
-let embedder = try MiniLMEmbedder()
+// Automatic MiniLM on iOS 18/macOS 15+ (default MiniLMEmbeddings trait)
+let memory = try await Memory(at: storeURL)
 
-// Single embedding
-let vector = try await embedder.embed("What is Swift concurrency?")
-// vector.count == 384
-
-// Batch embedding (much faster for bulk ingestion)
-let vectors = try await embedder.embed(batch: [
-    "First document",
-    "Second document",
-    "Third document"
-])
+// Or force / customize via Config.embedding / BuiltInEmbeddings
+let memoryForced = try await Memory(at: storeURL) { config in
+    config.embedding = .builtIn(.miniLM)
+}
+let provider = try await BuiltInEmbeddings.make(.miniLM)
 ```
+
+The module wraps the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) sentence transformer as a compiled CoreML model with a full BERT WordPiece tokenizer. It produces 384-dimensional, L2-normalized embeddings optimized for semantic similarity search.
 
 ### Key Characteristics
 
@@ -35,6 +31,7 @@ let vectors = try await embedder.embed(batch: [
 | Compute | Neural Engine + CPU (default) |
 | Quantization | Float16 output, converted to Float32 |
 | Execution mode | On-device only (no network) |
+| App access | Via ``Memory/Config/embedding`` / ``BuiltInEmbeddings`` only |
 
 This module is conditionally compiled via the `MiniLMEmbeddings` package trait, which is enabled by default.
 

@@ -5,11 +5,14 @@ The video RAG pipeline (`VideoRAGOrchestrator`, `VideoFile`, `VideoQuery`,
 `VideoTranscriptProvider`) is **package-only** in the current release: downstream Swift
 apps cannot import or construct it. Do not generate client code against it.
 
-Supported paths today:
-1. Agent workflows: use the Wax MCP server video tools (`video_*`), which run the
-   pipeline inside the Wax process. Host apps supply transcripts — Wax does not
-   transcribe in v1.
-2. Swift apps: store transcript text and metadata in `Memory` and search it with the
-   standard text/vector lanes.
+There are **no** Wax MCP `video_*` tools today (see `Sources/WaxMCPServer/ToolSchemas.swift`).
 
-A stable public video facade will be documented here when it ships.
+Supported path today:
+1. Host apps (or agents with transcript text) store transcript text and metadata in
+   `Memory` via `save` / MCP `remember`, then search with the standard text/vector lanes
+   (`Memory.search` or MCP `recall` / `search`). Wax does not transcribe in v1 — supply
+   transcripts yourself.
+2. Keep content concise and task-scoped; use metadata keys (for example `source=video`,
+   `asset_id`, timestamps) so later retrieval can filter or cite provenance.
+
+A stable public video facade and any MCP video tools will be documented here when they ship.

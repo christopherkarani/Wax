@@ -32,10 +32,11 @@ When you call `MemoryOrchestrator/remember(_:metadata:)`, the orchestrator:
 
 1. **Chunks** the text using the configured chunking strategy (default: token-count with 400 tokens and 40-token overlap)
 2. **Embeds** each chunk using the embedding provider (if provided), batching through `BatchEmbeddingProvider` when available
-3. **Writes** each chunk as a frame to the `.wax` file
+3. **Writes** each chunk as a frame to the `.wax` file's write-ahead log (WAL)
 4. **Indexes** each chunk's text in the FTS5 full-text search engine
-5. **Adds** each chunk's embedding to the vector search engine
-6. **Commits** all changes atomically
+5. **Adds** each chunk's embedding to the live vector search engine and the pending vector set
+
+Writes are **not** committed to the durable indexes on every `remember` call. Call `flush()` (or `close()`, which flushes) to commit the WAL, FTS index, and vector index atomically. In-process searches see pending vectors immediately; durability requires a commit. The public `Memory.save` / `Memory.flush` / `Memory.close` path mirrors this behavior.
 
 ### Batching
 
@@ -43,7 +44,7 @@ Ingestion respects two config parameters:
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
-| `ingestBatchSize` | 32 | Chunks per commit batch |
+| `ingestBatchSize` | 32 | Chunks per ingest batch |
 | `ingestConcurrency` | 1 | Parallel embedding tasks |
 
 ### Embedding Cache

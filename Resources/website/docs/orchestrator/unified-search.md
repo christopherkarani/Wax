@@ -1,16 +1,20 @@
 ---
 sidebar_position: 3
-title: "Unified Search"
+title: "Unified Search (internal)"
 sidebar_label: "Unified Search"
 ---
+
+:::warning App targets: use `Memory`
+The unified search pipeline and `MemoryOrchestrator` are **package-internal**. Downstream apps should call [`Memory.search`](../ios/memory-api). This page is contributor documentation for the retrieval lanes behind that facade.
+:::
 
 Understand how Wax fuses BM25, vector, structured-memory, and timeline results.
 
 ## Overview
 
-Wax's unified search pipeline is a package-only implementation detail, not public API. Public callers should use orchestrator recall methods such as `MemoryOrchestrator.recall(query:)` and configure behavior through supported orchestrator entry points.
+Wax's unified search pipeline is a package-only implementation detail, not public API. Public callers should use `Memory.search(_:options:)` (or the configure overload) and configure behavior through `Memory.Config` / `Memory.SearchOptions`.
 
-Internally, the pipeline runs multiple retrieval lanes and combines their candidates with reciprocal rank fusion (RRF). This hybrid approach combines exact keyword matches with semantic and temporal recall while keeping the user-facing API focused on memory ingestion and recall.
+Internally, the pipeline runs multiple retrieval lanes and combines their candidates with reciprocal rank fusion (RRF). This hybrid approach combines exact keyword matches with semantic and temporal recall while keeping the user-facing API focused on memory ingestion and search.
 
 ## Search Lanes
 
@@ -29,7 +33,7 @@ The text lane runs an FTS5 MATCH query with BM25 scoring. If the primary query r
 
 ### Vector Lane
 
-The vector lane compares the query embedding with indexed frame embeddings. It is only active when the orchestrator has vector search enabled and an embedding provider is available.
+The vector lane compares the query embedding with indexed frame embeddings. It is only active when vector search is enabled and an embedding provider is available.
 
 ### Structured Memory Lane
 
@@ -70,13 +74,13 @@ Classification is fully offline. It does not call network services or external m
 
 ## Public Usage
 
-Use the memory orchestrator for supported recall:
+Use `Memory` for supported search:
 
 ```swift
-let context = try await memory.recall(query: "quarterly roadmap")
-for item in context.items {
+let results = try await memory.search("quarterly roadmap")
+for item in results.items {
     print(item.text)
 }
 ```
 
-The package-only request, response, filtering, and diagnostics types are intentionally omitted from the public documentation because downstream apps cannot construct or name them directly.
+The package-only request, response, filtering, and diagnostics types are intentionally omitted from the public documentation because downstream apps cannot construct or name them directly. Public callers see requested vs. effective mode via `RAGContext.diagnostics`.

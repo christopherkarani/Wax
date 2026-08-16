@@ -80,14 +80,17 @@ Wax meets you where you are. Pick the path that matches what you're building:
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8")
+    // Prefer branch `main` until a tagged release ships the current public
+    // Memory.Config.embedding / stats() / Foundation Models adapters surface.
+    // Tag `0.1.24` still keeps Foundation Models types package-only.
+    .package(url: "https://github.com/christopherkarani/Wax.git", branch: "main")
 ]
 ```
 
-Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
+Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git` (Dependency rule: **Branch** → `main`, or a release newer than `0.1.25` once published with the public adapters).
 
 > [!NOTE]
-> **Requirements:** Wax builds for iOS 17/macOS 14 and later. Built-in semantic embeddings (MiniLM) auto-configure on iOS 18/macOS 15+ when the default `MiniLMEmbeddings` package trait is enabled; on older OS versions, `Memory` runs text-only unless you pass a custom `EmbeddingProvider`. Foundation Models tools require iOS 26/macOS 26.
+> **Requirements:** Wax builds for iOS 17/macOS 14 and later. Built-in semantic embeddings (MiniLM) auto-configure on iOS 18/macOS 15+ when the default `MiniLMEmbeddings` package trait is enabled; on older OS versions, `Memory` runs text-only unless you pass a custom `EmbeddingProvider`. Foundation Models tools require iOS 26/macOS 26. Samples in this README match the **current `main` API** — pin to `main` (or a post-`0.1.25` tag) rather than older release tags if you need those APIs.
 
 ### 2. Copy-paste this into your app
 
@@ -271,7 +274,8 @@ This stages the Wax runtime locally, registers `wax-mcp` with Claude Code, and s
 **wax-mcp operator skill** under `~/.local/share/waxmcp/skills/wax-mcp` (then attempts
 `claude install-skill` when available). `npx` is only used for the one-time install.
 
-The MCP server also ships lifecycle instructions with every tools connection, so agents
+The MCP server also ships lifecycle instructions with every tools connection
+(`Sources/WaxMCPServer/AgentInstructions.swift` — source of truth), so agents
 receive the remember/recall/handoff playbook even without a separate skill install.
 
 ### 2. Install the wax-mcp skill (if install did not auto-register it)
@@ -300,7 +304,7 @@ Use the Wax MCP server for persistent memory in this repo.
 Workflow rules:
 - At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
 - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits.
+- Use `recall` for assembled context (preferred read path) and `search` for raw ranked hits.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
 - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
 - Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
@@ -423,7 +427,7 @@ npx -y waxmcp@latest mcp install --scope user
 
 For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
-For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
+OpenClaw plugin manifests live under [`Resources/openclaw/`](Resources/openclaw/) and [`Resources/npm/waxmcp/plugins/openclaw/`](Resources/npm/waxmcp/plugins/openclaw/).
 
 The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`, including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync` also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on `session_synthesize` / `memory_promote` or via environment variables.
 
