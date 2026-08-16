@@ -9,7 +9,7 @@ const root = process.env.WAXMCP_PACKAGE_DIR
   ? path.resolve(process.env.WAXMCP_PACKAGE_DIR)
   : path.resolve(__dirname, "..");
 
-const platforms = ["darwin-arm64", "darwin-x64"];
+const platforms = ["darwin-arm64"];
 const binaries = ["wax-cli", "wax-mcp"];
 const missing = [];
 
