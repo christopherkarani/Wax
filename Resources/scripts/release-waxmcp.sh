@@ -22,8 +22,7 @@ echo "-> Release version $RELEASE_VERSION"
 
 cd "$ROOT"
 for target in \
-  "darwin-arm64 arm64-apple-macosx14.0" \
-  "darwin-x64 x86_64-apple-macosx14.0"
+  "darwin-arm64 arm64-apple-macosx14.0"
 do
   read -r platform triple <<<"$target"
   echo "-> Build release binaries ($platform)"

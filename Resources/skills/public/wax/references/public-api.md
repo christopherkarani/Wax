@@ -73,6 +73,7 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 - `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode`.
 - `public protocol BatchEmbeddingProvider: EmbeddingProvider` — `func embed(batch:) async throws -> [[Float]]`.
+- `public protocol QueryAwareEmbeddingProvider: EmbeddingProvider` — `func embedQuery(_:) async throws -> [Float]` for retrieval-optimized query embeddings.
 - `public struct EmbeddingIdentity` (`provider`, `model`, `dimensions`, `normalized`).
 
 ## Errors

@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Pipeline:
 #   1. Bump all version surfaces (scripts/bump-version.sh)
-#   2. Build darwin-arm64 + darwin-x64 binaries
+#   2. Build darwin-arm64 binaries
 #   3. Validate version congruency
 #   4. Generate commit message
 #   5. Print next steps
@@ -26,7 +26,6 @@ BUILD_SCRIPT="$ROOT/Resources/scripts/build-waxmcp-binaries.sh"
 # Platform definitions: "PLATFORM TRIPLE"
 PLATFORMS=(
   "darwin-arm64 arm64-apple-macosx14.0"
-  "darwin-x64 x86_64-apple-macosx14.0"
 )
 
 VERSION_ARG=""
@@ -189,7 +188,7 @@ echo "  │   - Swift server: bump to v$RESOLVED_VERSION"
 echo "  │   - OpenClaw plugin: bump to v$RESOLVED_VERSION"
 echo "  │   - OpenCode extension: bump to v$RESOLVED_VERSION"
 echo "  │   - Homebrew formula: bump to v$RESOLVED_VERSION"
-echo "  │   - darwin-arm64 + darwin-x64 binaries rebuilt                          │"
+echo "  │   - darwin-arm64 binaries rebuilt                                        │"
 echo "  └─────────────────────────────────────────────────────────────────────────┘"
 echo ""
 

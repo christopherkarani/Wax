@@ -35,12 +35,11 @@ function platformDistDir() {
   if (os.platform() !== "darwin") {
     return null;
   }
-  const arch = os.arch();
-  const mappedArch = arch === "x64" ? "x64" : arch === "arm64" ? "arm64" : null;
-  if (!mappedArch) {
+  // Prebuilt npm artifacts are Apple Silicon only (MetalANNS Float16).
+  if (os.arch() !== "arm64") {
     return null;
   }
-  return path.join(__dirname, "..", "dist", `darwin-${mappedArch}`);
+  return path.join(__dirname, "..", "dist", "darwin-arm64");
 }
 
 function resolveBundledBinary(name) {

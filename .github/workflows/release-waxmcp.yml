@@ -18,23 +18,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: macos-14
-            platform: darwin-x64
-            triple: x86_64-apple-macosx14.0
-            source_build: true
-          - runs-on: macos-14
+          # Use macos-15 + Xcode Swift (not the OSS toolchain). GRDB 7 requires
+          # Apple SDK Sendable conformances for DispatchQoS / DispatchSpecificKey
+          # that the open-source Swift 6.2 snapshot on macos-14 does not provide.
+          #
+          # darwin-x64 is intentionally omitted: MetalANNS Float16 paths require
+          # Apple Silicon and fail when cross-compiling to x86_64. Published
+          # waxmcp packages have effectively been arm64-only since 0.1.21.
+          - runs-on: macos-15
             platform: darwin-arm64
             triple: arm64-apple-macosx14.0
             source_build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
-          swift-version: "6.2"
+          xcode-version: latest-stable
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Show Swift / Xcode toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
 
       - name: Set release version
         run: |
@@ -117,12 +126,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore darwin-x64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: waxmcp-darwin-x64
-          path: Resources/npm/waxmcp/dist/darwin-x64
-
       - name: Restore darwin-arm64 binary
         uses: actions/download-artifact@v4
         with:
@@ -145,33 +148,27 @@ jobs:
           set -euo pipefail
           chmod +x Resources/npm/waxmcp/dist/darwin-arm64/wax-cli
           test -x Resources/npm/waxmcp/dist/darwin-arm64/wax-cli
-          chmod +x Resources/npm/waxmcp/dist/darwin-x64/wax-cli
-          test -x Resources/npm/waxmcp/dist/darwin-x64/wax-cli
           # Make wax-mcp executable if present
-          for arch in darwin-arm64 darwin-x64; do
-            if [[ -f "Resources/npm/waxmcp/dist/$arch/wax-mcp" ]]; then
-              chmod +x "Resources/npm/waxmcp/dist/$arch/wax-mcp"
-              test -x "Resources/npm/waxmcp/dist/$arch/wax-mcp"
-            fi
-          done
+          if [[ -f "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp" ]]; then
+            chmod +x "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp"
+            test -x "Resources/npm/waxmcp/dist/darwin-arm64/wax-mcp"
+          fi
 
       - name: Verify package integrity
         run: |
           set -euo pipefail
-          for arch in darwin-arm64 darwin-x64; do
-            for bin in wax-cli wax-mcp; do
-              chk="Resources/npm/waxmcp/dist/$arch/$bin.sha256"
-              if [[ -f "$chk" ]]; then
-                (
-                  cd "Resources/npm/waxmcp/dist/$arch"
-                  if command -v shasum >/dev/null 2>&1; then
-                    shasum -a 256 -c "$bin.sha256"
-                  else
-                    sha256sum -c "$bin.sha256"
-                  fi
-                )
-              fi
-            done
+          for bin in wax-cli wax-mcp; do
+            chk="Resources/npm/waxmcp/dist/darwin-arm64/$bin.sha256"
+            if [[ -f "$chk" ]]; then
+              (
+                cd "Resources/npm/waxmcp/dist/darwin-arm64"
+                if command -v shasum >/dev/null 2>&1; then
+                  shasum -a 256 -c "$bin.sha256"
+                else
+                  sha256sum -c "$bin.sha256"
+                fi
+              )
+            fi
           done
 
       - name: Verify version consistency
@@ -203,12 +200,11 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Authenticate to npm
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "${HOME}/.npmrc"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Ensures subsequent steps can authenticate with secrets.NPM_TOKEN
+          # via NODE_AUTH_TOKEN (required by the registry-url .npmrc template).
 
       - name: Publish package
         working-directory: Resources/npm/waxmcp
         run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
