@@ -1,6 +1,7 @@
 #if MCPServer
 import Foundation
 import Wax
+import WaxCore
 
 enum CorpusMetadataKeys {
     static let origin = "wax.corpus.origin"

@@ -11,5 +11,6 @@ public typealias WaxError = WaxCore.WaxError
 
 public typealias EmbeddingProvider = WaxVectorSearch.EmbeddingProvider
 public typealias BatchEmbeddingProvider = WaxVectorSearch.BatchEmbeddingProvider
+public typealias QueryAwareEmbeddingProvider = WaxVectorSearch.QueryAwareEmbeddingProvider
 public typealias EmbeddingIdentity = WaxVectorSearch.EmbeddingIdentity
 public typealias ProviderExecutionMode = WaxVectorSearch.ProviderExecutionMode
