@@ -4500,7 +4500,7 @@ func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Session.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func sessionStart(arguments: [String: AgentBrokerValue])"))
@@ -4520,7 +4520,7 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Session.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func sessionResume(arguments: [String: AgentBrokerValue])"))
@@ -4540,7 +4540,7 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Session.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func sessionEnd(arguments: [String: AgentBrokerValue])"))
@@ -4567,7 +4567,7 @@ func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Search.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func remember(arguments: [String: AgentBrokerValue])"))
@@ -4587,7 +4587,7 @@ func brokerHandoffRecordsEventBeforeCommittingHandoffFrame() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Session.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func handoff(arguments: [String: AgentBrokerValue])"))
@@ -4608,7 +4608,7 @@ func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Session.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func recordHandoff(sessionID: UUID, content: String)"))
@@ -4628,7 +4628,7 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Search.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func knowledgeCapture(arguments: [String: AgentBrokerValue])"))

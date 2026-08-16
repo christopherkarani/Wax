@@ -117,12 +117,12 @@ private func validFlatVecIndexSegment(
 
 @Test func commitLockedRestoresActorStateWhenDurableCommitFails() throws {
     let source = try String(
-        contentsOfFile: "Sources/WaxCore/Wax.swift",
+        contentsOfFile: "Sources/WaxCore/Wax+Mutations.swift",
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
+    let start = try #require(source.range(of: "    func commitLocked() async throws {"))
     let remainder = source[start.lowerBound...]
-    let end = try #require(remainder.range(of: "    // MARK: - Reads"))
+    let end = try #require(remainder.range(of: "    struct CommitRollbackState {"))
     let body = String(remainder[..<end.lowerBound])
 
     let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))

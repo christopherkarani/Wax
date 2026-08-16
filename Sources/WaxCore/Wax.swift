@@ -106,7 +106,7 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
         self.normalized = normalized
     }
 
-    fileprivate func matches(metadataEntries: [String: String]) -> Bool {
+    func matches(metadataEntries: [String: String]) -> Bool {
         if let provider, metadataEntries["wax.embedding.provider"] != provider {
             return false
         }
