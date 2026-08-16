@@ -787,6 +787,8 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.projectRules.contains("handoff_latest"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_start"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("default to `mode: \"hybrid\"`"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("OpenClaw wire aliases"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
     }
 

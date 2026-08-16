@@ -149,7 +149,8 @@ private extension CLIDaemonSession {
             throw CLIError("Query must not be empty")
         }
 
-        let modeString = request.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "text"
+        // Omit-mode default matches broker/MCP/CLI search primary (hybrid).
+        let modeString = request.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "hybrid"
         let mode: MemoryOrchestrator.DirectSearchMode
         switch modeString {
         case "text":
