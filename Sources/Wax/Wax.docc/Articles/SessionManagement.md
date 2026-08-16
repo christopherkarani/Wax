@@ -8,7 +8,7 @@ Understand how Wax manages persistence sessions.
 
 The ``Memory`` actor opens, stages, commits, and closes internal sessions as needed. It also coordinates writer access with the underlying WaxCore store so callers do not construct lower-level sessions directly.
 
-## Public Lifecycle
+## App Lifecycle
 
 Create one ``Memory`` per store URL and close it when the store is no longer needed:
 

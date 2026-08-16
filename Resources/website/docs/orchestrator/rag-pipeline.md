@@ -1,14 +1,18 @@
 ---
 sidebar_position: 2
-title: "RAG Pipeline"
+title: "RAG Pipeline (internal)"
 sidebar_label: "RAG Pipeline"
 ---
 
-Understand the token-budget-aware context assembly with surrogate tiers and intent-aware reranking.
+:::warning App targets: use `Memory`
+`FastRAGContextBuilder`, `FastRAGConfig`, and the internal RAG assembly types are **package-internal**. Downstream apps should call [`Memory.search`](../ios/memory-api) (which returns a `RAGContext`). This page is contributor documentation for the assembly pipeline behind that facade.
+:::
+
+Understand the package-only token-budget-aware context assembly with surrogate tiers and intent-aware reranking.
 
 ## Overview
 
-The `FastRAGContextBuilder` assembles a `RAGContext` from search results within a configurable token budget. It uses a multi-stage pipeline: unified search, intent-aware reranking, expansion, surrogates, and snippets.
+The package-internal `FastRAGContextBuilder` assembles a `RAGContext` from search results within a configurable token budget. It uses a multi-stage pipeline: unified search, intent-aware reranking, expansion, surrogates, and snippets. App code does not construct these types — configure retrieval through `Memory.Config` / `Memory.SearchOptions` instead.
 
 ## Pipeline Stages
 
@@ -87,9 +91,9 @@ Remaining budget is filled with preview-based snippets from additional search re
 
 For certain query intents (location, date, ownership), snippets may be expanded to their full frame content if the preview appears to contain the answer.
 
-## Configuration
+## Configuration (package-internal)
 
-`FastRAGConfig` controls all pipeline parameters:
+`FastRAGConfig` controls pipeline parameters inside the Wax package (not a public app API):
 
 ```swift
 var config = FastRAGConfig()
@@ -141,3 +145,15 @@ public struct RAGContext {
 ```
 
 Each item has a `kind` (`.snippet`, `.expanded`, or `.surrogate`), the source `frameId`, a relevance `score`, and the assembled `text`.
+
+## Public Usage
+
+Apps receive assembled context through `Memory`:
+
+```swift
+let results = try await memory.search("quarterly roadmap")
+print(results.items.count)
+print(results.diagnostics?.effectiveMode as Any)
+```
+
+Do not construct `FastRAGContextBuilder` / `FastRAGConfig` from app targets.

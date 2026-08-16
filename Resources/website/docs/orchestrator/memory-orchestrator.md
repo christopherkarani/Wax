@@ -1,6 +1,6 @@
 ---
 sidebar_position: 1
-title: "Memory Orchestrator"
+title: "Memory Orchestrator (internal)"
 sidebar_label: "Memory Orchestrator"
 ---
 
