@@ -20,19 +20,10 @@ package enum StoreLockProbe {
             return error
         }
 
-        let timeoutLabel = timeout.map(formatDuration(_:)) ?? "the configured timeout"
+        let timeoutLabel = timeout.map(DurationFormatting.format(_:)) ?? "the configured timeout"
         return WaxError.lockUnavailable(
             "\(details). Wax \(operation) failed fast after \(timeoutLabel) because another process is already using \(url.path). " +
                 "Use a unique --store-path per client or agent, or stop the existing Wax process before retrying."
         )
-    }
-
-    private static func formatDuration(_ duration: Duration) -> String {
-        let components = duration.components
-        let seconds = Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
-        if seconds == 0 {
-            return "0s"
-        }
-        return String(format: "%.2fs", seconds)
     }
 }

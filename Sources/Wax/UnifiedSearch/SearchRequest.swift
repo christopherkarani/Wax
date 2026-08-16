@@ -108,6 +108,18 @@ package struct SearchTimeRange: Sendable, Equatable {
         if let before, timestamp >= before { return false }
         return true
     }
+
+    /// Converts an inclusive `Date` closed range into a `SearchTimeRange`.
+    ///
+    /// Upper bounds that saturate `Int64` (ms since epoch) become `before: nil`
+    /// (unbounded) instead of an `Int64.max` exclusive sentinel.
+    package static func fromClosedDateRange(_ range: ClosedRange<Date>?) -> SearchTimeRange? {
+        guard let range else { return nil }
+        let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
+        let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
+        let beforeExclusive: Int64? = beforeInclusive == Int64.max ? nil : beforeInclusive + 1
+        return SearchTimeRange(after: after, before: beforeExclusive)
+    }
 }
 
 /// Frame filter predicate.

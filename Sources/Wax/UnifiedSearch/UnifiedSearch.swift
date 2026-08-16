@@ -616,7 +616,7 @@ extension Wax {
             guard semantic.adjustment > -9.5 else { return nil }
             var updated = result
             if !semantic.reasons.isEmpty {
-                updated.explanations = dedupedExplanations(result.explanations + semantic.reasons)
+                updated.explanations = SearchExplanationDeduper.dedupedExplanations(result.explanations + semantic.reasons)
             }
             return (index: index, composite: result.score + semantic.adjustment, adjustment: semantic.adjustment, result: updated)
         }
@@ -687,19 +687,7 @@ extension Wax {
             nowMs: nowMs
         )
         reasons.append(contentsOf: semantic.reasons)
-        return dedupedExplanations(reasons)
-    }
-
-    private static func dedupedExplanations(_ reasons: [String]) -> [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        ordered.reserveCapacity(reasons.count)
-        for reason in reasons {
-            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
-            ordered.append(normalized)
-        }
-        return ordered
+        return SearchExplanationDeduper.dedupedExplanations(reasons)
     }
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
@@ -1117,8 +1105,6 @@ extension Wax {
             || text.contains("pending approval")
     }
 
-    // containsTentativeLaunchLanguage → RerankingHelpers (shared with FastRAGContextBuilder)
-
     private static let movedToLocationRegex = try? NSRegularExpression(
         pattern: #"\b(?:moved|move)\s+to\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b"#
     )
@@ -1128,8 +1114,6 @@ extension Wax {
         let range = NSRange(location: 0, length: text.utf16.count)
         return regex.firstMatch(in: text, range: range) != nil
     }
-
-    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private static func isDigitsOnly(_ text: String) -> Bool {
         !text.isEmpty && text.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }

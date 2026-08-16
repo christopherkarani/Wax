@@ -207,17 +207,8 @@ package final class FileLock {
         case .exclusive: "exclusive"
         }
         let target = url?.path ?? "<unknown>"
-        let timeoutLabel = timeout.map(formatDuration(_:)) ?? "the configured timeout"
+        let timeoutLabel = timeout.map(DurationFormatting.format(_:)) ?? "the configured timeout"
         return "timed out waiting for \(modeLabel) lock on \(target) after \(timeoutLabel)"
-    }
-
-    private static func formatDuration(_ duration: Duration) -> String {
-        let components = duration.components
-        let seconds = Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
-        if seconds == 0 {
-            return "0s"
-        }
-        return String(format: "%.2fs", seconds)
     }
 
     private func ensureActive() throws {

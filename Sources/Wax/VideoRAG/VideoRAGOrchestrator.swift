@@ -224,7 +224,7 @@ package actor VideoRAGOrchestrator {
             }
         }()
 
-        let timeRange = Self.toWaxTimeRange(query.timeRange)
+        let timeRange = SearchTimeRange.fromClosedDateRange(query.timeRange)
 
         let frameFilter: FrameFilter? = {
             // Constraint-only queries use timeline fallback; filter to roots to avoid returning all segment frames.
@@ -392,7 +392,6 @@ package actor VideoRAGOrchestrator {
         let picked = Array(sorted.prefix(query.resultLimit))
         let rootIdsPicked = picked.map(\.rootId)
 
-        // Parse root -> videoID.
         func videoID(from rootMeta: FrameMeta) -> VideoID? {
             guard let entries = rootMeta.metadata?.entries else { return nil }
             guard let source = entries[MetaKey.source],
@@ -402,7 +401,6 @@ package actor VideoRAGOrchestrator {
             return VideoID(source: src, id: sourceID)
         }
 
-        // Load segment transcripts for selected segments (batch).
         var selectedSegmentFrameIds: [UInt64] = []
         selectedSegmentFrameIds.reserveCapacity(picked.count * max(1, query.segmentLimitPerVideo))
         for root in picked {
@@ -478,7 +476,7 @@ package actor VideoRAGOrchestrator {
             )
         }
 
-        // Apply text budget deterministically.
+        // Text budget is applied deterministically (stable order, first-fit).
         let counter = try await TokenCounter.shared()
         let perItemCap = max(1, query.contextBudget.maxTextTokens / max(1, items.count))
         let processed = await counter.countAndTruncateBatch(items.map(\.summaryText), maxTokens: perItemCap)
@@ -584,7 +582,6 @@ package actor VideoRAGOrchestrator {
         let rootOptions = FrameMetaSubset(kind: FrameKind.root, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
 
-        // Segment frames (embedded + optional transcript payload)
         try await writeSegments(
             rootId: rootId,
             videoID: videoID,
@@ -741,7 +738,6 @@ package actor VideoRAGOrchestrator {
             allFrameIds.append(contentsOf: batchFrameIds)
         }
 
-        // Index segments that have transcript text.
         var textFrameIds: [UInt64] = []
         var texts: [String] = []
         textFrameIds.reserveCapacity(allFrameIds.count)
@@ -817,26 +813,7 @@ package actor VideoRAGOrchestrator {
         }
 
         index = next
-        await sweepRetiredVectors(retiredVectorIds)
-    }
-
-    /// Removes vectors for frames outside the live index (superseded trees, deleted
-    /// frames). Stores written before vector cleanup existed can otherwise keep serving
-    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
-    /// opening or reindexing the store.
-    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
-        guard !frameIds.isEmpty else { return }
-        for frameId in frameIds {
-            do {
-                try await session.removeVector(frameId: frameId)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "VideoRAG retired-vector sweep",
-                    fallback: "stale vector may remain in the committed index"
-                )
-            }
-        }
+        await session.sweepRetiredVectors(retiredVectorIds, context: "VideoRAG retired-vector sweep")
     }
 
     private func isDegraded(videoID: VideoID) -> Bool {
@@ -1020,7 +997,6 @@ package actor VideoRAGOrchestrator {
                   let url = URL(string: fileURLString)
             else { continue }
 
-            // Attach thumbnails to the first N segments, in existing order.
             for segIndex in updated[itemIndex].segments.indices where remaining > 0 {
                 let startMs = updated[itemIndex].segments[segIndex].startMs
                 let endMs = updated[itemIndex].segments[segIndex].endMs
@@ -1118,22 +1094,6 @@ package actor VideoRAGOrchestrator {
             unique.append(file)
         }
         return unique
-    }
-
-    private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> SearchTimeRange? {
-        guard let range else { return nil }
-        let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
-        let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
-        
-        // Handle unbounded ranges (e.g., Date...Date.distantFuture)
-        // Check for very large dates that represent "no upper bound"
-        let beforeExclusive: Int64
-        if beforeInclusive > Int64.max - 1 {
-            beforeExclusive = Int64.max
-        } else {
-            beforeExclusive = beforeInclusive + 1
-        }
-        return SearchTimeRange(after: after, before: beforeExclusive)
     }
 
     private static func makeSegments(

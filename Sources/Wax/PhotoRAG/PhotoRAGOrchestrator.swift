@@ -275,7 +275,7 @@ package actor PhotoRAGOrchestrator {
             }
         }()
 
-        let timeRange = Self.toWaxTimeRange(query.timeRange)
+        let timeRange = SearchTimeRange.fromClosedDateRange(query.timeRange)
 
         let locationAllowlist = query.location.flatMap { buildLocationAllowlist(location: $0) }
         let assetAllowlist = buildAssetAllowlist(assetIDs: query.filters.assetIDs)
@@ -367,7 +367,6 @@ package actor PhotoRAGOrchestrator {
                 candidates[rootId] = entry
             }
 
-            // Build summary text for the top candidates, then apply budgets.
             let sorted = candidates.values.sorted { a, b in
                 if a.score != b.score { return a.score > b.score }
                 return a.rootId < b.rootId
@@ -381,7 +380,6 @@ package actor PhotoRAGOrchestrator {
         }
         let rootIdsPicked = picked.map(\.rootId)
 
-        // Resolve asset IDs and derived frame refs.
         var assetIdByRoot: [UInt64: String] = [:]
         assetIdByRoot.reserveCapacity(rootIdsPicked.count)
         for rootId in rootIdsPicked {
@@ -396,7 +394,6 @@ package actor PhotoRAGOrchestrator {
             }
         }
 
-        // Load derived texts in a single batch.
         var derivedFrameIds: [UInt64] = []
         derivedFrameIds.reserveCapacity(rootIdsPicked.count * 3)
         for rootId in rootIdsPicked {
@@ -447,7 +444,6 @@ package actor PhotoRAGOrchestrator {
             )
         }
 
-        // Apply text budget.
         let perItemCap = max(1, query.contextBudget.maxTextTokens / max(1, items.count))
         let processed = await tokenCounter.countAndTruncateBatch(items.map(\.summaryText), maxTokens: perItemCap)
         assert(processed.count == items.count, "countAndTruncateBatch must return exactly one result per input")
@@ -464,7 +460,7 @@ package actor PhotoRAGOrchestrator {
             budgetedItems.append(updated)
         }
 
-        // Optionally attach thumbnails and region crops (offline-only, Photos-backed).
+        // Offline-only, Photos-backed thumbnails / region crops.
         let itemsWithPixels = try await attachPixels(
             items: budgetedItems,
             rootCandidates: picked,
@@ -576,7 +572,6 @@ package actor PhotoRAGOrchestrator {
         let previousRoot = index.rootByAssetID[assetID]
 
         if !isLocal {
-            // Metadata-only ingest
             let options = FrameMetaSubset(
                 kind: FrameKind.root,
                 metadata: baseMeta
@@ -614,7 +609,6 @@ package actor PhotoRAGOrchestrator {
         let embedImage = try Self.decodeThumbnail(from: imageData, maxPixelSize: config.embedMaxPixelSize)
         let ocrImage = try Self.decodeThumbnail(from: imageData, maxPixelSize: config.ocrMaxPixelSize)
 
-        // Global embedding
         var globalEmbedding = try await embedder.embed(image: embedImage)
         if embedder.normalize, !globalEmbedding.isEmpty {
             globalEmbedding = VectorMath.normalizeL2(globalEmbedding)
@@ -623,7 +617,6 @@ package actor PhotoRAGOrchestrator {
             throw WaxError.invalidEmbedding(reason: "embedder produced \(globalEmbedding.count) dims for image, expected \(embedder.dimensions)")
         }
 
-        // Root frame
         let rootOptions = FrameMetaSubset(
             kind: FrameKind.root,
             metadata: baseMeta
@@ -638,13 +631,11 @@ package actor PhotoRAGOrchestrator {
             timestampMs: frameTimestampMs
         )
 
-        // OCR
         var ocrBlocks: [RecognizedTextBlock] = []
         if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
             ocrBlocks = try await ocr.recognizeText(in: ocrImage)
         }
 
-        // Caption
         let captionText: String?
         if let captioner {
             do {
@@ -663,7 +654,7 @@ package actor PhotoRAGOrchestrator {
 
         let derivedTagsText = Self.buildPhotoTags(from: metadata, captionText: captionText)
 
-        // Derived frames to write (non-embedded)
+        // Derived frames (non-embedded payloads + optional text index).
         var derivedContents: [Data] = []
         var derivedOptions: [FrameMetaSubset] = []
         var derivedTextsForIndex: [(frameIndex: Int, text: String)] = []
@@ -689,13 +680,11 @@ package actor PhotoRAGOrchestrator {
 
         // OCR block frames (not indexed) + one summary frame (indexed)
         if !ocrBlocks.isEmpty {
-            // Summary
             let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
             if !summary.isEmpty {
                 addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
             }
 
-            // Blocks
             for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
@@ -718,7 +707,6 @@ package actor PhotoRAGOrchestrator {
             timestampsMs: Array(repeating: frameTimestampMs, count: derivedContents.count)
         )
 
-        // Index searchable derived frames.
         if !derivedTextsForIndex.isEmpty {
             var frameIds: [UInt64] = []
             var texts: [String] = []
@@ -731,11 +719,9 @@ package actor PhotoRAGOrchestrator {
             try await session.indexTextBatch(frameIds: frameIds, texts: texts)
         }
 
-        // Regions (OCR-driven and/or grid)
         if config.enableRegionEmbeddings, config.maxRegionsPerPhoto > 0 {
             let regions = Self.proposeRegions(from: ocrBlocks, maxRegions: config.maxRegionsPerPhoto)
             if !regions.isEmpty {
-                // Collect all crops first
                 var crops: [(index: Int, crop: CGImage, region: ProposedRegion)] = []
                 crops.reserveCapacity(regions.count)
                 for region in regions {
@@ -744,7 +730,7 @@ package actor PhotoRAGOrchestrator {
                 }
 
                 if !crops.isEmpty {
-                    // Embed in parallel with bounded concurrency (4 concurrent tasks)
+                    // Bounded concurrent region embeds (see regionEmbeddingConcurrency).
                     var regionEmbeddings: [[Float]] = []
                     var regionContents: [Data] = []
                     var regionOptions: [FrameMetaSubset] = []
@@ -757,7 +743,6 @@ package actor PhotoRAGOrchestrator {
                         let maxConcurrency = self.config.regionEmbeddingConcurrency
                         var cropIterator = crops.makeIterator()
 
-                        // Start initial batch
                         while activeCount < maxConcurrency, let item = cropIterator.next() {
                             let (index, crop, _) = item
                             group.addTask {
@@ -773,7 +758,6 @@ package actor PhotoRAGOrchestrator {
                             activeCount += 1
                         }
 
-                        // Collect results and spawn new tasks
                         var results: [(Int, [Float])] = []
                         results.reserveCapacity(crops.count)
                         for try await result in group {
@@ -793,10 +777,9 @@ package actor PhotoRAGOrchestrator {
                             }
                         }
 
-                        // Sort results by index to maintain deterministic ordering
+                        // Deterministic region write order.
                         results.sort { $0.0 < $1.0 }
 
-                        // Build final arrays in correct order
                         for (index, vec) in results {
                             let (_, _, region) = crops[index]
                             regionEmbeddings.append(vec)
@@ -1159,26 +1142,7 @@ package actor PhotoRAGOrchestrator {
         }
 
         index = next
-        await sweepRetiredVectors(retiredVectorIds)
-    }
-
-    /// Removes vectors for frames outside the live index (superseded trees, deleted
-    /// frames). Stores written before vector cleanup existed can otherwise keep serving
-    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
-    /// opening or reindexing the store.
-    private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
-        guard !frameIds.isEmpty else { return }
-        for frameId in frameIds {
-            do {
-                try await session.removeVector(frameId: frameId)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "PhotoRAG retired-vector sweep",
-                    fallback: "stale vector may remain in the committed index"
-                )
-            }
-        }
+        await session.sweepRetiredVectors(retiredVectorIds, context: "PhotoRAG retired-vector sweep")
     }
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {
@@ -1407,7 +1371,6 @@ package actor PhotoRAGOrchestrator {
 
         var updated = items
 
-        // Thumbnails for the first N items.
         let thumbCount = min(maxImages, updated.count)
         if config.includeThumbnailsInContext, thumbCount > 0 {
             for index in 0..<thumbCount {
@@ -1418,7 +1381,7 @@ package actor PhotoRAGOrchestrator {
             }
         }
 
-        // Region crops: take the highest-scoring matched regions first.
+        // Highest-scoring matched regions first.
         if config.includeRegionCropsInContext, maxRegions > 0 {
             var remaining = maxRegions
             for index in 0..<updated.count where remaining > 0 {
@@ -1675,22 +1638,6 @@ package actor PhotoRAGOrchestrator {
               let h = Double(entries[MetaKey.bboxH] ?? "")
         else { return nil }
         return PhotoNormalizedRect(x: x, y: y, width: w, height: h)
-    }
-
-    private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> SearchTimeRange? {
-        guard let range else { return nil }
-        let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
-        let beforeInclusive = Int64(range.upperBound.timeIntervalSince1970 * 1000)
-        
-        // Handle unbounded ranges (e.g., Date...Date.distantFuture)
-        // Check for very large dates that represent "no upper bound"
-        let beforeExclusive: Int64
-        if beforeInclusive > Int64.max - 1 {
-            beforeExclusive = Int64.max
-        } else {
-            beforeExclusive = beforeInclusive + 1
-        }
-        return SearchTimeRange(after: after, before: beforeExclusive)
     }
 
     private static func buildSummaryText(

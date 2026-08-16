@@ -923,7 +923,7 @@ package actor MemoryOrchestrator {
             var item = item
             let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId]).reasons
             if !accessReasons.isEmpty {
-                item.explanations = dedupedExplanations(item.explanations + accessReasons)
+                item.explanations = SearchExplanationDeduper.dedupedExplanations(item.explanations + accessReasons)
             }
             return item
         }
@@ -1023,7 +1023,7 @@ package actor MemoryOrchestrator {
                 previewText: result.previewText,
                 sources: result.sources,
                 metadata: result.metadata,
-                explanations: dedupedExplanations(result.explanations + accessReasons)
+                explanations: SearchExplanationDeduper.dedupedExplanations(result.explanations + accessReasons)
             )
         }
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
@@ -1058,18 +1058,6 @@ package actor MemoryOrchestrator {
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
         await accessStatsManager.snapshot()
-    }
-
-    private func dedupedExplanations(_ reasons: [String]) -> [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        ordered.reserveCapacity(reasons.count)
-        for reason in reasons {
-            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
-            ordered.append(normalized)
-        }
-        return ordered
     }
 
     package func sessionRuntimeStats() async throws -> SessionRuntimeStats {
