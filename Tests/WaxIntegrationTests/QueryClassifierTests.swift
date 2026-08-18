@@ -31,3 +31,8 @@ import Wax
     #expect(RuleBasedQueryClassifier.classify("Swift") == .exploratory)
 }
 
+@Test func letterOnlyHexWordsStayExploratory() {
+    #expect(RuleBasedQueryClassifier.classify("facade") == .exploratory)
+    #expect(RuleBasedQueryClassifier.classify("decade") == .exploratory)
+}
+

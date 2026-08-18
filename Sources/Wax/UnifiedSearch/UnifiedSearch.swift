@@ -365,20 +365,49 @@ extension Wax {
                 diagnosticsTopK: diagnosticsTopK
             )
 
-            // Lexical exclusive rank-1 floor: default hybrid must not bury an
-            // exclusive FTS hit under an exclusive vector neighbor.
-            var fusedPairs = fused.map { ($0.frameId, $0.score) }
-            HybridSearch.applyExclusiveTextRank1Floor(
-                merged: &fusedPairs,
-                textFrameIds: textIds,
-                vectorFrameIds: vectorIds,
-                alpha: clampedAlpha
-            )
-            let fusedById = Dictionary(uniqueKeysWithValues: fused.map { ($0.frameId, $0) })
-            fused = fusedPairs.compactMap { pair in
-                guard var entry = fusedById[pair.0] else { return nil }
-                entry.score = pair.1
-                return entry
+            // Factual identifier path only: exclusive FTS rank-1 must not lose
+            // to an exclusive vector neighbor. Semantic/exploratory keep AdaptiveFusion.
+            if queryType == .factual,
+               let lift = HybridSearch.exclusiveTextRank1FloorIndices(
+                   mergedFrameIds: fused.map(\.frameId),
+                   textFrameIds: textIds,
+                   vectorFrameIds: vectorIds
+               ) {
+                let textEntry = fused[lift.textIndex]
+                let vectorEntry = fused[lift.vectorIndex]
+                fused.remove(at: lift.textIndex)
+                let liftedDiagnostics = textEntry.diagnostics.map { diag in
+                    SearchResponse.RankingDiagnostics(
+                        bestLaneRank: diag.bestLaneRank,
+                        laneContributions: diag.laneContributions,
+                        tieBreakReason: .topResult
+                    )
+                }
+                fused.insert(
+                    (
+                        frameId: textEntry.frameId,
+                        score: vectorEntry.score.nextUp,
+                        sources: textEntry.sources,
+                        diagnostics: liftedDiagnostics
+                    ),
+                    at: lift.vectorIndex
+                )
+                let displacedIndex = lift.vectorIndex + 1
+                if displacedIndex < fused.count,
+                   let diag = fused[displacedIndex].diagnostics,
+                   diag.tieBreakReason == .topResult {
+                    let displaced = fused[displacedIndex]
+                    fused[displacedIndex] = (
+                        frameId: displaced.frameId,
+                        score: displaced.score,
+                        sources: displaced.sources,
+                        diagnostics: SearchResponse.RankingDiagnostics(
+                            bestLaneRank: diag.bestLaneRank,
+                            laneContributions: diag.laneContributions,
+                            tieBreakReason: .fusedScore
+                        )
+                    )
+                }
             }
 
             let timelineSet = Set(timelineIds)

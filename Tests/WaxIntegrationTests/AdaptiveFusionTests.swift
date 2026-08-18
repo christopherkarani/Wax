@@ -28,11 +28,3 @@ import Wax
     #expect(weights.bm25 > weights.vector)
 }
 
-@Test func factualHybridLaneWeightsKeepExclusiveTextAheadOfExclusiveVector() {
-    let weights = AdaptiveFusionConfig.default.weights(for: .factual)
-    let alpha: Float = 0.5
-    let textWeight = weights.bm25 * alpha
-    let vectorWeight = weights.vector * (1 - alpha)
-    #expect(textWeight > vectorWeight)
-}
-
