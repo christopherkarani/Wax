@@ -279,8 +279,55 @@ extension AgentBrokerService {
         )
         try validateDurableWriteContent(content: content, metadata: metadata)
         let memory = try await memory(for: sessionID)
+        if let sessionID {
+            try await refreshSessionManifest(sessionID)
+        }
 
         let before = await memory.runtimeStats()
+        if !noEmbedder, before.vectorSearchEnabled, !before.queryEmbedderConfigured {
+            let capturedSessionID = sessionID
+            let capturedContent = content
+            let capturedMetadata = metadata
+            Task {
+                try? await self.completeRemember(
+                    memory: memory,
+                    content: capturedContent,
+                    metadata: capturedMetadata,
+                    sessionID: capturedSessionID
+                )
+            }
+            return .object([
+                "status": .string("pending"),
+                "embedding_state": .string("loading"),
+                "framesAdded": .from(0),
+                "frameCount": .from(before.frameCount),
+                "pendingFrames": .from(before.pendingFrames),
+                "display_text": .string("Remember accepted. Embedding provider is still loading; the frame will land when ready."),
+            ])
+        }
+
+        return try await completeRemember(
+            memory: memory,
+            content: content,
+            metadata: metadata,
+            sessionID: sessionID,
+            before: before
+        )
+    }
+
+    func completeRemember(
+        memory: MemoryOrchestrator,
+        content: String,
+        metadata: [String: String],
+        sessionID: UUID?,
+        before: MemoryOrchestrator.RuntimeStats? = nil
+    ) async throws -> AgentBrokerValue {
+        let beforeStats: MemoryOrchestrator.RuntimeStats
+        if let before {
+            beforeStats = before
+        } else {
+            beforeStats = await memory.runtimeStats()
+        }
         try await memory.remember(content, metadata: metadata)
         if let sessionID {
             try await refreshSessionManifest(sessionID)
@@ -296,7 +343,7 @@ extension AgentBrokerService {
         }
         try await memory.flush()
         let after = await memory.runtimeStats()
-        let totalBefore = before.frameCount + before.pendingFrames
+        let totalBefore = beforeStats.frameCount + beforeStats.pendingFrames
         let totalAfter = after.frameCount + after.pendingFrames
         let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
 
@@ -315,13 +362,13 @@ extension AgentBrokerService {
 
     func recall(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        let query = try requireNonEmptyQuery(args)
         let limit = try args.optionalInt("limit") ?? 5
         guard (1...Self.maxRecallLimit).contains(limit) else {
             throw BrokerValidationError.invalid("limit must be between 1 and \(Self.maxRecallLimit)")
         }
         let parsedFilters = try parseSearchFilters(args)
-        let memory = try await memory(for: parsedFilters.sessionId)
+        let sessionMemory = parsedFilters.sessionId == nil ? nil : try await memory(for: parsedFilters.sessionId)
 
         let mode = try parseRecallMode(args)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
@@ -337,21 +384,61 @@ extension AgentBrokerService {
         case .hybrid?, nil:
             .ifAvailable
         }
-        let execution = try await memory.recallExecution(
+
+        let durableExecution = try await longTermMemory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
-            frameFilter: parsedFilters.frameFilter,
+            frameFilter: parsedFilters.sessionId == nil ? parsedFilters.frameFilter : nil,
             timeRange: parsedFilters.timeRange,
             topK: effectiveTopK,
             mode: mode
         )
-        let context = execution.context
-        let selected = Array(context.items.prefix(limit))
+        let sessionExecution: MemoryOrchestrator.RecallExecution?
+        var sessionItems: [RAGContext.Item] = []
+        if let sessionMemory {
+            let execution = try await sessionMemory.recallExecution(
+                query: query,
+                embeddingPolicy: embeddingPolicy,
+                frameFilter: parsedFilters.frameFilter,
+                timeRange: parsedFilters.timeRange,
+                topK: effectiveTopK,
+                mode: mode
+            )
+            sessionExecution = execution
+            sessionItems = execution.context.items
+            if sessionItems.isEmpty {
+                let documents = try await sessionMemory.corpusSourceDocuments()
+                    .sorted { lhs, rhs in
+                        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
+                        return lhs.frameId > rhs.frameId
+                    }
+                sessionItems = documents.prefix(effectiveTopK).map { document in
+                    RAGContext.Item(
+                        kind: .snippet,
+                        frameId: document.frameId,
+                        score: 0.2,
+                        sources: [.text],
+                        text: document.text,
+                        metadata: document.metadata,
+                        explanations: ["current session", "recent session note"]
+                    )
+                }
+            }
+        } else {
+            sessionExecution = nil
+        }
+
+        let selected = Self.mergeRecallItems(
+            sessionItems: sessionItems,
+            durableItems: durableExecution.context.items,
+            limit: limit
+        )
+        let primaryExecution = sessionExecution ?? durableExecution
         var lines: [String] = [
-            "Query: \(context.query)",
-            "Total tokens: \(context.totalTokens)",
-            "Results: \(selected.count) of \(limit) requested (orchestrator returned \(context.items.count))",
-            "Search controls: requested_mode=\(execution.requestedModeSummary) effective_mode=\(execution.effectiveModeSummary) query_embedding_state=\(execution.queryEmbeddingState.rawValue) search_top_k=\(effectiveTopK) limit=\(limit)",
+            "Query: \(query)",
+            "Total tokens: \(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
+            "Results: \(selected.count) of \(limit) requested (orchestrator returned \(selected.count))",
+            "Search controls: requested_mode=\(primaryExecution.requestedModeSummary) effective_mode=\(primaryExecution.effectiveModeSummary) query_embedding_state=\(primaryExecution.queryEmbeddingState.rawValue) search_top_k=\(effectiveTopK) limit=\(limit)",
         ]
         lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
         for (index, item) in selected.enumerated() {
@@ -370,34 +457,89 @@ extension AgentBrokerService {
                 "explanations": .array(item.explanations.map(AgentBrokerValue.string)),
             ])
         }
-        if let sessionID = parsedFilters.sessionId {
+        if let sessionID = parsedFilters.sessionId, let sessionMemory {
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: query,
                 hits: selected.map { ($0.frameId, $0.score) },
-                memory: memory
+                memory: sessionMemory
             )
         }
 
         return .object([
-            "query": .string(context.query),
-            "total_tokens": .from(context.totalTokens),
+            "query": .string(query),
+            "total_tokens": .from(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }),
             "result_count": .from(selected.count),
             "limit": .from(limit),
             "search_top_k": .from(effectiveTopK),
-            "requested_mode": .string(execution.requestedModeSummary),
-            "effective_mode": .string(execution.effectiveModeSummary),
-            "query_embedding_state": .string(execution.queryEmbeddingState.rawValue),
+            "requested_mode": .string(primaryExecution.requestedModeSummary),
+            "effective_mode": .string(primaryExecution.effectiveModeSummary),
+            "query_embedding_state": .string(primaryExecution.queryEmbeddingState.rawValue),
             "applied_filters": parsedFilters.summary,
             "results": .array(results),
             "display_text": .string(lines.joined(separator: "\n")),
         ])
     }
 
+    package static func mergeRecallItems(
+        sessionItems: [RAGContext.Item],
+        durableItems: [RAGContext.Item],
+        limit: Int
+    ) -> [RAGContext.Item] {
+        func identity(_ item: RAGContext.Item) -> String {
+            if let hash = item.metadata["wax.content.hash"] {
+                return hash
+            }
+            return item.text
+        }
+
+        let sessionTagged = sessionItems.map { item -> RAGContext.Item in
+            var copy = item
+            copy.score += 0.12
+            if !copy.explanations.contains("current session") {
+                copy.explanations = ["current session"] + copy.explanations
+            }
+            return copy
+        }
+        let durableTagged = durableItems.map { item -> RAGContext.Item in
+            var copy = item
+            if !copy.explanations.contains("durable memory") {
+                copy.explanations = ["durable memory"] + copy.explanations
+            }
+            return copy
+        }
+
+        var seen = Set<String>()
+        var merged: [RAGContext.Item] = []
+        let ranked = (sessionTagged + durableTagged).sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
+        }
+        for item in ranked {
+            guard seen.insert(identity(item)).inserted else { continue }
+            merged.append(item)
+            if merged.count >= limit { break }
+        }
+
+        func ensureHorizon(from items: [RAGContext.Item], marker: String) {
+            guard merged.count < limit else { return }
+            guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
+            guard let extra = items.first(where: { !seen.contains(identity($0)) }) else { return }
+            seen.insert(identity(extra))
+            merged.append(extra)
+        }
+        ensureHorizon(from: sessionTagged, marker: "current session")
+        ensureHorizon(from: durableTagged, marker: "durable memory")
+        if merged.count > limit {
+            merged = Array(merged.prefix(limit))
+        }
+        return merged
+    }
+
     func search(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        let query = try requireNonEmptyQuery(args)
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
         let topK = try args.optionalInt("topK") ?? 10
@@ -450,7 +592,7 @@ extension AgentBrokerService {
 
     func memorySearch(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        let query = try requireNonEmptyQuery(args)
         let topK = try args.optionalInt("topK") ?? 10
         guard (1...Self.maxTopK).contains(topK) else {
             throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
@@ -462,7 +604,8 @@ extension AgentBrokerService {
         let includeDurable = try args.optionalBool("include_durable") ?? true
         let sessionID = try resolveSessionID(
             try parseOptionalSessionID(args),
-            requiringUnambiguousWorkingMemory: includeWorking
+            requiringUnambiguousWorkingMemory: includeWorking,
+            allowDurableWithoutSession: includeDurable || includeEpisodic
         )
         let hits = try await layeredMemorySearch(
             query: query,
@@ -519,6 +662,9 @@ extension AgentBrokerService {
         let args = BrokerArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
         guard let resolvedSessionID = try resolveSessionID(sessionID) else {
+            if activeSessions.count > 1 {
+                throw BrokerValidationError.invalid("session_id is required when more than one session is active")
+            }
             throw BrokerValidationError.invalid("session_id is required when no active session is available")
         }
         guard let session = activeSessions[resolvedSessionID] else {
@@ -826,6 +972,17 @@ extension AgentBrokerService {
         ])
     }
 
+    package func prewarmEmbedder() async {
+        guard !noEmbedder else { return }
+        _ = try? await longTermMemory.searchExecution(
+            query: "wax",
+            mode: .hybrid(alpha: 0.5),
+            topK: 1,
+            frameFilter: nil,
+            timeRange: nil
+        )
+    }
+
     func flush() async throws -> AgentBrokerValue {
         try await longTermMemory.flush()
         for session in activeSessions.values {
@@ -845,9 +1002,23 @@ extension AgentBrokerService {
     func sessionStart(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let explicitSessionID = try parseOptionalSessionID(args)
+        let requestedAgentID = try args.optionalString("agent_id")
+        let requestedRunID = try args.optionalString("run_id")
+        let requestedCWD = try args.optionalString("cwd")
+        let inferredScope = requestedCWD.map {
+            MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
+        } ?? scopeContext
+
+        if explicitSessionID == nil, let requestedAgentID, let requestedRunID,
+           let existing = try findActiveSession(agentID: requestedAgentID, runID: requestedRunID) {
+            return try await sessionResume(arguments: [
+                "session_id": .string(existing.sessionID.uuidString),
+            ])
+        }
+
         let sessionID = explicitSessionID ?? UUID()
         if let active = activeSessions[sessionID] {
-            return renderSessionLifecycleResult(state: active, resumed: false, recoveredLease: false)
+            return renderSessionLifecycleResult(state: active, resumed: true, recoveredLease: false)
         }
 
         let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
@@ -860,14 +1031,14 @@ extension AgentBrokerService {
         let memory = try await openSessionMemory(at: sessionURL)
 
         let nowMs = Self.nowMs()
-        let agentID = try args.optionalString("agent_id") ?? scopeContext.repoName ?? "wax-agent"
-        let runID = try args.optionalString("run_id") ?? UUID().uuidString
+        let agentID = requestedAgentID ?? inferredScope.repoName ?? "wax-agent"
+        let runID = requestedRunID ?? UUID().uuidString
         let manifest = BrokerSessionManifest(
             sessionID: sessionID,
             agentID: agentID,
             runID: runID,
-            project: scopeContext.projectName,
-            repo: scopeContext.repoName,
+            project: inferredScope.projectName,
+            repo: inferredScope.repoName,
             storePath: sessionURL.path,
             eventLogPath: eventLogURL.path,
             status: .active,
@@ -901,6 +1072,17 @@ extension AgentBrokerService {
         )
         activeSessions[sessionID] = state
         return renderSessionLifecycleResult(state: state, resumed: false, recoveredLease: false)
+    }
+
+    func findActiveSession(agentID: String, runID: String) throws -> BrokerSessionManifest? {
+        if let live = activeSessions.values.first(where: {
+            $0.manifest.agentID == agentID && $0.manifest.runID == runID
+        }) {
+            return live.manifest
+        }
+        return try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL).first { manifest in
+            manifest.status == .active && manifest.agentID == agentID && manifest.runID == runID
+        }
     }
 
     func sessionResume(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -1052,7 +1234,7 @@ extension AgentBrokerService {
 
     func compactContext(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        let query = try requireNonEmptyQuery(args)
         let tokenBudget = try args.optionalInt("token_budget") ?? 1800
         guard (128...Self.maxCompactContextTokenBudget).contains(tokenBudget) else {
             throw BrokerValidationError.invalid("token_budget must be between 128 and \(Self.maxCompactContextTokenBudget)")
@@ -1224,13 +1406,13 @@ extension AgentBrokerService {
         }
         let subject = try args.optionalString("subject").map { EntityKey($0) }
         let predicate = try args.optionalString("predicate").map { PredicateKey($0) }
-        let asOfMs = try args.optionalInt64("as_of") ?? Int64.max
+        let asOfMs = try args.optionalInt64("as_of")
         let systemAsOfMs = try args.optionalInt64("system_as_of")
         let validAsOfMs = try args.optionalInt64("valid_as_of")
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
-            asOfMs: asOfMs,
+            asOfMs: asOfMs ?? Int64.max,
             systemAsOfMs: systemAsOfMs,
             validAsOfMs: validAsOfMs,
             limit: limit
@@ -1257,9 +1439,9 @@ extension AgentBrokerService {
         return .object([
             "count": .from(result.hits.count),
             "truncated": .from(result.wasTruncated),
-            "as_of": .from(asOfMs),
-            "system_as_of": .from(effectiveSystemAsOfMs),
-            "valid_as_of": .from(effectiveValidAsOfMs),
+            "as_of": asOfMs.map(AgentBrokerValue.from) ?? .null,
+            "system_as_of": effectiveSystemAsOfMs.map(AgentBrokerValue.from) ?? .null,
+            "valid_as_of": effectiveValidAsOfMs.map(AgentBrokerValue.from) ?? .null,
             "hits": .array(hits),
         ])
     }
@@ -1284,7 +1466,7 @@ extension AgentBrokerService {
 
     func corpusSearch(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        let query = try requireNonEmptyQuery(args)
         let recursive = try args.optionalBool("recursive") ?? true
         let rebuild = try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild
         let modeRaw = try args.optionalString("mode")?.lowercased()
@@ -1349,7 +1531,38 @@ extension AgentBrokerService {
             $0.id.uuidString < $1.id.uuidString
         }
         var activeSessionHitGroups: [[BrokerCorpusMergeHit]] = []
-        activeSessionHitGroups.reserveCapacity(orderedActiveSessions.count)
+        let longTermExecution = try await longTermMemory.searchExecution(
+            query: query,
+            mode: mode,
+            topK: topK,
+            frameFilter: nil,
+            timeRange: nil
+        )
+        let longTermHits: [BrokerCorpusMergeHit] = longTermExecution.hits.map { hit in
+            let preview = hit.previewText ?? ""
+            let storePath = longTermStoreURL.path
+            var metadata = hit.metadata
+            metadata[BrokerCorpusMetadataKeys.origin] = "long_term"
+            metadata[BrokerCorpusMetadataKeys.sourceStorePath] = storePath
+            metadata[BrokerCorpusMetadataKeys.sourceStoreName] = longTermStoreURL.lastPathComponent
+            metadata[BrokerCorpusMetadataKeys.sourceFrameID] = String(hit.frameId)
+            return BrokerCorpusMergeHit(
+                frameId: hit.frameId,
+                score: hit.score,
+                sources: hit.sources.map(\.rawValue),
+                preview: preview,
+                metadata: metadata,
+                dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
+                    sourcePath: storePath,
+                    frameId: hit.frameId,
+                    preview: preview
+                )
+            )
+        }
+        if !longTermHits.isEmpty {
+            activeSessionHitGroups.append(longTermHits)
+        }
+        activeSessionHitGroups.reserveCapacity(orderedActiveSessions.count + 1)
         for state in orderedActiveSessions {
             let sessionExecution = try await state.memory.searchExecution(
                 query: query,
@@ -1822,6 +2035,29 @@ extension AgentBrokerService {
                     timestampMs: state.manifest.updatedAtMs
                 ))
             }
+            if short.isEmpty {
+                let documents = try await state.memory.corpusSourceDocuments()
+                    .sorted { lhs, rhs in
+                        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
+                        return lhs.frameId > rhs.frameId
+                    }
+                for document in documents.prefix(min(4, maxItems)) {
+                    short.append(LayeredMemoryHit(
+                        reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: document.frameId),
+                        horizon: .working,
+                        sessionID: sessionID,
+                        agentID: state.manifest.agentID,
+                        runID: state.manifest.runID,
+                        frameID: document.frameId,
+                        score: 0.2,
+                        text: document.text,
+                        preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                        metadata: document.metadata,
+                        explanations: ["current session", "recent session note"],
+                        timestampMs: document.timestampMs
+                    ))
+                }
+            }
         }
 
         let longExecution = try await longTermMemory.recallExecution(
@@ -2252,7 +2488,8 @@ extension AgentBrokerService {
 
     func resolveSessionID(
         _ explicit: UUID?,
-        requiringUnambiguousWorkingMemory includeWorking: Bool
+        requiringUnambiguousWorkingMemory includeWorking: Bool,
+        allowDurableWithoutSession: Bool = false
     ) throws -> UUID? {
         if let explicit { return explicit }
         guard includeWorking else { return nil }
@@ -2262,8 +2499,19 @@ extension AgentBrokerService {
         case 1:
             return activeSessions.keys.first
         default:
+            if allowDurableWithoutSession {
+                return nil
+            }
             throw BrokerValidationError.invalid("session_id is required when more than one session is active")
         }
+    }
+
+    func requireNonEmptyQuery(_ args: BrokerArguments) throws -> String {
+        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
+        guard !query.isEmpty else {
+            throw BrokerValidationError.invalid("query must not be empty")
+        }
+        return query
     }
 
     struct ParsedSearchFilters {
@@ -2411,6 +2659,9 @@ extension AgentBrokerService {
             }
             return nil
         }
+        if alpha != nil, modeRaw != "hybrid" {
+            throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
+        }
 
         switch modeRaw {
         case "text":
@@ -2428,8 +2679,12 @@ extension AgentBrokerService {
         modeRaw: String?,
         alpha: Double?
     ) throws -> MemoryOrchestrator.DirectSearchMode {
+        let resolvedMode = modeRaw ?? "text"
+        if alpha != nil, resolvedMode != "hybrid" {
+            throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
+        }
         let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
-        switch modeRaw ?? "text" {
+        switch resolvedMode {
         case "text":
             return .text
         case "vector":

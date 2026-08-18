@@ -2532,7 +2532,7 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
         #expect(scopedRecall.isError != true)
         let scopedRecallText = firstText(in: scopedRecall)
         #expect(scopedRecallText.contains("SESSION_ONLY_XYZ"))
-        #expect(!scopedRecallText.contains("GLOBAL_ONLY_ABC"))
+        #expect(scopedRecallText.contains("GLOBAL_") && scopedRecallText.contains("ABC"))
 
         let unscopedSearch = await WaxMCPTools.handleCall(
             params: .init(
@@ -5263,7 +5263,11 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
         let firstPayload = try #require(first.payload?.objectValue)
         let firstSessionID = try #require(firstPayload["session_id"]?.stringValue)
 
-        try await Task.sleep(for: .milliseconds(2))
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(firstSessionID)]
+        ))
+        #expect(ended.ok == true)
 
         let second = await service.handle(.init(
             command: "session_start",
@@ -5275,12 +5279,7 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
         #expect(second.ok == true)
         let secondPayload = try #require(second.payload?.objectValue)
         let secondSessionID = try #require(secondPayload["session_id"]?.stringValue)
-
-        let ended = await service.handle(.init(
-            command: "session_end",
-            arguments: ["session_id": .string(secondSessionID)]
-        ))
-        #expect(ended.ok == true)
+        #expect(secondSessionID != firstSessionID)
 
         let resumed = await service.handle(.init(
             command: "session_resume",
@@ -5292,7 +5291,7 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
 
         #expect(resumed.ok == true)
         let resumedPayload = try #require(resumed.payload?.objectValue)
-        #expect(resumedPayload["session_id"]?.stringValue == firstSessionID)
+        #expect(resumedPayload["session_id"]?.stringValue == secondSessionID)
         #expect(resumedPayload["resumed"]?.boolValue == true)
     }
 }
@@ -6613,7 +6612,7 @@ struct WaxMCPProcessTests {
             timeout: 20
         )
         #expect(recall.contains("SESSION_ONLY_XYZ"))
-        #expect(!recall.contains("GLOBAL_ONLY_ABC"))
+        #expect(recall.contains("GLOBAL_") && recall.contains("ABC"))
 
         _ = try await harness.callTool(
             id: 7,
@@ -7623,6 +7622,39 @@ struct WaxMCPProcessTests {
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
         #expect(!stderr.localizedCaseInsensitiveContains("use a unique --store-path"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func threeMCPClientsAttachToOneBrokerWithoutExclusiveLockTimeout() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-three-clients-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let third = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        try second.start()
+        try third.start()
+        defer {
+            first.terminateIfNeeded()
+            second.terminateIfNeeded()
+            third.terminateIfNeeded()
+        }
+
+        _ = try await first.bootstrap(clientName: "wax-mcp-three-a", includeToolsList: true)
+        _ = try await second.bootstrap(clientName: "wax-mcp-three-b", includeToolsList: true)
+        _ = try await third.bootstrap(clientName: "wax-mcp-three-c", includeToolsList: true)
+
+        let statsA = try await first.callTool(id: 41, name: "stats", arguments: [:], timeout: 15)
+        let statsB = try await second.callTool(id: 42, name: "stats", arguments: [:], timeout: 15)
+        let statsC = try await third.callTool(id: 43, name: "stats", arguments: [:], timeout: 15)
+        #expect(!statsA.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(!statsB.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(!statsC.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(statsA.contains("frameCount") || statsA.contains("storePath"))
+        #expect(first.brokerSocketPath == second.brokerSocketPath)
+        #expect(second.brokerSocketPath == third.brokerSocketPath)
     }
 
     @Test(.timeLimit(.minutes(1)))

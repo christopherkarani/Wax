@@ -76,9 +76,22 @@ package enum AgentBrokerClient {
     package static func ensureAvailable(configuration: AgentBrokerConfiguration) async throws -> Bool {
         if let response = try sendIfAvailable(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
-            socketPath: configuration.socketPath
+            socketPath: configuration.socketPath,
+            timeoutSeconds: min(5.0, responseTimeoutSeconds)
         ), response.ok {
             return false
+        }
+
+        if isConnectable(socketPath: configuration.socketPath) {
+            if let response = try sendIfAvailable(
+                AgentBrokerRequest(id: "__ping__", command: "stats"),
+                socketPath: configuration.socketPath
+            ), response.ok {
+                return false
+            }
+            throw BrokerClientError(
+                "Broker socket is live at \(configuration.socketPath) but did not answer; not starting a second daemon."
+            )
         }
 
         return try startBrokerIfNeeded(configuration: configuration)
@@ -104,7 +117,6 @@ package enum AgentBrokerClient {
             "--embedder", configuration.embedderChoice,
             "--socket-path", configuration.socketPath,
             "--idle-timeout-secs", String(idleTimeoutSeconds),
-            "--skip-prewarm",
         ]
         process.arguments?.append(contentsOf: configuration.embedderTuning.daemonArguments())
         if configuration.noEmbedder {
@@ -208,9 +220,37 @@ package enum AgentBrokerClient {
         return true
     }
 
+    private static func isConnectable(socketPath: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return connectResult == 0
+    }
+
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,
-        socketPath: String
+        socketPath: String,
+        timeoutSeconds: Double? = nil
     ) throws -> AgentBrokerResponse? {
         guard FileManager.default.fileExists(atPath: socketPath) else {
             return nil
@@ -258,15 +298,15 @@ package enum AgentBrokerClient {
         handle.write(Data([0x0A]))
         shutdown(fd, socketShutdownWrite)
 
-        guard let line = try readSocketResponseLine(fd: fd) else {
+        guard let line = try readSocketResponseLine(fd: fd, timeoutSeconds: timeoutSeconds ?? responseTimeoutSeconds) else {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
     }
 
-    private static func readSocketResponseLine(fd: Int32) throws -> String? {
+    private static func readSocketResponseLine(fd: Int32, timeoutSeconds: Double? = nil) throws -> String? {
         var buffer = Data()
-        let timeoutMS = Int32(responseTimeoutSeconds * 1000)
+        let timeoutMS = Int32((timeoutSeconds ?? responseTimeoutSeconds) * 1000)
         while true {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, timeoutMS)

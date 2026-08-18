@@ -315,9 +315,9 @@ This is the **agent operator** skill (session lifecycle, remember/recall, handof
 Use the Wax MCP server for persistent memory in this repo.
 
 Workflow rules:
-- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`.
+- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
 - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits.
+- Use `recall` for assembled context and `search` for raw ranked hits. `recall` with `session_id` merges that session with durable long-term memory.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
 - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
 - Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
