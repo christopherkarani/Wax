@@ -21,6 +21,12 @@ extension AsyncParsableCommand {
                 #elseif canImport(Glibc)
                 Glibc.exit(EXIT_SUCCESS)
                 #endif
+            } catch let code as ExitCode {
+                #if canImport(Darwin)
+                Darwin.exit(code.rawValue)
+                #elseif canImport(Glibc)
+                Glibc.exit(code.rawValue)
+                #endif
             } catch {
                 writeStderr("Error: \(error.localizedDescription)")
                 #if canImport(Darwin)

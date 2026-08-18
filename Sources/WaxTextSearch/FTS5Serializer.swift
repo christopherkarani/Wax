@@ -1,8 +1,16 @@
 import Foundation
 import WaxCore
 
+#if canImport(Glibc)
+import Glibc
+#endif
 #if canImport(SQLite3)
 import SQLite3
+#elseif canImport(GRDBSQLite)
+import GRDBSQLite
+#endif
+
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 
 enum FTS5Serializer {
     static func serialize(connection: OpaquePointer) throws -> Data {
@@ -63,10 +71,8 @@ enum FTS5Serializer {
 
 #else
 
-// SQLite3 system module is not available on this platform (e.g. Linux without
-// libsqlite3-dev). FTS5SearchEngine uses file-based GRDB persistence on Linux,
-// so the in-memory serialize/deserialize path is not exercised. These stubs
-// satisfy the type-checker so the target compiles cross-platform.
+// Neither Darwin SQLite3 nor GRDBSQLite is available. Persist-to-.wax then
+// cannot snapshot the FTS5 database; callers get an explicit I/O error.
 enum FTS5Serializer {
     static func serialize(connection: OpaquePointer) throws -> Data {
         throw WaxError.io("FTS5 in-memory serialization is not supported on this platform")
