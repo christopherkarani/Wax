@@ -4,6 +4,7 @@ package enum HybridSearch {
     ///
     /// Notes (v1):
     /// - RRF is rank-based (it ignores the raw score scales from BM25 vs vector distance).
+    /// - Two-list `rrfFusion` publishes 0–1 scores that preserve that order so callers can threshold.
     /// - Provide deterministic tie-break rules so outputs are stable.
     package static func rrfFusion(
         textResults: [(UInt64, Float)],
@@ -12,10 +13,12 @@ package enum HybridSearch {
         alpha: Float = 0.5
     ) -> [(UInt64, Float)] {
         let clampedAlpha = min(1, max(0, alpha))
+        let textWeight = textResults.isEmpty ? 0 : clampedAlpha
+        let vectorWeight = vectorResults.isEmpty ? 0 : (1 - clampedAlpha)
         var merged = rrfFusion(
             lists: [
-                (weight: clampedAlpha, frameIds: textResults.map(\.0)),
-                (weight: 1 - clampedAlpha, frameIds: vectorResults.map(\.0)),
+                (weight: textWeight, frameIds: textResults.map(\.0)),
+                (weight: vectorWeight, frameIds: vectorResults.map(\.0)),
             ],
             k: k
         )
@@ -25,7 +28,28 @@ package enum HybridSearch {
             vectorFrameIds: vectorResults.map(\.0),
             alpha: clampedAlpha
         )
+        // Publish 0–1 scores that preserve RRF (+ floor) order so callers can threshold.
+        publishNormalizedRRFScores(
+            &merged,
+            k: k,
+            totalWeight: textWeight + vectorWeight
+        )
         return merged
+    }
+
+    /// Maps raw RRF (`weight / (k + rank)`) onto `0...1` without changing order.
+    /// `totalWeight` is the sum of lane weights that contributed to fusion.
+    package static func publishNormalizedRRFScores(
+        _ ranked: inout [(UInt64, Float)],
+        k: Int,
+        totalWeight: Float
+    ) {
+        let maxRRF = max(0, totalWeight) / Float(max(0, k) + 1)
+        guard maxRRF > 0 else { return }
+        for index in ranked.indices {
+            let normalized = ranked[index].1 / maxRRF
+            ranked[index].1 = min(1, max(0, normalized))
+        }
     }
 
     /// Default hybrid (alpha >= 0.5): exclusive text rank-1 cannot lose to an

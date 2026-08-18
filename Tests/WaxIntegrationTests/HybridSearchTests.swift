@@ -97,6 +97,28 @@ import Wax
     #expect(merged.first?.0 == textCanary)
 }
 
+@Test func rrfPublishedScoresDescendAndAreThresholdable() {
+    let textCanary: UInt64 = 1706
+    let vectorNeighbor: UInt64 = 1
+    let merged = HybridSearch.rrfFusion(
+        textResults: [(textCanary, 0.9), (2, 0.4)],
+        vectorResults: [(vectorNeighbor, 0.95), (3, 0.8)],
+        k: 60,
+        alpha: 0.5
+    )
+
+    #expect(merged.first?.0 == textCanary)
+    #expect(merged.count == 4)
+    for (previous, next) in zip(merged, merged.dropFirst()) {
+        #expect(previous.1 >= next.1)
+    }
+    // Independent of raw RRF (≈ weight/(k+1) ≈ 0.008): rank-1 must be
+    // usable as a 0–1 threshold the way text scores already are.
+    #expect(merged[0].1 >= 0.5)
+    #expect(merged[0].1 <= 1.0)
+    #expect(merged.allSatisfy { (0...1).contains($0.1) })
+}
+
 @Test func hybridSearchRanksUniqueLexicalCanaryAboveVectorNeighbors() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
