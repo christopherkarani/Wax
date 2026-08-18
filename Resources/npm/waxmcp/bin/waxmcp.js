@@ -207,7 +207,8 @@ if (forwardedArgs[0] === "vector-health") {
 
 // --- Subcommand: install-hermes-plugin ---
 if (forwardedArgs[0] === "install-hermes-plugin") {
-  const hermesPluginsDir = path.join(os.homedir(), ".hermes", "plugins", "wax-memory");
+  const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), ".hermes");
+  const hermesPluginsDir = path.join(hermesHome, "plugins", "wax-memory");
   const pluginSrcDir = path.join(__dirname, "..", "plugins", "hermes");
 
   if (!fs.existsSync(pluginSrcDir)) {
