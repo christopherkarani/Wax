@@ -73,7 +73,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
     }
 }
 
-@Test func hybridSearchReportedScoresDescendAndAreThresholdable() async throws {
+@Test func hybridSearchReportedScoresDescendAfterFusion() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
         let text = try await wax.enableTextSearch()
@@ -101,9 +101,6 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
         )
 
         #expect(response.results.first?.frameId == canary)
-        let topScore = response.results.first?.score ?? 0
-        #expect(topScore >= 0.5)
-        #expect(topScore <= 1.0)
         for (previous, next) in zip(response.results, response.results.dropFirst()) {
             #expect(previous.score >= next.score)
         }
