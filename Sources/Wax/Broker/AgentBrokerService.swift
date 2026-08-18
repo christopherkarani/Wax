@@ -16,6 +16,7 @@ package actor AgentBrokerService {
     let sessionRootURL: URL
     let corpusStoreURL: URL
     let noEmbedder: Bool
+    let requireVector: Bool
     let embedderChoice: String
     let embedderTuning: CommandLineEmbedderRuntimeTuning
     let enableAccessStatsScoring: Bool
@@ -36,6 +37,7 @@ package actor AgentBrokerService {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
         self.noEmbedder = noEmbedder
+        self.requireVector = requireVector
         self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
         self.enableAccessStatsScoring = enableAccessStatsScoring
@@ -51,33 +53,37 @@ package actor AgentBrokerService {
         let corpusFileName = ".corpus-\(Self.stableHash(longTermStoreURL.path)).wax"
         self.corpusStoreURL = sessionRootURL.deletingLastPathComponent().appendingPathComponent(corpusFileName)
 
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
-        if requireVector {
-            if noEmbedder {
-                throw BrokerStartupError("Vector search required but --no-embedder was set.")
-            }
-            if embedder == nil {
-                throw BrokerStartupError("Vector search required but the embedding provider is unavailable.")
-            }
+        if requireVector, noEmbedder {
+            throw BrokerStartupError("Vector search required but --no-embedder was set.")
+        }
+        let request: EmbeddingOpenRequest
+        do {
+            request = try HostEmbeddingReadiness.request(
+                noEmbedder: noEmbedder,
+                requireVector: requireVector,
+                embedderChoice: embedderChoice,
+                options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+            )
+        } catch {
+            throw BrokerStartupError(error.localizedDescription)
         }
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
+        do {
+            self.longTermMemory = try await EmbeddingReadinessBinding.openOrchestrator(
+                at: longTermStoreURL,
+                config: config,
+                request: request,
+                waxOptions: CommandLineEmbedderFactory.waxOptions()
+            )
+        } catch {
+            if requireVector {
+                throw BrokerStartupError("Vector search required but the embedding provider is unavailable.")
+            }
+            throw error
         }
-        self.longTermMemory = try await MemoryOrchestrator(
-            at: longTermStoreURL,
-            config: config,
-            embedder: embedder,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
-        )
     }
 
     package func close() async throws {
@@ -794,6 +800,7 @@ extension AgentBrokerService {
             "diskBytes": .from(diskBytes),
             "storePath": .string(stats.storeURL.path),
             "vectorSearchEnabled": .from(stats.vectorSearchEnabled),
+            "embeddingStatus": .string(stats.embeddingStatus.wireName),
             "queryEmbeddingAvailable": .from(
                 stats.vectorSearchEnabled && stats.queryEmbedderConfigured && !stats.queryEmbeddingCircuitOpen
             ),
@@ -2178,23 +2185,20 @@ extension AgentBrokerService {
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = false
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
-        }
-        return try await MemoryOrchestrator(
+        let request = try HostEmbeddingReadiness.request(
+            noEmbedder: noEmbedder,
+            requireVector: requireVector,
+            embedderChoice: embedderChoice,
+            options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+        )
+        return try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
-            embedder: embedder,
+            request: request,
             waxOptions: CommandLineEmbedderFactory.waxOptions()
         )
     }
@@ -2205,23 +2209,20 @@ extension AgentBrokerService {
         noEmbedder: Bool,
         body: (MemoryOrchestrator) async throws -> T
     ) async throws -> T {
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
-        }
-        let memory = try await MemoryOrchestrator(
+        let request = try HostEmbeddingReadiness.request(
+            noEmbedder: noEmbedder,
+            requireVector: false,
+            embedderChoice: embedderChoice,
+            options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+        )
+        let memory = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
-            embedder: embedder,
+            request: request,
             waxOptions: CommandLineEmbedderFactory.waxOptions()
         )
         do {

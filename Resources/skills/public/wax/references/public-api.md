@@ -8,7 +8,7 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
-  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the built-in MiniLM embedder is wired on iOS 18/macOS 15+ (requires the default `MiniLMEmbeddings` package trait). On older OS versions or if the model is unavailable, the store runs text-only — check `stats()` or `RAGContext.diagnostics`.
+  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while the built-in MiniLM provider loads (default `MiniLMEmbeddings` trait, iOS 18/macOS 15+), then live-attaches. Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
 - `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
 - `public func save(_ text: String, metadata: [String: String] = [:]) async throws`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`
@@ -28,8 +28,8 @@ Source: `Sources/Wax/Memory.swift`
 
 `public enum EmbeddingSource: Sendable` — selects the embedder for a store:
 
-- `.automatic` — built-in MiniLM when the platform/build supports it, text-only fallback otherwise.
-- `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is unavailable on this OS/build.
+- `.automatic` — open immediately while the built-in MiniLM provider loads; live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
+- `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is missing on this OS/build, or `BuiltInEmbeddingProviderError.timedOut` when compile exceeds `timeoutSeconds`.
 - `.custom(any EmbeddingProvider)` — bring your own embedder.
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
@@ -53,7 +53,19 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 
 ### Memory.Stats
 
-`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`.
+`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`.
+
+`queryEmbedderConfigured` is derived: `true` only for `active` and `degraded`.
+
+### EmbeddingStatus
+
+`public enum EmbeddingStatus: Sendable, Equatable`
+
+- `.disabled` — vector search was explicitly turned off
+- `.loading` — a provider is compiling; text operations remain available
+- `.active(EmbeddingIdentity?)` — provider ready
+- `.degraded(EmbeddingIdentity?, reason: String)` — provider ready, some existing frames have no vectors
+- `.unavailable(reason: String)` — no provider could be activated; a vector index may still exist
 
 ## Built-in Embeddings
 
@@ -65,7 +77,7 @@ Source: `Sources/Wax/BuiltInEmbeddings.swift`
 - `public enum BuiltInEmbeddings { public static func make(_:options:) async throws -> any EmbeddingProvider }`
 - `public struct BuiltInEmbeddingProviderOptions` (`batchSize`, `prewarmBatchSize`, `allowLowPrecisionGPU`, `timeoutSeconds`, `computeUnitsOrder`).
 - `public enum BuiltInEmbeddingComputeUnit { cpuOnly, cpuAndGPU, cpuAndNeuralEngine, all }`
-- `public enum BuiltInEmbeddingProviderError: LocalizedError { case unavailable(BuiltInEmbeddingProvider) }`
+- `public enum BuiltInEmbeddingProviderError: LocalizedError { case unavailable(BuiltInEmbeddingProvider), timedOut(BuiltInEmbeddingProvider) }`
 
 ## Embedding Protocols (public, via WaxVectorSearch)
 

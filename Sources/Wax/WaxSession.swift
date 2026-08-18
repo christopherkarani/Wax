@@ -49,8 +49,8 @@ package actor WaxSession {
     package let config: Config
 
     private let textEngine: FTS5SearchEngine?
-    private let vectorEngine: (any VectorSearchEngine)?
-    private let concreteVectorEngine: ConcreteVectorEngine?
+    private var vectorEngine: (any VectorSearchEngine)?
+    private var concreteVectorEngine: ConcreteVectorEngine?
     private var lastPendingEmbeddingSequence: UInt64?
     /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
     /// Mirrors ``WaxVectorSearchSession`` so pending putEmbedding + remove does not re-stage ghosts.
@@ -132,6 +132,22 @@ package actor WaxSession {
             writerLeaseId = nil
             await wax.releaseWriterLease(leaseId)
         }
+    }
+
+    /// Load the vector engine after a provider attaches when dimensions were unknown at open.
+    package func ensureVectorEngine(dimensions: Int) async throws {
+        guard config.enableVectorSearch else { return }
+        if concreteVectorEngine != nil { return }
+        let loaded = try await Self.loadVectorEngine(
+            wax: wax,
+            metric: config.vectorMetric,
+            dimensions: dimensions,
+            preference: config.vectorEnginePreference
+        )
+        concreteVectorEngine = loaded
+        vectorEngine = loaded.erased
+        let snapshot = await wax.pendingEmbeddingMutations(since: nil)
+        lastPendingEmbeddingSequence = snapshot.latestSequence
     }
 
     // MARK: - Search

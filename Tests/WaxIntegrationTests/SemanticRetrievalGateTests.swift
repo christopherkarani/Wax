@@ -22,6 +22,7 @@ func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async thr
         // On iOS 18/macOS 15+ with the default MiniLMEmbeddings trait this must
         // auto-wire the built-in MiniLM embedder.
         let memory = try await Memory(at: url)
+        try await waitUntilEmbeddingReady(memory)
 
         let stats = await memory.stats()
         #expect(
@@ -83,4 +84,20 @@ func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
 
         try await memory.close()
     }
+}
+
+private func waitUntilEmbeddingReady(_ memory: Memory, timeout: Duration = .seconds(180)) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        switch await memory.stats().embeddingStatus {
+        case .active, .degraded:
+            return
+        case .unavailable(let reason):
+            Issue.record("default Memory(at:) embedder unavailable: \(reason)")
+            throw WaxError.io("embedding provider unavailable: \(reason)")
+        case .disabled, .loading:
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+    throw WaxError.io("timed out waiting for automatic embedding readiness")
 }
