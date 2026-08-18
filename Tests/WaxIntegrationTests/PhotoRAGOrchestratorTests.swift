@@ -106,7 +106,7 @@ func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
             location: nil,
             filters: .none,
             resultLimit: 5,
-            contextBudget: ContextBudget(maxTextTokens: 400, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 4)
+            contextBudget: PhotoContextBudget(maxTextTokens: 400, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 4)
         )
 
         let ctx = try await orchestrator.recall(query)
@@ -244,7 +244,7 @@ func photoRAGRecallIncludesSearchableTagsFromIndexedFrames() async throws {
             location: nil,
             filters: .none,
             resultLimit: 5,
-            contextBudget: ContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 4)
+            contextBudget: PhotoContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 4)
         )
 
         let ctx = try await orchestrator.recall(query)

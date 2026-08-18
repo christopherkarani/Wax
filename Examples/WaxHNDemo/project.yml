@@ -1,0 +1,117 @@
+name: WaxHNDemo
+options:
+  bundleIdPrefix: com.bebop
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+packages:
+  Wax:
+    path: ../..
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: 5V273URY46
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: true
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+targets:
+  WaxHNDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: WaxHNDemo
+      - path: ../WaxDemoCorpus
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Wax
+        product: Wax
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bebop.WaxHNDemo
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: >-
+          Wax indexes photos you pick so you can search text that appears
+          in them. Photos never leave your device.
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  WaxHNDemoMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: WaxHNDemo
+      - path: ../WaxDemoCorpus
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Wax
+        product: Wax
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bebop.WaxHNDemo
+        PRODUCT_MODULE_NAME: WaxHNDemo
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: >-
+          Wax indexes photos you pick or drop so you can search text
+          that appears in them. Photos never leave this Mac.
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        ENABLE_APP_SANDBOX: false
+        COMBINE_HIDPI_IMAGES: true
+
+  WaxHNDemoMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: WaxHNDemoTests
+    dependencies:
+      - target: WaxHNDemoMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bebop.WaxHNDemoMacTests
+        GENERATE_INFOPLIST_FILE: true
+
+  WaxHNDemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WaxHNDemoTests
+    dependencies:
+      - target: WaxHNDemo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bebop.WaxHNDemoTests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/WaxHNDemo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WaxHNDemo"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  WaxHNDemo:
+    build:
+      targets:
+        WaxHNDemo: all
+        WaxHNDemoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - WaxHNDemoTests
+
+  WaxHNDemoMac:
+    build:
+      targets:
+        WaxHNDemoMac: all
+        WaxHNDemoMacTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - WaxHNDemoMacTests

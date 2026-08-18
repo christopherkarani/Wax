@@ -50,11 +50,11 @@ let storeURL = <STORE_URL>
 let memory = try await Memory(at: storeURL) { $0.embedding = .builtIn(.miniLM) }
 ```
 
-Alternative (automatic: built-in MiniLM when the platform supports it, text-only otherwise):
+Alternative (automatic: opens while MiniLM loads, then live-attaches):
 ```swift
 import Wax
 
 let storeURL = <STORE_URL>
 let memory = try await Memory(at: storeURL)
-// Verify: await memory.stats().queryEmbedderConfigured
+// Verify: await memory.stats().embeddingStatus
 ```

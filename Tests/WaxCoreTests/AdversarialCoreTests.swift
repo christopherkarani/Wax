@@ -470,6 +470,22 @@ func validateEvidenceRejectsBadConfidence(_ confidence: Double) {
     }
 }
 
+@Test func asyncTimeoutFiresWhenOperationBlocksTheThread() async {
+    await #expect(throws: AsyncTimeout.TimeoutError.self) {
+        _ = try await AsyncTimeout.run(
+            timeout: .milliseconds(30),
+            operation: "adversarial-thread-sleep"
+        ) {
+            blockCurrentThread(for: 1)
+            return 0
+        }
+    }
+}
+
+private func blockCurrentThread(for seconds: TimeInterval) {
+    Thread.sleep(forTimeInterval: seconds)
+}
+
 // MARK: - Concurrency: bounded multi-writer no lost updates
 
 @Test func asyncMutexNoLostUpdatesUnderContention() async {

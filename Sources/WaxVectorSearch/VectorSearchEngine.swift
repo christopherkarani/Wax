@@ -1,7 +1,8 @@
 import Foundation
 import WaxCore
 
-package enum VectorEnginePreference: Sendable, Equatable {
+/// Preferred vector search backend: automatic selection, GPU-only, or CPU-only.
+public enum VectorEnginePreference: Sendable, Equatable {
     case auto
     @available(*, deprecated, renamed: "auto")
     case metalPreferred

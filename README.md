@@ -14,8 +14,9 @@
 <div style="height: 16px;"></div>
 
 <p align="center">
-  <strong>Give your AI agent a memory that never forgets.</strong><br/>
-  One file. Zero cloud. Blazing fast recall on Apple Silicon.
+  <strong>Local-first shared memory for every agent on your machine.</strong><br/>
+  One <code>.wax</code> file. Claude, Cursor, Codex, Hermes — same store.<br/>
+  Sync machines with iCloud, or AirDrop the file.
 </p>
 
 <p align="center">
@@ -34,9 +35,29 @@
 
 ## What is Wax?
 
-Wax is a Swift-native memory engine for AI agents. It stores documents, embeddings, and structured knowledge in a **single `.wax` file** that lives entirely on your device.
+Wax is a **local-first shared memory layer**. Every coding agent on this machine — Claude Code, Cursor, Codex, Hermes, whatever speaks MCP — reads and writes the same store.
 
-No servers. No API keys. No Docker. Just one file you can AirDrop, sync, or back up like any other document.
+That store is one file: `~/.wax/memory.wax`. No account. No hosted vector DB. Decisions, handoffs, and project facts survive the chat, the app, and the reboot.
+
+**Same Mac, many agents.** Point each host at the file (or at one local HTTP server). They share memory instead of each keeping a private brain.
+
+**Another Mac.** Put the file in iCloud Drive and both machines see the same store, or AirDrop `memory.wax` like any other document.
+
+```text
+~/Library/Mobile Documents/com~apple~CloudDocs/Wax/memory.wax   # iCloud
+# or
+AirDrop  memory.wax  →  ~/.wax/memory.wax
+```
+
+Agent setup: [Agent Quick Start](#agent-quick-start) · host snippets: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md)
+
+<p align="center">
+  <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
+</p>
+
+### Also a Swift engine
+
+The same file is a Swift package. Embed it in an iOS or macOS app when you want on-device RAG without standing up a server.
 
 ```swift
 import Wax
@@ -53,21 +74,19 @@ let results = try await memory.search("What editor does the user like?")
 
 ### What you can build
 
-- **Persistent chatbots** — Your assistant remembers every conversation, preference, and decision across sessions.
-- **Coding agents with long-term memory** — Claude Code or Cursor that recalls your codebase patterns, architectural decisions, and TODOs from last week.
-- **Personal knowledge bases** — Semantic search over your notes, documents, and web clips. Ask "What did I read about HNSW?" and get the exact paragraph.
-- **On-device RAG** — Ship AI features in your iOS or macOS app without calling the cloud.
+- **Shared agent memory** — one store across every MCP client on the machine.
+- **Carry it** — iCloud the file between Macs, or AirDrop it.
+- **Personal knowledge** — semantic search over notes and clips, still on disk.
+- **On-device RAG** — ship memory inside an app, no cloud dependency.
 
 ---
 
 ## Choose Your Path
 
-Wax meets you where you are. Pick the path that matches what you're building:
-
-| 🛠️ Swift Developer | ⌨️ CLI Power User | 🤖 AI Agent Setup |
-|:--------------------|:------------------|:------------------|
-| **You want:** Embed memory in your iOS/macOS app or Swift tool. | **You want:** A command-line memory store you can script against. | **You want:** Your AI assistant (Claude Code, Cursor, etc.) to remember context across sessions. |
-| **Get started:** [Swift Quick Start](#swift-quick-start) ↓ | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Agent Quick Start](#agent-quick-start) ↓ |
+| 🤖 Every agent on this Mac | ⌨️ CLI | 🛠️ Swift app |
+|:---------------------------|:-------|:-------------|
+| **You want:** Claude, Cursor, Codex, Hermes sharing one local memory. Sync the file with iCloud or AirDrop. | **You want:** A command-line store you can script. | **You want:** The same engine inside an iOS/macOS app. |
+| **Get started:** [Agent Quick Start](#agent-quick-start) ↓ | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Swift Quick Start](#swift-quick-start) ↓ |
 
 ---
 
@@ -276,63 +295,110 @@ Then send JSON-line commands:
 
 ## Agent Quick Start
 
-Give your AI coding assistant (Claude Code, Cursor, Windsurf) a persistent memory that survives across sessions.
+Give your AI coding assistant (Claude Code, Cursor, Codex, Hermes, OpenClaw, Windsurf) a persistent memory that survives across sessions.
 
-### 1. Install the MCP server (and stage the operator skill)
+Installing the server is not enough. Hosts ignore MCP tool descriptions unless an always-on file says **when** to write. Paste a block below after you wire the host.
 
-```bash
-npx -y waxmcp@latest mcp install --scope user
-```
-
-This stages the Wax runtime locally, registers `wax-mcp` with Claude Code, and stages the
-**wax-mcp operator skill** under `~/.local/share/waxmcp/skills/wax-mcp` (then attempts
-`claude install-skill` when available). `npx` is only used for the one-time install.
-
-The MCP server also ships lifecycle instructions with every tools connection, so agents
-receive the remember/recall/handoff playbook even without a separate skill install.
-
-### 2. Install the wax-mcp skill (if install did not auto-register it)
+### 1. Stage the server once
 
 ```bash
-# Preferred: staged local copy after mcp install
-claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
-
-# Or from GitHub
-claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
+npx -y waxmcp@latest install
 ```
 
-This is the **agent operator** skill (session lifecycle, remember/recall, handoffs).
-
-> Writing Swift apps with the Wax framework? That is a different skill:
-> `claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax`
-
-### 3. Or paste project rules into CLAUDE.md / AGENTS.md
+**Claude-only** can use stdio. **Two or more clients must share one HTTP server** on `http://127.0.0.1:3000/mcp` — a second process on `~/.wax/memory.wax` will lock.
 
 <details>
-<summary><strong>Wax MCP project rules (click to expand, then copy)</strong></summary>
+<summary><strong>Host wire-up (Claude, Codex, Cursor, Hermes, OpenClaw)</strong></summary>
+
+| Host | Wire-up |
+|------|---------|
+| Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
+| Codex | `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` + copy the skill to `~/.codex/skills/wax-mcp` |
+| Cursor | `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
+| Hermes | HTTP + `memory.provider: wax-memory` + append the SOUL.md stanza to `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`) |
+| OpenClaw | HTTP + memory plugin + append the SOUL.md stanza to the workspace `SOUL.md` |
+| Anything else | HTTP URL + paste the AGENTS.md block into project `AGENTS.md` |
+
+Full snippets, the HTTP start command, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+
+The **wax-mcp** skill is the operator playbook. The **wax** skill is Swift framework integration — different audience.
+
+</details>
+
+### 2. Teach the model when to use Wax
+
+Pick the file your host actually loads on every turn.
+
+<details>
+<summary><strong>Paste into AGENTS.md / CLAUDE.md / Cursor rules</strong></summary>
+
+Use the project or user `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules`. Same text as `Resources/skills/public/wax-mcp/references/project-rules.md`.
 
 ```text
-Use the Wax MCP server for persistent memory in this repo.
+Wax is the shared memory layer. Chat dies; Wax does not. Skip one-line Q&A. Use on any multi-step coding, debug, or research task.
+
+Open every multi-step session:
+1. Call `handoff_latest` first (`project` = repo name). Read it. Do not ask the user to restate it.
+2. Call `session_start` once. Keep `session_id`. Do not invent one. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
+3. Call `recall` without `session_id` for durable-only. `recall` with `session_id` merges that session with durable long-term memory.
 
 Workflow rules:
-- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
 - Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits. `recall` with `session_id` merges that session with durable long-term memory.
+- Use `recall` for assembled context and `search` for raw ranked hits.
 - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
 - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
 - Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
 - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
 - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
 
-Behavior expectations:
-- Read existing handoffs and recall results before asking me to restate prior context.
-- Keep memory writes concise, factual, and scoped to the task.
-- When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
+
+Tactical (this task) — write immediately, not at the end:
+- `remember` with top-level `session_id`, `memory_type: task_state`, `durability: working`
+- When: you lock a plan, a path fails (what + why), you find a landmine / owner file / required gate, a milestone finishes, or you are about to spawn a subagent / compact / stop
+- Read with `recall` plus `session_id`
+
+Strategic (survives this session):
+- `remember` without `session_id`, `durability: durable`, `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact`
+- When: the user corrects you, you make an architecture or product decision, a pitfall will waste the next agent time, a standing preference appears, or a repo fact is stable
+
+Both horizons on a long task: `compact_context`.
+`recall` with `session_id` merges that session with durable long-term memory. `search` with `session_id` is session-store only.
+
+Share across agents: the parent writes before spawning. Children often have no Wax tools. The parent writes again from their evidence.
+
+Close: `handoff` (`content`, `project`, `pending_tasks`, `session_id`) then `session_end`.
+
+Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or huge logs. Do not manage `SESSION_STORE`, `--store-path`, or `flush`. Prefer `mode: "text"` for exact names and recent facts. Structured `entity_*` / `fact_*` tools are for stable graph facts, not debug notes.
 ```
 
 </details>
 
-For the full Claude Code setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
+<details>
+<summary><strong>Paste into Hermes / OpenClaw SOUL.md</strong></summary>
+
+Hermes: `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md`. OpenClaw: the workspace `SOUL.md`.
+
+SOUL.md is identity. **Append** this section. Do not replace the rest of the soul.
+
+```text
+## Memory (Wax)
+
+You have Wax. Chat is not memory.
+
+On every multi-step task: `handoff_latest` → `session_start` → keep `session_id`.
+
+Write as you go:
+- This task: `remember` with `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
+- Long-term: `remember` without `session_id`, `durability: durable`, type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (corrections, decisions, standing prefs, stable repo facts).
+
+Read: `recall` without `session_id` for durable-only. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
+
+Close with `handoff` then `session_end`. Do not invent a `session_id` or put it in `metadata`. Do not store secrets.
+```
+
+</details>
+
+Host install path: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md). Claude/doctor details: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ---
 
@@ -435,20 +501,27 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your local memory to Claude Code or any MCP-compatible agent.
 
 ```bash
-npx -y waxmcp@latest mcp install --scope user
+npx -y waxmcp@latest install
 ```
 
-For the recommended Claude Code prompt and setup flow, see [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
-For the OpenClaw adapter verification pass used in this repo, run [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh).
-For the native-memory operator guide, verifier, and benchmark sweep, see [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
+Then [wire the host](#agent-quick-start) and paste the AGENTS.md or SOUL.md block so the model actually writes. Snippets: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 
-The MCP surface now supports managed Markdown round-trips with `markdown_export` / `markdown_sync`, including `MEMORY.md`, daily notes, and `DREAMS.md` promotion review. `markdown_sync` also supports `dry_run`, and OpenClaw-oriented promotion thresholds can be overridden on `session_synthesize` / `memory_promote` or via environment variables.
+<details>
+<summary><strong>HTTP, OpenClaw, and Markdown extras</strong></summary>
 
-For remote or team-hosted deployments, `wax-mcp` also supports HTTP transport:
+Claude registrar and doctor: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
+
+OpenClaw adapter check: [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh). Native-memory operator guide: [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
+
+The MCP surface supports `markdown_export` / `markdown_sync` (`MEMORY.md`, daily notes, `DREAMS.md`). `markdown_sync` accepts `dry_run`. Promotion thresholds can be overridden on `session_synthesize` / `memory_promote`.
+
+Local HTTP (when this process is the only writer):
 
 ```bash
 ./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
 ```
+
+</details>
 
 ### 🔍 WaxRepo
 A semantic search TUI for your git history. Index any repository and find code or commits using natural language.

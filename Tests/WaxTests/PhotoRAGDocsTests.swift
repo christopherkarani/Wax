@@ -18,8 +18,10 @@ func photoRAGDocsDoNotAdvertisePackageOnlyOrchestratorAsPublicAPI() throws {
     for relativePath in photoRAGDocPaths {
         let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
 
-        #expect(doc.contains("package-only"))
-        #expect(doc.contains("not public API"))
+        #expect(doc.contains("PhotoMemory"))
+        #expect(doc.contains("BuiltInMultimodalEmbeddings"))
+        #expect(!doc.contains("wait for a stable public facade"))
+        #expect(!doc.contains("wait for a facade"))
         #expect(!doc.contains("PhotoRAGOrchestrator provides"))
         #expect(!doc.contains("let orchestrator = try await PhotoRAGOrchestrator("))
         #expect(!doc.contains("try await orchestrator.ingest"))

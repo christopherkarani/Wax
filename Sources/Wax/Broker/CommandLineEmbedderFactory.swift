@@ -2,61 +2,34 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-import WaxVectorSearchMiniLM
-#endif
-
-#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-import WaxVectorSearchArctic
-#endif
-
-/// Reports whether a deferred query embedder has resolved its inner provider.
-///
-/// `EmbeddingProvider` presence is not readiness: `DeferredCommandLineEmbedder`
-/// is non-nil at broker start while CoreML load is still in flight.
-package protocol QueryEmbedderReadiness: Sendable {
-    func isQueryEmbedderReady() async -> Bool
-}
-
 package enum CommandLineEmbedderFactory {
     private static let defaultLockTimeoutSeconds = 2.0
 
+    /// Compile or reuse a built-in provider through embedding readiness.
     package static func buildEmbedder(
         noEmbedder: Bool,
         embedderChoice: String,
         tuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws -> (any EmbeddingProvider)? {
-        if noEmbedder {
+        let request = try HostEmbeddingReadiness.request(
+            noEmbedder: noEmbedder,
+            requireVector: false,
+            embedderChoice: embedderChoice,
+            options: BuiltInEmbeddingProviderOptions(tuning: tuning)
+        )
+        switch request {
+        case .disabled:
             return nil
-        }
-
-        let choice = embedderChoice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard choice == "auto" || choice == "minilm" || choice == "arctic" else {
-            throw WaxError.encodingError(reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, or auto.")
-        }
-
-        if choice == "arctic" {
-            #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-            if #available(macOS 15.0, iOS 18.0, *) {
-                return DeferredCommandLineEmbedder(kind: .arctic, tuning: tuning)
+        case .custom(let provider):
+            return provider
+        case .automatic(let provider, let options), .builtIn(let provider, let options):
+            return try await EmbeddingReadiness.shared.compile(
+                key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
+                timeout: options.tuning.timeoutDuration
+            ) {
+                try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: true)
             }
-            brokerWriteStderr("Warning: Arctic requires macOS 15.0 or iOS 18.0. Falling back to text-only search.")
-            return nil
-            #else
-            brokerWriteStderr("Warning: Arctic embeddings not available in this build. Falling back to text-only search.")
-            return nil
-            #endif
         }
-
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-        if #available(macOS 15.0, iOS 18.0, *) {
-            return DeferredCommandLineEmbedder(kind: .minilm, tuning: tuning)
-        }
-        brokerWriteStderr("Warning: MiniLM requires macOS 15.0 or iOS 18.0. Falling back to text-only search.")
-        return nil
-        #else
-        return nil
-        #endif
     }
 
     package static func waxOptions() -> WaxOptions {
@@ -80,167 +53,3 @@ package enum CommandLineEmbedderFactory {
     }
 }
 
-@available(macOS 15.0, iOS 18.0, *)
-private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmbeddingProvider, QueryEmbedderReadiness {
-    enum Kind: Sendable {
-        case minilm
-        case arctic
-    }
-
-    private let kind: Kind
-    private let tuning: CommandLineEmbedderRuntimeTuning
-    private var providerTask: Task<(any EmbeddingProvider)?, Never>?
-    private var provider: (any EmbeddingProvider)?
-
-    init(kind: Kind, tuning: CommandLineEmbedderRuntimeTuning) {
-        self.kind = kind
-        self.tuning = tuning
-    }
-
-    nonisolated var executionMode: ProviderExecutionMode { .onDeviceOnly }
-
-    nonisolated var dimensions: Int { 384 }
-
-    nonisolated var normalize: Bool {
-        switch kind {
-        case .minilm:
-            return true
-        case .arctic:
-            return false
-        }
-    }
-
-    nonisolated var identity: EmbeddingIdentity? {
-        switch kind {
-        case .minilm:
-            return EmbeddingIdentity(provider: "Wax", model: "MiniLM", dimensions: 384, normalized: true)
-        case .arctic:
-            return EmbeddingIdentity(provider: "Wax", model: "ArcticEmbedS", dimensions: 384, normalized: true)
-        }
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        guard let provider = try await resolvedProvider() else {
-            throw BrokerEmbedderError.unavailable
-        }
-        return try await provider.embed(text)
-    }
-
-    func embed(batch texts: [String]) async throws -> [[Float]] {
-        guard let provider = try await resolvedProvider() else {
-            throw BrokerEmbedderError.unavailable
-        }
-        if let batchProvider = provider as? any BatchEmbeddingProvider {
-            return try await batchProvider.embed(batch: texts)
-        }
-        return try await texts.asyncMap { try await provider.embed($0) }
-    }
-
-    func embedQuery(_ query: String) async throws -> [Float] {
-        guard let provider = try await resolvedProvider() else {
-            throw BrokerEmbedderError.unavailable
-        }
-        if let queryAware = provider as? any QueryAwareEmbeddingProvider {
-            return try await queryAware.embedQuery(query)
-        }
-        return try await provider.embed(query)
-    }
-
-    func isQueryEmbedderReady() -> Bool {
-        provider != nil
-    }
-
-    private func resolvedProvider() async throws -> (any EmbeddingProvider)? {
-        if let provider {
-            return provider
-        }
-        if let task = providerTask {
-            let resolved = await task.value
-            provider = resolved
-            providerTask = nil
-            return resolved
-        }
-
-        let task = Task<(any EmbeddingProvider)?, Never> { [kind, tuning] in
-            await loadProvider(kind: kind, tuning: tuning)
-        }
-        providerTask = task
-        let resolved = await task.value
-        provider = resolved
-        providerTask = nil
-        return resolved
-    }
-
-    private nonisolated func loadProvider(
-        kind: Kind,
-        tuning: CommandLineEmbedderRuntimeTuning
-    ) async -> (any EmbeddingProvider)? {
-        await withTaskGroup(of: (any EmbeddingProvider)?.self) { group in
-            group.addTask {
-                do {
-                    switch kind {
-                    case .minilm:
-                        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-                        return try await MiniLMEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: tuning.prewarmBatchSize,
-                            skipPrewarm: true,
-                            tuning: tuning
-                        )
-                        #else
-                        return nil
-                        #endif
-                    case .arctic:
-                        #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
-                        return try await ArcticEmbedder.makeCommandLineEmbedder(
-                            prewarmBatchSize: tuning.prewarmBatchSize,
-                            skipPrewarm: true,
-                            tuning: tuning
-                        )
-                        #else
-                        return nil
-                        #endif
-                    }
-                } catch {
-                    brokerWriteStderr("Embedder load failed: \(error.localizedDescription)")
-                    return nil
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: tuning.timeoutDuration)
-                return nil
-            }
-
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-    }
-}
-
-private enum BrokerEmbedderError: LocalizedError {
-    case unavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .unavailable:
-            return "Embedding provider is unavailable."
-        }
-    }
-}
-
-private func brokerWriteStderr(_ message: String) {
-    guard let data = (message + "\n").data(using: .utf8) else { return }
-    FileHandle.standardError.write(data)
-}
-
-private extension Sequence {
-    func asyncMap<T: Sendable>(
-        _ transform: (Element) async throws -> T
-    ) async throws -> [T] {
-        var results: [T] = []
-        for element in self {
-            results.append(try await transform(element))
-        }
-        return results
-    }
-}

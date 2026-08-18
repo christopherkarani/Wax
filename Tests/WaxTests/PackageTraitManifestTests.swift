@@ -34,6 +34,14 @@ import Testing
     #expect(!source.contains("multimodal RAG tools"))
 }
 
+@Test func brokerStartTimeoutDefaultAllowsParallelProcessTests() throws {
+    let source = try PackageSource.load("Sources/Wax/Broker/AgentBrokerClient.swift")
+
+    #expect(source.contains("envKey: \"WAX_BROKER_START_TIMEOUT_SECS\""))
+    #expect(source.contains("defaultValue: 10.0"))
+    #expect(!source.contains("envKey: \"WAX_BROKER_START_TIMEOUT_SECS\",\n        defaultValue: 5.0"))
+}
+
 @Test func brokerCorpusStoreBuildDoesNotDeleteExistingCorpusBeforeReplacement() throws {
     let source = try PackageSource.load("Sources/Wax/Broker/BrokerCorpusStore.swift")
 
@@ -45,11 +53,17 @@ import Testing
     let manifest = try PackageManifest.load()
     let requiredExcludes = [
         "AccessStatsBootstrapBenchmarks.swift",
+        "BertTokenizerFastPathTests.swift",
         "HandoffLookupBenchmarks.swift",
+        "HybridVectorEngineBenchmark.swift",
         "PayloadLivenessBenchmarks.swift",
         "RememberDedupBenchmarks.swift",
         "SessionRuntimeStatsBenchmarks.swift",
+        "StructuredMemoryCRUDTests.swift",
+        "StructuredMemorySchemaTests.swift",
         "SurrogateSourceBenchmarks.swift",
+        "TextSearchEngineTests.swift",
+        "VersionRelationTests.swift",
     ]
 
     for file in requiredExcludes {

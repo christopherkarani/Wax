@@ -106,7 +106,7 @@ func whitespaceOnlyRecallDoesNotRequestEmbedding() async throws {
         let embedder = WhitespaceRecallCountingEmbedder()
         let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
 
-        let context = try await orchestrator.recall(query: " \n\t ", embeddingPolicy: .ifAvailable)
+        let context = try await orchestrator.recall(query: " \n\t ")
 
         #expect(context.items.isEmpty)
         #expect(await embedder.callCount == 0)

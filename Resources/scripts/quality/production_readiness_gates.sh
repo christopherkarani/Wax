@@ -19,12 +19,35 @@ run_and_capture() {
   fi
 }
 
+# Optional suites that use Swift Testing `.disabled` / XCTest `XCTSkip` unless an
+# explicit env var or package trait is set. These are not silent product gaps.
+expected_optional_skip_pattern() {
+  printf '%s' \
+    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_"
+}
+
 assert_no_skips() {
   local log_file="$1"
-  if grep -E "([Tt]est skipped|(^|[[:space:]])(Suite|Test)[[:space:]].* skipped:)" "$log_file" >/dev/null; then
+  local skip_lines unexpected
+  skip_lines="$(grep -E "([Tt]est skipped|(^|[[:space:]])(Suite|Test)[[:space:]].* skipped:)" "$log_file" || true)"
+  if [[ -z "$skip_lines" ]]; then
+    return 0
+  fi
+
+  unexpected="$(printf '%s\n' "$skip_lines" | grep -Ev "$(expected_optional_skip_pattern)" || true)"
+  if [[ -n "$unexpected" ]]; then
     echo "FAIL: skipped tests detected in $log_file" >&2
+    printf '%s\n' "$unexpected" >&2
     return 1
   fi
+  echo "EXPECTED_SKIPS: env/trait-gated optional suites omitted"
+}
+
+# Heavy XCTest benches and soak/burn profiles belong in dedicated jobs, not `full`.
+# Keep historical class names so a rename cannot silently reintroduce a 10k-doc run.
+full_gate_skip_regex() {
+  printf '%s' \
+    "(RAGPerformanceBenchmarks|RAGMiniLMBenchmarks|RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark|HybridVectorEngineBenchmark|HandoffLookupBenchmarks|PayloadLivenessBenchmarks|SessionRuntimeStatsBenchmarks|StoreBloatBenchmarks|RememberDedupBenchmarks|SurrogateSourceBenchmarks|ArcticPerformanceBenchmark|AccessStatsBootstrapBenchmarks|ProductionReadinessStabilityTests)"
 }
 
 assert_full_pass_rate() {
@@ -115,7 +138,7 @@ run_full() {
   local log_file="/tmp/wax-gate-full.log"
   local mcp_log_file="/tmp/wax-gate-full-mcp.log"
   local skip_regex
-  skip_regex="(RAGBenchmarks|RAGBenchmarksMiniLM|WALCompactionBenchmarks|LongMemoryBenchmarkHarness|BatchEmbeddingBenchmark|MetalVectorEngineBenchmark|OptimizationComparisonBenchmark|TokenizerBenchmark|BufferSerializationBenchmark)"
+  skip_regex="$(full_gate_skip_regex)"
 
   run_and_capture "$log_file" \
     swift test --parallel --skip "$skip_regex"

@@ -4,7 +4,7 @@ title: "Architecture"
 sidebar_label: "Architecture"
 ---
 
-How Wax layers fit together. App code still enters through `Memory`; the actors below are mostly package-internal.
+How Wax layers fit together. App code enters through `Memory`, experimental `PhotoMemory`, and experimental `VideoMemory`. The orchestrator actors below are package-internal.
 
 ## Overview
 
@@ -24,9 +24,12 @@ Every major subsystem is an actor with its own serial executor:
 
 | Actor | Responsibility |
 |-------|---------------|
-| `MemoryOrchestrator` | Text ingestion, recall, session management |
-| `PhotoRAGOrchestrator` | Photo library sync, OCR, photo queries |
-| `VideoRAGOrchestrator` | Video ingestion, transcript handling, segment queries |
+| `Memory` | Public text-memory facade |
+| `PhotoMemory` | Experimental public photo facade (`BuiltInMultimodalEmbeddings`) |
+| `VideoMemory` | Experimental public video facade (`BuiltInMultimodalEmbeddings`) |
+| `MemoryOrchestrator` | Package-only text engine behind `Memory` |
+| `PhotoRAGOrchestrator` | Package-only engine behind `PhotoMemory` |
+| `VideoRAGOrchestrator` | Package-only engine behind `VideoMemory` |
 | `WaxSession` | Frame writes, search delegation, structured memory |
 | `Wax` (WaxCore) | File I/O, WAL, frame storage, writer leasing |
 | `FTS5SearchEngine` | BM25 indexing/search, structured memory persistence |

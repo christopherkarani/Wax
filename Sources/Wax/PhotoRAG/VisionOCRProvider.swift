@@ -5,23 +5,28 @@ import CoreGraphics
 import Foundation
 
 /// Default on-device OCR provider using Apple Vision framework for text recognition.
-package struct VisionOCRProvider: OCRProvider, Sendable {
+public struct VisionOCRProvider: OCRProvider, Sendable {
     /// Accuracy level for OCR recognition.
-    package enum Accuracy: Sendable {
+    public enum Accuracy: Sendable {
         case fast
         case accurate
     }
 
-    package var accuracy: Accuracy
-    package var usesLanguageCorrection: Bool
-    package var executionMode: ProviderExecutionMode { .onDeviceOnly }
+    /// Recognition accuracy versus latency trade-off for this provider.
+    public var accuracy: Accuracy
+    /// Whether Vision should apply language correction to recognized text.
+    public var usesLanguageCorrection: Bool
+    /// Always on-device; Vision does not leave the device.
+    public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 
-    package init(accuracy: Accuracy = .accurate, usesLanguageCorrection: Bool = true) {
+    /// Create a Vision OCR provider.
+    public init(accuracy: Accuracy = .accurate, usesLanguageCorrection: Bool = true) {
         self.accuracy = accuracy
         self.usesLanguageCorrection = usesLanguageCorrection
     }
 
-    package func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
+    /// Recognize text blocks in `image` using Vision.
+    public func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
         let accuracyLevel = accuracy
         let languageCorrection = usesLanguageCorrection
 

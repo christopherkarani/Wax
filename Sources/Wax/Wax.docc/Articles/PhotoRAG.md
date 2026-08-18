@@ -1,16 +1,22 @@
 # Photo RAG
 
-Understand the package-only Photo RAG pipeline for contributor work.
+Use the experimental ``PhotoMemory`` facade to ingest photos and recall ranked photo context.
 
 ## Status
 
-Photo RAG is an experimental, package-only implementation. The current `PhotoRAGOrchestrator` actor and related photo types use Swift `package` access, so they are not public API for application or downstream package consumers.
+Photo RAG is experimental public API on Darwin (`canImport(ImageIO)`). Application code uses ``PhotoMemory`` and ``BuiltInMultimodalEmbeddings``. For video, use ``VideoMemory`` with the same embedder factory. `PhotoRAGOrchestrator` is package-only and not public API — do not construct it in app or docs samples.
 
-Use this article as internal implementation documentation for Wax contributors. Public integration docs should wait for a stable public facade or an explicit access-level change.
+```swift
+let embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)
+let photos = try await PhotoMemory(at: storeURL, embedder: embedder, ocr: VisionOCRProvider())
+try await photos.ingest(files: [PhotoFile(id: "receipt-1", url: imageURL)])
+let context = try await photos.recall(PhotoQuery(text: "coffee receipt"))
+try await photos.close()
+```
 
 ## Overview
 
-The package-scoped pipeline builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and metadata tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
+``PhotoMemory`` builds retrieval-augmented context over photo libraries. It ingests Photos assets or local images, extracts metadata and OCR text, attaches optional captions and metadata tags, computes multimodal embeddings, and prepares ranked photo context for natural-language queries.
 
 ## Architecture
 
@@ -26,21 +32,24 @@ Each photo is represented as a hierarchy of frames:
 | `region` | Bounding box regions of interest |
 | `syncState` | Library sync checkpoint |
 
-## Internal Components
+## Components
 
 | Component | Role |
 |-----------|------|
-| `PhotoRAGOrchestrator` | Package-scoped actor that owns photo sync, ingestion, indexing, recall, deletion, and flush flows |
-| `PhotoRAGConfig` | Package-scoped configuration for pixel sizes, OCR, regions, vector search, and context budgets |
-| `MultimodalEmbeddingProvider` | Package-scoped provider requirement for image and text embeddings |
-| `OCRProvider` | Package-scoped provider for image text extraction |
-| `CaptionProvider` | Package-scoped provider for generated image descriptions |
-| `PhotoQuery` | Package-scoped query model for text, metadata, location, and evidence constraints |
-| `PhotoRAGContext` | Package-scoped recall result grouped into photo items and evidence |
+| ``PhotoMemory`` | Experimental public facade for photo sync, ingestion, indexing, recall, deletion, and flush |
+| ``BuiltInMultimodalEmbeddings`` | Public factory for the on-device multimodal embedder |
+| ``MultimodalEmbeddingProvider`` | Public provider requirement for image and text embeddings |
+| ``PhotoRAGConfig`` | Configuration for pixel sizes, OCR, regions, vector search, and context budgets |
+| ``VisionOCRProvider`` | Default on-device OCR provider |
+| `OCRProvider` | Provider protocol for image text extraction |
+| `CaptionProvider` | Provider protocol for generated image descriptions |
+| ``PhotoQuery`` | Query model for text, metadata, location, and evidence constraints |
+| ``PhotoRAGContext`` | Recall result grouped into photo items and evidence |
+| `PhotoRAGOrchestrator` | Package-only engine behind ``PhotoMemory``; not public API |
 
 ## Ingestion
 
-The package-only ingestion path currently supports:
+The ingestion path currently supports:
 
 - Photos-library sync for full-library or selected-asset scopes
 - Local image ingestion when the package is compiled with ImageIO support
@@ -66,7 +75,7 @@ Each ingested photo stores rich metadata:
 
 ## Recall Behavior
 
-The package-only recall flow:
+The recall flow:
 1. Embeds the query text
 2. Searches across OCR text (BM25) and image embeddings (vector similarity)
 3. Fuses results with RRF
@@ -74,7 +83,7 @@ The package-only recall flow:
 
 ## Configuration
 
-``PhotoRAGConfig`` controls internal ingestion and search:
+``PhotoRAGConfig`` controls ingestion and search:
 
 | Parameter | Description |
 |-----------|-------------|

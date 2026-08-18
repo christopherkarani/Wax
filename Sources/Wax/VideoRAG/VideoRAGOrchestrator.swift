@@ -143,12 +143,6 @@ package actor VideoRAGOrchestrator {
     }
 
     #if canImport(Photos)
-    /// Scope for syncing videos from the Photos library.
-    package enum VideoScope: Sendable, Equatable {
-        case fullLibrary
-        case assetIDs([String])
-    }
-
     /// Sync the Photos library videos into the local Wax store.
     ///
     /// Offline-only: iCloud-only assets are indexed as metadata-only and marked degraded.
@@ -520,14 +514,23 @@ package actor VideoRAGOrchestrator {
 
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
-            try await session.removeVector(frameId: frameId)
         }
+        try await removeSearchIndexes(frameIds: toDelete)
         try await session.commit()
         try await rebuildIndex()
     }
 
     package func flush() async throws {
         try await session.commit()
+    }
+
+    /// Flush pending writes, then close the session and the underlying store.
+    ///
+    /// The orchestrator must not be used after `close()` returns.
+    package func close() async throws {
+        try await flush()
+        await session.close()
+        try await wax.close()
     }
 
     /// Removes vector-index entries for a superseded root and its segment frames.
@@ -537,8 +540,15 @@ package actor VideoRAGOrchestrator {
         if let segmentIds = index.segmentIdsByVideoID[videoID] {
             ids.append(contentsOf: segmentIds)
         }
-        for frameId in ids {
+        try await removeSearchIndexes(frameIds: ids)
+    }
+
+    /// Drops vector and text postings so deleted/superseded segments cannot
+    /// satisfy a later transcript query in place of the live tree.
+    private func removeSearchIndexes(frameIds: [UInt64]) async throws {
+        for frameId in frameIds {
             try await session.removeVector(frameId: frameId)
+            try await session.removeText(frameId: frameId)
         }
     }
 
@@ -593,6 +603,7 @@ package actor VideoRAGOrchestrator {
             keyframes: keyframeImages,
             transcriptByIndex: transcriptByIndex
         )
+        try await indexRolledUpTranscript(rootId: rootId, transcriptByIndex: transcriptByIndex)
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
@@ -657,6 +668,7 @@ package actor VideoRAGOrchestrator {
                 keyframes: keyframes,
                 transcriptByIndex: transcriptByIndex
             )
+            try await indexRolledUpTranscript(rootId: rootId, transcriptByIndex: transcriptByIndex)
         }
 
         if let previousRoot {
@@ -757,6 +769,18 @@ package actor VideoRAGOrchestrator {
         }
     }
 
+    /// Indexes the concatenated transcript on the video root so a query that
+    /// spans multiple segments (AND of all tokens) can still retrieve the clip.
+    /// Segment frames keep their per-window text for timestamped hits.
+    private func indexRolledUpTranscript(rootId: UInt64, transcriptByIndex: [Int: String]) async throws {
+        let joined = transcriptByIndex.keys.sorted()
+            .compactMap { transcriptByIndex[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !joined.isEmpty else { return }
+        try await session.indexText(frameId: rootId, text: joined)
+    }
+
     private func loadTranscript(videoID: VideoID, localFileURL: URL, durationMs: Int64) async throws -> [VideoTranscriptChunk] {
         guard let provider = transcriptProvider else { return [] }
         let request = VideoTranscriptRequest(videoID: videoID, localFileURL: localFileURL, durationMs: durationMs)
@@ -836,6 +860,15 @@ package actor VideoRAGOrchestrator {
                     fallback: "stale vector may remain in the committed index"
                 )
             }
+            do {
+                try await session.removeText(frameId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "VideoRAG retired-text sweep",
+                    fallback: "stale text posting may remain in the committed index"
+                )
+            }
         }
     }
 
@@ -873,7 +906,14 @@ package actor VideoRAGOrchestrator {
     #if canImport(AVFoundation)
     private func buildKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {
         let asset = AVURLAsset(url: url)
-        let duration = try await asset.load(.duration)
+        let duration: CMTime
+        do {
+            duration = try await asset.load(.duration)
+        } catch {
+            // AVFoundation throws untyped NSErrors for undecodable files; map to
+            // the typed ingest error so callers can handle malformed media uniformly.
+            throw VideoIngestError.invalidVideo(reason: "unreadable video file: \(error.localizedDescription)")
+        }
         let durationMs = Int64(duration.seconds * 1000)
         if durationMs <= 0 {
             throw VideoIngestError.invalidVideo(reason: "duration must be > 0")

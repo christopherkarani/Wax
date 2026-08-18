@@ -10,24 +10,34 @@
 npx -y waxmcp@latest mcp serve
 ```
 
-For Claude Code / Codex installs, prefer:
+For Claude Code, register with `wax-cli` (not this launcher):
 
 ```bash
-npx -y waxmcp@latest mcp install --scope user
+swift run --traits MCPServer wax-cli mcp install --scope user
 ```
+
+This launcher (`npx waxmcp`) **serves** MCP. It does not implement `mcp install --scope`.
+
+Shared HTTP (required when more than one client uses `~/.wax/memory.wax`):
+
+```bash
+npx -y waxmcp@latest --transport http --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp --embedder minilm
+```
+
+Then add the URL to Codex / Cursor / Hermes. Full host snippets: repo `Resources/docs/wax-mcp-hosts.md`.
 
 That install flow:
 
-1. Stages the bundled runtime into a stable local directory
-2. Registers the staged `wax-mcp` binary with Claude Code
-3. Stages the **wax-mcp operator skill** to `~/.local/share/waxmcp/skills/wax-mcp`
-4. Attempts `claude install-skill` when available and prints project-rules fallback text
+1. `npx waxmcp install` stages the bundled runtime into a stable local directory
+2. `wax-cli mcp install` registers the staged `wax-mcp` binary with Claude Code
+3. The skill is staged to `~/.local/share/waxmcp/skills/wax-mcp`
+4. `claude install-skill` is best-effort; other hosts copy the skill or paste project-rules
 
 So regular MCP sessions do not keep launching through raw `npx`, and agents get a
 session lifecycle playbook (also embedded in MCP server instructions).
 
 ```bash
-# If skill auto-install did not run:
+# If skill auto-install did not run (Claude):
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 ```
 

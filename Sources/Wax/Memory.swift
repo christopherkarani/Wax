@@ -41,15 +41,15 @@ public actor Memory {
 
     /// Selects the embedding provider that backs vector search for a ``Memory`` store.
     public enum EmbeddingSource: Sendable {
-        /// Wire the built-in MiniLM embedder automatically on iOS 18/macOS 15+ when Wax
-        /// is built with the default `MiniLMEmbeddings` trait. On older OS versions, or
-        /// if the model is unavailable, the store falls back to text-only search;
-        /// inspect ``RAGContext/diagnostics`` on search results or ``Memory/stats()``
-        /// to see which mode is actually in effect.
+        /// Prefer a built-in provider but open immediately while it loads.
+        /// Hybrid search is text until compile finishes and this store live-attaches;
+        /// ``vectorOnly`` throws until then. If the provider cannot activate, status is
+        /// ``EmbeddingStatus/unavailable`` (the vector index remains). Inspect
+        /// ``RAGContext/diagnostics`` or ``Memory/stats()``.
         case automatic
         /// Use one of Wax's built-in embedding providers. Store creation throws if the
-        /// provider cannot be constructed (trait compiled out, model missing, or
-        /// unsupported OS).
+        /// provider cannot be constructed (trait compiled out, model missing,
+        /// unsupported OS) or if compile exceeds the wait timeout.
         case builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)
         /// Use a custom embedding provider.
         case custom(any EmbeddingProvider)
@@ -117,16 +117,25 @@ public actor Memory {
     /// Create or open a memory store at the given URL.
     ///
     /// Embedder selection lives on ``Config/embedding`` and defaults to
-    /// ``EmbeddingSource/automatic``: the built-in MiniLM embedder is wired on
-    /// iOS 18/macOS 15+ when Wax is built with the default `MiniLMEmbeddings` trait.
-    /// On older OS versions, or if the model is unavailable, the store falls back to
-    /// text-only search; inspect ``RAGContext/diagnostics`` on search results or
-    /// ``stats()`` to see which mode is actually in effect.
+    /// ``EmbeddingSource/automatic``: the store opens while the built-in provider
+    /// loads, then live-attaches. Inspect ``RAGContext/diagnostics`` or ``stats()``.
     public init(at url: URL, config: Config = .default) async throws {
-        self.orchestrator = try await MemoryOrchestrator(
+        try await self.init(at: url, config: config, readiness: .shared, readinessFactory: nil)
+    }
+
+    /// Package test seam: inject readiness and a compile factory.
+    package init(
+        at url: URL,
+        config: Config,
+        readiness: EmbeddingReadiness,
+        readinessFactory: (@Sendable () async throws -> any EmbeddingProvider)?
+    ) async throws {
+        self.orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: Self.makeOrchestratorConfig(config),
-            embedder: try await Self.makeEmbedder(for: config)
+            request: Self.openRequest(for: config),
+            readiness: readiness,
+            factoryOverride: readinessFactory
         )
     }
 
@@ -154,30 +163,12 @@ public actor Memory {
     public func search(_ query: String, options: SearchOptions = .default) async throws -> Results {
         let frameFilter = FrameFilter(includeSurrogates: options.includeSurrogates)
         let mappedTimeRange = options.timeRange.map { SearchTimeRange(after: $0.afterMs, before: $0.beforeMs) }
-        let directMode: MemoryOrchestrator.DirectSearchMode = switch options.mode {
-        case .textOnly:
-            .text
-        case .vectorOnly:
-            .vector
-        case .hybrid(let alpha):
-            .hybrid(alpha: alpha)
-        }
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch options.mode {
-        case .textOnly:
-            .never
-        case .vectorOnly:
-            .always
-        case .hybrid:
-            .ifAvailable
-        }
-
         let execution = try await orchestrator.recallExecution(
             query: query,
-            embeddingPolicy: embeddingPolicy,
+            mode: options.mode,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
-            topK: options.topK,
-            mode: directMode
+            topK: options.topK
         )
         var results = execution.context
         results.diagnostics = RAGContext.Diagnostics(
@@ -247,6 +238,8 @@ public actor Memory {
         public var queryEmbeddingCircuitOpen: Bool
         /// Identity of the configured embedding provider, if any.
         public var embedderIdentity: EmbeddingIdentity?
+        /// Readiness of the embedding provider attached to this store.
+        public var embeddingStatus: EmbeddingStatus
 
         public init(
             frameCount: UInt64,
@@ -254,7 +247,8 @@ public actor Memory {
             vectorSearchEnabled: Bool,
             queryEmbedderConfigured: Bool,
             queryEmbeddingCircuitOpen: Bool,
-            embedderIdentity: EmbeddingIdentity?
+            embedderIdentity: EmbeddingIdentity?,
+            embeddingStatus: EmbeddingStatus = .disabled
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -262,6 +256,7 @@ public actor Memory {
             self.queryEmbedderConfigured = queryEmbedderConfigured
             self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.embedderIdentity = embedderIdentity
+            self.embeddingStatus = embeddingStatus
         }
     }
 
@@ -275,43 +270,27 @@ public actor Memory {
             frameCount: runtime.frameCount,
             pendingFrames: runtime.pendingFrames,
             vectorSearchEnabled: runtime.vectorSearchEnabled,
-            queryEmbedderConfigured: runtime.queryEmbedderConfigured,
+            queryEmbedderConfigured: runtime.embeddingStatus.isQueryEmbedderConfigured,
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
-            embedderIdentity: runtime.embedderIdentity
+            embedderIdentity: runtime.embeddingStatus.identity,
+            embeddingStatus: runtime.embeddingStatus
         )
     }
 
-    /// Resolves the embedder for ``Config/embedding``. `.automatic` returns nil
-    /// (text-only fallback) on unsupported OS versions, when the `MiniLMEmbeddings`
-    /// trait is compiled out, or when the model fails to load; `.builtIn` throws
-    /// instead of falling back so misconfiguration surfaces immediately.
-    private static func makeEmbedder(for config: Config) async throws -> (any EmbeddingProvider)? {
-        switch config.embedding {
-        case .automatic:
-            return await Self.makeAutoEmbedderIfPossible(config: config)
-        case .builtIn(let provider, let options):
-            return try await BuiltInEmbeddings.make(provider, options: options)
-        case .custom(let provider):
-            return provider
-        }
+    package func setSearchSnapshotHoldForTesting(_ duration: Duration?) async {
+        await orchestrator.setSearchSnapshotHoldForTesting(duration)
     }
 
-    private static func makeAutoEmbedderIfPossible(config: Config) async -> (any EmbeddingProvider)? {
-        guard config.enableVectorSearch else { return nil }
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
-        if #available(macOS 15.0, iOS 18.0, *) {
-            do {
-                return try await BuiltInEmbeddings.make(.miniLM)
-            } catch {
-                WaxDiagnostics.logSwallowed(
-                    error,
-                    context: "automatic MiniLM embedder setup",
-                    fallback: "text-only search"
-                )
-            }
+    private static func openRequest(for config: Config) -> EmbeddingOpenRequest {
+        guard config.enableVectorSearch else { return .disabled }
+        switch config.embedding {
+        case .automatic:
+            return .automatic(.miniLM, .default)
+        case .builtIn(let provider, let options):
+            return .builtIn(provider, options)
+        case .custom(let provider):
+            return .custom(provider)
         }
-        #endif
-        return nil
     }
 
     private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {

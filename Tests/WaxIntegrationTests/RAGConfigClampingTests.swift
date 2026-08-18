@@ -88,7 +88,7 @@ private func blendedPhotoQuery() -> PhotoQuery {
         location: nil,
         filters: .none,
         resultLimit: 2,
-        contextBudget: ContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 1)
+        contextBudget: PhotoContextBudget(maxTextTokens: 120, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 1)
     )
 }
 

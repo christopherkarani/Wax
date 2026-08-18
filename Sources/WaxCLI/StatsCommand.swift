@@ -32,6 +32,9 @@ struct StatsCommand: AsyncParsableCommand {
                 let diskBytes = Int64(brokerInt64(payload, "diskBytes") ?? 0)
                 print("Disk: \(ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))")
                 print("Vector search: \((brokerBool(payload, "vectorSearchEnabled") ?? false) ? "enabled" : "disabled")")
+                if let status = brokerString(payload, "embeddingStatus") {
+                    print("Embedding status: \(status)")
+                }
             }
             return
         }
@@ -71,6 +74,7 @@ struct StatsCommand: AsyncParsableCommand {
                     "diskBytes": diskBytes,
                     "storePath": stats.storeURL.path,
                     "vectorSearchEnabled": stats.vectorSearchEnabled,
+                    "embeddingStatus": stats.embeddingStatus.wireName,
                     "miniLMCompiled": compiled,
                     "features": [
                         "structuredMemoryEnabled": stats.structuredMemoryEnabled,
@@ -103,6 +107,7 @@ struct StatsCommand: AsyncParsableCommand {
                 print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
                 print("MiniLM compiled: \(compiled ? "yes" : "no")")
                 print("Vector search: \(stats.vectorSearchEnabled ? "enabled" : "disabled")")
+                print("Embedding status: \(stats.embeddingStatus.wireName)")
                 if let identity = stats.embedderIdentity {
                     let provider = identity.provider ?? "unknown"
                     let model = identity.model ?? "unknown"

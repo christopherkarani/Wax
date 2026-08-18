@@ -23,6 +23,8 @@ package enum AsyncTimeout {
     /// Execute `operation` and throw `TimeoutError` if it does not finish within `timeout`.
     ///
     /// - Important: The underlying operation may continue running after the timeout fires.
+    ///   The deadline is a GCD timer so a blocked cooperative thread (Core ML load,
+    ///   `Thread.sleep`) cannot starve the timeout.
     package static func run<T: Sendable>(
         timeout: Duration,
         operation name: StaticString,
@@ -32,12 +34,11 @@ package enum AsyncTimeout {
             let once = OnceThrowingContinuation<T>(continuation)
             let cancels = CancelBox()
             let operationTask = Task { try await operation() }
-            let timeoutTask = Task {
-                do {
-                    try await Task.sleep(for: timeout)
-                } catch {
-                    return
-                }
+            let deadline = DeadlineBox()
+            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+            deadline.timer = timer
+            timer.schedule(deadline: .now() + dispatchInterval(timeout))
+            timer.setEventHandler {
                 // Resume BEFORE cancelling: cancelling first lets a cooperatively
                 // cancellable operation complete with CancellationError, and the
                 // watcher task (running on another executor thread) can then win the
@@ -45,19 +46,41 @@ package enum AsyncTimeout {
                 _ = once.resume(throwing: TimeoutError(operation: String(describing: name), timeout: timeout))
                 operationTask.cancel()
                 cancels.cancelWatcher()
+                deadline.cancel()
             }
+            timer.resume()
 
             let watcherTask = Task {
                 let result = await operationTask.result
                 switch result {
                 case .success(let value):
-                    if once.resume(returning: value) { timeoutTask.cancel() }
+                    if once.resume(returning: value) { deadline.cancel() }
                 case .failure(let error):
-                    if once.resume(throwing: error) { timeoutTask.cancel() }
+                    if once.resume(throwing: error) { deadline.cancel() }
                 }
             }
             cancels.setWatcher(watcherTask)
         }
+    }
+
+    private static func dispatchInterval(_ duration: Duration) -> DispatchTimeInterval {
+        let components = duration.components
+        let nanoseconds = components.seconds * 1_000_000_000
+            + components.attoseconds / 1_000_000_000
+        return .nanoseconds(Int(clamping: nanoseconds))
+    }
+}
+
+private final class DeadlineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    var timer: DispatchSourceTimer?
+
+    func cancel() {
+        lock.lock()
+        let source = timer
+        timer = nil
+        lock.unlock()
+        source?.cancel()
     }
 }
 

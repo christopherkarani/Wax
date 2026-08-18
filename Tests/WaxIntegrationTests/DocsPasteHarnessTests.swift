@@ -227,8 +227,12 @@ func iosDocsPinMainNotBrokenRelease024() throws {
         encoding: .utf8
     )
     #expect(gettingStarted.contains("branch: \"main\""))
-    #expect(gettingStarted.contains("0.1.24") == false || gettingStarted.contains("package-only"))
     #expect(!gettingStarted.contains("from: \"0.1.24\""))
+    let warnsThatOldTagIsPackageScoped =
+        gettingStarted.contains("package-only")
+        || gettingStarted.contains("`package`-only")
+        || gettingStarted.contains("`package`-internal")
+    #expect(!gettingStarted.contains("0.1.24") || warnsThatOldTagIsPackageScoped)
 
     let fm = try String(
         contentsOf: DocumentationPaths.websiteDocs.appendingPathComponent("ios/foundation-models.md"),
@@ -281,5 +285,67 @@ private func makeConfiguredSessionForDocs(memory: Memory) -> WaxFoundationModelS
         instructions: "Be concise.",
         configuration: configuration
     )
+}
+#endif
+
+// MARK: - Photo / video public facade paste contract
+
+@Test
+func docsPastePublicAPISkillAndWebsiteNamePhotoVideoFacades() throws {
+    let repoRoot = DocumentationPaths.repoRoot
+    for relativePath in [
+        "Resources/skills/public/wax/references/public-api.md",
+        "Resources/skills/public/wax/SKILL.md",
+        "Resources/website/docs/intro.md",
+        "Resources/website/docs/media/photo-rag.md",
+        "Resources/website/docs/media/video-rag.md",
+    ] {
+        let doc = try String(
+            contentsOf: repoRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+        #expect(doc.contains("PhotoMemory"), "\(relativePath) must name PhotoMemory")
+        #expect(doc.contains("VideoMemory"), "\(relativePath) must name VideoMemory")
+        #expect(doc.contains("BuiltInMultimodalEmbeddings"), "\(relativePath) must name BuiltInMultimodalEmbeddings")
+        #expect(!doc.contains("wait for a stable public facade"), "\(relativePath)")
+        #expect(!doc.contains("wait for a facade"), "\(relativePath)")
+    }
+}
+
+#if canImport(ImageIO)
+/// Mirrors the `public-api.md` PhotoMemory / VideoMemory construction sample.
+func docsPaste_photoVideoFacades(photoStoreURL: URL, videoStoreURL: URL) async throws {
+    let embedder: any MultimodalEmbeddingProvider
+    if ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] == "1" {
+        embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)
+    } else {
+        embedder = DeterministicMultimodalEmbedder()
+    }
+
+    #if canImport(Vision)
+    let photos = try await PhotoMemory(
+        at: photoStoreURL,
+        embedder: embedder,
+        ocr: VisionOCRProvider()
+    )
+    #else
+    let photos = try await PhotoMemory(at: photoStoreURL, embedder: embedder)
+    #endif
+    try await photos.close()
+
+    let videos = try await VideoMemory(at: videoStoreURL, embedder: embedder)
+    try await videos.close()
+}
+
+@Test
+func docsPastePhotoVideoFacadesConstruct() async throws {
+    try await TempFiles.withTempFile { photoURL in
+        try await TempFiles.withTempFile { videoURL in
+            try await docsPaste_photoVideoFacades(
+                photoStoreURL: photoURL,
+                videoStoreURL: videoURL
+            )
+        }
+    }
 }
 #endif

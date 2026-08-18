@@ -28,13 +28,13 @@ struct SearchCommand: AsyncParsableCommand {
             throw CLIError("top-k must be between 1 and 200")
         }
 
-        let searchMode: MemoryOrchestrator.DirectSearchMode
+        let searchMode: Memory.RetrievalMode
         let requireVector = store.requireVector || modeLower == "vector" || modeLower == "hybrid"
         switch modeLower {
         case "text":
-            searchMode = .text
+            searchMode = .textOnly
         case "vector":
-            searchMode = .vector
+            searchMode = .vectorOnly
         case "hybrid":
             searchMode = .hybrid(alpha: 0.5)
         default:

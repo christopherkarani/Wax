@@ -1,55 +1,55 @@
 import Foundation
 import WaxVectorSearch
 
-/// Configuration for `VideoRAGOrchestrator` (v1).
+/// Configuration for ``VideoMemory`` (v1).
 ///
 /// This configuration is intentionally host-app tunable: it trades off recall quality, latency,
 /// battery, and store size for on-device RAG over video.
-package struct VideoRAGConfig: Sendable, Equatable {
+public struct VideoRAGConfig: Sendable, Equatable {
     /// Pipeline version string stamped into frame metadata for migration tracking.
-    package var pipelineVersion: String
+    public var pipelineVersion: String
 
     // MARK: - Ingest
 
     /// Duration of each video segment in seconds (default: 10).
-    package var segmentDurationSeconds: Double
+    public var segmentDurationSeconds: Double
     /// Overlap between adjacent segments in seconds (default: 0).
-    package var segmentOverlapSeconds: Double
+    public var segmentOverlapSeconds: Double
     /// Maximum number of segments per video (default: 360, covering 1 hour at 10s segments).
-    package var maxSegmentsPerVideo: Int
+    public var maxSegmentsPerVideo: Int
     /// Number of segments to write per batch I/O operation.
-    package var segmentWriteBatchSize: Int
+    public var segmentWriteBatchSize: Int
     /// Maximum pixel dimension for keyframe images used for embedding.
-    package var embedMaxPixelSize: Int
+    public var embedMaxPixelSize: Int
     /// Maximum transcript bytes stored per segment (default: 8KB).
-    package var maxTranscriptBytesPerSegment: Int
+    public var maxTranscriptBytesPerSegment: Int
 
     // MARK: - Search
 
     /// Number of candidate results fetched from the search engine before filtering.
-    package var searchTopK: Int
+    public var searchTopK: Int
     /// Balance between text and vector search in hybrid mode. 0.0 = vector only, 1.0 = text only.
-    package var hybridAlpha: Float
+    public var hybridAlpha: Float
     /// Preferred vector search engine (auto, Metal GPU, or CPU-only).
-    package var vectorEnginePreference: VectorEnginePreference
+    public var vectorEnginePreference: VectorEnginePreference
     /// Maximum frames returned by timeline fallback when no text/vector results are found.
-    package var timelineFallbackLimit: Int
+    public var timelineFallbackLimit: Int
     /// When true, validates that all providers declare `.onDeviceOnly` execution mode.
-    package var requireOnDeviceProviders: Bool
+    public var requireOnDeviceProviders: Bool
 
     // MARK: - Output
 
     /// Whether to attach keyframe thumbnail bytes to recalled segments.
-    package var includeThumbnailsInContext: Bool
+    public var includeThumbnailsInContext: Bool
     /// Maximum pixel dimension for keyframe thumbnails in output.
-    package var thumbnailMaxPixelSize: Int
+    public var thumbnailMaxPixelSize: Int
 
     // MARK: - Caching
 
     /// LRU cache capacity for query text embeddings. Set to 0 to disable caching.
-    package var queryEmbeddingCacheCapacity: Int
+    public var queryEmbeddingCacheCapacity: Int
 
-    package init(
+    public init(
         pipelineVersion: String = "video_rag_v1",
         segmentDurationSeconds: Double = 10,
         segmentOverlapSeconds: Double = 0,
@@ -91,5 +91,5 @@ package struct VideoRAGConfig: Sendable, Equatable {
         return min(1, max(0, value))
     }
 
-    package static let `default` = VideoRAGConfig()
+    public static let `default` = VideoRAGConfig()
 }

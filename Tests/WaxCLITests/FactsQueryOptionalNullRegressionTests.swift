@@ -1,5 +1,12 @@
 import Foundation
 import Testing
+@testable import Wax
+import WaxCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Regression: `facts-query` with omitted optional filters used to fail with
 /// "subject must be a string" because the broker treated JSON null as invalid.
@@ -54,4 +61,47 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
             || queryAll.1.localizedCaseInsensitiveContains("fact"),
         Comment(rawValue: queryAll.1)
     )
+}
+
+@Test
+func brokerStartTimeoutTerminatesLaunchedProcess() async throws {
+    let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("broker-timeout-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let pidFile = temp.appendingPathComponent("daemon.pid")
+    let script = temp.appendingPathComponent("hanging-broker")
+    let scriptBody = """
+    #!/bin/sh
+    echo $$ > '\(pidFile.path)'
+    exec sleep 60
+    """
+    try scriptBody.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+    setenv("WAX_BROKER_START_TIMEOUT_SECS", "0.4", 1)
+    defer { unsetenv("WAX_BROKER_START_TIMEOUT_SECS") }
+
+    let configuration = AgentBrokerConfiguration(
+        brokerExecutablePath: script.path,
+        storePath: temp.appendingPathComponent("store.wax").path,
+        sessionRootPath: temp.appendingPathComponent("sessions").path,
+        socketPath: temp.appendingPathComponent("broker.sock").path,
+        embedderChoice: "none",
+        noEmbedder: true,
+        requireVector: false,
+        embedderTuning: CommandLineEmbedderRuntimeTuning()
+    )
+
+    await #expect(throws: Error.self) {
+        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+    }
+
+    let pidText = (try? String(contentsOf: pidFile, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let pid = pidText.flatMap(Int32.init)
+    if let pid, pid > 0 {
+        #expect(kill(pid, 0) != 0, "timed-out broker process \(pid) must not keep running")
+    }
 }
