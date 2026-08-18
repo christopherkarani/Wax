@@ -6,13 +6,15 @@ package enum HybridSearch {
     /// - RRF is rank-based (it ignores the raw score scales from BM25 vs vector distance).
     /// - Two-list `rrfFusion` then maps those ranks onto `0...1` without changing order.
     /// - Exclusive-text floor is off unless the caller passes `applyFloor: true` (factual path).
+    /// - OR-fallback-only text rank-1 is never floored, even on the factual path.
     /// - Provide deterministic tie-break rules so outputs are stable.
     package static func rrfFusion(
         textResults: [(UInt64, Float)],
         vectorResults: [(UInt64, Float)],
         k: Int = 60,
         alpha: Float = 0.5,
-        applyFloor: Bool = false
+        applyFloor: Bool = false,
+        textRank1IsORFallbackOnly: Bool = false
     ) -> [(UInt64, Float)] {
         let clampedAlpha = min(1, max(0, alpha))
         let textWeight = textResults.isEmpty ? 0 : clampedAlpha
@@ -28,8 +30,10 @@ package enum HybridSearch {
             merged: &merged,
             textFrameIds: textResults.map(\.0),
             vectorFrameIds: vectorResults.map(\.0),
-            applyFloor: applyFloor
+            applyFloor: applyFloor,
+            textRank1IsORFallbackOnly: textRank1IsORFallbackOnly
         )
+        // Publish 0–1 scores that preserve RRF (+ floor) order so callers can threshold.
         publishNormalizedRRFScores(
             &merged,
             k: k,
@@ -57,13 +61,16 @@ package enum HybridSearch {
     /// exclusive vector-only neighbor. Ranking order only; score scale unchanged
     /// except a `nextUp` bump so later score-sorts keep the same order.
     /// Semantic / exploratory callers must pass `applyFloor: false`.
+    /// OR-fallback-only text rank-1 is a 1-of-N overlap, not a lexical canary.
     package static func applyExclusiveTextRank1Floor(
         merged: inout [(UInt64, Float)],
         textFrameIds: [UInt64],
         vectorFrameIds: [UInt64],
-        applyFloor: Bool
+        applyFloor: Bool,
+        textRank1IsORFallbackOnly: Bool = false
     ) {
         guard applyFloor,
+              !textRank1IsORFallbackOnly,
               let lift = exclusiveTextRank1FloorIndices(
                   mergedFrameIds: merged.map(\.0),
                   textFrameIds: textFrameIds,
