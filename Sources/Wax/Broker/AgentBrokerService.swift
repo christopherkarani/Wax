@@ -1440,13 +1440,7 @@ extension AgentBrokerService {
         runID: String?
     ) throws -> BrokerSessionManifest {
         if let explicitSessionID {
-            do {
-                return try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: explicitSessionID)
-            } catch {
-                throw BrokerValidationError.invalid(
-                    "No session manifest found for session_id \(explicitSessionID.uuidString)"
-                )
-            }
+            return try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: explicitSessionID)
         }
 
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)

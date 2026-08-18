@@ -4789,6 +4789,28 @@ func brokerSessionListManifestsPropagatesMalformedSessionManifest() throws {
 }
 
 @Test
+func brokerSessionLoadManifestMissingUUIDDoesNotLeakPath() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-manifest-missing-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let sessionID = UUID()
+    do {
+        _ = try BrokerSessionPersistence.loadManifest(rootURL: rootURL, sessionID: sessionID)
+        Issue.record("missing manifest should throw")
+    } catch let error as BrokerSessionPersistenceError {
+        #expect(error == .manifestNotFound(sessionID: sessionID))
+        let description = error.localizedDescription
+        #expect(description == "No session manifest found for session_id \(sessionID.uuidString)")
+        #expect(!description.contains("/Users/"))
+        #expect(!description.contains("/home/"))
+        #expect(!description.contains("~/.wax"))
+        #expect(!description.contains(".json"))
+    }
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"
@@ -5479,7 +5501,32 @@ func brokerSessionResumeMissingUUIDDoesNotLeakPath() async throws {
 
         #expect(resumed.ok != true)
         let error = resumed.error ?? ""
-        #expect(error.contains(missingSessionID.uuidString))
+        #expect(error == "No session manifest found for session_id \(missingSessionID.uuidString)")
+        #expect(!error.contains("/Users/"))
+        #expect(!error.contains("/home/"))
+        #expect(!error.contains("~/.wax"))
+        #expect(!error.contains(".json"))
+    }
+}
+
+@Test
+func brokerSessionResumeCorruptUUIDDoesNotReportMissing() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let sessionID = UUID()
+        let corruptManifestURL = BrokerSessionPersistence.manifestURL(
+            rootURL: sessionRootURL,
+            sessionID: sessionID
+        )
+        try Data("{not valid json".utf8).write(to: corruptManifestURL)
+
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: ["session_id": .string(sessionID.uuidString)]
+        ))
+
+        #expect(resumed.ok != true)
+        let error = resumed.error ?? ""
+        #expect(!error.contains("No session manifest found"))
         #expect(!error.contains("/Users/"))
         #expect(!error.contains("/home/"))
         #expect(!error.contains("~/.wax"))
