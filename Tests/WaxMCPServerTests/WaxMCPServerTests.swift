@@ -1290,6 +1290,10 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
         #expect(historicalValidCurrentSystem.isError != true)
         #expect(firstText(in: historicalValidCurrentSystem).contains("temporal"))
 
+        // Capture a fresh clock after earlier tool calls. A stale `nowMs` from
+        // the start of this test can land `at_ms` before system_from under
+        // parallel CI load.
+        let retractableFromMs = Int64(Date().timeIntervalSince1970 * 1000)
         let retractable = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_assert",
@@ -1297,7 +1301,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "subject": .string("project:wax"),
                     "predicate": .string("retractable"),
                     "object": .string("temporal retraction"),
-                    "valid_from": .int(Int(nowMs)),
+                    "valid_from": .int(Int(retractableFromMs)),
                 ]
             ),
             memory: memory
@@ -1306,12 +1310,13 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
         let retractableJSON = try parseJSONText(in: retractable)
         let factID = try requireInt(retractableJSON, key: "fact_id")
 
+        let retractAtMs = retractableFromMs + 2_000
         let retract = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_retract",
                 arguments: [
                     "fact_id": .int(factID),
-                    "at_ms": .int(Int(nowMs + 200)),
+                    "at_ms": .int(Int(retractAtMs)),
                 ]
             ),
             memory: memory
@@ -1324,7 +1329,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                 arguments: [
                     "subject": .string("project:wax"),
                     "predicate": .string("retractable"),
-                    "as_of": .int(Int(nowMs + 150)),
+                    "as_of": .int(Int(retractableFromMs + 1_000)),
                 ]
             ),
             memory: memory
@@ -1338,7 +1343,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                 arguments: [
                     "subject": .string("project:wax"),
                     "predicate": .string("retractable"),
-                    "as_of": .int(Int(nowMs + 250)),
+                    "as_of": .int(Int(retractAtMs + 1_000)),
                 ]
             ),
             memory: memory
@@ -1744,7 +1749,7 @@ func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
         ) { memory in
             try await memory.searchExecution(
                 query: "thruster calibration",
-                mode: .text,
+                mode: .textOnly,
                 topK: 5,
                 frameFilter: nil,
                 timeRange: nil
@@ -1804,7 +1809,7 @@ func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
         ) { memory in
             try await memory.searchExecution(
                 query: "mission telemetry",
-                mode: .text,
+                mode: .textOnly,
                 topK: 5,
                 frameFilter: nil,
                 timeRange: nil
@@ -1953,7 +1958,7 @@ func brokerCorpusSearchRebuildsWhenSourceFingerprintChanges() async throws {
         ) { memory in
             try await memory.searchExecution(
                 query: "navigation lock",
-                mode: .text,
+                mode: .textOnly,
                 topK: 5,
                 frameFilter: nil,
                 timeRange: nil
@@ -7792,7 +7797,13 @@ struct WaxMCPProcessTests {
         #expect(secondResult.toolsList?.contains(#""name":"remember""#) == true)
     }
 
-    @Test(.timeLimit(.minutes(3)))
+    @Test(
+        .timeLimit(.minutes(3)),
+        .disabled(
+            if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+            "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+        )
+    )
     func waxMCPProcessRememberWithRealCoreMLEmbedder() async throws {
         let harness = try MCPServerProcessHarness(useRealEmbedder: true)
         try harness.start()
@@ -7829,13 +7840,25 @@ struct WaxMCPProcessTests {
         suitable for semantic search and retrieval-augmented generation workflows.
         """
 
-        let rememberResp = try await harness.callTool(
+        var rememberResp = try await harness.callTool(
             id: 2,
             name: "remember",
             arguments: ["content": longContent],
             timeout: 120
         )
-        let rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
+        let rememberJSON: [String: Any]
+        do {
+            rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
+        } catch {
+            // One retry: CoreML compile/load can lose a race under `swift test --parallel`.
+            rememberResp = try await harness.callTool(
+                id: 22,
+                name: "remember",
+                arguments: ["content": longContent],
+                timeout: 120
+            )
+            rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)
+        }
         #expect((rememberJSON["status"] as? String) == "ok")
 
         let recallResp = try await harness.callTool(

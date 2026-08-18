@@ -2,6 +2,15 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
+/// Reports whether a deferred query embedder has resolved its inner provider.
+///
+/// `EmbeddingProvider` presence is not readiness: a custom override can be
+/// non-nil while still gated, and automatic compile can still be `loading`.
+package protocol QueryEmbedderReadiness: Sendable {
+    func isQueryEmbedderReady() async -> Bool
+}
+
+
 package enum CommandLineEmbedderFactory {
     private static let defaultLockTimeoutSeconds = 2.0
 

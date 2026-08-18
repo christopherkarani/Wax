@@ -40,31 +40,41 @@ import Testing
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
     let storePath = tempDir.appendingPathComponent("memory.wax").path
+    let brokerDir = tempDir.appendingPathComponent("broker", isDirectory: true)
+    try FileManager.default.createDirectory(at: brokerDir, withIntermediateDirectories: true)
     let sessionID = UUID().uuidString
     let baseArgs = ["--store-path", storePath, "--no-embedder", "--format", "json"]
+    let brokerEnv = [
+        "WAX_BROKER_DIR": brokerDir.path,
+        "WAX_LOCK_TIMEOUT_SECS": "10",
+    ]
 
     let start = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"]
+        arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
+        environment: brokerEnv
     )
     #expect(start.status == 0, "session-start failed: \(start.stderr)")
 
     let append = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["memory-append"] + baseArgs + ["--arg", "session_id=\(sessionID)", "session lifecycle smoke"]
+        arguments: ["memory-append"] + baseArgs + ["--arg", "session_id=\(sessionID)", "session lifecycle smoke"],
+        environment: brokerEnv
     )
     #expect(append.status == 0, "memory-append failed: \(append.stderr)")
 
     let search = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["memory-search"] + baseArgs + ["--arg", "session_id=\(sessionID)", "smoke"]
+        arguments: ["memory-search"] + baseArgs + ["--arg", "session_id=\(sessionID)", "smoke"],
+        environment: brokerEnv
     )
     #expect(search.status == 0, "memory-search failed: \(search.stderr)")
     #expect(search.stdout.contains("session lifecycle"))
 
     let end = try WaxCLIProcess.run(
         executableURL: executable,
-        arguments: ["session-end"] + baseArgs + ["--arg", "session_id=\(sessionID)"]
+        arguments: ["session-end"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
+        environment: brokerEnv
     )
     #expect(end.status == 0, "session-end failed: \(end.stderr)")
 }
@@ -120,11 +130,19 @@ private enum WaxCLIProcess {
     static func run(
         executableURL: URL,
         arguments: [String],
+        environment: [String: String] = [:],
         timeout: TimeInterval = 15
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
+        if !environment.isEmpty {
+            var merged = ProcessInfo.processInfo.environment
+            for (key, value) in environment {
+                merged[key] = value
+            }
+            process.environment = merged
+        }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

@@ -255,7 +255,7 @@ func memoryDeleteFrameRemovesFromTextSearchSameSession() async throws {
 
         let hits = try await orchestrator.search(
             query: "EpsilonTextGone",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(!hits.isEmpty)
@@ -265,7 +265,7 @@ func memoryDeleteFrameRemovesFromTextSearchSameSession() async throws {
 
         let after = try await orchestrator.search(
             query: "EpsilonTextGone",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(after.isEmpty)
@@ -289,7 +289,7 @@ func memoryDeleteWorksWhenVectorSearchDisabled() async throws {
 
         let hits = try await orchestrator.search(
             query: "ZetaTextOnly",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(!hits.isEmpty)
@@ -299,7 +299,7 @@ func memoryDeleteWorksWhenVectorSearchDisabled() async throws {
 
         let after = try await orchestrator.search(
             query: "ZetaTextOnly",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(after.isEmpty)

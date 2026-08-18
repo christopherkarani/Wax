@@ -1,28 +1,34 @@
 import Foundation
 
 /// Stable, type-safe identifier for a video across multiple ingestion sources.
-package struct VideoID: Sendable, Hashable, Equatable {
-    package enum Source: Sendable, Hashable, Equatable {
+public struct VideoID: Sendable, Hashable, Equatable {
+    public enum Source: Sendable, Hashable, Equatable {
         case photos
         case file
     }
 
-    package var source: Source
-    package var id: String
+    public var source: Source
+    public var id: String
 
-    package init(source: Source, id: String) {
+    public init(source: Source, id: String) {
         self.source = source
         self.id = id
     }
 }
 
-/// Input item for file-based video ingestion.
-package struct VideoFile: Sendable, Equatable {
-    package var id: String
-    package var url: URL
-    package var captureDate: Date?
+/// Scope for syncing videos from the Photos library.
+public enum VideoScope: Sendable, Equatable {
+    case fullLibrary
+    case assetIDs([String])
+}
 
-    package init(id: String, url: URL, captureDate: Date? = nil) {
+/// Input item for file-based video ingestion.
+public struct VideoFile: Sendable, Equatable {
+    public var id: String
+    public var url: URL
+    public var captureDate: Date?
+
+    public init(id: String, url: URL, captureDate: Date? = nil) {
         self.id = id
         self.url = url
         self.captureDate = captureDate
@@ -30,34 +36,34 @@ package struct VideoFile: Sendable, Equatable {
 }
 
 /// Controls how much context is assembled for downstream models/agents.
-package struct VideoContextBudget: Sendable, Equatable {
-    package var maxTextTokens: Int
-    package var maxThumbnails: Int
-    package var maxTranscriptLinesPerSegment: Int
+public struct VideoContextBudget: Sendable, Equatable {
+    public var maxTextTokens: Int
+    public var maxThumbnails: Int
+    public var maxTranscriptLinesPerSegment: Int
 
-    package init(maxTextTokens: Int = 1_200, maxThumbnails: Int = 0, maxTranscriptLinesPerSegment: Int = 8) {
+    public init(maxTextTokens: Int = 1_200, maxThumbnails: Int = 0, maxTranscriptLinesPerSegment: Int = 8) {
         self.maxTextTokens = max(0, maxTextTokens)
         self.maxThumbnails = max(0, maxThumbnails)
         self.maxTranscriptLinesPerSegment = max(0, maxTranscriptLinesPerSegment)
     }
 
-    package static let `default` = VideoContextBudget()
+    public static let `default` = VideoContextBudget()
 }
 
 /// Query parameters for Video RAG recall.
-package struct VideoQuery: Sendable, Equatable {
-    package var text: String?
+public struct VideoQuery: Sendable, Equatable {
+    public var text: String?
     /// Optional capture-time filter for videos (using Wax frame timestamps).
-    package var timeRange: ClosedRange<Date>?
+    public var timeRange: ClosedRange<Date>?
     /// Optional allowlist of videos to search within.
-    package var videoIDs: Set<VideoID>?
+    public var videoIDs: Set<VideoID>?
     /// Maximum number of videos to return.
-    package var resultLimit: Int
+    public var resultLimit: Int
     /// Maximum number of segments to include per video.
-    package var segmentLimitPerVideo: Int
-    package var contextBudget: VideoContextBudget
+    public var segmentLimitPerVideo: Int
+    public var contextBudget: VideoContextBudget
 
-    package init(
+    public init(
         text: String? = nil,
         timeRange: ClosedRange<Date>? = nil,
         videoIDs: Set<VideoID>? = nil,
@@ -75,15 +81,15 @@ package struct VideoQuery: Sendable, Equatable {
 }
 
 /// Still thumbnail attached to a recalled segment (optional).
-package struct VideoThumbnail: Sendable, Equatable {
-    package enum Format: Sendable, Equatable { case png, jpeg }
+public struct VideoThumbnail: Sendable, Equatable {
+    public enum Format: Sendable, Equatable { case png, jpeg }
 
-    package var data: Data
-    package var format: Format
-    package var width: Int
-    package var height: Int
+    public var data: Data
+    public var format: Format
+    public var width: Int
+    public var height: Int
 
-    package init(data: Data, format: Format, width: Int, height: Int) {
+    public init(data: Data, format: Format, width: Int, height: Int) {
         self.data = data
         self.format = format
         self.width = max(0, width)
@@ -92,17 +98,17 @@ package struct VideoThumbnail: Sendable, Equatable {
 }
 
 /// A recalled video segment hit with timecodes and optional pixel payload.
-package struct VideoSegmentHit: Sendable, Equatable {
-    package enum Evidence: Sendable, Equatable { case vector, text(snippet: String?), timeline }
+public struct VideoSegmentHit: Sendable, Equatable {
+    public enum Evidence: Sendable, Equatable { case vector, text(snippet: String?), timeline }
 
-    package var startMs: Int64
-    package var endMs: Int64
-    package var score: Float
-    package var evidence: [Evidence]
-    package var transcriptSnippet: String?
-    package var thumbnail: VideoThumbnail?
+    public var startMs: Int64
+    public var endMs: Int64
+    public var score: Float
+    public var evidence: [Evidence]
+    public var transcriptSnippet: String?
+    public var thumbnail: VideoThumbnail?
 
-    package init(
+    public init(
         startMs: Int64,
         endMs: Int64,
         score: Float,
@@ -120,14 +126,14 @@ package struct VideoSegmentHit: Sendable, Equatable {
 }
 
 /// A recalled video with grouped segment hits and a prompt-ready summary.
-package struct VideoRAGItem: Sendable, Equatable {
-    package var videoID: VideoID
-    package var score: Float
-    package var evidence: [VideoSegmentHit.Evidence]
-    package var summaryText: String
-    package var segments: [VideoSegmentHit]
+public struct VideoRAGItem: Sendable, Equatable {
+    public var videoID: VideoID
+    public var score: Float
+    public var evidence: [VideoSegmentHit.Evidence]
+    public var summaryText: String
+    public var segments: [VideoSegmentHit]
 
-    package init(videoID: VideoID, score: Float, evidence: [VideoSegmentHit.Evidence], summaryText: String, segments: [VideoSegmentHit]) {
+    public init(videoID: VideoID, score: Float, evidence: [VideoSegmentHit.Evidence], summaryText: String, segments: [VideoSegmentHit]) {
         self.videoID = videoID
         self.score = score
         self.evidence = evidence
@@ -137,22 +143,22 @@ package struct VideoRAGItem: Sendable, Equatable {
 }
 
 /// Deterministic recall output suitable for prompting.
-package struct VideoRAGContext: Sendable, Equatable {
-    package struct Diagnostics: Sendable, Equatable {
-        package var usedTextTokens: Int
-        package var degradedVideoCount: Int
+public struct VideoRAGContext: Sendable, Equatable {
+    public struct Diagnostics: Sendable, Equatable {
+        public var usedTextTokens: Int
+        public var degradedVideoCount: Int
 
-        package init(usedTextTokens: Int = 0, degradedVideoCount: Int = 0) {
+        public init(usedTextTokens: Int = 0, degradedVideoCount: Int = 0) {
             self.usedTextTokens = max(0, usedTextTokens)
             self.degradedVideoCount = max(0, degradedVideoCount)
         }
     }
 
-    package var query: VideoQuery
-    package var items: [VideoRAGItem]
-    package var diagnostics: Diagnostics
+    public var query: VideoQuery
+    public var items: [VideoRAGItem]
+    public var diagnostics: Diagnostics
 
-    package init(query: VideoQuery, items: [VideoRAGItem], diagnostics: Diagnostics = .init()) {
+    public init(query: VideoQuery, items: [VideoRAGItem], diagnostics: Diagnostics = .init()) {
         self.query = query
         self.items = items
         self.diagnostics = diagnostics
@@ -160,7 +166,7 @@ package struct VideoRAGContext: Sendable, Equatable {
 }
 
 /// Errors thrown during video ingestion.
-package enum VideoIngestError: Error, Sendable, Equatable {
+public enum VideoIngestError: Error, Sendable, Equatable {
     case fileMissing(id: String, url: URL)
     case unsupportedPlatform(reason: String)
     case invalidVideo(reason: String)

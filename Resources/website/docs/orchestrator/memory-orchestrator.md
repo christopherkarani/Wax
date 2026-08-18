@@ -58,20 +58,14 @@ A bounded LRU cache (default capacity: 2,048) avoids re-embedding identical text
 let context = try await orchestrator.recall(query: "project timeline")
 ```
 
-### Embedding Policies
+### Retrieval Mode
 
-Control when query embeddings are computed:
-
-| Policy | Behavior |
-|--------|----------|
-| `.never` | Text-only search (no vector lane) |
-| `.ifAvailable` | Use vector search if an embedder is configured |
-| `.always` | Require vector search; throw if no embedder |
+Hosts name `Memory.RetrievalMode` (`textOnly` / `vectorOnly` / `hybrid`). Hybrid may fall back to text when the vector lane is unavailable; `vectorOnly` throws. `recallExecution(...)` reports the requested vs. effective mode and the query-embedding state; public `Memory.search` surfaces the same information via `RAGContext.diagnostics`.
 
 ```swift
 let context = try await orchestrator.recall(
     query: "timeline",
-    embeddingPolicy: .ifAvailable
+    mode: .hybrid()
 )
 ```
 

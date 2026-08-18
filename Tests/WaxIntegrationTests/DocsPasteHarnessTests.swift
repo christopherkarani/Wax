@@ -227,8 +227,12 @@ func iosDocsPinMainNotBrokenRelease024() throws {
         encoding: .utf8
     )
     #expect(gettingStarted.contains("branch: \"main\""))
-    #expect(gettingStarted.contains("0.1.24") == false || gettingStarted.contains("package-only"))
     #expect(!gettingStarted.contains("from: \"0.1.24\""))
+    let warnsThatOldTagIsPackageScoped =
+        gettingStarted.contains("package-only")
+        || gettingStarted.contains("`package`-only")
+        || gettingStarted.contains("`package`-internal")
+    #expect(!gettingStarted.contains("0.1.24") || warnsThatOldTagIsPackageScoped)
 
     let fm = try String(
         contentsOf: DocumentationPaths.websiteDocs.appendingPathComponent("ios/foundation-models.md"),

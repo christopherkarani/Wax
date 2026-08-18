@@ -1,0 +1,73 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 670 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+16 TL
+(HARBOR WEEK REPORT) Tj
+T*
+() Tj
+T*
+(NORTH HARBOR WEEK REPORT) Tj
+T*
+(10-15 Aug 2026) Tj
+T*
+() Tj
+T*
+(Goal: record four retrieval states from one local store.) Tj
+T*
+(Store: harbor-week.wax) Tj
+T*
+(Ship Friday. Stay on-device.) Tj
+T*
+() Tj
+T*
+(Evidence that must survive ingest:) Tj
+T*
+(- Whiteboard: ship Friday / Offline only) Tj
+T*
+(- Nameplate: WAX-HB-4419) Tj
+T*
+(- Receipt + invoice: Fog Latte at Cedar Loft) Tj
+T*
+(- Label + PO: ANE-7 / PO-NH-8821) Tj
+T*
+(- Sticky + loft note: dock code NH-19) Tj
+T*
+(- Card + standup: Mira Chen) Tj
+T*
+() Tj
+T*
+(Paraphrase query for vector search:) Tj
+T*
+(How do we keep memory on the device?) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000962 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1032
+%%EOF

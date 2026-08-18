@@ -22,14 +22,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev
 
+      # GRDB 7 SPM imports the GRDBSQLite system library (libsqlite3-dev).
+      # -DGRDBCUSTOMSQLITE selects GRDB's empty custom-framework import and
+      # fails the compile with missing sqlite3_* symbols.
       - name: Build WaxCore target
-        run: swift build --target WaxCore -Xswiftc -DGRDBCUSTOMSQLITE
+        run: swift build --target WaxCore
 
       - name: Build Wax product
-        run: swift build --product Wax -Xswiftc -DGRDBCUSTOMSQLITE
+        run: swift build --product Wax
 
       - name: Build wax-cli product
         run: swift build --product wax-cli --traits default,MCPServer
+
 
       - name: Run wax-cli Linux demo stress
         run: |
@@ -37,7 +41,7 @@ jobs:
           "$BIN" demo --run --items 4 --rounds 1 --concurrency 2 --volume 8
 
       - name: Build wax-mcp product
-        run: swift build --product wax-mcp --traits default,MCPServer -Xswiftc -DGRDBCUSTOMSQLITE
+        run: swift build --product wax-mcp --traits default,MCPServer
 
       - name: Run WaxCore tests
-        run: swift test --filter WaxCoreTests -Xswiftc -DGRDBCUSTOMSQLITE
+        run: swift test --filter WaxCoreTests

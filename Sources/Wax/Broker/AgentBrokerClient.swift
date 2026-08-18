@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -14,10 +15,12 @@ package enum AgentBrokerClient {
     private static let socketShutdownWrite: Int32 = Int32(SHUT_WR)
     #endif
 
-    private static let startTimeoutSeconds = configuredSeconds(
-        envKey: "WAX_BROKER_START_TIMEOUT_SECS",
-        defaultValue: 5.0
-    )
+    private static var startTimeoutSeconds: TimeInterval {
+        configuredSeconds(
+            envKey: "WAX_BROKER_START_TIMEOUT_SECS",
+            defaultValue: 10.0
+        )
+    }
 
     private static let idleTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_IDLE_TIMEOUT_SECS",
@@ -119,6 +122,7 @@ package enum AgentBrokerClient {
             "--embedder", configuration.embedderChoice,
             "--socket-path", configuration.socketPath,
             "--idle-timeout-secs", String(idleTimeoutSeconds),
+            "--skip-prewarm",
         ]
         process.arguments?.append(contentsOf: configuration.embedderTuning.daemonArguments())
         if configuration.noEmbedder {
@@ -173,6 +177,8 @@ package enum AgentBrokerClient {
             return observedExitStatus == nil
         }
 
+        terminateLaunchedBroker(process)
+
         if let observedExitStatus, observedExitStatus != EXIT_SUCCESS {
             let stderrSuffix: String
             if let observedStderr,
@@ -188,6 +194,18 @@ package enum AgentBrokerClient {
 
         throw BrokerClientError("Timed out waiting for broker startup.")
         #endif
+    }
+
+    private static func terminateLaunchedBroker(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let stopBy = Date().addingTimeInterval(0.5)
+        while process.isRunning, Date() < stopBy {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     private static func shutdownStartedBroker(configuration: AgentBrokerConfiguration) throws {
@@ -212,7 +230,12 @@ package enum AgentBrokerClient {
         }
     }
 
-    private static func brokerShutdownCompleted(
+    /// True when the broker socket is gone and the store file is no longer exclusively locked.
+    ///
+    /// A still-held store lock is "not done yet", not a hard failure: the daemon can unlink
+    /// its socket before `flock` is released, and a 50ms probe would otherwise throw
+    /// `WaxError.lockUnavailable` out of the shutdown retry loop.
+    package static func brokerShutdownCompleted(
         socketPath: String,
         storePath: String
     ) throws -> Bool {
@@ -220,11 +243,18 @@ package enum AgentBrokerClient {
             return false
         }
 
-        try StoreLockProbe.preflightExclusiveAccess(
-            at: URL(fileURLWithPath: storePath),
-            timeout: .milliseconds(50)
-        )
-        return true
+        do {
+            try StoreLockProbe.preflightExclusiveAccess(
+                at: URL(fileURLWithPath: storePath),
+                timeout: .milliseconds(50)
+            )
+            return true
+        } catch let error as WaxError {
+            if case .lockUnavailable = error {
+                return false
+            }
+            throw error
+        }
     }
 
     /// Returns whether a Unix-domain listener is accepting connections at `socketPath`.

@@ -86,7 +86,7 @@ func vectorSearchDocsDoNotInstantiatePackageOnlyMetalEngineAsPublicAPI() throws 
 }
 
 @Test
-func docsDoNotExposePackageOnlyVectorEnginePreferenceAsPublicConfig() throws {
+func vectorEnginePreferenceIsPublicAPIAndDocsOmitDeprecatedEngineFlags() throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -96,15 +96,18 @@ func docsDoNotExposePackageOnlyVectorEnginePreferenceAsPublicConfig() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/VectorSearchEngine.swift"),
         encoding: .utf8
     )
-    #expect(source.contains("package enum VectorEnginePreference"))
+    #expect(source.contains("public enum VectorEnginePreference"))
+    #expect(!source.contains("package enum VectorEnginePreference"))
+
+    let aliases = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PublicAliases.swift"),
+        encoding: .utf8
+    )
+    #expect(aliases.contains("public typealias VectorEnginePreference = WaxVectorSearch.VectorEnginePreference"))
 
     for relativePath in vectorEnginePreferenceDocPaths {
         let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
-        #expect(!doc.contains("VectorEnginePreference"))
-        #expect(!doc.contains("vectorEnginePreference"))
         #expect(!doc.contains("useMetalVectorSearch"))
-        #expect(!doc.contains("`.gpuOnly`"))
-        #expect(!doc.contains("`.cpuOnly`"))
         #expect(!doc.contains("`.metalPreferred`"))
     }
 }

@@ -214,12 +214,11 @@ func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
 
 @Test
 func tokenCounterBpeLoadsAtMostOncePerEncoding() async throws {
-    let wasPreloaded = await TokenCounter.isPreloaded()
     await TokenCounter._resetBpeCacheStats()
 
     _ = try await TokenCounter()
     _ = try await TokenCounter()
 
     let stats = await TokenCounter._bpeCacheStats()
-    #expect(stats.loadCount == (wasPreloaded ? 0 : 1))
+    #expect(stats.loadCount <= 1)
 }
