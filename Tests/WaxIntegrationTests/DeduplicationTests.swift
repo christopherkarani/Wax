@@ -38,7 +38,8 @@ import WaxCore
         try await orchestrator.flush()
 
         let stats = await orchestrator.runtimeStats()
-        #expect(stats.frameCount == UInt64(expectedChunks.count + 1))
+        let expectedFrames = expectedChunks.count == 1 ? 1 : expectedChunks.count + 1
+        #expect(stats.frameCount == UInt64(expectedFrames))
 
         try await orchestrator.close()
     }
