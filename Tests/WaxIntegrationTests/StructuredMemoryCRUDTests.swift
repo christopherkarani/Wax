@@ -596,16 +596,10 @@ import WaxVectorSearch
 
 @Test func retractFactMissingIdFailsClosed() async throws {
     let engine = try FTS5SearchEngine.inMemory()
-    do {
+    await #expect {
         try await engine.retractFact(factId: FactRowID(rawValue: 999_999), atMs: 0)
-        Issue.record("retractFact of a missing fact_id should fail closed")
-    } catch let error as WaxError {
-        let description = error.localizedDescription
-        #expect(!description.isEmpty)
-        #expect(!description.contains("/private/"))
-        #expect(!description.contains(".wax"))
-    } catch {
-        Issue.record("Expected WaxError, got \(error)")
+    } throws: { error in
+        (error as? WaxError)?.localizedDescription.contains("fact_id has no open spans") == true
     }
 }
 

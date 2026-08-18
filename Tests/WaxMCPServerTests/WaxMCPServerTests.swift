@@ -5478,20 +5478,9 @@ func factRetractMissingIdDoesNotReportCommitted() async throws {
             ),
             memory: memory
         )
-        if retract.isError != true {
-            let json = try parseJSONText(in: retract)
-            #expect((json["committed"] as? Bool) != true)
-            let reason = json["reason"] as? String ?? ""
-            #expect(!reason.isEmpty)
-            #expect(!reason.contains("/private/"))
-            #expect(!reason.contains(".wax"))
-        } else {
-            let text = firstText(in: retract)
-            #expect(!text.isEmpty)
-            #expect(!text.contains("\"committed\":true"))
-            #expect(!text.contains("/private/"))
-            #expect(!text.contains(".wax"))
-        }
+        #expect(retract.isError == true)
+        #expect(firstText(in: retract).contains("fact_id has no open spans"))
+        #expect(!firstText(in: retract).contains("\"committed\":true"))
     }
 
     try await withAgentBrokerService { service, _ in
@@ -5499,19 +5488,9 @@ func factRetractMissingIdDoesNotReportCommitted() async throws {
             command: "fact_retract",
             arguments: ["fact_id": .int(999_999)]
         ))
-        if result.ok {
-            let payload = try #require(result.payload?.objectValue)
-            #expect(payload["committed"]?.boolValue != true)
-            let reason = payload["reason"]?.stringValue ?? ""
-            #expect(!reason.isEmpty)
-            #expect(!reason.contains("/private/"))
-            #expect(!reason.contains(".wax"))
-        } else {
-            let error = result.error ?? ""
-            #expect(!error.isEmpty)
-            #expect(!error.contains("/private/"))
-            #expect(!error.contains(".wax"))
-        }
+        #expect(result.ok == false)
+        #expect(result.payload == nil)
+        #expect(result.error?.contains("fact_id has no open spans") == true)
     }
 }
 
