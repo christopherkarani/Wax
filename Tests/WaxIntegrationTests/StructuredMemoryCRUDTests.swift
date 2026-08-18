@@ -594,6 +594,21 @@ import WaxVectorSearch
     #expect(afterClose.hits.isEmpty)
 }
 
+@Test func retractFactMissingIdFailsClosed() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    do {
+        try await engine.retractFact(factId: FactRowID(rawValue: 999_999), atMs: 0)
+        Issue.record("retractFact of a missing fact_id should fail closed")
+    } catch let error as WaxError {
+        let description = error.localizedDescription
+        #expect(!description.isEmpty)
+        #expect(!description.contains("/private/"))
+        #expect(!description.contains(".wax"))
+    } catch {
+        Issue.record("Expected WaxError, got \(error)")
+    }
+}
+
 @Test func queryOrderIsDeterministicForTies() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 

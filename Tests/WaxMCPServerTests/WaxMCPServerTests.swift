@@ -5468,6 +5468,53 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
     }
 }
 
+@Test
+func factRetractMissingIdDoesNotReportCommitted() async throws {
+    try await withMemory { memory in
+        let retract = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_retract",
+                arguments: ["fact_id": .int(999_999)]
+            ),
+            memory: memory
+        )
+        if retract.isError != true {
+            let json = try parseJSONText(in: retract)
+            #expect((json["committed"] as? Bool) != true)
+            let reason = json["reason"] as? String ?? ""
+            #expect(!reason.isEmpty)
+            #expect(!reason.contains("/private/"))
+            #expect(!reason.contains(".wax"))
+        } else {
+            let text = firstText(in: retract)
+            #expect(!text.isEmpty)
+            #expect(!text.contains("\"committed\":true"))
+            #expect(!text.contains("/private/"))
+            #expect(!text.contains(".wax"))
+        }
+    }
+
+    try await withAgentBrokerService { service, _ in
+        let result = await service.handle(.init(
+            command: "fact_retract",
+            arguments: ["fact_id": .int(999_999)]
+        ))
+        if result.ok {
+            let payload = try #require(result.payload?.objectValue)
+            #expect(payload["committed"]?.boolValue != true)
+            let reason = payload["reason"]?.stringValue ?? ""
+            #expect(!reason.isEmpty)
+            #expect(!reason.contains("/private/"))
+            #expect(!reason.contains(".wax"))
+        } else {
+            let error = result.error ?? ""
+            #expect(!error.isEmpty)
+            #expect(!error.contains("/private/"))
+            #expect(!error.contains(".wax"))
+        }
+    }
+}
+
 private func firstText(in result: CallTool.Result) -> String {
     for content in result.content {
         if case .text(text: let text, annotations: _, _meta: _) = content {
@@ -6667,9 +6714,10 @@ struct WaxMCPProcessTests {
             #expect(search.ok == true)
             let searchPayload = try #require(search.payload?.objectValue)
             let searchResults = try #require(searchPayload["results"]?.arrayValue)
-            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
+            let rawFrameIDs = searchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frameId"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let rawFrameID = try #require(rawFrameIDs.first)
 
             let memorySearch = await service.handle(.init(
                 command: "memory_search",
@@ -6686,9 +6734,10 @@ struct WaxMCPProcessTests {
             #expect(memorySearch.ok == true)
             let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
             let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
-            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
+            let canonicalFrameIDs = memorySearchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let canonicalFrameID = try #require(canonicalFrameIDs.first)
             #expect(canonicalFrameID != rawFrameID)
 
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)

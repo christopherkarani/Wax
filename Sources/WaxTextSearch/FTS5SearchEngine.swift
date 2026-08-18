@@ -362,6 +362,20 @@ package actor FTS5SearchEngine {
     }
 
     package func retractFact(factId: FactRowID, atMs: Int64) async throws {
+        try await flushPendingStructuredOpsIfNeeded()
+        let dbQueue = self.dbQueue
+        let factExists = try await io.run {
+            try dbQueue.read { db in
+                try Int64.fetchOne(
+                    db,
+                    sql: "SELECT fact_id FROM sm_fact WHERE fact_id = ?",
+                    arguments: [factId.rawValue]
+                ) != nil
+            }
+        }
+        guard factExists else {
+            throw WaxError.io("fact_id has no open spans")
+        }
         enqueueStructuredOp(.retractFact(factId: factId, atMs: atMs))
         try await flushPendingStructuredOpsIfThresholdExceeded()
         try await flushPendingStructuredOpsIfNeeded()
@@ -1156,7 +1170,17 @@ package actor FTS5SearchEngine {
 
                     case .retractFact(let factId, let atMs):
                         let spans = try Row.fetchAll(selectOpenSpanStmt, arguments: [factId.rawValue])
-                        guard !spans.isEmpty else { break }
+                        guard !spans.isEmpty else {
+                            let factExists = try Int64.fetchOne(
+                                db,
+                                sql: "SELECT fact_id FROM sm_fact WHERE fact_id = ?",
+                                arguments: [factId.rawValue]
+                            ) != nil
+                            if !factExists {
+                                throw WaxError.io("fact_id has no open spans")
+                            }
+                            break
+                        }
 
                         for row in spans {
                             let systemFrom: Int64 = row["system_from_ms"] ?? 0
