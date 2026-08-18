@@ -217,9 +217,9 @@ package actor MemoryOrchestrator {
 
     private var requiresEmbedderForSave: Bool {
         switch embeddingStatus {
-        case .active, .degraded:
+        case .active, .degraded, .unavailable:
             true
-        case .disabled, .loading, .unavailable:
+        case .disabled, .loading:
             false
         }
     }
