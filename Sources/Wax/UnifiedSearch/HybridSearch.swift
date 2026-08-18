@@ -12,13 +12,45 @@ package enum HybridSearch {
         alpha: Float = 0.5
     ) -> [(UInt64, Float)] {
         let clampedAlpha = min(1, max(0, alpha))
-        return rrfFusion(
+        var merged = rrfFusion(
             lists: [
                 (weight: clampedAlpha, frameIds: textResults.map(\.0)),
                 (weight: 1 - clampedAlpha, frameIds: vectorResults.map(\.0)),
             ],
             k: k
         )
+        applyExclusiveTextRank1Floor(
+            merged: &merged,
+            textFrameIds: textResults.map(\.0),
+            vectorFrameIds: vectorResults.map(\.0),
+            alpha: clampedAlpha
+        )
+        return merged
+    }
+
+    /// Default hybrid (alpha >= 0.5): exclusive text rank-1 cannot lose to an
+    /// exclusive vector-only neighbor. Ranking order only; score scale unchanged
+    /// except a `nextUp` bump so later score-sorts keep the same order.
+    package static func applyExclusiveTextRank1Floor(
+        merged: inout [(UInt64, Float)],
+        textFrameIds: [UInt64],
+        vectorFrameIds: [UInt64],
+        alpha: Float
+    ) {
+        let clampedAlpha = min(1, max(0, alpha))
+        guard clampedAlpha >= 0.5,
+              let textTop = textFrameIds.first,
+              let vectorTop = vectorFrameIds.first,
+              !vectorFrameIds.contains(textTop),
+              !textFrameIds.contains(vectorTop),
+              let textIndex = merged.firstIndex(where: { $0.0 == textTop }),
+              let vectorIndex = merged.firstIndex(where: { $0.0 == vectorTop }),
+              textIndex > vectorIndex
+        else { return }
+
+        let lifted = (textTop, merged[vectorIndex].1.nextUp)
+        merged.remove(at: textIndex)
+        merged.insert(lifted, at: vectorIndex)
     }
 
     /// Multi-list weighted RRF (e.g., text + vector + timeline).
