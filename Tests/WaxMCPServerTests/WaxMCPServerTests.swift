@@ -5468,6 +5468,25 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
     }
 }
 
+@Test
+func brokerSessionResumeMissingUUIDDoesNotLeakPath() async throws {
+    try await withAgentBrokerService { service, _ in
+        let missingSessionID = UUID()
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: ["session_id": .string(missingSessionID.uuidString)]
+        ))
+
+        #expect(resumed.ok != true)
+        let error = resumed.error ?? ""
+        #expect(error.contains(missingSessionID.uuidString))
+        #expect(!error.contains("/Users/"))
+        #expect(!error.contains("/home/"))
+        #expect(!error.contains("~/.wax"))
+        #expect(!error.contains(".json"))
+    }
+}
+
 private func firstText(in result: CallTool.Result) -> String {
     for content in result.content {
         if case .text(text: let text, annotations: _, _meta: _) = content {
@@ -6667,9 +6686,10 @@ struct WaxMCPProcessTests {
             #expect(search.ok == true)
             let searchPayload = try #require(search.payload?.objectValue)
             let searchResults = try #require(searchPayload["results"]?.arrayValue)
-            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
+            let searchFrameIDs = searchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frameId"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let rawFrameID = try #require(searchFrameIDs.first)
 
             let memorySearch = await service.handle(.init(
                 command: "memory_search",
@@ -6686,9 +6706,10 @@ struct WaxMCPProcessTests {
             #expect(memorySearch.ok == true)
             let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
             let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
-            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
+            let memorySearchFrameIDs = memorySearchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let canonicalFrameID = try #require(memorySearchFrameIDs.first)
             #expect(canonicalFrameID != rawFrameID)
 
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
