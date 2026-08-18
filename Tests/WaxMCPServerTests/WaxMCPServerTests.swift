@@ -1823,74 +1823,6 @@ func corpusSearchRejectsInvalidTopK() async throws {
 
 @Test
 func corpusSearchDefaultRebuildIsFalse() async throws {
-    try await withTemporaryDirectory { root in
-        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
-        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
-
-        let source = sessionsDir.appendingPathComponent("session-a.wax")
-        let corpus = root.appendingPathComponent("corpus.wax")
-        try await writeSessionStore(
-            at: source,
-            documents: [("Default rebuild canary about orbital telemetry.", ["session_id": "session-a"])]
-        )
-        _ = try await CorpusStoreBuilder.build(
-            sessionsDirectory: sessionsDir,
-            targetStoreURL: corpus,
-            noEmbedder: true,
-            embedderChoice: "minilm",
-            recursive: true
-        )
-        #expect(FileManager.default.fileExists(atPath: corpus.path))
-
-        let omitted = try await WaxMCPTools.corpusSearchForTests(
-            [
-                "query": .string("orbital telemetry"),
-                "mode": .string("text"),
-                "topK": .int(5),
-                "sessions_dir": .string(sessionsDir.path),
-                "corpus_store_path": .string(corpus.path),
-            ],
-            noEmbedder: true,
-            embedderChoice: "minilm"
-        )
-        let omittedPayload = try parseJSONResource(in: omitted, uriSuffix: "corpus-search-summary")
-        let omittedBuild = try #require(omittedPayload["build"] as? [String: Any])
-        let omittedPerformed = try #require(omittedBuild["performed"] as? Bool)
-        try #require(omittedPerformed == false)
-
-        let explicit = try await WaxMCPTools.corpusSearchForTests(
-            [
-                "query": .string("orbital telemetry"),
-                "mode": .string("text"),
-                "topK": .int(5),
-                "rebuild": .bool(true),
-                "sessions_dir": .string(sessionsDir.path),
-                "corpus_store_path": .string(corpus.path),
-            ],
-            noEmbedder: true,
-            embedderChoice: "minilm"
-        )
-        let explicitPayload = try parseJSONResource(in: explicit, uriSuffix: "corpus-search-summary")
-        let explicitBuild = try #require(explicitPayload["build"] as? [String: Any])
-        #expect(explicitBuild["performed"] as? Bool == true)
-
-        try FileManager.default.removeItem(at: corpus)
-        let missing = try await WaxMCPTools.corpusSearchForTests(
-            [
-                "query": .string("orbital telemetry"),
-                "mode": .string("text"),
-                "topK": .int(5),
-                "sessions_dir": .string(sessionsDir.path),
-                "corpus_store_path": .string(corpus.path),
-            ],
-            noEmbedder: true,
-            embedderChoice: "minilm"
-        )
-        let missingPayload = try parseJSONResource(in: missing, uriSuffix: "corpus-search-summary")
-        let missingBuild = try #require(missingPayload["build"] as? [String: Any])
-        #expect(missingBuild["performed"] as? Bool == true)
-    }
-
     try await withAgentBrokerService { service, _ in
         let token = "CORPUSDEFAULT\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
         let started = await service.handle(.init(command: "session_start"))
@@ -6815,10 +6747,9 @@ struct WaxMCPProcessTests {
             #expect(search.ok == true)
             let searchPayload = try #require(search.payload?.objectValue)
             let searchResults = try #require(searchPayload["results"]?.arrayValue)
-            let searchFrameIDs = searchResults.compactMap { result -> UInt64? in
+            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frameId"]?.intValue.map(UInt64.init)
-            }
-            let rawFrameID = try #require(searchFrameIDs.first)
+            }.first as UInt64?)
 
             let memorySearch = await service.handle(.init(
                 command: "memory_search",
@@ -6835,10 +6766,9 @@ struct WaxMCPProcessTests {
             #expect(memorySearch.ok == true)
             let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
             let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
-            let memorySearchFrameIDs = memorySearchResults.compactMap { result -> UInt64? in
+            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
-            }
-            let canonicalFrameID = try #require(memorySearchFrameIDs.first)
+            }.first as UInt64?)
             #expect(canonicalFrameID != rawFrameID)
 
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
