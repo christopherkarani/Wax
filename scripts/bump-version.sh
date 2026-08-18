@@ -293,12 +293,17 @@ if [[ -f "$HERMES_README" ]]; then
   info "Hermes README → $TARGET_VERSION"
 fi
 
-# Surface 9: Hermes plugin
+# Surface 9: Hermes plugin (canonical + npm ship copy must stay byte-identical)
 if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]] && [[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]]; then
   sed_inplace \
     "s|^version: [0-9]+\\.[0-9]+\\.[0-9]+|version: ${TARGET_VERSION}|" \
     "$HERMES_PLUGIN/plugin.yaml"
   info "Hermes plugin → $TARGET_VERSION"
+  NPM_HERMES_PLUGIN="$ROOT/Resources/npm/waxmcp/plugins/hermes/plugin.yaml"
+  if [[ -f "$NPM_HERMES_PLUGIN" ]]; then
+    cp "$HERMES_PLUGIN/plugin.yaml" "$NPM_HERMES_PLUGIN"
+    info "Hermes npm ship copy → $TARGET_VERSION"
+  fi
 fi
 
 # ── Phase 6: Summary ────────────────────────────────────────────────────────
