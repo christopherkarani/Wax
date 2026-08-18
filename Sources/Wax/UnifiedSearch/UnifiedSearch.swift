@@ -99,6 +99,7 @@ extension Wax {
             guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
             let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
             let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
+            let queryTokenCount = Self.normalizedFTSTokens(from: trimmedQuery, maxTokens: 16).count
 
             func merged(
                 base: [TextSearchResult],
@@ -106,7 +107,10 @@ extension Wax {
                 limit: Int
             ) -> [TextSearchResult] {
                 guard !base.isEmpty else {
-                    return Array(fallback.prefix(limit))
+                    return Self.scoredAsORFallbackOnly(
+                        Array(fallback.prefix(limit)),
+                        tokenCount: queryTokenCount
+                    )
                 }
                 if base.count >= limit { return Array(base.prefix(limit)) }
 
@@ -115,7 +119,9 @@ extension Wax {
                 combined.reserveCapacity(limit)
                 for candidate in fallback {
                     guard !seen.contains(candidate.frameId) else { continue }
-                    combined.append(candidate)
+                    combined.append(
+                        Self.scoredAsORFallbackOnly(candidate, tokenCount: queryTokenCount)
+                    )
                     seen.insert(candidate.frameId)
                     if combined.count >= limit { break }
                 }
@@ -133,14 +139,18 @@ extension Wax {
                 }
                 let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
                 if base.isEmpty {
-                    return Array(fallback.prefix(candidateLimit))
+                    return Self.scoredAsORFallbackOnly(
+                        Array(fallback.prefix(candidateLimit)),
+                        tokenCount: queryTokenCount
+                    )
                 }
                 return merged(base: base, fallback: fallback, limit: candidateLimit)
             } catch {
                 guard let fallbackQuery else {
                     throw error
                 }
-                return try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
+                let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
+                return Self.scoredAsORFallbackOnly(fallback, tokenCount: queryTokenCount)
             }
         }()
 
@@ -730,6 +740,35 @@ extension Wax {
             ordered.append(normalized)
         }
         return ordered
+    }
+
+    /// OR-fallback-only hits cannot publish a saturated 1.0 for a 1-of-N overlap.
+    private static func orFallbackOnlyScoreScale(tokenCount: Int) -> Double {
+        let n = max(tokenCount, 1)
+        guard n > 1 else { return 1 }
+        return 1 / Double(n)
+    }
+
+    private static func scoredAsORFallbackOnly(
+        _ result: TextSearchResult,
+        tokenCount: Int
+    ) -> TextSearchResult {
+        let scale = orFallbackOnlyScoreScale(tokenCount: tokenCount)
+        guard scale < 1 else { return result }
+        return TextSearchResult(
+            frameId: result.frameId,
+            score: result.score * scale,
+            snippet: result.snippet
+        )
+    }
+
+    private static func scoredAsORFallbackOnly(
+        _ results: [TextSearchResult],
+        tokenCount: Int
+    ) -> [TextSearchResult] {
+        let scale = orFallbackOnlyScoreScale(tokenCount: tokenCount)
+        guard scale < 1 else { return results }
+        return results.map { scoredAsORFallbackOnly($0, tokenCount: tokenCount) }
     }
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
