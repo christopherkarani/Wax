@@ -1822,6 +1822,86 @@ func corpusSearchRejectsInvalidTopK() async throws {
 }
 
 @Test
+func corpusSearchDefaultRebuildIsFalse() async throws {
+    try await withAgentBrokerService { service, _ in
+        let token = "CORPUSDEFAULT\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Broker default rebuild note \(token)"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(ended.ok == true)
+
+        let seeded = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "rebuild": .bool(true),
+            ]
+        ))
+        #expect(seeded.ok == true, "corpus_search failed: \(seeded.error ?? "nil")")
+        let seededBuild = try #require(seeded.payload?.objectValue?["build"]?.objectValue)
+        try #require(seededBuild["performed"]?.boolValue == true)
+        try #require(seeded.payload?.objectValue?["rebuild_requested"]?.boolValue == true)
+
+        let omitted = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(omitted.ok == true, "corpus_search failed: \(omitted.error ?? "nil")")
+        let omittedBuild = try #require(omitted.payload?.objectValue?["build"]?.objectValue)
+        try #require(omitted.payload?.objectValue?["rebuild_requested"]?.boolValue == false)
+        try #require(omittedBuild["performed"]?.boolValue == false)
+
+        let corpusPath = try #require(
+            omitted.payload?.objectValue?["build"]?.objectValue?["corpus_store_path"]?.stringValue
+        )
+        try FileManager.default.removeItem(atPath: corpusPath)
+
+        let missing = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(missing.ok == true, "corpus_search failed: \(missing.error ?? "nil")")
+        #expect(missing.payload?.objectValue?["rebuild_requested"]?.boolValue == false)
+        #expect(missing.payload?.objectValue?["build"]?.objectValue?["performed"]?.boolValue == true)
+    }
+
+    guard let obj = ToolSchemas.waxCorpusSearch.objectValue,
+          case .object(let properties) = obj["properties"],
+          case .object(let rebuildSchema) = properties["rebuild"],
+          case .string(let description) = rebuildSchema["description"]
+    else {
+        Issue.record("corpus_search rebuild schema is missing a description")
+        return
+    }
+    #expect(!description.contains("Default: true"))
+    #expect(description.contains("Default: false"))
+}
+
+@Test
 func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
     try await withMemory { memory in
         let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
