@@ -17,7 +17,7 @@ struct DaemonCommand: AsyncParsableCommand {
 
     @Flag(
         name: .customLong("skip-prewarm"),
-        help: "Accepted for compatibility. The broker uses lazy embedders and does not eagerly prewarm."
+        help: "Skip background embedder prewarm. Cold first writes may then wait on MiniLM."
     )
     var skipPrewarm = false
 
@@ -43,6 +43,12 @@ struct DaemonCommand: AsyncParsableCommand {
             ),
             embedderTuning: store.embedderTuning
         )
+
+        if !store.noEmbedder, !skipPrewarm {
+            Task {
+                await service.prewarmEmbedder()
+            }
+        }
 
         do {
             if let socketPath {
@@ -123,6 +129,9 @@ private extension DaemonCommand {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        if isLiveBrokerSocket(at: socketURL.path) {
+            throw CLIError("Broker already running at \(socketURL.path)")
+        }
         try removeExistingSocket(at: socketURL.path)
 
         let listener = socket(AF_UNIX, unixStreamSocketType, 0)
@@ -163,12 +172,19 @@ private extension DaemonCommand {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
 
-        let timeoutMS: Int32 = idleTimeoutSeconds > 0 ? Int32(idleTimeoutSeconds * 1000) : -1
-        while true {
+        let inflight = SocketInflight()
+        let pollSliceMS: Int32 = 200
+        var lastActivity = Date()
+        while !inflight.shouldStop {
             var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, timeoutMS)
+            let pollResult = poll(&descriptor, 1, pollSliceMS)
             if pollResult == 0 {
-                return
+                if idleTimeoutSeconds > 0,
+                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                   !inflight.isBusy {
+                    return
+                }
+                continue
             }
             if pollResult < 0 {
                 if errno == EINTR { continue }
@@ -181,15 +197,23 @@ private extension DaemonCommand {
                 throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
             }
 
-            do {
-                let shouldExit = try await handleSocketClient(service: service, fd: client)
-                if shouldExit {
-                    return
+            lastActivity = Date()
+            inflight.enter()
+            Task {
+                defer { inflight.leave() }
+                do {
+                    let shouldExit = try await handleSocketClient(service: service, fd: client)
+                    if shouldExit {
+                        inflight.requestStop()
+                    }
+                } catch {
+                    close(client)
                 }
-            } catch {
-                close(client)
-                throw error
             }
+        }
+        let drainDeadline = Date().addingTimeInterval(2)
+        while inflight.isBusy, Date() < drainDeadline {
+            try await Task.sleep(for: .milliseconds(20))
         }
     }
 
@@ -281,6 +305,33 @@ private extension DaemonCommand {
         return line.isEmpty ? nil : line
     }
 
+    func isLiveBrokerSocket(at path: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return connectResult == 0
+    }
+
     func removeExistingSocket(at path: String) throws {
         var existing = stat()
         if lstat(path, &existing) != 0 {
@@ -305,6 +356,42 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+
+private final class SocketInflight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var stop = false
+
+    func enter() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    func leave() {
+        lock.lock()
+        count = max(0, count - 1)
+        lock.unlock()
+    }
+
+    var isBusy: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return count > 0
+    }
+
+    func requestStop() {
+        lock.lock()
+        stop = true
+        lock.unlock()
+    }
+
+    var shouldStop: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stop
+    }
+}
 
 private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
     let env = ProcessInfo.processInfo.environment
