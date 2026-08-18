@@ -5571,6 +5571,32 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
 }
 
 @Test
+func factRetractMissingIdDoesNotReportCommitted() async throws {
+    try await withMemory { memory in
+        let retract = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_retract",
+                arguments: ["fact_id": .int(999_999)]
+            ),
+            memory: memory
+        )
+        #expect(retract.isError == true)
+        #expect(firstText(in: retract).contains("fact_id has no open spans"))
+        #expect(!firstText(in: retract).contains("\"committed\":true"))
+    }
+
+    try await withAgentBrokerService { service, _ in
+        let result = await service.handle(.init(
+            command: "fact_retract",
+            arguments: ["fact_id": .int(999_999)]
+        ))
+        #expect(result.ok == false)
+        #expect(result.payload == nil)
+        #expect(result.error?.contains("fact_id has no open spans") == true)
+    }
+}
+
+@Test
 func brokerSessionResumeMissingUUIDDoesNotLeakPath() async throws {
     try await withAgentBrokerService { service, _ in
         let missingSessionID = UUID()
