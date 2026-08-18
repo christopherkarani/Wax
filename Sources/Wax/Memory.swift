@@ -270,7 +270,7 @@ public actor Memory {
             frameCount: runtime.frameCount,
             pendingFrames: runtime.pendingFrames,
             vectorSearchEnabled: runtime.vectorSearchEnabled,
-            queryEmbedderConfigured: EmbeddingStatus.queryEmbedderConfigured(runtime.embeddingStatus),
+            queryEmbedderConfigured: runtime.embeddingStatus.isQueryEmbedderConfigured,
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
             embedderIdentity: runtime.embeddingStatus.identity,
             embeddingStatus: runtime.embeddingStatus

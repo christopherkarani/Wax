@@ -50,17 +50,21 @@ public actor PhotoMemory {
         )
     }
 
+    #if canImport(Photos)
     /// Sync photos from the Photos library into the store.
     ///
-    /// Requires Photos authorization. On platforms without Photos support this is a no-op.
+    /// Requires Photos authorization.
     public func syncLibrary(scope: PhotoScope) async throws {
         try await orchestrator.syncLibrary(scope: scope)
     }
 
     /// Ingest Photos-library assets by local identifier.
+    ///
+    /// Requires Photos authorization.
     public func ingest(assetIDs: [String]) async throws {
         try await orchestrator.ingest(assetIDs: assetIDs)
     }
+    #endif
 
     /// Ingest local image files.
     public func ingest(files: [PhotoFile]) async throws {

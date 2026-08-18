@@ -12,15 +12,20 @@ public struct VisionOCRProvider: OCRProvider, Sendable {
         case accurate
     }
 
+    /// Recognition accuracy versus latency trade-off for this provider.
     public var accuracy: Accuracy
+    /// Whether Vision should apply language correction to recognized text.
     public var usesLanguageCorrection: Bool
+    /// Always on-device; Vision does not leave the device.
     public var executionMode: ProviderExecutionMode { .onDeviceOnly }
 
+    /// Create a Vision OCR provider.
     public init(accuracy: Accuracy = .accurate, usesLanguageCorrection: Bool = true) {
         self.accuracy = accuracy
         self.usesLanguageCorrection = usesLanguageCorrection
     }
 
+    /// Recognize text blocks in `image` using Vision.
     public func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
         let accuracyLevel = accuracy
         let languageCorrection = usesLanguageCorrection

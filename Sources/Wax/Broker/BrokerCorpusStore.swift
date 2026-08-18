@@ -178,6 +178,7 @@ package enum BrokerCorpusStoreBuilder {
             embedderTuning: embedderTuning,
             structuredMemoryEnabled: false
         )
+        try await memory.waitUntilReadyForRemember()
 
         do {
             for storeURL in storeURLs {

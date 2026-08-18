@@ -1,7 +1,7 @@
 import Foundation
 import WaxVectorSearch
 
-/// Configuration for `VideoRAGOrchestrator` (v1).
+/// Configuration for ``VideoMemory`` (v1).
 ///
 /// This configuration is intentionally host-app tunable: it trades off recall quality, latency,
 /// battery, and store size for on-device RAG over video.

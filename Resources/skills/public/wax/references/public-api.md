@@ -67,6 +67,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 - `.active(EmbeddingIdentity?)` — provider ready
 - `.degraded(EmbeddingIdentity?, reason: String)` — provider ready, some existing frames have no vectors
 - `.unavailable(reason: String)` — no provider could be activated; a vector index may still exist
+- `isQueryEmbedderConfigured` — `true` only for `active` and `degraded`
 
 ## Built-in Embeddings
 

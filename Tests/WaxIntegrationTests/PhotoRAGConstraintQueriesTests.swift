@@ -81,7 +81,7 @@ func photoRAGTimeOnlyQueryUsesTimelineFallback() async throws {
             location: nil,
             filters: .none,
             resultLimit: 5,
-            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
         )
 
         let ctx = try await orchestrator.recall(query)
@@ -164,7 +164,7 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
             location: location,
             filters: .none,
             resultLimit: 2,
-            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
         )
 
         let ctx = try await orchestrator.recall(query)
@@ -246,7 +246,7 @@ func photoRAGLocationRadiusAppliesExactDistanceAfterCoarseBin() async throws {
             ),
             filters: .none,
             resultLimit: 10,
-            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
         )
 
         let ctx = try await orchestrator.recall(query)
@@ -309,7 +309,7 @@ func photoRAGLocationRadiusHandlesAntimeridianBins() async throws {
                     radiusMeters: 300
                 ),
                 resultLimit: 10,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
 
@@ -397,7 +397,7 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
                 text: "receipt",
                 filters: PhotoFilters(isLocal: true),
                 resultLimit: 10,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
 
@@ -408,7 +408,7 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
                 text: "receipt",
                 filters: PhotoFilters(assetIDs: ["icloud-only-photo"]),
                 resultLimit: 10,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
         #expect(remoteByAssetID.items.map(\.assetID) == ["icloud-only-photo"])
@@ -418,7 +418,7 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
                 text: "receipt",
                 filters: PhotoFilters(source: .photos),
                 resultLimit: 10,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
         #expect(remoteBySource.items.map(\.assetID) == ["icloud-only-photo"])
@@ -490,7 +490,7 @@ func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
             PhotoQuery(
                 filters: PhotoFilters(source: .file),
                 resultLimit: 1,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
         #expect(ctx.items.map(\.assetID) == ["old-file"])
@@ -559,7 +559,7 @@ func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
             PhotoQuery(
                 filters: PhotoFilters(assetIDs: ["local-no-derived", "icloud-only"]),
                 resultLimit: 2,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
 

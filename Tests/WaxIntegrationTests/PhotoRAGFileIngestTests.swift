@@ -37,7 +37,7 @@ func photoRAGIngestsLocalImageFilesAndRecallsCaptionMetadata() async throws {
             PhotoQuery(
                 text: "receipt",
                 resultLimit: 5,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0)
             )
         )
         #expect(context.items.first?.assetID == "local-fixture")
@@ -125,7 +125,7 @@ func photoRAGLocalFileRecallSurvivesMissingPixelSource() async throws {
             PhotoQuery(
                 text: "deleted",
                 resultLimit: 1,
-                contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 1, maxRegions: 0)
+                contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 1, maxRegions: 0)
             )
         )
         #expect(context.items.first?.assetID == "deleted-file")

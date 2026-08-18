@@ -10,7 +10,7 @@ The Wax module is the primary public API surface for building memory-augmented a
 - **Foundation Models adapters** — Use Wax as durable memory for Apple's on-device Foundation Models
 - **``RAGContext``** — Token-budget-aware retrieval results for prompts and agents
 - **Built-in embeddings** — Optional MiniLM / Arctic providers for vector search
-- **Package-only advanced surfaces** — Photo RAG, Video RAG, and low-level orchestrators for Wax internals
+- **``PhotoMemory`` / ``VideoMemory``** — Experimental Darwin facades for photo and video RAG (`BuiltInMultimodalEmbeddings`). `PhotoRAGOrchestrator` and `VideoRAGOrchestrator` remain package-only.
 
 ```swift
 import Wax

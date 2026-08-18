@@ -11,6 +11,7 @@ This site is aimed at people adding Wax to **iOS and iPadOS** apps, especially a
 ## What you get
 
 - **`Memory`** — public API: open a store, `save`, `search`, `flush`, `close`
+- **`PhotoMemory` / `VideoMemory`** — experimental Darwin facades for photo and video RAG; build the embedder with `BuiltInMultimodalEmbeddings`
 - **Built-in MiniLM embeddings** on iOS 18+ (default package trait) so hybrid text + vector search works without wiring your own model
 - **Foundation Models adapters** on iOS 26+ — prompt injection, memory tools, and turn persistence around `LanguageModelSession`
 
@@ -32,4 +33,4 @@ API reference also ships as DocC inside the package (`Sources/Wax/Wax.docc`).
 
 ## Public vs internal APIs
 
-Use **`import Wax`** and **`Memory`**. Types like `MemoryOrchestrator` are package-internal; app targets cannot call them. Older pages under Orchestrator / WaxCore describe internals for contributors — not the app-facing surface.
+Use **`import Wax`** with **`Memory`**, and experimental **`PhotoMemory` / `VideoMemory`** for media. Types like `MemoryOrchestrator`, `PhotoRAGOrchestrator`, and `VideoRAGOrchestrator` are package-internal; app targets cannot call them. Older pages under Orchestrator / WaxCore describe internals for contributors — not the app-facing surface.

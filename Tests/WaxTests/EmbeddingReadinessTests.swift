@@ -10,7 +10,7 @@ func embeddingReadinessCustomIsActiveImmediately() async throws {
 
     #expect(await session.status == .active(provider.identity))
     #expect(await session.currentProvider()?.identity?.model == "FromHost")
-    #expect(EmbeddingStatus.queryEmbedderConfigured(.active(provider.identity)))
+    #expect(EmbeddingStatus.active(provider.identity).isQueryEmbedderConfigured)
 }
 
 @Test
@@ -19,7 +19,7 @@ func embeddingReadinessDisabledHasNoProvider() async throws {
 
     #expect(await session.status == .disabled)
     #expect(await session.currentProvider() == nil)
-    #expect(!EmbeddingStatus.queryEmbedderConfigured(.disabled))
+    #expect(!EmbeddingStatus.disabled.isQueryEmbedderConfigured)
 }
 
 @Test
@@ -28,16 +28,16 @@ func embeddingReadinessAutomaticOpensWhileLoadingThenBecomesActive() async throw
     let calls = Counter()
     let key = EmbeddingLoadKey(provider: "test", configuration: "slow-auto")
     let session = try await EmbeddingReadiness().open(
-        .automatic(key: key, waitTimeout: .seconds(5))
-    ) {
-        await calls.increment()
-        await gate.wait()
-        return RecordingEmbedder(model: "FromFactory")
-    }
+        .automatic(key: key, waitTimeout: .seconds(5), factory: {
+            await calls.increment()
+            await gate.wait()
+            return RecordingEmbedder(model: "FromFactory")
+        })
+    )
 
     #expect(await session.status == .loading)
     #expect(await session.currentProvider() == nil)
-    #expect(!EmbeddingStatus.queryEmbedderConfigured(.loading))
+    #expect(!EmbeddingStatus.loading.isQueryEmbedderConfigured)
 
     await gate.open()
     let settled = await session.waitUntilSettled()
@@ -51,10 +51,10 @@ func embeddingReadinessBuiltInWaitsAndThrowsOnFailure() async {
     let key = EmbeddingLoadKey(provider: "test", configuration: "boom")
     await #expect(throws: TestEmbedderError.boom) {
         _ = try await EmbeddingReadiness().open(
-            .builtIn(key: key, waitTimeout: .seconds(2))
-        ) {
-            throw TestEmbedderError.boom
-        }
+            .builtIn(key: key, waitTimeout: .seconds(2), factory: {
+                throw TestEmbedderError.boom
+            })
+        )
     }
 }
 
@@ -71,12 +71,10 @@ func embeddingReadinessKeyedCompileRunsFactoryOnce() async throws {
     }
 
     let first = try await readiness.open(
-        .automatic(key: key, waitTimeout: .seconds(5)),
-        factory: factory
+        .automatic(key: key, waitTimeout: .seconds(5), factory: factory)
     )
     let second = try await readiness.open(
-        .automatic(key: key, waitTimeout: .seconds(5)),
-        factory: factory
+        .automatic(key: key, waitTimeout: .seconds(5), factory: factory)
     )
     #expect(await first.status == .loading)
     #expect(await second.status == .loading)
@@ -101,15 +99,13 @@ func embeddingReadinessTimedOutWaiterDoesNotCancelCompile() async throws {
 
     await #expect(throws: EmbeddingReadiness.WaitError.timedOut) {
         _ = try await readiness.open(
-            .builtIn(key: key, waitTimeout: .milliseconds(30)),
-            factory: factory
+            .builtIn(key: key, waitTimeout: .milliseconds(30), factory: factory)
         )
     }
 
     await gate.open()
     let session = try await readiness.open(
-        .builtIn(key: key, waitTimeout: .seconds(2)),
-        factory: factory
+        .builtIn(key: key, waitTimeout: .seconds(2), factory: factory)
     )
     #expect(await session.status == .active(RecordingEmbedder(model: "Kept").identity))
     #expect(await calls.value() == 1)
@@ -120,11 +116,11 @@ func embeddingReadinessAutomaticWaitTimeoutMarksUnavailableThenBecomesActive() a
     let gate = Gate()
     let key = EmbeddingLoadKey(provider: "test", configuration: "auto-timeout")
     let session = try await EmbeddingReadiness().open(
-        .automatic(key: key, waitTimeout: .milliseconds(40))
-    ) {
-        await gate.wait()
-        return RecordingEmbedder(model: "Late")
-    }
+        .automatic(key: key, waitTimeout: .milliseconds(40), factory: {
+            await gate.wait()
+            return RecordingEmbedder(model: "Late")
+        })
+    )
 
     #expect(await session.status == .loading)
     try await Task.sleep(for: .milliseconds(80))
@@ -155,39 +151,39 @@ func embeddingReadinessIdentityComesFromProviderNotWrapper() async throws {
 @Test
 func hostEmbeddingReadinessMapsExistingFlags() throws {
     #expect(
-        try HostEmbeddingReadiness.kind(
+        try HostEmbeddingReadiness.request(
             noEmbedder: true,
             requireVector: false,
             embedderChoice: "auto"
         ) == .disabled
     )
     #expect(
-        try HostEmbeddingReadiness.kind(
+        try HostEmbeddingReadiness.request(
             noEmbedder: false,
             requireVector: false,
             embedderChoice: "auto"
-        ) == .automatic(.miniLM)
+        ) == .automatic(.miniLM, .default)
     )
     #expect(
-        try HostEmbeddingReadiness.kind(
+        try HostEmbeddingReadiness.request(
             noEmbedder: false,
             requireVector: false,
             embedderChoice: "minilm"
-        ) == .automatic(.miniLM)
+        ) == .automatic(.miniLM, .default)
     )
     #expect(
-        try HostEmbeddingReadiness.kind(
+        try HostEmbeddingReadiness.request(
             noEmbedder: false,
             requireVector: false,
             embedderChoice: "arctic"
-        ) == .automatic(.arctic)
+        ) == .automatic(.arctic, .default)
     )
     #expect(
-        try HostEmbeddingReadiness.kind(
+        try HostEmbeddingReadiness.request(
             noEmbedder: false,
             requireVector: true,
             embedderChoice: "arctic"
-        ) == .builtIn(.arctic)
+        ) == .builtIn(.arctic, .default)
     )
 }
 

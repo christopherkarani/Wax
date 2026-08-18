@@ -6,8 +6,16 @@ import WaxVectorSearch
 package enum EmbeddingReadinessSource: Sendable {
     case disabled
     case custom(any EmbeddingProvider)
-    case automatic(key: EmbeddingLoadKey, waitTimeout: Duration?)
-    case builtIn(key: EmbeddingLoadKey, waitTimeout: Duration?)
+    case automatic(
+        key: EmbeddingLoadKey,
+        waitTimeout: Duration?,
+        factory: @Sendable () async throws -> any EmbeddingProvider
+    )
+    case builtIn(
+        key: EmbeddingLoadKey,
+        waitTimeout: Duration?,
+        factory: @Sendable () async throws -> any EmbeddingProvider
+    )
 }
 
 /// Process-wide embedding readiness: keyed compile, wait, status, and missing-provider rule.
@@ -32,16 +40,14 @@ package actor EmbeddingReadiness {
     /// Begin readiness for one store. `.automatic` returns while status is `loading`.
     /// `.builtIn` waits and throws if load fails. `.custom` is already `active`.
     package func open(
-        _ source: EmbeddingReadinessSource,
-        factory: (@Sendable () async throws -> any EmbeddingProvider)? = nil
+        _ source: EmbeddingReadinessSource
     ) async throws -> EmbeddingReadinessSession {
         switch source {
         case .disabled:
             return EmbeddingReadinessSession(status: .disabled, provider: nil)
         case .custom(let provider):
             return EmbeddingReadinessSession(status: .active(provider.identity), provider: provider)
-        case .automatic(let key, let waitTimeout):
-            let factory = try requiredFactory(factory)
+        case .automatic(let key, let waitTimeout, let factory):
             if let ready = await coordinator.readyProvider(for: key) {
                 return EmbeddingReadinessSession(
                     status: .active(ready.identity),
@@ -66,8 +72,7 @@ package actor EmbeddingReadiness {
                 }
             }
             return session
-        case .builtIn(let key, let waitTimeout):
-            let factory = try requiredFactory(factory)
+        case .builtIn(let key, let waitTimeout, let factory):
             let provider = try await compile(key: key, timeout: waitTimeout, factory: factory)
             return EmbeddingReadinessSession(
                 status: .active(provider.identity),
@@ -75,15 +80,6 @@ package actor EmbeddingReadiness {
                 compileResult: .success(provider)
             )
         }
-    }
-
-    private func requiredFactory(
-        _ factory: (@Sendable () async throws -> any EmbeddingProvider)?
-    ) throws -> @Sendable () async throws -> any EmbeddingProvider {
-        guard let factory else {
-            throw WaxError.io("embedding readiness factory is required for automatic and built-in sources")
-        }
-        return factory
     }
 }
 
@@ -181,28 +177,7 @@ package actor EmbeddingReadinessSession {
 }
 
 /// Maps existing host flags onto embedding-readiness sources. No new flags.
-package enum HostEmbeddingKind: Sendable, Equatable {
-    case disabled
-    case automatic(BuiltInEmbeddingProvider)
-    case builtIn(BuiltInEmbeddingProvider)
-}
-
 package enum HostEmbeddingReadiness {
-    package static func kind(
-        noEmbedder: Bool,
-        requireVector: Bool,
-        embedderChoice: String
-    ) throws -> HostEmbeddingKind {
-        if noEmbedder {
-            return .disabled
-        }
-        let provider = try resolveProvider(embedderChoice)
-        if requireVector {
-            return .builtIn(provider)
-        }
-        return .automatic(provider)
-    }
-
     package static func resolveProvider(_ embedderChoice: String) throws -> BuiltInEmbeddingProvider {
         let choice = embedderChoice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch choice {
@@ -223,27 +198,38 @@ package enum HostEmbeddingReadiness {
         embedderChoice: String,
         options: BuiltInEmbeddingProviderOptions = .default
     ) throws -> EmbeddingOpenRequest {
-        switch try kind(
-            noEmbedder: noEmbedder,
-            requireVector: requireVector,
-            embedderChoice: embedderChoice
-        ) {
-        case .disabled:
+        if noEmbedder {
             return .disabled
-        case .automatic(let provider):
-            return .automatic(provider, options)
-        case .builtIn(let provider):
+        }
+        let provider = try resolveProvider(embedderChoice)
+        if requireVector {
             return .builtIn(provider, options)
         }
+        return .automatic(provider, options)
     }
 }
 
 /// Caller-facing request used to open a store with embedding readiness.
-package enum EmbeddingOpenRequest: Sendable {
+package enum EmbeddingOpenRequest: Sendable, Equatable {
     case disabled
     case automatic(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions)
     case builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions)
     case custom(any EmbeddingProvider)
+
+    package static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.disabled, .disabled):
+            true
+        case let (.automatic(leftProvider, leftOptions), .automatic(rightProvider, rightOptions)):
+            leftProvider == rightProvider && leftOptions == rightOptions
+        case let (.builtIn(leftProvider, leftOptions), .builtIn(rightProvider, rightOptions)):
+            leftProvider == rightProvider && leftOptions == rightOptions
+        case let (.custom(leftProvider), .custom(rightProvider)):
+            leftProvider.identity == rightProvider.identity
+        default:
+            false
+        }
+    }
 }
 
 /// Opens a ``MemoryOrchestrator`` bound to embedding readiness (load, status, attach).
@@ -280,8 +266,11 @@ package enum EmbeddingReadinessBinding {
                 try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: true)
             }
             let session = try await readiness.open(
-                .automatic(key: BuiltInEmbeddingCompiler.loadKey(provider, options: options), waitTimeout: options.tuning.timeoutDuration),
-                factory: factory
+                .automatic(
+                    key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
+                    waitTimeout: options.tuning.timeoutDuration,
+                    factory: factory
+                )
             )
             return try await openBound(
                 at: url,
@@ -295,8 +284,11 @@ package enum EmbeddingReadinessBinding {
             }
             do {
                 let session = try await readiness.open(
-                    .builtIn(key: BuiltInEmbeddingCompiler.loadKey(provider, options: options), waitTimeout: options.tuning.timeoutDuration),
-                    factory: factory
+                    .builtIn(
+                        key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
+                        waitTimeout: options.tuning.timeoutDuration,
+                        factory: factory
+                    )
                 )
                 return try await openBound(
                     at: url,

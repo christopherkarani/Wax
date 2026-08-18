@@ -28,6 +28,8 @@ package actor AgentBrokerService {
     let scopeContext: MemoryScopeContext
     let promotionSettings: BrokerPromotionSettings
     let embeddingRequest: EmbeddingOpenRequest
+    let readiness: EmbeddingReadiness
+    let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     var activeSessions: [UUID: SessionState] = [:]
     var pendingRememberWrites: [PendingRememberWrite] = []
@@ -40,7 +42,9 @@ package actor AgentBrokerService {
         requireVector: Bool,
         enableAccessStatsScoring: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
-        embedderOverride: (any EmbeddingProvider)? = nil
+        embedderOverride: (any EmbeddingProvider)? = nil,
+        readiness: EmbeddingReadiness = .shared,
+        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -80,6 +84,8 @@ package actor AgentBrokerService {
             }
         }
         self.embeddingRequest = request
+        self.readiness = readiness
+        self.factoryOverride = factoryOverride
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
@@ -89,7 +95,9 @@ package actor AgentBrokerService {
                 at: longTermStoreURL,
                 config: config,
                 request: request,
-                waxOptions: CommandLineEmbedderFactory.waxOptions()
+                waxOptions: CommandLineEmbedderFactory.waxOptions(),
+                readiness: readiness,
+                factoryOverride: factoryOverride
             )
         } catch {
             if requireVector {
@@ -317,6 +325,7 @@ extension AgentBrokerService {
             let capturedContent = content
             let capturedMetadata = metadata
             let task = Task<Void, Error> {
+                try await memory.waitUntilReadyForRemember()
                 _ = try await self.completeRemember(
                     memory: memory,
                     content: capturedContent,
@@ -2491,7 +2500,9 @@ extension AgentBrokerService {
             at: url,
             config: config,
             request: embeddingRequest,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
+            waxOptions: CommandLineEmbedderFactory.waxOptions(),
+            readiness: readiness,
+            factoryOverride: factoryOverride
         )
     }
 
@@ -2515,7 +2526,9 @@ extension AgentBrokerService {
             at: url,
             config: config,
             request: request,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
+            waxOptions: CommandLineEmbedderFactory.waxOptions(),
+            readiness: readiness,
+            factoryOverride: noEmbedder ? nil : factoryOverride
         )
         do {
             let result = try await body(memory)

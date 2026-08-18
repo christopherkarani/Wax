@@ -1155,7 +1155,7 @@ package actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
-            queryEmbedderConfigured: embedder != nil || isLoadingEmbedding(embeddingStatus),
+            queryEmbedderConfigured: embeddingStatus.isQueryEmbedderConfigured,
             queryEmbedderReady: await isQueryEmbedderReady(),
             queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
@@ -1165,30 +1165,33 @@ package actor MemoryOrchestrator {
         )
     }
 
-    /// True when query embedding can run now.
-    ///
-    /// A deferred command-line embedder is configured (`embedder != nil`) before
-    /// its inner provider has loaded. Cold remember must wait on this, not on
-    /// mere configuration.
+    /// True when query embedding can run now (``.active`` / ``.degraded``).
     package func isQueryEmbedderReady() async -> Bool {
-        if let readiness = embedder as? any QueryEmbedderReadiness {
-            return await readiness.isQueryEmbedderReady()
-        }
-        return EmbeddingStatus.queryEmbedderConfigured(embeddingStatus)
+        embeddingStatus.isQueryEmbedderConfigured
     }
 
     package func shouldDeferRememberUntilEmbedderReady() async -> Bool {
         guard config.enableVectorSearch else { return false }
-        if isLoadingEmbedding(embeddingStatus) { return true }
-        if let readiness = embedder as? any QueryEmbedderReadiness {
-            return await !readiness.isQueryEmbedderReady()
-        }
+        if case .loading = embeddingStatus { return true }
         return false
     }
 
-    private func isLoadingEmbedding(_ status: EmbeddingStatus) -> Bool {
-        if case .loading = status { return true }
-        return false
+    /// Wait until automatic compile has attached, or throw if it failed.
+    ///
+    /// Do not call ``remember(_:metadata:)`` while status is ``.loading`` and
+    /// `embedder == nil` — that path persists text-only and is not backfilled.
+    package func waitUntilReadyForRemember() async throws {
+        if let readinessFollowTask {
+            await readinessFollowTask.value
+        }
+        switch embeddingStatus {
+        case .active, .degraded, .disabled:
+            return
+        case .loading:
+            throw WaxError.io("embedding provider is still loading")
+        case .unavailable(let reason):
+            throw WaxError.io(reason)
+        }
     }
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
