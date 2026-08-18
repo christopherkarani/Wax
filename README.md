@@ -48,7 +48,7 @@ let results = try await memory.search("What editor does the user like?")
 ```
 
 <p align="center">
-  <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
+  <img src="Resources/docs/assets/wax-cli-demo.gif" width="720" alt="Wax CLI demo TUI — live retrieval time, memory, FrameStore, concurrency, volume, errors, and exclusive lock">
 </p>
 
 ### What you can build
@@ -236,6 +236,23 @@ wax-cli search "car service" --mode hybrid --topK 3
 
 # Simple text-only search (no setup required)
 wax-cli search "car service" --mode text
+
+# Linux / cloud TUI demo + public-API stress (text-only; no MiniLM claim)
+wax-cli demo --run
+wax-cli demo --stress --run
+```
+
+The dashboard tracks **retrieval time** live (`last` / `p50` / `p95` / `n`) on every successful `Memory.search`.
+
+On Linux, build `wax-cli` **without** `-DGRDBCUSTOMSQLITE` (that flag breaks GRDB's system SQLite overlay):
+
+```bash
+swift build --product wax-cli --traits default,MCPServer
+BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)/wax-cli"
+"$BIN" demo --run
+"$BIN" demo --stress --run
+# Hold each TUI frame for a recording or live walkthrough
+"$BIN" demo --run --pace-ms 1500 --hold-ms 4000
 ```
 
 For long-running sessions, start the daemon:
