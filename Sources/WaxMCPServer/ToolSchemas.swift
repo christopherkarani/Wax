@@ -411,7 +411,7 @@ enum ToolSchemas {
             ],
             "rebuild": [
                 "type": "boolean",
-                "description": "Rebuild the broker-managed shared corpus before searching. Default: true.",
+                "description": "Rebuild the broker-managed shared corpus before searching. Default: \(AgentBrokerCommandSurface.corpusSearchDefaultRebuild). Rebuilds automatically when the corpus store is missing.",
             ],
             "recursive": [
                 "type": "boolean",

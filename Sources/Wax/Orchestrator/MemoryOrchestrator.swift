@@ -370,8 +370,19 @@ package actor MemoryOrchestrator {
             metadata: docMeta.entries,
             expectedChunkCount: chunks.count,
             embeddingIdentity: Self.rememberDedupEmbeddingIdentity(from: localEmbedder?.identity)
-        ), existingProbe.isComplete {
-            return
+        ) {
+            if existingProbe.isComplete {
+                return
+            }
+            // Single-chunk remember writes only the document. A matching
+            // document is not complete unless it is actually searchable.
+            if chunks.count == 1 {
+                try await ensureSingleChunkDocumentSearchable(
+                    documentId: existingProbe.documentId,
+                    text: chunks[0]
+                )
+                return
+            }
         }
 
         let chunkCount = chunks.count
@@ -403,12 +414,11 @@ package actor MemoryOrchestrator {
 
         if chunkCount == 1 {
             let chunk = chunks[0]
-            let chunkData = Data(chunk.utf8)
-
-            var chunkMeta = Metadata(metadata)
-            if let effectiveSessionId {
-                chunkMeta.entries["session_id"] = effectiveSessionId
-            }
+            var docOptions = FrameMetaSubset(
+                role: .document,
+                metadata: docMeta
+            )
+            docOptions.searchText = chunk
 
             let chunkEmbedding: [Float]?
             if useVectorSearch {
@@ -425,51 +435,22 @@ package actor MemoryOrchestrator {
                 chunkEmbedding = nil
             }
 
-            let docId = try await localSession.put(
-                contentData,
-                options: FrameMetaSubset(
-                    role: .document,
-                    metadata: docMeta
-                )
-            )
-
-            var option = FrameMetaSubset()
-            option.role = .chunk
-            option.parentId = docId
-            option.chunkIndex = 0
-            option.chunkCount = 1
-            option.searchText = chunk
-            option.metadata = chunkMeta
-
+            // Put without identity so doc metadata stays user keys + hash.
+            // `put(..., identity:)` stamps wax.embedding.* and the rematch
+            // probe uses exact metadata equality without those keys.
+            let frameId = try await localSession.put(contentData, options: docOptions)
             if let chunkEmbedding {
-                guard let localEmbedder else {
-                    throw WaxError.missingEmbedder
-                }
-                let frameId = try await localSession.put(
-                    chunkData,
-                    embedding: chunkEmbedding,
-                    identity: localEmbedder.identity,
-                    options: option
-                )
+                try await wax.putEmbedding(frameId: frameId, vector: chunkEmbedding)
                 try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
-                if config.enableTextSearch {
-                    try await localSession.indexText(frameId: frameId, text: chunk)
-                }
-                if let enrichmentPipeline {
-                    try await enrichmentPipeline.enqueue(
-                        EnrichmentTask(frameId: frameId, text: chunk)
-                    )
-                }
-            } else {
-                let frameId = try await localSession.put(chunkData, options: option)
-                if config.enableTextSearch {
-                    try await localSession.indexText(frameId: frameId, text: chunk)
-                }
-                if let enrichmentPipeline {
-                    try await enrichmentPipeline.enqueue(
-                        EnrichmentTask(frameId: frameId, text: chunk)
-                    )
-                }
+            }
+
+            if config.enableTextSearch {
+                try await localSession.indexText(frameId: frameId, text: chunk)
+            }
+            if let enrichmentPipeline {
+                try await enrichmentPipeline.enqueue(
+                    EnrichmentTask(frameId: frameId, text: chunk)
+                )
             }
             return
         }
@@ -632,6 +613,106 @@ package actor MemoryOrchestrator {
             dimensions: identity.dimensions,
             normalized: identity.normalized
         )
+    }
+
+    /// Re-index / re-embed an existing single-chunk document in place (0 new frames).
+    /// `searchText` cannot be patched on a written frame; FTS and embeddings can.
+    private func ensureSingleChunkDocumentSearchable(
+        documentId: UInt64,
+        text: String
+    ) async throws {
+        if await isSingleChunkDocumentSearchable(documentId: documentId, expectedText: text) {
+            return
+        }
+
+        if config.enableTextSearch {
+            let alreadyIndexed = await documentIsInTextIndex(documentId: documentId, text: text)
+            if !alreadyIndexed {
+                try await session.indexText(frameId: documentId, text: text)
+            }
+        }
+
+        if config.enableVectorSearch {
+            let alreadyEmbedded = await documentHasEmbedding(frameId: documentId)
+            if !alreadyEmbedded {
+                guard let localEmbedder = embedder else {
+                    throw WaxError.missingEmbedder
+                }
+                let embedding = try await Self.embedOne(
+                    text,
+                    embedder: localEmbedder,
+                    cache: embeddingCache,
+                    timeout: config.ingestEmbeddingTimeout
+                )
+                try await wax.putEmbedding(frameId: documentId, vector: embedding)
+                if let identity = localEmbedder.identity {
+                    try await ensureMemoryBindingIfNeeded(
+                        MemoryBindingCompatibility.binding(from: identity)
+                    )
+                }
+            }
+        }
+    }
+
+    private func isSingleChunkDocumentSearchable(
+        documentId: UInt64,
+        expectedText: String
+    ) async -> Bool {
+        let meta: FrameMeta
+        do {
+            meta = try await wax.frameMetaIncludingPending(frameId: documentId)
+        } catch {
+            return false
+        }
+        let searchText = meta.searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !searchText.isEmpty else { return false }
+
+        if config.enableTextSearch {
+            let indexed = await documentIsInTextIndex(documentId: documentId, text: expectedText)
+            guard indexed else { return false }
+        }
+        if config.enableVectorSearch {
+            let embedded = await documentHasEmbedding(frameId: documentId)
+            guard embedded else { return false }
+        }
+        return true
+    }
+
+    private func documentIsInTextIndex(documentId: UInt64, text: String) async -> Bool {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return false }
+        do {
+            let hits = try await session.searchText(query: query, topK: 64)
+            return hits.contains { $0.frameId == documentId }
+        } catch {
+            return false
+        }
+    }
+
+    private func documentHasEmbedding(frameId: UInt64) async -> Bool {
+        let pending = await wax.pendingEmbeddingMutations()
+        if pending.contains(where: { $0.frameId == frameId }) {
+            return true
+        }
+        if let staged = await wax.readStagedVecIndexBytes(),
+           Self.vecSegmentContains(frameId: frameId, bytes: staged.bytes) {
+            return true
+        }
+        if let bytes = try? await wax.readCommittedVecIndexBytes(),
+           Self.vecSegmentContains(frameId: frameId, bytes: bytes) {
+            return true
+        }
+        return false
+    }
+
+    private static func vecSegmentContains(frameId: UInt64, bytes: Data) -> Bool {
+        guard let payload = try? VectorSerializer.decodeVecSegment(from: bytes) else {
+            return false
+        }
+        switch payload {
+        case .metal(_, _, let frameIds):
+            return frameIds.contains(frameId)
+        }
     }
 
     private static func persistEnrichmentResult(

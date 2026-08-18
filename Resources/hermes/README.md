@@ -36,8 +36,10 @@ Start the Wax MCP server:
 **Directory plugin (local / development):**
 
 ```bash
-cp -r /path/to/Resources/hermes/wax-memory-plugin ~/.hermes/plugins/wax-memory
+cp -r /path/to/Resources/hermes/wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"
 ```
+
+`npx waxmcp install-hermes-plugin` copies the same files into `$HERMES_HOME/plugins/wax-memory` (or `~/.hermes` when `HERMES_HOME` is unset).
 
 **Pip install (distributable):**
 
@@ -45,18 +47,18 @@ cp -r /path/to/Resources/hermes/wax-memory-plugin ~/.hermes/plugins/wax-memory
 pip install ./Resources/hermes/wax-memory-plugin
 ```
 
+The package entry point is `hermes_agent.memory_providers` → `hermes_wax_memory:register`.
+
 ### Enable
 
-Add to `~/.hermes/config.yaml`:
+Add to `$HERMES_HOME/config.yaml`:
 
 ```yaml
 memory:
   provider: wax-memory
-
-plugins:
-  enabled:
-  - wax-memory
 ```
+
+Memory providers are exclusive. Do not add `wax-memory` to `plugins.enabled`.
 
 Or set the environment variable:
 
@@ -68,33 +70,21 @@ export WAX_STRUCTURED_MEMORY=1   # optional
 ### What You Get
 
 - `MemoryProvider` interface — Wax is the canonical memory backend
-- `on_session_end` hook — auto-persists session summary + handoff into Wax
-- Native tool schemas for all Wax MCP tools (`remember`, `recall`, `search`, `handoff`, `compact_context`, `markdown_export`, `markdown_sync`, `stats`, `session_start`, `session_end`)
-- Optional structured memory tools (`entity_upsert`, `fact_assert`, `facts_query`) when `WAX_STRUCTURED_MEMORY=1`
-- **Vector search** — semantic recall via `mode: vector` or `mode: hybrid`
-- Auto-detection + clear diagnostics when vector search is unavailable
+- `on_session_end` / `on_session_switch` — session-correct handoff and resume
+- Background prefetch and turn sync so recall does not block Hermes
+- Native tool schemas for core Wax MCP tools
+- Optional structured memory tools when `WAX_STRUCTURED_MEMORY=1`
+- Vector search via `mode: vector` or `mode: hybrid`
+- `hermes wax-memory doctor` for broker and embedder diagnostics
 
 ### Verify Vector Search
 
 ```bash
-# Via npm wrapper
 npx waxmcp vector-health
-
-# Or check the plugin loads with vector search
-python3 -c "
-import sys, os
-sys.path.insert(0, os.path.expanduser('~/.hermes/hermes-agent'))
-from plugins.memory import load_memory_provider
-p = load_memory_provider('wax-memory')
-print('Available:', p.is_available())
-result = json.loads(p.handle_tool_call('wax_stats', {}))
-stats = json.loads(result['text'])
-print('Vector search:', stats.get('vectorSearchEnabled'))
-print('Embedder:', stats.get('embedder'))
-"
+hermes wax-memory doctor
 ```
 
-See [`wax-memory-plugin/README.md`](./wax-memory-plugin/README.md) for full tool reference and configuration.
+See [`wax-memory-plugin/README.md`](./wax-memory-plugin/README.md) for the tool reference and configuration.
 
 ---
 
@@ -102,7 +92,7 @@ See [`wax-memory-plugin/README.md`](./wax-memory-plugin/README.md) for full tool
 
 If you prefer the lighter MCP-only approach, add Wax as an `mcp_servers` entry in Hermes config.
 
-Add to your Hermes `~/.hermes/config.yaml`:
+Add to your Hermes `$HERMES_HOME/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -127,7 +117,7 @@ mcp_servers:
 | `command` | `npx` | Launcher for waxmcp |
 | `args` | `["-y", "waxmcp@0.1.26", "mcp", "serve"]` | Arguments passed to waxmcp |
 | `env.WAX_MCP_FEATURE_LICENSE` | `"0"` | Disable license checks |
-| `env.WAX_MCP_FEATURE_STRUCTURED_MEMORY` | `"1""` | Enable structured memory tools |
+| `env.WAX_MCP_FEATURE_STRUCTURED_MEMORY` | `"1"` | Enable structured memory tools |
 | `timeout` | `120` | MCP call timeout in seconds |
 | `tools.include` | all tools | Whitelist of Wax tools to expose |
 
