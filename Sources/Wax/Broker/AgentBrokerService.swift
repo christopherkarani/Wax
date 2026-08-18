@@ -11,6 +11,11 @@ package actor AgentBrokerService {
         let memory: MemoryOrchestrator
     }
 
+    struct PendingRememberWrite: Sendable {
+        let sessionID: UUID?
+        let task: Task<Void, Error>
+    }
+
     let longTermMemory: MemoryOrchestrator
     let longTermStoreURL: URL
     let sessionRootURL: URL
@@ -23,6 +28,7 @@ package actor AgentBrokerService {
     let promotionSettings: BrokerPromotionSettings
     let brokerInstanceID = UUID().uuidString
     var activeSessions: [UUID: SessionState] = [:]
+    var pendingRememberWrites: [PendingRememberWrite] = []
 
     package init(
         storePath: String,
@@ -31,7 +37,8 @@ package actor AgentBrokerService {
         embedderChoice: String,
         requireVector: Bool,
         enableAccessStatsScoring: Bool = false,
-        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
+        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
+        embedderOverride: (any EmbeddingProvider)? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -51,11 +58,16 @@ package actor AgentBrokerService {
         let corpusFileName = ".corpus-\(Self.stableHash(longTermStoreURL.path)).wax"
         self.corpusStoreURL = sessionRootURL.deletingLastPathComponent().appendingPathComponent(corpusFileName)
 
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
+        let embedder: (any EmbeddingProvider)?
+        if let embedderOverride {
+            embedder = embedderOverride
+        } else {
+            embedder = try await CommandLineEmbedderFactory.buildEmbedder(
+                noEmbedder: noEmbedder,
+                embedderChoice: embedderChoice,
+                tuning: embedderTuning
+            )
+        }
         if requireVector {
             if noEmbedder {
                 throw BrokerStartupError("Vector search required but --no-embedder was set.")
@@ -81,6 +93,12 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
+        var pendingError: Error?
+        do {
+            try await settlePendingRememberWrites()
+        } catch {
+            pendingError = error
+        }
         for session in activeSessions.values {
             try? await session.memory.flush()
             try? await session.memory.close()
@@ -88,6 +106,9 @@ package actor AgentBrokerService {
         activeSessions.removeAll()
         try await longTermMemory.flush()
         try await longTermMemory.close()
+        if let pendingError {
+            throw pendingError
+        }
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
@@ -275,7 +296,7 @@ extension AgentBrokerService {
             metadata: rawMetadata,
             semantics: writeSemantics,
             sessionID: sessionID,
-            inferredScope: scopeContext
+            inferredScope: writeScope(for: sessionID)
         )
         try validateDurableWriteContent(content: content, metadata: metadata)
         let memory = try await memory(for: sessionID)
@@ -284,18 +305,19 @@ extension AgentBrokerService {
         }
 
         let before = await memory.runtimeStats()
-        if !noEmbedder, before.vectorSearchEnabled, !before.queryEmbedderConfigured {
+        if !noEmbedder, before.vectorSearchEnabled, !before.queryEmbedderReady {
             let capturedSessionID = sessionID
             let capturedContent = content
             let capturedMetadata = metadata
-            Task {
-                try? await self.completeRemember(
+            let task = Task<Void, Error> {
+                _ = try await self.completeRemember(
                     memory: memory,
                     content: capturedContent,
                     metadata: capturedMetadata,
                     sessionID: capturedSessionID
                 )
             }
+            pendingRememberWrites.append(PendingRememberWrite(sessionID: sessionID, task: task))
             return .object([
                 "status": .string("pending"),
                 "embedding_state": .string("loading"),
@@ -388,7 +410,7 @@ extension AgentBrokerService {
         let durableExecution = try await longTermMemory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
-            frameFilter: parsedFilters.sessionId == nil ? parsedFilters.frameFilter : nil,
+            frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange,
             topK: effectiveTopK,
             mode: mode
@@ -462,7 +484,10 @@ extension AgentBrokerService {
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: query,
-                hits: selected.map { ($0.frameId, $0.score) },
+                hits: selected.compactMap { item in
+                    guard item.explanations.contains("current session") else { return nil }
+                    return (item.frameId, item.score)
+                },
                 memory: sessionMemory
             )
         }
@@ -523,9 +548,23 @@ extension AgentBrokerService {
         }
 
         func ensureHorizon(from items: [RAGContext.Item], marker: String) {
-            guard merged.count < limit else { return }
+            guard !items.isEmpty else { return }
             guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
-            guard let extra = items.first(where: { !seen.contains(identity($0)) }) else { return }
+            guard let extra = items
+                .filter({ !seen.contains(identity($0)) })
+                .max(by: { lhs, rhs in
+                    if lhs.score != rhs.score { return lhs.score < rhs.score }
+                    return lhs.frameId > rhs.frameId
+                })
+            else { return }
+
+            if merged.count >= limit {
+                guard let evictIndex = merged.lastIndex(where: { !$0.explanations.contains(marker) }) else {
+                    return
+                }
+                let evicted = merged.remove(at: evictIndex)
+                seen.remove(identity(evicted))
+            }
             seen.insert(identity(extra))
             merged.append(extra)
         }
@@ -533,6 +572,10 @@ extension AgentBrokerService {
         ensureHorizon(from: durableTagged, marker: "durable memory")
         if merged.count > limit {
             merged = Array(merged.prefix(limit))
+        }
+        merged.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
         }
         return merged
     }
@@ -599,14 +642,37 @@ extension AgentBrokerService {
         }
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let includeWorking = try args.optionalBool("include_working") ?? true
-        let includeEpisodic = try args.optionalBool("include_episodic") ?? true
-        let includeDurable = try args.optionalBool("include_durable") ?? true
-        let sessionID = try resolveSessionID(
-            try parseOptionalSessionID(args),
-            requiringUnambiguousWorkingMemory: includeWorking,
-            allowDurableWithoutSession: includeDurable || includeEpisodic
-        )
+        let requestedWorking = try args.optionalBool("include_working") ?? true
+        let requestedEpisodic = try args.optionalBool("include_episodic") ?? true
+        let requestedDurable = try args.optionalBool("include_durable") ?? true
+        let policy: SessionResolutionPolicy
+        if requestedWorking || requestedEpisodic {
+            policy = requestedDurable ? .durableOnlyWhenAmbiguous : .requireUnambiguousWorking
+        } else {
+            policy = .unscoped
+        }
+        let scope = try resolveSessionScope(try parseOptionalSessionID(args), policy: policy)
+        let sessionID: UUID?
+        let includeWorking: Bool
+        let includeEpisodic: Bool
+        let includeDurable: Bool
+        switch scope {
+        case .session(let resolved):
+            sessionID = resolved
+            includeWorking = requestedWorking
+            includeEpisodic = requestedEpisodic
+            includeDurable = requestedDurable
+        case .durableOnly:
+            sessionID = nil
+            includeWorking = false
+            includeEpisodic = false
+            includeDurable = true
+        case .none:
+            sessionID = nil
+            includeWorking = false
+            includeEpisodic = requestedEpisodic
+            includeDurable = requestedDurable
+        }
         let hits = try await layeredMemorySearch(
             query: query,
             mode: mode,
@@ -623,7 +689,10 @@ extension AgentBrokerService {
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: query,
-                hits: hits.map { ($0.frameID, $0.score) },
+                hits: hits.compactMap { hit in
+                    guard hit.horizon == .working else { return nil }
+                    return (hit.frameID, hit.score)
+                },
                 memory: sessionMemory
             )
         }
@@ -738,7 +807,7 @@ extension AgentBrokerService {
             metadata: baseMetadata,
             semantics: writeSemantics,
             sessionID: nil,
-            inferredScope: scopeContext
+            inferredScope: writeScope(for: resolvedPromotionSessionID)
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
@@ -941,7 +1010,7 @@ extension AgentBrokerService {
             "storePath": .string(stats.storeURL.path),
             "vectorSearchEnabled": .from(stats.vectorSearchEnabled),
             "queryEmbeddingAvailable": .from(
-                stats.vectorSearchEnabled && stats.queryEmbedderConfigured && !stats.queryEmbeddingCircuitOpen
+                stats.vectorSearchEnabled && stats.queryEmbedderReady && !stats.queryEmbeddingCircuitOpen
             ),
             "queryEmbeddingCircuitOpen": .from(stats.queryEmbeddingCircuitOpen),
             "features": .object([
@@ -984,6 +1053,7 @@ extension AgentBrokerService {
     }
 
     func flush() async throws -> AgentBrokerValue {
+        try await settlePendingRememberWrites()
         try await longTermMemory.flush()
         for session in activeSessions.values {
             try await session.memory.flush()
@@ -1162,6 +1232,7 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("session_id is required when more than one session is active")
         }
         if let state = activeSessions[target] {
+            try await settlePendingRememberWrites(sessionID: target)
             var manifest = state.manifest
             manifest.status = .ended
             manifest.updatedAtMs = Self.nowMs()
@@ -1245,10 +1316,13 @@ extension AgentBrokerService {
         }
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let sessionID = try resolveSessionID(
-            try parseOptionalSessionID(args),
-            requiringUnambiguousWorkingMemory: true
-        )
+        let sessionID: UUID?
+        switch try resolveSessionScope(try parseOptionalSessionID(args), policy: .requireUnambiguousWorking) {
+        case .session(let resolved):
+            sessionID = resolved
+        case .none, .durableOnly:
+            sessionID = nil
+        }
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await sessionMemory.flush()
@@ -2478,6 +2552,18 @@ extension AgentBrokerService {
         return value
     }
 
+    func writeScope(for sessionID: UUID?) -> MemoryScopeContext {
+        guard let sessionID, let session = activeSessions[sessionID] else {
+            return scopeContext
+        }
+        return MemoryScopeContext(
+            cwdPath: scopeContext.cwdPath,
+            repoRootPath: scopeContext.repoRootPath,
+            repoName: session.manifest.repo ?? scopeContext.repoName,
+            projectName: session.manifest.project ?? scopeContext.projectName
+        )
+    }
+
     func resolveSessionID(_ explicit: UUID?) throws -> UUID? {
         if let explicit { return explicit }
         if activeSessions.count == 1 {
@@ -2486,23 +2572,82 @@ extension AgentBrokerService {
         return nil
     }
 
-    func resolveSessionID(
+    enum SessionResolutionPolicy: Sendable, Equatable {
+        /// Do not infer a working session from live sessions.
+        case unscoped
+        /// Infer the sole live session; throw if more than one is live.
+        case requireUnambiguousWorking
+        /// Infer the sole live session; if more than one is live, search durable only.
+        case durableOnlyWhenAmbiguous
+    }
+
+    enum ResolvedSessionScope: Sendable, Equatable {
+        case session(UUID)
+        case durableOnly
+        case none
+    }
+
+    func resolveSessionScope(
         _ explicit: UUID?,
-        requiringUnambiguousWorkingMemory includeWorking: Bool,
-        allowDurableWithoutSession: Bool = false
-    ) throws -> UUID? {
-        if let explicit { return explicit }
-        guard includeWorking else { return nil }
-        switch activeSessions.count {
-        case 0:
-            return nil
-        case 1:
-            return activeSessions.keys.first
-        default:
-            if allowDurableWithoutSession {
-                return nil
+        policy: SessionResolutionPolicy
+    ) throws -> ResolvedSessionScope {
+        if let explicit { return .session(explicit) }
+        switch policy {
+        case .unscoped:
+            return .none
+        case .requireUnambiguousWorking:
+            switch activeSessions.count {
+            case 0:
+                return .none
+            case 1:
+                return .session(activeSessions.keys.first!)
+            default:
+                throw BrokerValidationError.invalid("session_id is required when more than one session is active")
             }
-            throw BrokerValidationError.invalid("session_id is required when more than one session is active")
+        case .durableOnlyWhenAmbiguous:
+            switch activeSessions.count {
+            case 0:
+                return .none
+            case 1:
+                return .session(activeSessions.keys.first!)
+            default:
+                return .durableOnly
+            }
+        }
+    }
+
+    package func settlePendingRememberWrites(sessionID: UUID? = nil) async throws {
+        let selected: [PendingRememberWrite]
+        if let sessionID {
+            var remaining: [PendingRememberWrite] = []
+            remaining.reserveCapacity(pendingRememberWrites.count)
+            var matched: [PendingRememberWrite] = []
+            for write in pendingRememberWrites {
+                if write.sessionID == sessionID {
+                    matched.append(write)
+                } else {
+                    remaining.append(write)
+                }
+            }
+            pendingRememberWrites = remaining
+            selected = matched
+        } else {
+            selected = pendingRememberWrites
+            pendingRememberWrites.removeAll()
+        }
+
+        var firstError: Error?
+        for write in selected {
+            do {
+                try await write.task.value
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+            }
+        }
+        if let firstError {
+            throw firstError
         }
     }
 

@@ -148,6 +148,32 @@ func sessionStartInfersProjectFromClientCwdNotBrokerBinary() async throws {
         #expect(payload["project"]?.stringValue == repo.lastPathComponent)
         #expect(payload["project"]?.stringValue != "Wax")
         #expect(payload["repo"]?.stringValue == repo.lastPathComponent)
+
+        let sessionID = try requireString(payload, "session_id")
+        let write = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Session write should inherit the client cwd project, not the daemon cwd."),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(write.ok == true)
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string("inherit the client cwd project"),
+                "session_id": .string(sessionID),
+                "include_working": .bool(true),
+                "include_durable": .bool(false),
+                "include_episodic": .bool(false),
+            ]
+        ))
+        #expect(search.ok == true)
+        let hit = try #require(try requireObject(search.payload)["results"]?.arrayValue?.first?.objectValue)
+        let metadata = try #require(hit["metadata"]?.objectValue)
+        #expect(metadata["wax.project"]?.stringValue == repo.lastPathComponent)
+        #expect(metadata["wax.repo"]?.stringValue == repo.lastPathComponent)
     }
 }
 
@@ -346,6 +372,379 @@ func compactContextIncludesLiveSessionNote() async throws {
         let short = payload["short_context"]?.arrayValue ?? []
         #expect(short.contains { $0.objectValue?["preview"]?.stringValue?.contains(token) == true
             || $0.objectValue?["text"]?.stringValue?.contains(token) == true })
+    }
+}
+
+@Test
+func defaultMemorySearchDoesNotReturnOtherSessionsEndedNoteWhenMultipleSessionsAreLive() async throws {
+    try await withIsolatedBroker { service, _ in
+        let ended = await service.handle(.init(command: "session_start"))
+        #expect(ended.ok == true)
+        let endedID = try requireString(try requireObject(ended.payload), "session_id")
+        let token = "ENDED-WORKING-\(UUID().uuidString.prefix(8))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Ended-session working note \(token) must not leak unscoped."),
+                "session_id": .string(endedID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(endedID)]
+        ))).ok == true)
+
+        #expect((await service.handle(.init(command: "session_start"))).ok == true)
+        #expect((await service.handle(.init(command: "session_start"))).ok == true)
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+            ]
+        ))
+        #expect(search.ok == true, "memory_search failed: \(search.error ?? "nil")")
+        let payload = try requireObject(search.payload)
+        let texts = resultTexts(payload)
+        let display = payload["display_text"]?.stringValue ?? ""
+        #expect(!texts.contains { $0.contains(token) })
+        #expect(!display.contains(token))
+        #expect(!(payload["results"]?.arrayValue ?? []).contains { result in
+            result.objectValue?["horizon"]?.stringValue == "episodic"
+                && (result.objectValue?["text"]?.stringValue?.contains(token) == true
+                    || result.objectValue?["preview"]?.stringValue?.contains(token) == true)
+        })
+    }
+}
+
+@Test
+func mergeRecallItemsReservesMissingSessionHorizonWhenDurableFillsLimit() {
+    let durable = (1...5).map { index in
+        recallItem(frameId: UInt64(index), score: 1.0 - Float(index) * 0.01, text: "durable hit \(index)")
+    }
+    let session = [recallItem(frameId: 99, score: 0.05, text: "session reserved note")]
+    let merged = AgentBrokerService.mergeRecallItems(
+        sessionItems: session,
+        durableItems: durable,
+        limit: 5
+    )
+    #expect(merged.count == 5)
+    #expect(merged.contains { $0.text.contains("session reserved note") })
+    #expect(merged.contains { $0.explanations.contains("current session") })
+    #expect(merged.contains { $0.explanations.contains("durable memory") })
+}
+
+@Test
+func mergeRecallItemsReservesMissingDurableHorizonWhenSessionFillsLimit() {
+    let session = (1...5).map { index in
+        recallItem(frameId: UInt64(index), score: 1.0 - Float(index) * 0.01, text: "session hit \(index)")
+    }
+    let durable = [recallItem(frameId: 99, score: 0.05, text: "durable reserved note")]
+    let merged = AgentBrokerService.mergeRecallItems(
+        sessionItems: session,
+        durableItems: durable,
+        limit: 5
+    )
+    #expect(merged.count == 5)
+    #expect(merged.contains { $0.text.contains("durable reserved note") })
+    #expect(merged.contains { $0.explanations.contains("current session") })
+    #expect(merged.contains { $0.explanations.contains("durable memory") })
+}
+
+@Test
+func recallAppliesFrameFilterToDurableHitsWhenSessionIDIsSet() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let token = "FILTER-DURABLE-\(UUID().uuidString.prefix(8))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) keep this durable fact"),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+                "metadata": .object(["topic": .string("keep")]),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) drop this durable fact"),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+                "metadata": .object(["topic": .string("drop")]),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) session note without topic"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+
+        let recalled = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "mode": .string("text"),
+                "limit": .int(10),
+                "filters": .object([
+                    "metadata": .object(["topic": .string("keep")]),
+                ]),
+            ]
+        ))
+        #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")
+        let texts = resultTexts(try requireObject(recalled.payload))
+        #expect(texts.contains { $0.contains("keep this durable fact") })
+        #expect(!texts.contains { $0.contains("drop this durable fact") })
+    }
+}
+
+@Test
+func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
+    try await withIsolatedBroker { service, sessionRootURL in
+        let started = await service.handle(.init(command: "session_start"))
+        let startedPayload = try requireObject(started.payload)
+        let sessionID = try requireString(startedPayload, "session_id")
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        let token = "HIT-SCOPE-\(UUID().uuidString.prefix(8))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decoy session note that must not inherit durable frame hits."),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) session mention that should be recorded."),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) durable fact that shares no session store."),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))).ok == true)
+
+        let scopedWorking = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "mode": .string("text"),
+                "include_working": .bool(true),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(false),
+            ]
+        ))
+        #expect(scopedWorking.ok == true)
+        let workingHits = try requireObject(scopedWorking.payload)["results"]?.arrayValue ?? []
+        let sessionFrameIDs = Set(workingHits.compactMap { $0.objectValue?["frame_id"]?.intValue }.map(UInt64.init))
+        #expect(!sessionFrameIDs.isEmpty)
+
+        let recalled = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "mode": .string("text"),
+                "limit": .int(10),
+            ]
+        ))
+        #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")
+        let recallPayload = try requireObject(recalled.payload)
+        let recallTexts = resultTexts(recallPayload)
+        #expect(recallTexts.contains { $0.contains("durable fact") })
+        #expect(recallTexts.contains { $0.contains("session mention") })
+
+        let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionUUID)
+        let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+        let recordedFrameIDs = Set(events.compactMap { event -> UInt64? in
+            guard event.kind == .retrievalHit else { return nil }
+            return event.payload["frame_id"].flatMap(UInt64.init)
+        })
+        #expect(!recordedFrameIDs.isEmpty)
+        #expect(recordedFrameIDs.isSubset(of: sessionFrameIDs))
+    }
+}
+
+@Test
+func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-pending-remember-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let embedder = GateableQueryEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: embedder
+    )
+    do {
+        let token = "PENDINGLAND\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("Cold remember \(token) should land after embedder ready.")]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+        let pendingPayload = try requireObject(remembered.payload)
+        #expect(pendingPayload["status"]?.stringValue == "pending")
+        #expect(pendingPayload["embedding_state"]?.stringValue == "loading")
+
+        await embedder.markReady()
+        try await service.settlePendingRememberWrites()
+        #expect((await service.handle(.init(command: "flush"))).ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true, "search failed: \(search.error ?? "nil")")
+        let searchPayload = try requireObject(search.payload)
+        let texts = resultTexts(searchPayload)
+        let display = searchPayload["display_text"]?.stringValue ?? ""
+        #expect(
+            texts.contains { $0.contains(token) } || display.contains(token),
+            "expected landed frame for \(token); display=\(display) texts=\(texts)"
+        )
+        try await service.close()
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
+@Test
+func coldRememberPendingWriteSurfacesTypedFailureWhenEmbedderFails() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-pending-fail-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let embedder = GateableQueryEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: embedder
+    )
+    do {
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("Cold remember should surface embedder failure.")]
+        ))
+        #expect(remembered.ok == true)
+        #expect(try requireObject(remembered.payload)["status"]?.stringValue == "pending")
+
+        await embedder.fail(GateableQueryEmbedder.Failure.unavailable)
+        do {
+            try await service.settlePendingRememberWrites()
+            Issue.record("pending remember should fail when the embedder never becomes ready")
+        } catch {
+            #expect(error.localizedDescription.localizedCaseInsensitiveContains("unavailable")
+                || error.localizedDescription.localizedCaseInsensitiveContains("embed"))
+        }
+        try await service.close()
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
+private func recallItem(frameId: UInt64, score: Float, text: String) -> RAGContext.Item {
+    RAGContext.Item(
+        kind: .snippet,
+        frameId: frameId,
+        score: score,
+        sources: [.text],
+        text: text
+    )
+}
+
+private actor GateableQueryEmbedder: EmbeddingProvider, QueryEmbedderReadiness {
+    enum Failure: LocalizedError {
+        case unavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .unavailable:
+                return "Embedding provider is unavailable."
+            }
+        }
+    }
+
+    nonisolated let dimensions = 8
+    nonisolated let normalize = true
+    nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "Gateable", dimensions: 8, normalized: true)
+    nonisolated var executionMode: ProviderExecutionMode { .onDeviceOnly }
+    private var ready = false
+    private var failure: (any Error)?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func isQueryEmbedderReady() -> Bool {
+        ready && failure == nil
+    }
+
+    func markReady() {
+        ready = true
+        resumeWaiters()
+    }
+
+    func fail(_ error: any Error) {
+        failure = error
+        resumeWaiters()
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        if !ready && failure == nil {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+        if let failure {
+            throw failure
+        }
+        var vector = [Float](repeating: 0, count: dimensions)
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        vector[0] = Float(hash % 1_000) / 1_000
+        return vector
+    }
+
+    private func resumeWaiters() {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }
 

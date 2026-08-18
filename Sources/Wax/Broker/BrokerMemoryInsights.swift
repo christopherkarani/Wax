@@ -394,15 +394,11 @@ package enum BrokerMemoryInsights {
         }
     }
 
-    package static func explicitlyBlocksPromotion(_ text: String) -> Bool {
+    private static func explicitlyBlocksPromotion(_ text: String) -> Bool {
         let lower = text.lowercased()
         let markers = [
             "do not promote",
             "don't promote",
-            "do not persist",
-            "don't persist",
-            "do not write",
-            "session-only note",
         ]
         return markers.contains { lower.contains($0) }
     }
