@@ -170,6 +170,9 @@ let package = Package(
             dependencies: [
                 "WaxCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // Linux has no Darwin SQLite3 overlay. GRDB's system library
+                // exposes sqlite3_serialize so FTS5 can persist into the .wax file.
+                .product(name: "GRDBSQLite", package: "GRDB.swift"),
             ],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         ),

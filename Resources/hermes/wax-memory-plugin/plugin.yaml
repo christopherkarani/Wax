@@ -3,3 +3,9 @@ version: 0.1.26
 description: "Wax-backed native memory provider for Hermes Agent. Delegates to the Wax MCP broker over HTTP for cross-session persistence, RAG recall, structured memory, and managed Markdown projections."
 pip_dependencies:
   - requests>=2.28
+hooks:
+  - on_session_end
+  - on_session_switch
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation

@@ -27,6 +27,11 @@ import Testing
     }
 }
 
+@Test func waxCLIExposesLinuxDemoCommand() throws {
+    let source = try WaxCLISource.load("WaxCLICommand.swift")
+    #expect(source.contains("DemoCommand.self"))
+}
+
 @Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -103,6 +108,8 @@ private enum WaxCLIProcess {
         let candidates = [
             packageRoot.appendingPathComponent(".build/debug/wax-cli"),
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
+            packageRoot.appendingPathComponent(".build/x86_64-unknown-linux-gnu/debug/wax-cli"),
+            packageRoot.appendingPathComponent(".build/aarch64-unknown-linux-gnu/debug/wax-cli"),
         ]
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
             return candidate
