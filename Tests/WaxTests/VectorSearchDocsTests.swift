@@ -112,6 +112,36 @@ func vectorEnginePreferenceIsPublicAPIAndDocsOmitDeprecatedEngineFlags() throws 
     }
 }
 
+@Test
+func publicAPINamesBuiltInMultimodalEmbeddingsForPhotoVideoFacades() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let publicAPI = try String(
+        contentsOf: repoRoot.appendingPathComponent("Resources/skills/public/wax/references/public-api.md"),
+        encoding: .utf8
+    )
+    #expect(publicAPI.contains("PhotoMemory"))
+    #expect(publicAPI.contains("VideoMemory"))
+    #expect(publicAPI.contains("BuiltInMultimodalEmbeddings"))
+    #expect(publicAPI.contains("BuiltInMultimodalEmbeddings.make"))
+    #expect(!publicAPI.contains("wait for a facade"))
+
+    for relativePath in [
+        "Sources/Wax/Wax.docc/Articles/PhotoRAG.md",
+        "Resources/website/docs/media/photo-rag.md",
+        "Sources/Wax/Wax.docc/Articles/VideoRAG.md",
+        "Resources/website/docs/media/video-rag.md",
+    ] {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(doc.contains("BuiltInMultimodalEmbeddings"), "\(relativePath) must name BuiltInMultimodalEmbeddings")
+        #expect(!doc.contains("wait for a stable public facade"))
+        #expect(!doc.contains("wait for a facade"))
+    }
+}
+
 private let vectorSearchDocPaths = [
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Documentation.md",
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/VectorSearchEngines.md",

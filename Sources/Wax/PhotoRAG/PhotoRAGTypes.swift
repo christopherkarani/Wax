@@ -1,7 +1,7 @@
 import Foundation
 
-/// Controls how much context is assembled for downstream models/agents.
-public struct ContextBudget: Sendable, Equatable {
+/// Token and image limits for assembled ``PhotoMemory`` recall context.
+public struct PhotoContextBudget: Sendable, Equatable {
     public var maxTextTokens: Int
     public var maxImages: Int
     public var maxRegions: Int
@@ -19,7 +19,7 @@ public struct ContextBudget: Sendable, Equatable {
         self.maxOCRLinesPerItem = max(0, maxOCRLinesPerItem)
     }
 
-    public static let `default` = ContextBudget()
+    public static let `default` = PhotoContextBudget()
 }
 
 /// Optional filters applied during photo recall.
@@ -51,7 +51,7 @@ public struct PhotoFilters: Sendable, Equatable {
     }
 }
 
-/// Source backing a photo record in the package-only Photo RAG pipeline.
+/// Source backing a photo record ingested by ``PhotoMemory``.
 public enum PhotoSource: String, Sendable, Equatable {
     case photos
     case file
@@ -91,7 +91,7 @@ public enum PhotoScope: Sendable, Equatable {
     case assetIDs([String])
 }
 
-/// A local image file to ingest into the package-only Photo RAG pipeline.
+/// A local image file to ingest into ``PhotoMemory``.
 public struct PhotoFile: Sendable, Equatable {
     /// Stable caller-provided identifier used as the photo asset ID in Wax metadata.
     public var id: String
@@ -165,6 +165,7 @@ public struct PhotoNormalizedRect: Sendable, Equatable {
     }
 }
 
+/// A photo recall query with optional text, image, time, location, and result-budget constraints.
 public struct PhotoQuery: Sendable, Equatable {
     public var text: String?
     public var image: PhotoQueryImage?
@@ -172,7 +173,7 @@ public struct PhotoQuery: Sendable, Equatable {
     public var location: PhotoLocationQuery?
     public var filters: PhotoFilters
     public var resultLimit: Int
-    public var contextBudget: ContextBudget
+    public var contextBudget: PhotoContextBudget
 
     public init(
         text: String? = nil,
@@ -181,7 +182,7 @@ public struct PhotoQuery: Sendable, Equatable {
         location: PhotoLocationQuery? = nil,
         filters: PhotoFilters = .none,
         resultLimit: Int = 12,
-        contextBudget: ContextBudget = .default
+        contextBudget: PhotoContextBudget = .default
     ) {
         self.text = text
         self.image = image
@@ -193,6 +194,7 @@ public struct PhotoQuery: Sendable, Equatable {
     }
 }
 
+/// Ranked photo recall result assembled for a ``PhotoQuery``.
 public struct PhotoRAGContext: Sendable, Equatable {
     public struct Diagnostics: Sendable, Equatable {
         public var usedTextTokens: Int
@@ -217,6 +219,7 @@ public struct PhotoRAGContext: Sendable, Equatable {
     }
 }
 
+/// A single ranked photo hit in a ``PhotoRAGContext``.
 public struct PhotoRAGItem: Sendable, Equatable {
     public enum Evidence: Sendable, Equatable {
         case vector

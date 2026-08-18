@@ -97,6 +97,29 @@ func unifiedSearchDocsDoNotConstructPackageOnlySearchRequestAsPublicAPI() throws
     }
 }
 
+@Test
+func publicAPIAndSkillNamePhotoVideoFacades() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    for relativePath in [
+        "Resources/skills/public/wax/references/public-api.md",
+        "Resources/skills/public/wax/SKILL.md",
+        "Resources/skills/public/wax/references/constraints.md",
+    ] {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(doc.contains("PhotoMemory"), "\(relativePath) must name PhotoMemory")
+        #expect(doc.contains("VideoMemory"), "\(relativePath) must name VideoMemory")
+        #expect(doc.contains("BuiltInMultimodalEmbeddings"), "\(relativePath) must name BuiltInMultimodalEmbeddings")
+        #expect(!doc.contains("wait for a stable public facade"))
+        #expect(!doc.contains("wait for a facade"))
+        #expect(!doc.contains("the only supported entry point for apps"))
+        #expect(!doc.contains("photo/video memory are exposed to agents via the Wax MCP"))
+    }
+}
+
 private let waxSessionDocPaths = [
     "Sources/Wax/Wax.docc/Articles/SessionManagement.md",
     "Resources/website/docs/orchestrator/session-management.md",

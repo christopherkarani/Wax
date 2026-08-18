@@ -6,8 +6,8 @@
 - Wax is not a cloud sync service. Source: `README.md`.
 
 ## Public API Surface
-- The public Swift API is the `Memory` facade (`import Wax`). `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `WaxSession`, and the `Wax` actor are package-only internals. Source: `Sources/Wax/Memory.swift`.
-- Structured memory (entities/facts) and photo/video memory are exposed to agents via the Wax MCP server tools, not via `import Wax`. Source: `README.md`.
+- The public Swift API is `Memory` plus experimental `PhotoMemory` / `VideoMemory` (`import Wax`). Use `BuiltInMultimodalEmbeddings.make` for the photo/video embedder. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `WaxSession`, and the `Wax` actor are package-only internals. Source: `Resources/skills/public/wax/references/public-api.md`.
+- Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API. Source: `README.md`.
 
 ## Vector Search and Embeddings
 - Built-in embedders (MiniLM, Arctic) require iOS 18/macOS 15+ and their package traits (`MiniLMEmbeddings` on by default, `ArcticEmbeddings` opt-in). Source: `Sources/Wax/BuiltInEmbeddings.swift`.
@@ -17,7 +17,8 @@
 - If query embedding times out, a circuit breaker pauses query embedding for a cooldown (default 60s), then half-opens and retries; a success closes it. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
 - The Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index. Source: `Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift`.
 
-## Video RAG Constraints (package-only pipeline)
+## Photo and Video RAG Constraints
+- Apps use experimental `PhotoMemory` / `VideoMemory` (`import Wax`). `PhotoRAGOrchestrator` and `VideoRAGOrchestrator` are package-only. Source: `Resources/skills/public/wax/references/public-api.md`.
 - Video RAG requires host-supplied transcripts; Wax does not transcribe in v1. Source: `README.md`, `Sources/Wax/VideoRAG/VideoRAGProtocols.swift`.
 - Video RAG stores text and metadata only; it does not store video/audio clip bytes. Source: `README.md`.
 - The video pipeline requires normalized embeddings when `vectorEnginePreference != .cpuOnly` (Metal-backed search). Source: `Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift`.

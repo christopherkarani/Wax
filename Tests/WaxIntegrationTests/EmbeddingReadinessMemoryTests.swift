@@ -353,6 +353,87 @@ func memorySearchKeepsLoadingSnapshotForTheWholeCall() async throws {
     }
 }
 
+@Test
+func waitUntilReadyForRememberAttachesThenRememberHasVector() async throws {
+    try await TempFiles.withTempFile { url in
+        let gate = Gate()
+        let readiness = EmbeddingReadiness()
+        var config = OrchestratorConfig.default
+        config.requireOnDeviceProviders = false
+        let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
+            at: url,
+            config: config,
+            request: .automatic(.miniLM, .default),
+            readiness: readiness
+        ) {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        #expect(await orchestrator.runtimeStats().embeddingStatus == .loading)
+
+        async let wait: Void = orchestrator.waitUntilReadyForRemember()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(await orchestrator.runtimeStats().embeddingStatus == .loading)
+
+        await gate.open()
+        try await wait
+
+        switch await orchestrator.runtimeStats().embeddingStatus {
+        case .active, .degraded:
+            break
+        case let status:
+            Issue.record("expected ready status after wait, got \(status)")
+        }
+
+        try await orchestrator.remember("corpus ingest needle should carry a vector")
+        try await orchestrator.flush()
+        let stats = await orchestrator.runtimeStats()
+        guard case .active = stats.embeddingStatus else {
+            Issue.record("remember after wait must not write text-only; got \(stats.embeddingStatus)")
+            try await orchestrator.close()
+            return
+        }
+        #expect(stats.queryEmbedderConfigured)
+        #expect(stats.queryEmbedderReady)
+
+        let hits = try await orchestrator.search(
+            query: "needle",
+            mode: .vectorOnly,
+            topK: 1
+        )
+        #expect(hits.first?.previewText?.contains("needle") == true)
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func waitUntilReadyForRememberThrowsWhenCompileFails() async throws {
+    try await TempFiles.withTempFile { url in
+        let readiness = EmbeddingReadiness()
+        var config = OrchestratorConfig.default
+        config.requireOnDeviceProviders = false
+        let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
+            at: url,
+            config: config,
+            request: .automatic(.miniLM, .default),
+            readiness: readiness
+        ) {
+            throw TestReadinessError.boom
+        }
+        do {
+            try await orchestrator.waitUntilReadyForRemember()
+            Issue.record("waitUntilReadyForRemember must throw when compile fails")
+        } catch let error as WaxError {
+            guard case .io = error else {
+                Issue.record("expected WaxError.io from compile failure, got \(error)")
+                try await orchestrator.close()
+                return
+            }
+        }
+        try await orchestrator.close()
+    }
+}
+
 private enum TestReadinessError: Error {
     case boom
 }

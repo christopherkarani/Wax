@@ -588,15 +588,19 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: rootURL) }
 
-    let embedder = GateableQueryEmbedder()
+    let gate = EmbedderGate()
+    let readiness = EmbeddingReadiness()
     let service = try await AgentBrokerService(
         storePath: storeURL.path,
         sessionRootPath: sessionRootURL.path,
         noEmbedder: false,
         embedderChoice: "auto",
         requireVector: false,
-        embedderOverride: embedder
-    )
+        readiness: readiness
+    ) {
+        await gate.wait()
+        return PendingRememberTestEmbedder()
+    }
     do {
         let token = "PENDINGLAND\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
         let remembered = await service.handle(.init(
@@ -608,11 +612,8 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
         #expect(pendingPayload["status"]?.stringValue == "pending")
         #expect(pendingPayload["embedding_state"]?.stringValue == "loading")
 
-        await embedder.markReady()
-        try await service.settlePendingRememberWrites()
-        #expect((await service.handle(.init(command: "flush"))).ok == true)
-
-        let search = await service.handle(.init(
+        try await Task.sleep(for: .milliseconds(40))
+        let earlySearch = await service.handle(.init(
             command: "search",
             arguments: [
                 "query": .string(token),
@@ -620,13 +621,35 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
                 "topK": .int(5),
             ]
         ))
+        #expect(earlySearch.ok == true, "early search failed: \(earlySearch.error ?? "nil")")
+        let earlyPayload = try requireObject(earlySearch.payload)
+        let earlyTexts = resultTexts(earlyPayload)
+        let earlyDisplay = earlyPayload["display_text"]?.stringValue ?? ""
+        #expect(
+            !earlyTexts.contains { $0.contains(token) } && !earlyDisplay.contains(token),
+            "frame must stay absent until the automatic factory opens; display=\(earlyDisplay) texts=\(earlyTexts)"
+        )
+
+        await gate.open()
+        try await service.settlePendingRememberWrites()
+        #expect((await service.handle(.init(command: "flush"))).ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("vector"),
+                "topK": .int(5),
+            ]
+        ))
         #expect(search.ok == true, "search failed: \(search.error ?? "nil")")
         let searchPayload = try requireObject(search.payload)
         let texts = resultTexts(searchPayload)
         let display = searchPayload["display_text"]?.stringValue ?? ""
+        #expect(searchPayload["query_embedding_state"]?.stringValue == "available")
         #expect(
             texts.contains { $0.contains(token) } || display.contains(token),
-            "expected landed frame for \(token); display=\(display) texts=\(texts)"
+            "expected vector-backed frame for \(token); display=\(display) texts=\(texts)"
         )
         try await service.close()
     } catch {
@@ -644,15 +667,19 @@ func coldRememberPendingWriteSurfacesTypedFailureWhenEmbedderFails() async throw
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: rootURL) }
 
-    let embedder = GateableQueryEmbedder()
+    let gate = EmbedderGate()
+    let readiness = EmbeddingReadiness()
     let service = try await AgentBrokerService(
         storePath: storeURL.path,
         sessionRootPath: sessionRootURL.path,
         noEmbedder: false,
         embedderChoice: "auto",
         requireVector: false,
-        embedderOverride: embedder
-    )
+        readiness: readiness
+    ) {
+        await gate.wait()
+        throw PendingRememberFactoryError.unavailable
+    }
     do {
         let remembered = await service.handle(.init(
             command: "remember",
@@ -661,10 +688,10 @@ func coldRememberPendingWriteSurfacesTypedFailureWhenEmbedderFails() async throw
         #expect(remembered.ok == true)
         #expect(try requireObject(remembered.payload)["status"]?.stringValue == "pending")
 
-        await embedder.fail(GateableQueryEmbedder.Failure.unavailable)
+        await gate.open()
         do {
             try await service.settlePendingRememberWrites()
-            Issue.record("pending remember should fail when the embedder never becomes ready")
+            Issue.record("pending remember should fail when automatic compile fails")
         } catch {
             #expect(error.localizedDescription.localizedCaseInsensitiveContains("unavailable")
                 || error.localizedDescription.localizedCaseInsensitiveContains("embed"))
@@ -686,49 +713,26 @@ private func recallItem(frameId: UInt64, score: Float, text: String) -> RAGConte
     )
 }
 
-private actor GateableQueryEmbedder: EmbeddingProvider, QueryEmbedderReadiness {
-    enum Failure: LocalizedError {
-        case unavailable
+private enum PendingRememberFactoryError: LocalizedError {
+    case unavailable
 
-        var errorDescription: String? {
-            switch self {
-            case .unavailable:
-                return "Embedding provider is unavailable."
-            }
-        }
+    var errorDescription: String? {
+        "Embedding provider is unavailable."
     }
+}
 
-    nonisolated let dimensions = 8
-    nonisolated let normalize = true
-    nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "Gateable", dimensions: 8, normalized: true)
-    nonisolated var executionMode: ProviderExecutionMode { .onDeviceOnly }
-    private var ready = false
-    private var failure: (any Error)?
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func isQueryEmbedderReady() -> Bool {
-        ready && failure == nil
-    }
-
-    func markReady() {
-        ready = true
-        resumeWaiters()
-    }
-
-    func fail(_ error: any Error) {
-        failure = error
-        resumeWaiters()
-    }
+private struct PendingRememberTestEmbedder: EmbeddingProvider {
+    let dimensions = 8
+    let normalize = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "PendingRemember",
+        dimensions: 8,
+        normalized: true
+    )
+    var executionMode: ProviderExecutionMode { .onDeviceOnly }
 
     func embed(_ text: String) async throws -> [Float] {
-        if !ready && failure == nil {
-            await withCheckedContinuation { continuation in
-                waiters.append(continuation)
-            }
-        }
-        if let failure {
-            throw failure
-        }
         var vector = [Float](repeating: 0, count: dimensions)
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in text.utf8 {
@@ -738,13 +742,23 @@ private actor GateableQueryEmbedder: EmbeddingProvider, QueryEmbedderReadiness {
         vector[0] = Float(hash % 1_000) / 1_000
         return vector
     }
+}
 
-    private func resumeWaiters() {
-        let pending = waiters
-        waiters.removeAll()
-        for waiter in pending {
+private actor EmbedderGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in waiters {
             waiter.resume()
         }
+        waiters.removeAll()
     }
 }
 

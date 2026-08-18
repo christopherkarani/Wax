@@ -6,7 +6,7 @@ Understand the module dependency graph, actor model, and end-to-end data flow.
 
 Wax is organized as a stack of Swift Package Manager library targets. Each layer adds capability while depending only on the layers below it.
 
-> Note: ``Memory`` is the public facade. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, and `WaxSession` are package-only internals — they are documented here for contributors and are not callable from outside the Wax package.
+> Note: ``Memory``, experimental ``PhotoMemory``, and experimental ``VideoMemory`` are the public facades. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, and `WaxSession` are package-only internals — they are documented here for contributors and are not callable from outside the Wax package.
 
 ## Module Dependency Graph
 
@@ -42,9 +42,11 @@ Every major subsystem is an actor with its own serial executor:
 | Actor | Access | Responsibility |
 |-------|--------|---------------|
 | ``Memory`` | **public** | Facade: save/search/delete/flush/close, stats, diagnostics |
+| ``PhotoMemory`` | **public** (experimental) | Photo ingest, OCR, multimodal recall |
+| ``VideoMemory`` | **public** (experimental) | Video ingest, keyframes, ranked segment recall |
 | `MemoryOrchestrator` | package | Text ingestion, recall, session management |
-| `PhotoRAGOrchestrator` | package | Photo library sync, OCR, photo queries |
-| `VideoRAGOrchestrator` | package | Video ingestion, transcript handling, segment queries |
+| `PhotoRAGOrchestrator` | package | Engine behind ``PhotoMemory`` |
+| `VideoRAGOrchestrator` | package | Engine behind ``VideoMemory`` |
 | `WaxSession` | package | Frame writes, search delegation, structured memory |
 | `Wax` (WaxCore) | package | File I/O, WAL, frame storage, writer leasing |
 | `FTS5SearchEngine` | package | BM25 indexing/search, structured memory persistence |

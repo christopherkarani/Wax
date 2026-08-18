@@ -12,8 +12,8 @@ public enum EmbeddingStatus: Sendable, Equatable {
     case unavailable(reason: String)
 
     /// `true` only when a provider can embed queries and new saves.
-    public static func queryEmbedderConfigured(_ status: EmbeddingStatus) -> Bool {
-        switch status {
+    public var isQueryEmbedderConfigured: Bool {
+        switch self {
         case .active, .degraded:
             true
         case .disabled, .loading, .unavailable:

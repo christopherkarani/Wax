@@ -36,29 +36,29 @@ public enum BuiltInMultimodalEmbeddings {
 /// Image descriptions come from on-device Vision classification labels and fast
 /// OCR. When Vision is unavailable or fails, a generic description is embedded so
 /// ingestion never hard-fails on a single undecodable image.
-public struct TextBridgedMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
+package struct TextBridgedMultimodalEmbedder: MultimodalEmbeddingProvider, Sendable {
     /// Minimum Vision classification confidence for a label to be included.
     private static let minimumLabelConfidence: Float = 0.3
     /// Maximum number of classification labels included in a description.
     private static let maximumLabelCount = 5
 
     /// The text embedding provider that produces all vectors.
-    public let base: any EmbeddingProvider
+    package let base: any EmbeddingProvider
 
-    public var dimensions: Int { base.dimensions }
-    public var normalize: Bool { base.normalize }
-    public var identity: EmbeddingIdentity? { base.identity }
-    public var executionMode: ProviderExecutionMode { base.executionMode }
+    package var dimensions: Int { base.dimensions }
+    package var normalize: Bool { base.normalize }
+    package var identity: EmbeddingIdentity? { base.identity }
+    package var executionMode: ProviderExecutionMode { base.executionMode }
 
-    public init(base: any EmbeddingProvider) {
+    package init(base: any EmbeddingProvider) {
         self.base = base
     }
 
-    public func embed(text: String) async throws -> [Float] {
+    package func embed(text: String) async throws -> [Float] {
         try await base.embed(text)
     }
 
-    public func embed(image: CGImage) async throws -> [Float] {
+    package func embed(image: CGImage) async throws -> [Float] {
         let description = await Self.describe(image: image)
         return try await base.embed(description)
     }

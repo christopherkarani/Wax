@@ -1,6 +1,6 @@
 import Foundation
 
-public enum PhotoFrameKind: String, Sendable, CaseIterable {
+package enum PhotoFrameKind: String, Sendable, CaseIterable {
     case root = "photo.root"
     case ocrBlock = "photo.ocr.block"
     case ocrSummary = "photo.ocr.summary"

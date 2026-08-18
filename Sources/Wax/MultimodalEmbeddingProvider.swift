@@ -1,5 +1,5 @@
 #if canImport(ImageIO)
-@_exported import CoreGraphics
+import CoreGraphics
 import Foundation
 import WaxVectorSearch
 

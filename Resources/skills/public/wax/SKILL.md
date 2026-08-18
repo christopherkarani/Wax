@@ -2,7 +2,8 @@
 name: wax
 description: >
   Swift framework guidance for Wax on-device memory/RAG. Use when writing Swift code
-  with the public Memory facade, embedding providers, retrieval modes, or hybrid search.
+  with the public Memory facade, experimental PhotoMemory / VideoMemory,
+  BuiltInMultimodalEmbeddings, embedding providers, retrieval modes, or hybrid search.
   For agent operators using the Wax MCP server tools, use the separate wax-mcp skill instead.
 ---
 
@@ -15,10 +16,11 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 `handoff`, `session_start`), use the `wax-mcp` skill instead of this one.
 
 ## Choose The API Surface
-1. Use `Memory` (public actor) for all text memory and retrieval. It is the only supported entry point for apps.
-2. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, and `WaxSession` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
-3. Photo/video memory and structured memory (entities/facts) are exposed to agents through the Wax MCP server tools, not through `import Wax`.
-4. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
+1. Use `Memory` (public actor) for text memory and retrieval.
+2. Use experimental `PhotoMemory` / `VideoMemory` (`import Wax`) for photo and video RAG on Darwin. Build the embedder with `BuiltInMultimodalEmbeddings.make`.
+3. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, `WaxSession`, and `MiniLMEmbedder` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
+4. Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API.
+5. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
@@ -32,7 +34,7 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 - Treat the `.wax` file as the single source of truth (data + indexes + WAL).
 - `RetrievalMode.hybrid` (the default) degrades to the text lane when no embedder is available; `RetrievalMode.vectorOnly` throws instead. Always check `results.diagnostics` (requested vs. effective mode) or `memory.stats()` when the mode matters.
 - On iOS 17/macOS 14 there is no built-in embedder: provide a custom `EmbeddingProvider` or use text-only search.
-- Video RAG does not transcribe by itself, and the video pipeline is package-only in v1.
+- Video RAG does not transcribe by itself. Use `VideoMemory`; the host supplies transcripts. The store keeps text and metadata, not media bytes.
 
 ## Performance & Determinism Tips
 - The first-ever built-in embedder load pays a one-time CoreML compile; later launches reuse the cached compiled model.
@@ -123,8 +125,24 @@ func demoCustomEmbedder() async throws {
 }
 ```
 
+```swift
+import Foundation
+import Wax
+
+func demoPhotoMemory(storeURL: URL, imageURL: URL) async throws {
+    let embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)
+    let photos = try await PhotoMemory(at: storeURL, embedder: embedder, ocr: VisionOCRProvider())
+    try await photos.ingest(files: [PhotoFile(id: "receipt-1", url: imageURL)])
+    let context = try await photos.recall(PhotoQuery(text: "coffee receipt"))
+    _ = context.items
+    try await photos.close()
+}
+```
+
 ## Glossary
 - `Memory`: Public facade for ingesting text and searching `RAGContext`.
+- `PhotoMemory` / `VideoMemory`: Experimental public facades for photo and video RAG (Darwin).
+- `BuiltInMultimodalEmbeddings`: Factory for the on-device multimodal embedder used by the photo/video facades.
 - `RAGContext`: Retrieval output with items, total token count, and `diagnostics` (requested vs. effective mode).
 - `EmbeddingProvider`: Supplies text embeddings for vector search.
 - `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` on-device CoreML embedders (iOS 18/macOS 15+).
@@ -138,3 +156,4 @@ func demoCustomEmbedder() async throws {
 - `templates/remember-recall-lifecycle.md`
 - `templates/hybrid-search.md`
 - `templates/maintenance.md`
+- `templates/video-rag-transcripts.md`

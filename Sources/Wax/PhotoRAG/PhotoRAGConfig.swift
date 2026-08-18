@@ -1,7 +1,7 @@
 import Foundation
 import WaxVectorSearch
 
-/// Configuration for `PhotoRAGOrchestrator`.
+/// Configuration for ``PhotoMemory``.
 ///
 /// This configuration is intentionally host-app tunable: it trades off recall quality, latency,
 /// battery, and store size for on-device RAG over photos.
