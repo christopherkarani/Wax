@@ -1286,7 +1286,7 @@ extension AgentBrokerService {
         let args = BrokerArguments(arguments)
         let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
         let recursive = try args.optionalBool("recursive") ?? true
-        let rebuild = try args.optionalBool("rebuild") ?? false
+        let rebuild = try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
         let topK = try args.optionalInt("topK") ?? 10
