@@ -67,8 +67,9 @@ package enum RuleBasedQueryClassifier {
             return true
         }
 
-        // Hex-only tokens such as `7f3a91` / `DEADBEEF`. Length avoids `cafe` / `dead`.
-        return token.count >= 6 && token.unicodeScalars.allSatisfy { hexScalars.contains($0) }
+        // Letter-only hex such as `DEADBEEF`. Digit hex (`7f3a91`) already matched.
+        // Length 8 avoids English hex-words (`facade`, `decade`).
+        return token.count >= 8 && token.unicodeScalars.allSatisfy { hexScalars.contains($0) }
     }
 }
 
