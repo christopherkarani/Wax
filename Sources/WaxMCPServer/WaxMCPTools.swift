@@ -45,10 +45,15 @@ enum WaxMCPTools {
             try validateToolAvailability(name: params.name, structuredMemoryEnabled: structuredMemoryEnabled)
             try validateArgumentSurface(name: params.name, arguments: params.arguments)
 
+            var forwarded = params.arguments ?? [:]
+            if params.name == "session_start", forwarded["cwd"] == nil {
+                forwarded["cwd"] = .string(FileManager.default.currentDirectoryPath)
+            }
+
             let response = try await AgentBrokerClient.perform(
                 request: AgentBrokerRequest(
                     command: params.name,
-                    arguments: (params.arguments ?? [:]).mapValues(brokerValue(from:))
+                    arguments: forwarded.mapValues(brokerValue(from:))
                 ),
                 configuration: brokerConfiguration
             )
@@ -883,7 +888,7 @@ private extension WaxMCPTools {
             alpha: try args.optionalDouble("alpha")
         )
         let embeddingPolicy = compatEmbeddingPolicy(for: directMode)
-        let execution = try await memory.recallExecution(
+        let sessionExecution = try await memory.recallExecution(
             query: query,
             embeddingPolicy: embeddingPolicy,
             frameFilter: filters.frameFilter,
@@ -891,8 +896,33 @@ private extension WaxMCPTools {
             topK: effectiveTopK,
             mode: directMode
         )
-        let context = execution.context
-        let selected = Array(context.items.prefix(limit))
+        let durableExecution: MemoryOrchestrator.RecallExecution
+        if filters.sessionID != nil {
+            durableExecution = try await memory.recallExecution(
+                query: query,
+                embeddingPolicy: embeddingPolicy,
+                frameFilter: nil,
+                timeRange: filters.timeRange,
+                topK: effectiveTopK,
+                mode: directMode
+            )
+        } else {
+            durableExecution = sessionExecution
+        }
+        let durableItems = filters.sessionID == nil
+            ? durableExecution.context.items
+            : durableExecution.context.items.filter { $0.metadata["session_id"] == nil }
+        let selected = AgentBrokerService.mergeRecallItems(
+            sessionItems: filters.sessionID == nil ? [] : sessionExecution.context.items,
+            durableItems: durableItems,
+            limit: limit
+        )
+        let execution = sessionExecution
+        let context = RAGContext(
+            query: query,
+            items: selected,
+            totalTokens: selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }
+        )
         let filterSummaryJSON = encodeJSON(filters.summary) ?? "{}"
         var lines: [String] = [
             "Query: \(context.query)",

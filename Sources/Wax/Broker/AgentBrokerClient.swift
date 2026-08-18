@@ -28,7 +28,7 @@ package enum AgentBrokerClient {
         envKey: "WAX_BROKER_SHUTDOWN_TIMEOUT_SECS",
         defaultValue: 2.0
     )
-    private static let responseTimeoutSeconds = configuredSeconds(
+    package static let responseTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_RESPONSE_TIMEOUT_SECS",
         defaultValue: 30.0
     )
@@ -76,9 +76,24 @@ package enum AgentBrokerClient {
     package static func ensureAvailable(configuration: AgentBrokerConfiguration) async throws -> Bool {
         if let response = try sendIfAvailable(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
-            socketPath: configuration.socketPath
+            socketPath: configuration.socketPath,
+            timeoutSeconds: min(5.0, responseTimeoutSeconds),
+            treatTimeoutAsUnavailable: true
         ), response.ok {
             return false
+        }
+
+        if isSocketLive(socketPath: configuration.socketPath) {
+            if let response = try sendIfAvailable(
+                AgentBrokerRequest(id: "__ping__", command: "stats"),
+                socketPath: configuration.socketPath,
+                treatTimeoutAsUnavailable: true
+            ), response.ok {
+                return false
+            }
+            throw BrokerClientError(
+                "Broker socket is live at \(configuration.socketPath) but did not answer; not starting a second daemon."
+            )
         }
 
         return try startBrokerIfNeeded(configuration: configuration)
@@ -104,7 +119,6 @@ package enum AgentBrokerClient {
             "--embedder", configuration.embedderChoice,
             "--socket-path", configuration.socketPath,
             "--idle-timeout-secs", String(idleTimeoutSeconds),
-            "--skip-prewarm",
         ]
         process.arguments?.append(contentsOf: configuration.embedderTuning.daemonArguments())
         if configuration.noEmbedder {
@@ -135,7 +149,12 @@ package enum AgentBrokerClient {
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath
             ), response.ok {
-                return true
+                if !process.isRunning {
+                    return false
+                }
+                // Bind-first loser may still be exiting after the winner answered.
+                Thread.sleep(forTimeInterval: 0.05)
+                return process.isRunning
             }
 
             if !process.isRunning {
@@ -208,9 +227,40 @@ package enum AgentBrokerClient {
         return true
     }
 
+    /// Returns whether a Unix-domain listener is accepting connections at `socketPath`.
+    /// Never creates, replaces, or unlinks the path.
+    package static func isSocketLive(socketPath: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return connectResult == 0
+    }
+
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,
-        socketPath: String
+        socketPath: String,
+        timeoutSeconds: Double? = nil,
+        treatTimeoutAsUnavailable: Bool = false
     ) throws -> AgentBrokerResponse? {
         guard FileManager.default.fileExists(atPath: socketPath) else {
             return nil
@@ -246,7 +296,6 @@ package enum AgentBrokerClient {
         }
         guard connectResult == 0 else {
             if errno == ECONNREFUSED || errno == ENOENT {
-                try? FileManager.default.removeItem(atPath: socketPath)
                 return nil
             }
             throw BrokerClientError("Unable to connect to broker socket at \(socketPath)")
@@ -258,19 +307,30 @@ package enum AgentBrokerClient {
         handle.write(Data([0x0A]))
         shutdown(fd, socketShutdownWrite)
 
-        guard let line = try readSocketResponseLine(fd: fd) else {
+        guard let line = try readSocketResponseLine(
+            fd: fd,
+            timeoutSeconds: timeoutSeconds ?? responseTimeoutSeconds,
+            treatTimeoutAsUnavailable: treatTimeoutAsUnavailable
+        ) else {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
     }
 
-    private static func readSocketResponseLine(fd: Int32) throws -> String? {
+    private static func readSocketResponseLine(
+        fd: Int32,
+        timeoutSeconds: Double? = nil,
+        treatTimeoutAsUnavailable: Bool = false
+    ) throws -> String? {
         var buffer = Data()
-        let timeoutMS = Int32(responseTimeoutSeconds * 1000)
+        let timeoutMS = Int32((timeoutSeconds ?? responseTimeoutSeconds) * 1000)
         while true {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, timeoutMS)
             if pollResult == 0 {
+                if treatTimeoutAsUnavailable {
+                    return nil
+                }
                 throw BrokerClientError("Timed out waiting for broker response")
             }
             if pollResult < 0 {
