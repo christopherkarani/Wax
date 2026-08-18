@@ -51,6 +51,8 @@ Where:
 
 RRF avoids comparing raw scores across heterogeneous engines and naturally rewards documents that appear in more than one lane.
 
+Published `score` is the rank key used to order hits, not a probability and not raw RRF. Hybrid fusion may scale that fused rank onto `0...1`. Intent-aware and semantic rerank may then overwrite `score` with an unbounded composite; later callers should treat the number as the current rank key, not a stable 0–1 confidence.
+
 ## Query Classification
 
 The package-only classifier adjusts lane weights using simple offline rules:

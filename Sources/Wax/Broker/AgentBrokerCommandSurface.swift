@@ -1,6 +1,8 @@
 import Foundation
 
 package enum AgentBrokerCommandSurface {
+    package static let corpusSearchDefaultRebuild = false
+
     package static let publicCommandArguments: [String: Set<String>] = [
         "memory_append": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked"],
         "memory_search": ["query", "topK", "session_id", "mode", "alpha", "include_working", "include_episodic", "include_durable"],
@@ -15,7 +17,7 @@ package enum AgentBrokerCommandSurface {
         "knowledge_capture": ["content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object"],
         "corpus_search": ["query", "rebuild", "recursive", "mode", "alpha", "topK"],
         "stats": [],
-        "session_start": ["session_id", "agent_id", "run_id"],
+        "session_start": ["session_id", "agent_id", "run_id", "cwd"],
         "session_resume": ["session_id", "agent_id", "run_id"],
         "session_end": ["session_id"],
         "handoff": ["content", "session_id", "project", "pending_tasks"],

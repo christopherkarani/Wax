@@ -21,3 +21,10 @@ import Wax
     #expect(abs(weights.bm25 - weights.vector) <= 0.1)
 }
 
+@Test func identifierQueryUsesLexicalFirstWeights() {
+    let queryType = RuleBasedQueryClassifier.classify("7f3a91")
+    let weights = AdaptiveFusionConfig.default.weights(for: queryType)
+    #expect(queryType != .exploratory)
+    #expect(weights.bm25 > weights.vector)
+}
+

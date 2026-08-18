@@ -2027,7 +2027,10 @@ package actor Wax {
 
             for frame in toc.frames {
                 guard frame.status == .active, frame.supersededBy == nil else { continue }
-                guard frame.role == .chunk else { continue }
+                // Single-chunk remember writes only a searchable document.
+                // Corpus ingest already does the same. Chunks stay the
+                // multi-chunk source.
+                guard frame.role == .chunk || frame.role == .document else { continue }
                 guard frame.kind != "surrogate" else { continue }
                 guard let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !searchText.isEmpty else {

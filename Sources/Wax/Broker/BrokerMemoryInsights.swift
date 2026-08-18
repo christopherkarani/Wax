@@ -42,7 +42,7 @@ package struct BrokerPromotionSettings: Sendable, Equatable {
 
     package static let `default` = BrokerPromotionSettings(
         minimumConfidence: 0.72,
-        minimumRecallCount: 0,
+        minimumRecallCount: 2,
         maxCandidates: 6
     )
 
@@ -185,6 +185,10 @@ package enum BrokerMemoryInsights {
                 || suggestedType == .userPreference
                 || suggestedType == .constraint
                 || suggestedType == .fact
+        let blocksPromotion = Self.explicitlyBlocksPromotion(content)
+        if blocksPromotion {
+            reasons.append("explicit do not promote instruction")
+        }
         let meetsThreshold = confidence >= settings.minimumConfidence && recallCount >= settings.minimumRecallCount
         if !isAlwaysPromotableType {
             reasons.append(String(format: "requires confidence >= %.2f", settings.minimumConfidence))
@@ -192,7 +196,7 @@ package enum BrokerMemoryInsights {
                 reasons.append("requires >=\(settings.minimumRecallCount) recalls")
             }
         }
-        let shouldWrite = !exactDuplicate && (isAlwaysPromotableType || meetsThreshold)
+        let shouldWrite = !exactDuplicate && !blocksPromotion && (isAlwaysPromotableType || meetsThreshold)
 
         return BrokerPromotionProposal(
             content: content,
@@ -388,6 +392,15 @@ package enum BrokerMemoryInsights {
         case .data(let data):
             return "data(\(data.count)b)"
         }
+    }
+
+    private static func explicitlyBlocksPromotion(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let markers = [
+            "do not promote",
+            "don't promote",
+        ]
+        return markers.contains { lower.contains($0) }
     }
 
     private static func baseConfidence(for type: MemoryType) -> Float {
