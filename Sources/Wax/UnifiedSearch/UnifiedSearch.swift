@@ -204,7 +204,11 @@ extension Wax {
         }()
 
         let textResults = try await textResultsAsync
-        let vectorResults = try await vectorResultsAsync
+        var vectorResults = try await vectorResultsAsync
+        vectorResults.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
+        }
         let structuredFrameIds = try await structuredFrameIdsAsync
 
         var timelineFrameIds: [UInt64] = []
@@ -373,6 +377,12 @@ extension Wax {
                 textFrameIds: textIds,
                 vectorFrameIds: vectorIds,
                 alpha: clampedAlpha
+            )
+            let totalWeight = lists.reduce(Float(0)) { $0 + max(0, $1.weight) }
+            HybridSearch.publishNormalizedRRFScores(
+                &fusedPairs,
+                k: request.rrfK,
+                totalWeight: totalWeight
             )
             let fusedById = Dictionary(uniqueKeysWithValues: fused.map { ($0.frameId, $0) })
             fused = fusedPairs.compactMap { pair in
@@ -656,7 +666,11 @@ extension Wax {
             if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
             if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
             return lhs.index < rhs.index
-        }.map(\.result)
+        }.map { item -> SearchResponse.Result in
+            var result = item.result
+            result.score = item.composite
+            return result
+        }
 
         if cappedWindow == results.count {
             return rankedHead
@@ -1102,6 +1116,7 @@ extension Wax {
         rerankedHead.reserveCapacity(cappedWindow)
         for (rank, candidate) in scoredHead.enumerated() {
             var result = results[candidate.index]
+            result.score = candidate.score
             if var diagnostics = result.rankingDiagnostics {
                 diagnostics.tieBreakReason = rank == 0 ? .topResult : .rerankComposite
                 result.rankingDiagnostics = diagnostics
