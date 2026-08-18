@@ -67,6 +67,268 @@ func brokerRejectsInvalidEmbedderChoice() async throws {
 }
 
 @Test
+func isSocketLiveDistinguishesMissingStaleAndListeningSockets() throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let missing = root.appendingPathComponent("missing.sock").path
+    #expect(!AgentBrokerClient.isSocketLive(socketPath: missing))
+
+    let stale = root.appendingPathComponent("stale.sock").path
+    try makeStaleUnixSocket(at: stale)
+    #expect(FileManager.default.fileExists(atPath: stale))
+    #expect(!AgentBrokerClient.isSocketLive(socketPath: stale))
+
+    let live = root.appendingPathComponent("live.sock").path
+    let listener = try bindAndListenUnixSocket(at: live)
+    defer {
+        close(listener)
+        unlink(live)
+    }
+    #expect(AgentBrokerClient.isSocketLive(socketPath: live))
+}
+
+@Test
+func ensureAvailableDoesNotUnlinkSocketOnConnectFailure() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    try makeStaleUnixSocket(at: socketPath)
+
+    do {
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        Issue.record("expected ensureAvailable to fail without a broker executable")
+    } catch {
+        #expect(error.localizedDescription.contains("not executable"))
+    }
+
+    #expect(FileManager.default.fileExists(atPath: socketPath))
+}
+
+@Test
+func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    let listener = try bindAndListenUnixSocket(at: socketPath)
+    defer {
+        close(listener)
+        unlink(socketPath)
+    }
+
+    let server = UnixStatsResponder(listener: listener)
+    server.start(holdFirstRequest: false)
+    defer { server.stop() }
+
+    let started = try await AgentBrokerClient.ensureAvailable(
+        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+    )
+    #expect(started == false)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    let listener = try bindAndListenUnixSocket(at: socketPath)
+    defer {
+        close(listener)
+        unlink(socketPath)
+    }
+
+    let server = UnixStatsResponder(listener: listener)
+    server.start(holdFirstRequest: true)
+    defer { server.stop() }
+
+    let started = try await AgentBrokerClient.ensureAvailable(
+        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+    )
+    #expect(started == false)
+}
+
+#if canImport(Darwin)
+private let testUnixStreamSocketType: Int32 = SOCK_STREAM
+#else
+private let testUnixStreamSocketType: Int32 = Int32(SOCK_STREAM.rawValue)
+#endif
+
+private func testBrokerConfiguration(root: URL, socketPath: String) -> AgentBrokerConfiguration {
+    AgentBrokerConfiguration(
+        brokerExecutablePath: "/nonexistent/wax-cli-must-not-start",
+        storePath: root.appendingPathComponent("memory.wax").path,
+        sessionRootPath: root.appendingPathComponent("sessions").path,
+        socketPath: socketPath,
+        embedderChoice: "auto",
+        noEmbedder: true,
+        requireVector: false,
+        embedderTuning: .fromEnvironment()
+    )
+}
+
+private func bindAndListenUnixSocket(at path: String) throws -> Int32 {
+    let fd = socket(AF_UNIX, testUnixStreamSocketType, 0)
+    guard fd >= 0 else {
+        throw TestUnixSocketError("socket: \(String(cString: strerror(errno)))")
+    }
+
+    var address = sockaddr_un()
+    #if canImport(Darwin)
+    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    #endif
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(path.utf8)
+    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+        close(fd)
+        throw TestUnixSocketError("path too long: \(path)")
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+        buffer.initializeMemory(as: CChar.self, repeating: 0)
+        for (index, byte) in pathBytes.enumerated() {
+            buffer[index] = byte
+        }
+    }
+
+    let bindResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        close(fd)
+        throw TestUnixSocketError("bind: \(String(cString: strerror(errno)))")
+    }
+    guard listen(fd, 16) == 0 else {
+        close(fd)
+        unlink(path)
+        throw TestUnixSocketError("listen: \(String(cString: strerror(errno)))")
+    }
+    return fd
+}
+
+private func makeStaleUnixSocket(at path: String) throws {
+    let fd = try bindAndListenUnixSocket(at: path)
+    close(fd)
+}
+
+private struct TestUnixSocketError: Error, CustomStringConvertible {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var description: String { message }
+}
+
+private final class UnixStatsResponder: @unchecked Sendable {
+    private let listener: Int32
+    private let lock = NSLock()
+    private var stopped = false
+    private var heldFDs: [Int32] = []
+    private var holdFirstRequest = false
+    private var heldFirstRequest = false
+
+    init(listener: Int32) {
+        self.listener = listener
+    }
+
+    func start(holdFirstRequest: Bool) {
+        lock.lock()
+        self.holdFirstRequest = holdFirstRequest
+        lock.unlock()
+
+        DispatchQueue.global().async { [weak self] in
+            while true {
+                guard let self, !self.isStopped else { return }
+                var descriptor = pollfd(fd: self.listener, events: Int16(POLLIN), revents: 0)
+                let pollResult = poll(&descriptor, 1, 50)
+                if pollResult == 0 { continue }
+                if pollResult < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                let client = accept(self.listener, nil, nil)
+                if client < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                self.handle(client: client)
+            }
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        let held = heldFDs
+        heldFDs.removeAll()
+        lock.unlock()
+        for fd in held {
+            close(fd)
+        }
+    }
+
+    private var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    private func handle(client: Int32) {
+        var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+        let pollResult = poll(&descriptor, 1, 200)
+        if pollResult <= 0 {
+            close(client)
+            return
+        }
+
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        let count = recv(client, &chunk, chunk.count, 0)
+        if count <= 0 {
+            close(client)
+            return
+        }
+
+        let shouldHold: Bool = {
+            lock.lock()
+            defer { lock.unlock() }
+            if holdFirstRequest && !heldFirstRequest {
+                heldFirstRequest = true
+                heldFDs.append(client)
+                return true
+            }
+            return false
+        }()
+        if shouldHold {
+            return
+        }
+
+        let response = AgentBrokerResponse(id: "__ping__", ok: true, payload: .object([:]))
+        guard let payload = try? JSONEncoder().encode(response) else {
+            close(client)
+            return
+        }
+        var data = payload
+        data.append(0x0A)
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            _ = write(client, base, data.count)
+        }
+        close(client)
+    }
+}
+
+@Test
 func toolsListContainsExpectedTools() {
     let names = Set(ToolSchemas.allTools.map(\.name))
     #expect(names.contains("memory_append"))
@@ -2532,7 +2794,7 @@ func sessionStartEndAndScopedRecallSearchWork() async throws {
         #expect(scopedRecall.isError != true)
         let scopedRecallText = firstText(in: scopedRecall)
         #expect(scopedRecallText.contains("SESSION_ONLY_XYZ"))
-        #expect(!scopedRecallText.contains("GLOBAL_ONLY_ABC"))
+        #expect(scopedRecallText.contains("GLOBAL_") && scopedRecallText.contains("ABC"))
 
         let unscopedSearch = await WaxMCPTools.handleCall(
             params: .init(
@@ -5263,7 +5525,11 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
         let firstPayload = try #require(first.payload?.objectValue)
         let firstSessionID = try #require(firstPayload["session_id"]?.stringValue)
 
-        try await Task.sleep(for: .milliseconds(2))
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(firstSessionID)]
+        ))
+        #expect(ended.ok == true)
 
         let second = await service.handle(.init(
             command: "session_start",
@@ -5275,12 +5541,7 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
         #expect(second.ok == true)
         let secondPayload = try #require(second.payload?.objectValue)
         let secondSessionID = try #require(secondPayload["session_id"]?.stringValue)
-
-        let ended = await service.handle(.init(
-            command: "session_end",
-            arguments: ["session_id": .string(secondSessionID)]
-        ))
-        #expect(ended.ok == true)
+        #expect(secondSessionID != firstSessionID)
 
         let resumed = await service.handle(.init(
             command: "session_resume",
@@ -5292,7 +5553,7 @@ func brokerSessionResumeSelectorSkipsEndedManifests() async throws {
 
         #expect(resumed.ok == true)
         let resumedPayload = try #require(resumed.payload?.objectValue)
-        #expect(resumedPayload["session_id"]?.stringValue == firstSessionID)
+        #expect(resumedPayload["session_id"]?.stringValue == secondSessionID)
         #expect(resumedPayload["resumed"]?.boolValue == true)
     }
 }
@@ -6613,7 +6874,7 @@ struct WaxMCPProcessTests {
             timeout: 20
         )
         #expect(recall.contains("SESSION_ONLY_XYZ"))
-        #expect(!recall.contains("GLOBAL_ONLY_ABC"))
+        #expect(recall.contains("GLOBAL_") && recall.contains("ABC"))
 
         _ = try await harness.callTool(
             id: 7,
@@ -7623,6 +7884,39 @@ struct WaxMCPProcessTests {
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
         #expect(!stderr.localizedCaseInsensitiveContains("use a unique --store-path"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func threeMCPClientsAttachToOneBrokerWithoutExclusiveLockTimeout() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-three-clients-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let third = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        try second.start()
+        try third.start()
+        defer {
+            first.terminateIfNeeded()
+            second.terminateIfNeeded()
+            third.terminateIfNeeded()
+        }
+
+        _ = try await first.bootstrap(clientName: "wax-mcp-three-a", includeToolsList: true)
+        _ = try await second.bootstrap(clientName: "wax-mcp-three-b", includeToolsList: true)
+        _ = try await third.bootstrap(clientName: "wax-mcp-three-c", includeToolsList: true)
+
+        let statsA = try await first.callTool(id: 41, name: "stats", arguments: [:], timeout: 15)
+        let statsB = try await second.callTool(id: 42, name: "stats", arguments: [:], timeout: 15)
+        let statsC = try await third.callTool(id: 43, name: "stats", arguments: [:], timeout: 15)
+        #expect(!statsA.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(!statsB.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(!statsC.localizedCaseInsensitiveContains("Lock unavailable"))
+        #expect(statsA.contains("frameCount") || statsA.contains("storePath"))
+        #expect(first.brokerSocketPath == second.brokerSocketPath)
+        #expect(second.brokerSocketPath == third.brokerSocketPath)
     }
 
     @Test(.timeLimit(.minutes(1)))

@@ -10,6 +10,14 @@ import WaxVectorSearchMiniLM
 import WaxVectorSearchArctic
 #endif
 
+/// Reports whether a deferred query embedder has resolved its inner provider.
+///
+/// `EmbeddingProvider` presence is not readiness: `DeferredCommandLineEmbedder`
+/// is non-nil at broker start while CoreML load is still in flight.
+package protocol QueryEmbedderReadiness: Sendable {
+    func isQueryEmbedderReady() async -> Bool
+}
+
 package enum CommandLineEmbedderFactory {
     private static let defaultLockTimeoutSeconds = 2.0
 
@@ -73,7 +81,7 @@ package enum CommandLineEmbedderFactory {
 }
 
 @available(macOS 15.0, iOS 18.0, *)
-private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmbeddingProvider {
+private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmbeddingProvider, QueryEmbedderReadiness {
     enum Kind: Sendable {
         case minilm
         case arctic
@@ -136,6 +144,10 @@ private actor DeferredCommandLineEmbedder: BatchEmbeddingProvider, QueryAwareEmb
             return try await queryAware.embedQuery(query)
         }
         return try await provider.embed(query)
+    }
+
+    func isQueryEmbedderReady() -> Bool {
+        provider != nil
     }
 
     private func resolvedProvider() async throws -> (any EmbeddingProvider)? {

@@ -17,7 +17,7 @@ struct DaemonCommand: AsyncParsableCommand {
 
     @Flag(
         name: .customLong("skip-prewarm"),
-        help: "Accepted for compatibility. The broker uses lazy embedders and does not eagerly prewarm."
+        help: "Skip background embedder prewarm. Cold first writes may then wait on MiniLM."
     )
     var skipPrewarm = false
 
@@ -44,6 +44,12 @@ struct DaemonCommand: AsyncParsableCommand {
             embedderTuning: store.embedderTuning
         )
 
+        if !store.noEmbedder, !skipPrewarm {
+            Task {
+                await service.prewarmEmbedder()
+            }
+        }
+
         do {
             if let socketPath {
                 try await runSocketServer(
@@ -59,6 +65,10 @@ struct DaemonCommand: AsyncParsableCommand {
                 )
             }
             try await service.close()
+        } catch is BrokerStoreBusyDuringShutdown {
+            throw CLIError(
+                "Broker still has in-flight clients after shutdown drain; not closing the store"
+            )
         } catch {
             try? await service.close()
             throw error
@@ -74,6 +84,7 @@ private extension DaemonCommand {
     #endif
     var socketClientReadTimeoutMS: Int32 { 1_000 }
     var maxSocketRequestBytes: Int { 1_048_576 }
+    var socketInflightDrainSeconds: TimeInterval { AgentBrokerClient.responseTimeoutSeconds }
 
     func runLoop(
         service: AgentBrokerService,
@@ -123,15 +134,20 @@ private extension DaemonCommand {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try removeExistingSocket(at: socketURL.path)
+        if AgentBrokerClient.isSocketLive(socketPath: socketURL.path) {
+            throw CLIError("Broker already running at \(socketURL.path)")
+        }
 
         let listener = socket(AF_UNIX, unixStreamSocketType, 0)
         guard listener >= 0 else {
             throw CLIError("Unable to create broker socket: \(String(cString: strerror(errno)))")
         }
+        var boundOwnSocket = false
         defer {
             close(listener)
-            unlink(socketURL.path)
+            if boundOwnSocket {
+                unlink(socketURL.path)
+            }
         }
 
         var address = sockaddr_un()
@@ -151,44 +167,88 @@ private extension DaemonCommand {
             }
         }
 
-        let bindResult = withUnsafePointer(to: &address) { pointer -> Int32 in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                bind(listener, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        var bindResult = bindUnixSocket(listener, address: &address)
+        if bindResult != 0, errno == EADDRINUSE {
+            if AgentBrokerClient.isSocketLive(socketPath: socketURL.path) {
+                throw CLIError("Broker already running at \(socketURL.path)")
             }
+            try removeExistingSocket(at: socketURL.path)
+            bindResult = bindUnixSocket(listener, address: &address)
         }
         guard bindResult == 0 else {
             throw CLIError("Unable to bind broker socket at \(socketURL.path): \(String(cString: strerror(errno)))")
         }
+        boundOwnSocket = true
         guard listen(listener, 16) == 0 else {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
 
-        let timeoutMS: Int32 = idleTimeoutSeconds > 0 ? Int32(idleTimeoutSeconds * 1000) : -1
-        while true {
-            var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, timeoutMS)
-            if pollResult == 0 {
-                return
-            }
-            if pollResult < 0 {
-                if errno == EINTR { continue }
-                throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
-            }
-
-            let client = accept(listener, nil, nil)
-            if client < 0 {
-                if errno == EINTR { continue }
-                throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
-            }
-
-            do {
-                let shouldExit = try await handleSocketClient(service: service, fd: client)
-                if shouldExit {
-                    return
+        let inflight = SocketInflight()
+        let pollSliceMS: Int32 = 200
+        var lastActivity = Date()
+        var loopError: Error?
+        do {
+            while !inflight.shouldStop {
+                var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+                let pollResult = poll(&descriptor, 1, pollSliceMS)
+                if pollResult == 0 {
+                    if idleTimeoutSeconds > 0,
+                       Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                       !inflight.isBusy {
+                        break
+                    }
+                    continue
                 }
-            } catch {
-                close(client)
-                throw error
+                if pollResult < 0 {
+                    if errno == EINTR { continue }
+                    throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
+                }
+
+                let client = accept(listener, nil, nil)
+                if client < 0 {
+                    if errno == EINTR { continue }
+                    throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
+                }
+
+                lastActivity = Date()
+                inflight.enter()
+                Task {
+                    defer { inflight.leave() }
+                    do {
+                        let shouldExit = try await handleSocketClient(service: service, fd: client)
+                        if shouldExit {
+                            inflight.requestStop()
+                        }
+                    } catch {
+                        // FileHandle owns the accepted fd. A dead peer must not
+                        // double-close it or skip inflight.leave().
+                    }
+                }
+            }
+        } catch {
+            loopError = error
+        }
+
+        try await drainSocketInflight(inflight)
+        if let loopError {
+            throw loopError
+        }
+    }
+
+    func drainSocketInflight(_ inflight: SocketInflight) async throws {
+        let drainDeadline = Date().addingTimeInterval(socketInflightDrainSeconds)
+        while inflight.isBusy, Date() < drainDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        if inflight.isBusy {
+            throw BrokerStoreBusyDuringShutdown()
+        }
+    }
+
+    func bindUnixSocket(_ listener: Int32, address: inout sockaddr_un) -> Int32 {
+        withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(listener, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
     }
@@ -305,6 +365,43 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+private struct BrokerStoreBusyDuringShutdown: Error {}
+
+private final class SocketInflight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var stop = false
+
+    func enter() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    func leave() {
+        lock.lock()
+        count = max(0, count - 1)
+        lock.unlock()
+    }
+
+    var isBusy: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return count > 0
+    }
+
+    func requestStop() {
+        lock.lock()
+        stop = true
+        lock.unlock()
+    }
+
+    var shouldStop: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stop
+    }
+}
 
 private func featureFlagEnabled(_ key: String, default defaultValue: Bool) -> Bool {
     let env = ProcessInfo.processInfo.environment
