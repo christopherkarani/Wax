@@ -1822,6 +1822,86 @@ func corpusSearchRejectsInvalidTopK() async throws {
 }
 
 @Test
+func corpusSearchDefaultRebuildIsFalse() async throws {
+    try await withAgentBrokerService { service, _ in
+        let token = "CORPUSDEFAULT\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Broker default rebuild note \(token)"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(remembered.ok == true)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(ended.ok == true)
+
+        let seeded = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "rebuild": .bool(true),
+            ]
+        ))
+        #expect(seeded.ok == true, "corpus_search failed: \(seeded.error ?? "nil")")
+        let seededBuild = try #require(seeded.payload?.objectValue?["build"]?.objectValue)
+        try #require(seededBuild["performed"]?.boolValue == true)
+        try #require(seeded.payload?.objectValue?["rebuild_requested"]?.boolValue == true)
+
+        let omitted = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(omitted.ok == true, "corpus_search failed: \(omitted.error ?? "nil")")
+        let omittedBuild = try #require(omitted.payload?.objectValue?["build"]?.objectValue)
+        try #require(omitted.payload?.objectValue?["rebuild_requested"]?.boolValue == false)
+        try #require(omittedBuild["performed"]?.boolValue == false)
+
+        let corpusPath = try #require(
+            omitted.payload?.objectValue?["build"]?.objectValue?["corpus_store_path"]?.stringValue
+        )
+        try FileManager.default.removeItem(atPath: corpusPath)
+
+        let missing = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(missing.ok == true, "corpus_search failed: \(missing.error ?? "nil")")
+        #expect(missing.payload?.objectValue?["rebuild_requested"]?.boolValue == false)
+        #expect(missing.payload?.objectValue?["build"]?.objectValue?["performed"]?.boolValue == true)
+    }
+
+    guard let obj = ToolSchemas.waxCorpusSearch.objectValue,
+          case .object(let properties) = obj["properties"],
+          case .object(let rebuildSchema) = properties["rebuild"],
+          case .string(let description) = rebuildSchema["description"]
+    else {
+        Issue.record("corpus_search rebuild schema is missing a description")
+        return
+    }
+    #expect(!description.contains("Default: true"))
+    #expect(description.contains("Default: false"))
+}
+
+@Test
 func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
     try await withMemory { memory in
         let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -4789,6 +4869,28 @@ func brokerSessionListManifestsPropagatesMalformedSessionManifest() throws {
 }
 
 @Test
+func brokerSessionLoadManifestMissingUUIDDoesNotLeakPath() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-manifest-missing-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let sessionID = UUID()
+    do {
+        _ = try BrokerSessionPersistence.loadManifest(rootURL: rootURL, sessionID: sessionID)
+        Issue.record("missing manifest should throw")
+    } catch let error as BrokerSessionPersistenceError {
+        #expect(error == .manifestNotFound(sessionID: sessionID))
+        let description = error.localizedDescription
+        #expect(description == "No session manifest found for session_id \(sessionID.uuidString)")
+        #expect(!description.contains("/Users/"))
+        #expect(!description.contains("/home/"))
+        #expect(!description.contains("~/.wax"))
+        #expect(!description.contains(".json"))
+    }
+}
+
+@Test
 func brokerRememberPreservesContentWhitespace() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "  WHITESPACE_KEEP_TOKEN\n"
@@ -5465,6 +5567,76 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
         let contradictions = healthJSON["contradictions"] as? [String] ?? []
         #expect(!duplicates.isEmpty)
         #expect(!contradictions.isEmpty)
+    }
+}
+
+@Test
+func factRetractMissingIdDoesNotReportCommitted() async throws {
+    try await withMemory { memory in
+        let retract = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "fact_retract",
+                arguments: ["fact_id": .int(999_999)]
+            ),
+            memory: memory
+        )
+        #expect(retract.isError == true)
+        #expect(firstText(in: retract).contains("fact_id has no open spans"))
+        #expect(!firstText(in: retract).contains("\"committed\":true"))
+    }
+
+    try await withAgentBrokerService { service, _ in
+        let result = await service.handle(.init(
+            command: "fact_retract",
+            arguments: ["fact_id": .int(999_999)]
+        ))
+        #expect(result.ok == false)
+        #expect(result.payload == nil)
+        #expect(result.error?.contains("fact_id has no open spans") == true)
+    }
+}
+
+@Test
+func brokerSessionResumeMissingUUIDDoesNotLeakPath() async throws {
+    try await withAgentBrokerService { service, _ in
+        let missingSessionID = UUID()
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: ["session_id": .string(missingSessionID.uuidString)]
+        ))
+
+        #expect(resumed.ok != true)
+        let error = resumed.error ?? ""
+        #expect(error == "No session manifest found for session_id \(missingSessionID.uuidString)")
+        #expect(!error.contains("/Users/"))
+        #expect(!error.contains("/home/"))
+        #expect(!error.contains("~/.wax"))
+        #expect(!error.contains(".json"))
+    }
+}
+
+@Test
+func brokerSessionResumeCorruptUUIDDoesNotReportMissing() async throws {
+    try await withAgentBrokerService { service, sessionRootURL in
+        let sessionID = UUID()
+        let corruptManifestURL = BrokerSessionPersistence.manifestURL(
+            rootURL: sessionRootURL,
+            sessionID: sessionID
+        )
+        try Data("{not valid json".utf8).write(to: corruptManifestURL)
+
+        let resumed = await service.handle(.init(
+            command: "session_resume",
+            arguments: ["session_id": .string(sessionID.uuidString)]
+        ))
+
+        #expect(resumed.ok != true)
+        let error = resumed.error ?? ""
+        #expect(!error.contains("No session manifest found"))
+        #expect(!error.contains("/Users/"))
+        #expect(!error.contains("/home/"))
+        #expect(!error.contains("~/.wax"))
+        #expect(!error.contains(".json"))
     }
 }
 
@@ -6667,9 +6839,10 @@ struct WaxMCPProcessTests {
             #expect(search.ok == true)
             let searchPayload = try #require(search.payload?.objectValue)
             let searchResults = try #require(searchPayload["results"]?.arrayValue)
-            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
+            let searchFrameIDs = searchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frameId"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let rawFrameID = try #require(searchFrameIDs.first)
 
             let memorySearch = await service.handle(.init(
                 command: "memory_search",
@@ -6686,9 +6859,10 @@ struct WaxMCPProcessTests {
             #expect(memorySearch.ok == true)
             let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
             let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
-            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
+            let memorySearchFrameIDs = memorySearchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let canonicalFrameID = try #require(memorySearchFrameIDs.first)
             #expect(canonicalFrameID != rawFrameID)
 
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)

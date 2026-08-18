@@ -594,6 +594,15 @@ import WaxVectorSearch
     #expect(afterClose.hits.isEmpty)
 }
 
+@Test func retractFactMissingIdFailsClosed() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    await #expect {
+        try await engine.retractFact(factId: FactRowID(rawValue: 999_999), atMs: 0)
+    } throws: { error in
+        (error as? WaxError)?.localizedDescription.contains("fact_id has no open spans") == true
+    }
+}
+
 @Test func queryOrderIsDeterministicForTies() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 

@@ -8,7 +8,7 @@ This guide covers how to publish and distribute Wax so Hermes Agent users can in
 |---|---|---|---|
 | **npm** (`waxmcp`) | Pre-built binaries + launcher | `npx waxmcp --transport http` | ✅ Automated CI/CD |
 | **GitHub** | Source + releases | Clone or download release | ✅ Available now |
-| **Directory plugin** | Direct copy to `~/.hermes/plugins` | `cp -r wax-memory-plugin ~/.hermes/plugins/wax-memory` | ✅ Available now |
+| **Directory plugin** | Direct copy to `$HERMES_HOME/plugins` | `cp -r wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"` | ✅ Available now |
 | **PyPI** (`hermes-wax-memory`) | Python package install | `pip install hermes-wax-memory` | 🚧 Needs setup |
 | **Homebrew** | macOS package manager | `brew install wax` | 🚧 Needs formula update |
 
@@ -68,7 +68,7 @@ npx waxmcp --transport http
 
 ```bash
 # From the Wax repo
-cp -r Resources/hermes/wax-memory-plugin ~/.hermes/plugins/wax-memory
+cp -r Resources/hermes/wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"
 
 # Enable in Hermes config
 hermes config set memory.provider wax-memory
@@ -186,7 +186,7 @@ npm install -g waxmcp
 npx waxmcp --transport http
 
 # 3. Install Hermes plugin
-cp -r /path/to/Wax/Resources/hermes/wax-memory-plugin ~/.hermes/plugins/wax-memory
+cp -r /path/to/Wax/Resources/hermes/wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"
 
 # 4. Enable
 hermes config set memory.provider wax-memory
@@ -208,7 +208,7 @@ The release binaries have MiniLM. If vector search is disabled, the broker (`wax
 ### "Plugin not found by Hermes"
 
 Check that the plugin directory name matches the plugin name:
-- Directory: `~/.hermes/plugins/wax-memory/`
+- Directory: `$HERMES_HOME/plugins/wax-memory/`
 - Plugin name in `plugin.yaml`: `name: wax-memory`
 
 ### "Version mismatch in release"
