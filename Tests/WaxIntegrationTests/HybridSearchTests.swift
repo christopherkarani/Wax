@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import Wax
 
@@ -134,6 +135,25 @@ import Wax
         applyFloor: false
     )
     #expect(merged.map(\.0) == [1, 1706, 2])
+}
+
+@Test func rrfPublishedScoresDescendAndStayInZeroToOneAfterFusion() {
+    let textCanary: UInt64 = 1706
+    let vectorNeighbor: UInt64 = 1
+    let merged = HybridSearch.rrfFusion(
+        textResults: [(textCanary, 0.9), (2, 0.4)],
+        vectorResults: [(vectorNeighbor, 0.95), (3, 0.8)],
+        k: 60,
+        alpha: 0.5,
+        applyFloor: true
+    )
+
+    #expect(merged.first?.0 == textCanary)
+    #expect(merged.count == 4)
+    for (previous, next) in zip(merged, merged.dropFirst()) {
+        #expect(previous.1 >= next.1)
+    }
+    #expect(merged.allSatisfy { (0...1).contains($0.1) })
 }
 
 @Test func hybridSearchRanksUniqueLexicalCanaryAboveVectorNeighbors() async throws {
