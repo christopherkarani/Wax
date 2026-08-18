@@ -5,19 +5,10 @@ import WaxVectorSearch
 /// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
 package actor MemoryOrchestrator {
     /// Policy controlling when to compute query embeddings for vector search.
-    package enum QueryEmbeddingPolicy: Sendable, Equatable {
+    private enum QueryEmbeddingPolicy: Sendable, Equatable {
         case never
         case ifAvailable
         case always
-    }
-
-    /// Direct search mode for raw candidate retrieval.
-    package enum DirectSearchMode: Sendable, Equatable {
-        case text
-        case vector
-        case hybrid(alpha: Float)
-
-        package static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
     }
 
     package enum QueryEmbeddingState: String, Sendable, Equatable {
@@ -943,7 +934,6 @@ package actor MemoryOrchestrator {
     package func recall(query: String) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: .ifAvailable,
             frameFilter: nil,
             timeRange: nil,
             topK: nil,
@@ -954,7 +944,6 @@ package actor MemoryOrchestrator {
     package func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: .ifAvailable,
             frameFilter: frameFilter,
             timeRange: nil,
             topK: nil,
@@ -966,28 +955,15 @@ package actor MemoryOrchestrator {
         return try await buildRecallContext(query: query, embedding: embedding)
     }
 
-    package func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: embeddingPolicy,
-            frameFilter: nil,
-            timeRange: nil,
-            topK: nil,
-            requestedMode: nil
-        ).context
-    }
-
     package func recall(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
+        mode: Memory.RetrievalMode,
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
+        topK: Int? = nil
     ) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: timeRange,
             topK: topK,
@@ -997,15 +973,13 @@ package actor MemoryOrchestrator {
 
     package func recallExecution(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
+        mode: Memory.RetrievalMode? = nil,
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
+        topK: Int? = nil
     ) async throws -> RecallExecution {
         try await executeRecall(
             query: query,
-            embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: timeRange,
             topK: topK,
@@ -1066,12 +1040,14 @@ package actor MemoryOrchestrator {
     ///
     /// - Parameters:
     ///   - query: Query text.
-    ///   - mode: Text-only or hybrid retrieval.
+    ///   - mode: ``Memory/RetrievalMode`` — text-only, vector-only, or hybrid.
+    ///     Hybrid may fall back to text when the vector lane is unavailable.
+    ///     `vectorOnly` throws if vector search is disabled or no embedder is configured.
     ///   - topK: Maximum number of hits to return.
     /// - Returns: Ranked raw hits.
     package func search(
         query: String,
-        mode: DirectSearchMode = .default,
+        mode: Memory.RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1087,7 +1063,7 @@ package actor MemoryOrchestrator {
 
     package func searchExecution(
         query: String,
-        mode: DirectSearchMode = .default,
+        mode: Memory.RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1113,24 +1089,16 @@ package actor MemoryOrchestrator {
 
         let preference = config.vectorEnginePreference
 
-        let policy: QueryEmbeddingPolicy = switch mode {
-        case .text:
-            .never
-        case .vector:
-            .always
-        case .hybrid:
-            .ifAvailable
-        }
         let snapshotEmbedder = embedderForCurrentSearch()
         if let hold = searchSnapshotHoldForTesting {
             try await Task.sleep(for: hold)
         }
         let queryEmbedding = try await queryEmbeddingResult(
             for: trimmed,
-            policy: policy,
+            policy: Self.queryEmbeddingPolicy(for: mode),
             embedder: snapshotEmbedder
         )
-        let searchMode = Self.resolveSearchMode(
+        let searchMode = try Self.resolveSearchMode(
             requested: Self.searchMode(from: mode),
             embeddingAvailable: queryEmbedding.embedding != nil
         )
@@ -1187,8 +1155,8 @@ package actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
-            queryEmbedderConfigured: EmbeddingStatus.queryEmbedderConfigured(embeddingStatus),
-            queryEmbedderReady: EmbeddingStatus.queryEmbedderConfigured(embeddingStatus),
+            queryEmbedderConfigured: embedder != nil || isLoadingEmbedding(embeddingStatus),
+            queryEmbedderReady: await isQueryEmbedderReady(),
             queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
@@ -1203,7 +1171,24 @@ package actor MemoryOrchestrator {
     /// its inner provider has loaded. Cold remember must wait on this, not on
     /// mere configuration.
     package func isQueryEmbedderReady() async -> Bool {
-        EmbeddingStatus.queryEmbedderConfigured(embeddingStatus)
+        if let readiness = embedder as? any QueryEmbedderReadiness {
+            return await readiness.isQueryEmbedderReady()
+        }
+        return EmbeddingStatus.queryEmbedderConfigured(embeddingStatus)
+    }
+
+    package func shouldDeferRememberUntilEmbedderReady() async -> Bool {
+        guard config.enableVectorSearch else { return false }
+        if isLoadingEmbedding(embeddingStatus) { return true }
+        if let readiness = embedder as? any QueryEmbedderReadiness {
+            return await !readiness.isQueryEmbedderReady()
+        }
+        return false
+    }
+
+    private func isLoadingEmbedding(_ status: EmbeddingStatus) -> Bool {
+        if case .loading = status { return true }
+        return false
     }
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
@@ -1502,17 +1487,17 @@ package actor MemoryOrchestrator {
 
     private func executeRecall(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
         frameFilter: FrameFilter?,
         timeRange: SearchTimeRange?,
         topK: Int?,
-        requestedMode: DirectSearchMode?
+        requestedMode: Memory.RetrievalMode?
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
         let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let embeddingPolicy = requestedMode.map(Self.queryEmbeddingPolicy(for:)) ?? .ifAvailable
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
-            let modeSummary = Self.modeSummary(requestedSearchMode)
+            let modeSummary = requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode)
             return RecallExecution(
                 context: RAGContext(query: query, items: [], totalTokens: 0),
                 requestedModeSummary: modeSummary,
@@ -1530,7 +1515,7 @@ package actor MemoryOrchestrator {
             policy: embeddingPolicy,
             embedder: snapshotEmbedder
         )
-        let effectiveSearchMode = Self.resolveSearchMode(
+        let effectiveSearchMode = try Self.resolveSearchMode(
             requested: requestedSearchMode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
@@ -1557,23 +1542,34 @@ package actor MemoryOrchestrator {
         let state: QueryEmbeddingState
     }
 
-    private static func searchMode(from mode: DirectSearchMode) -> SearchMode {
+    private static func queryEmbeddingPolicy(for mode: Memory.RetrievalMode) -> QueryEmbeddingPolicy {
         switch mode {
-        case .text:
+        case .textOnly:
+            .never
+        case .vectorOnly:
+            .always
+        case .hybrid:
+            .ifAvailable
+        }
+    }
+
+    private static func searchMode(from mode: Memory.RetrievalMode) -> SearchMode {
+        switch mode {
+        case .textOnly:
             .textOnly
-        case .vector:
+        case .vectorOnly:
             .vectorOnly
         case .hybrid(let alpha):
             .hybrid(alpha: clampHybridAlpha(alpha))
         }
     }
 
-    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
+    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) throws -> SearchMode {
         switch requested {
         case .textOnly:
             .textOnly
         case .vectorOnly where !embeddingAvailable:
-            .textOnly
+            throw WaxError.missingEmbedder
         case .vectorOnly:
             .vectorOnly
         case .hybrid where !embeddingAvailable:
@@ -1594,14 +1590,14 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private static func modeSummary(_ mode: DirectSearchMode) -> String {
+    private static func modeSummary(_ mode: Memory.RetrievalMode) -> String {
         switch mode {
-        case .text:
+        case .textOnly:
             return "text"
-        case .vector:
+        case .vectorOnly:
             return "vector"
         case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
+            return "hybrid(alpha=\(String(format: "%.3f", Double(clampHybridAlpha(alpha)))))"
         }
     }
 
@@ -2132,10 +2128,10 @@ package actor MemoryOrchestrator {
             }
         case .always:
             guard config.enableVectorSearch else {
-                throw WaxError.io("query embedding requested but vector search is disabled")
+                throw WaxError.featureDisabled(feature: "vector search")
             }
             guard let embedder else {
-                throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
+                throw WaxError.missingEmbedder
             }
             guard !queryEmbeddingCircuitOpen else {
                 throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")

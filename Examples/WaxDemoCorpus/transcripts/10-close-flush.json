@@ -1,0 +1,28 @@
+{
+  "id": "10-close-flush",
+  "title": "Flush",
+  "spoken": "Flush the store. Harbor week is in harbor-week.wax. Mira Chen signs the report.",
+  "duration_ms": 4936,
+  "chunks": [
+    {
+      "start_ms": 0,
+      "end_ms": 1234,
+      "text": "Flush the store."
+    },
+    {
+      "start_ms": 1234,
+      "end_ms": 2468,
+      "text": "Harbor week is in harbor-week."
+    },
+    {
+      "start_ms": 2468,
+      "end_ms": 3702,
+      "text": "wax."
+    },
+    {
+      "start_ms": 3702,
+      "end_ms": 4936,
+      "text": "Mira Chen signs the report."
+    }
+  ]
+}

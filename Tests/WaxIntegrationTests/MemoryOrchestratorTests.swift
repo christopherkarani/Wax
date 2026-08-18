@@ -349,7 +349,7 @@ func memoryOrchestratorRecallWithEmbeddingPolicyUsesEmbedderWhenAvailable() asyn
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.flush()
 
-        let ctx = try await orchestrator.recall(query: "irrelevant", embeddingPolicy: .ifAvailable)
+        let ctx = try await orchestrator.recall(query: "irrelevant")
         #expect(!ctx.items.isEmpty)
         #expect(ctx.items.contains { $0.sources.contains(.vector) })
 

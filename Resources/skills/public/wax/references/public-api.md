@@ -97,13 +97,35 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 When `canImport(FoundationModels)`: `memory.foundationModelsMemoryTool()`, `memory.foundationModelsTools(kit:)`, `memory.foundationModelsCombinedTools()` expose remember/recall/search as on-device model tools.
 
+## Photo and video memory (experimental, Darwin)
+
+Sources: `Sources/Wax/PhotoRAG/PhotoMemory.swift`, `Sources/Wax/VideoRAG/VideoMemory.swift`, `Sources/Wax/Embeddings/BuiltInMultimodalEmbeddings.swift`
+
+Available when `canImport(ImageIO)`. These are the public facades. Do not construct `PhotoRAGOrchestrator` or `VideoRAGOrchestrator`.
+
+- `public actor PhotoMemory` — ingest Photos assets or local files, OCR, multimodal embeddings, ranked photo recall
+- `public actor VideoMemory` — segment videos, embed keyframes, optional host-supplied transcripts, ranked segment recall
+- `public enum BuiltInMultimodalEmbeddings { public static func make(_:options:) async throws -> any MultimodalEmbeddingProvider }`
+- `public protocol MultimodalEmbeddingProvider` — shared image + text embedder for the photo/video facades
+- Supporting public types: `PhotoRAGConfig`, `PhotoFile`, `PhotoQuery`, `PhotoScope`, `PhotoRAGContext`, `VideoRAGConfig`, `VideoFile`, `VideoQuery`, `VideoScope`, `VideoRAGContext`, `VideoTranscriptProvider`, `VisionOCRProvider`
+
+```swift
+let embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)
+let photos = try await PhotoMemory(at: storeURL, embedder: embedder, ocr: VisionOCRProvider())
+try await photos.ingest(files: [PhotoFile(id: "receipt-1", url: imageURL)])
+let context = try await photos.recall(PhotoQuery(text: "coffee receipt"))
+try await photos.close()
+```
+
+Video does not transcribe and does not store media bytes. The host supplies transcripts.
+
 ## Package-only (NOT public API)
 
 The following are `package`-access internals. They are used by Wax's own CLI/MCP server and tests, but **cannot be imported or constructed by downstream apps**:
 
 - `MemoryOrchestrator`, `OrchestratorConfig`, `FastRAGConfig` (the engine behind `Memory`)
-- `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `MultimodalEmbeddingProvider`, `VideoTranscriptProvider` (experimental multimodal pipelines; host apps cannot use them yet)
+- `PhotoRAGOrchestrator`, `VideoRAGOrchestrator` (engines behind `PhotoMemory` / `VideoMemory`)
 - `WaxSession`, `Wax` actor, `SearchRequest`, `SearchResponse`, `FrameFilter`, structured-memory types (`EntityKey`, facts)
 - `MiniLMEmbedder` (use `BuiltInEmbeddings.make(.miniLM)` or `Memory.Config.embedding = .builtIn(.miniLM)` instead)
 
-Agent-facing access to structured memory, photo, and video memory is available through the Wax MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, `photo_*`, `video_*`), not through `import Wax`.
+Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API.

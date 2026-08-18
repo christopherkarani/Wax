@@ -1,7 +1,7 @@
 import Foundation
 import WaxCore
 
-package enum VectorEnginePreference: Sendable, Equatable {
+public enum VectorEnginePreference: Sendable, Equatable {
     case auto
     @available(*, deprecated, renamed: "auto")
     case metalPreferred

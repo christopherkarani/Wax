@@ -312,7 +312,7 @@ extension AgentBrokerService {
         }
 
         let before = await memory.runtimeStats()
-        if !noEmbedder, before.vectorSearchEnabled, isLoadingEmbedding(before.embeddingStatus) {
+        if !noEmbedder, before.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() {
             let capturedSessionID = sessionID
             let capturedContent = content
             let capturedMetadata = metadata
@@ -405,33 +405,22 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
         }
         let effectiveTopK = requestedTopK ?? limit
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch mode {
-        case .text?:
-            .never
-        case .vector?:
-            .always
-        case .hybrid?, nil:
-            .ifAvailable
-        }
-
         let durableExecution = try await longTermMemory.recallExecution(
             query: query,
-            embeddingPolicy: embeddingPolicy,
+            mode: mode,
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange,
-            topK: effectiveTopK,
-            mode: mode
+            topK: effectiveTopK
         )
         let sessionExecution: MemoryOrchestrator.RecallExecution?
         var sessionItems: [RAGContext.Item] = []
         if let sessionMemory {
             let execution = try await sessionMemory.recallExecution(
                 query: query,
-                embeddingPolicy: embeddingPolicy,
+                mode: mode,
                 frameFilter: parsedFilters.frameFilter,
                 timeRange: parsedFilters.timeRange,
-                topK: effectiveTopK,
-                mode: mode
+                topK: effectiveTopK
             )
             sessionExecution = execution
             sessionItems = execution.context.items
@@ -1558,8 +1547,8 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
         }
         let corpusNoEmbedder: Bool = switch mode {
-        case .text: true
-        case .vector: false
+        case .textOnly: true
+        case .vectorOnly: false
         case .hybrid: noEmbedder
         }
         let buildSummary: BrokerCorpusBuildSummary?
@@ -1884,7 +1873,7 @@ extension AgentBrokerService {
 
     func layeredMemorySearch(
         query: String,
-        mode: MemoryOrchestrator.DirectSearchMode,
+        mode: Memory.RetrievalMode,
         topK: Int,
         sessionID: UUID?,
         includeWorking: Bool,
@@ -2082,7 +2071,7 @@ extension AgentBrokerService {
     func assembleCompactContext(
         query: String,
         sessionID: UUID?,
-        mode: MemoryOrchestrator.DirectSearchMode,
+        mode: Memory.RetrievalMode,
         tokenBudget: Int,
         maxItems: Int
     ) async throws -> CompactContextAssembly {
@@ -2094,11 +2083,10 @@ extension AgentBrokerService {
         if let sessionID, let state = activeSessions[sessionID] {
             let execution = try await state.memory.recallExecution(
                 query: query,
-                embeddingPolicy: mode == .text ? .never : .ifAvailable,
+                mode: mode,
                 frameFilter: nil,
                 timeRange: nil,
-                topK: min(4, maxItems),
-                mode: mode
+                topK: min(4, maxItems)
             )
             for item in execution.context.items {
                 let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: state.memory)
@@ -2144,11 +2132,10 @@ extension AgentBrokerService {
 
         let longExecution = try await longTermMemory.recallExecution(
             query: query,
-            embeddingPolicy: mode == .text ? .never : .ifAvailable,
+            mode: mode,
             frameFilter: nil,
             timeRange: nil,
-            topK: min(4, maxItems),
-            mode: mode
+            topK: min(4, maxItems)
         )
         for item in longExecution.context.items {
             let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: longTermMemory)
@@ -2185,11 +2172,10 @@ extension AgentBrokerService {
             ) { memory in
                 let items = try await memory.recallExecution(
                     query: query,
-                    embeddingPolicy: mode == .text ? .never : .ifAvailable,
+                    mode: mode,
                     frameFilter: nil,
                     timeRange: nil,
-                    topK: 2,
-                    mode: mode
+                    topK: 2
                 ).context.items
                 var hits: [LayeredMemoryHit] = []
                 hits.reserveCapacity(items.count)
@@ -2478,11 +2464,6 @@ extension AgentBrokerService {
         try FileManager.default.removeItem(at: url)
     }
 
-
-    func isLoadingEmbedding(_ status: EmbeddingStatus) -> Bool {
-        if case .loading = status { return true }
-        return false
-    }
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
         guard let sessionID else {
@@ -2796,7 +2777,7 @@ extension AgentBrokerService {
         )
     }
 
-    func parseRecallMode(_ args: BrokerArguments) throws -> MemoryOrchestrator.DirectSearchMode? {
+    func parseRecallMode(_ args: BrokerArguments) throws -> Memory.RetrievalMode? {
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let alpha = try args.optionalDouble("alpha")
 
@@ -2812,9 +2793,9 @@ extension AgentBrokerService {
 
         switch modeRaw {
         case "text":
-            return .text
+            return .textOnly
         case "vector":
-            return .vector
+            return .vectorOnly
         case "hybrid":
             return .hybrid(alpha: try validatedHybridAlpha(alpha ?? 0.5))
         default:
@@ -2825,7 +2806,7 @@ extension AgentBrokerService {
     func parseSearchMode(
         modeRaw: String?,
         alpha: Double?
-    ) throws -> MemoryOrchestrator.DirectSearchMode {
+    ) throws -> Memory.RetrievalMode {
         let resolvedMode = modeRaw ?? "text"
         if alpha != nil, resolvedMode != "hybrid" {
             throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
@@ -2833,9 +2814,9 @@ extension AgentBrokerService {
         let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
         switch resolvedMode {
         case "text":
-            return .text
+            return .textOnly
         case "vector":
-            return .vector
+            return .vectorOnly
         case "hybrid":
             return .hybrid(alpha: validatedAlpha)
         default:

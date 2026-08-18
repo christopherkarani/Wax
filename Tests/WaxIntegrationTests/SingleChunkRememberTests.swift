@@ -31,7 +31,7 @@ func singleChunkRememberAddsOneFrame() async throws {
 
         let hits = try await orchestrator.search(
             query: "canary-7f3a91",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(!hits.isEmpty)
@@ -119,7 +119,7 @@ func singleChunkRememberRepairsUnsearchableDocument() async throws {
         )
         let beforeHits = try await orchestrator.search(
             query: "repair-canary-a91c2e",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(beforeHits.isEmpty)
@@ -134,14 +134,14 @@ func singleChunkRememberRepairsUnsearchableDocument() async throws {
 
         let textHits = try await orchestrator.search(
             query: "repair-canary-a91c2e",
-            mode: .text,
+            mode: .textOnly,
             topK: 5
         )
         #expect(!textHits.isEmpty)
 
         let vectorHits = try await orchestrator.search(
             query: "repair-canary-a91c2e",
-            mode: .vector,
+            mode: .vectorOnly,
             topK: 5
         )
         #expect(!vectorHits.isEmpty)
@@ -177,10 +177,10 @@ func singleChunkRememberIndexesDocumentForVectorSearch() async throws {
         let after = await orchestrator.runtimeStats()
         #expect(after.frameCount == 1)
 
-        let textHits = try await orchestrator.search(query: "canary-7f3a91", mode: .text, topK: 5)
+        let textHits = try await orchestrator.search(query: "canary-7f3a91", mode: .textOnly, topK: 5)
         #expect(!textHits.isEmpty)
 
-        let vectorHits = try await orchestrator.search(query: "canary-7f3a91", mode: .vector, topK: 5)
+        let vectorHits = try await orchestrator.search(query: "canary-7f3a91", mode: .vectorOnly, topK: 5)
         #expect(!vectorHits.isEmpty)
 
         try await orchestrator.remember(content, metadata: ["source": "single-chunk-vector"])

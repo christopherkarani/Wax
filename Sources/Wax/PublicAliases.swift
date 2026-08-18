@@ -14,3 +14,4 @@ public typealias BatchEmbeddingProvider = WaxVectorSearch.BatchEmbeddingProvider
 public typealias QueryAwareEmbeddingProvider = WaxVectorSearch.QueryAwareEmbeddingProvider
 public typealias EmbeddingIdentity = WaxVectorSearch.EmbeddingIdentity
 public typealias ProviderExecutionMode = WaxVectorSearch.ProviderExecutionMode
+public typealias VectorEnginePreference = WaxVectorSearch.VectorEnginePreference

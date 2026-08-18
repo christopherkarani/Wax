@@ -88,6 +88,31 @@ func memorySearchReturnsFullShortTextForSecondaryHitsAfterReopen() async throws 
 }
 
 @Test
+func memorySearchVectorOnlyWithVectorSearchDisabledThrows() async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(
+            at: url,
+            config: .init(enableTextSearch: true, enableVectorSearch: false, requireOnDeviceProviders: false)
+        )
+        try await memory.save("Vector-only search must not silently become text.")
+
+        do {
+            _ = try await memory.search("diagnostics", options: .init(mode: .vectorOnly))
+            Issue.record("vectorOnly must throw when vector search is disabled")
+        } catch let error as WaxError {
+            guard case .featureDisabled(let feature) = error else {
+                Issue.record("expected WaxError.featureDisabled, got \(error)")
+                try await memory.close()
+                return
+            }
+            #expect(feature == "vector search")
+        }
+
+        try await memory.close()
+    }
+}
+
+@Test
 func memorySearchReportsTextFallbackDiagnostics() async throws {
     try await TempFiles.withTempFile { url in
         let memory = try await Memory(

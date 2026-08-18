@@ -1,6 +1,6 @@
 import Foundation
 
-package enum VideoFrameKind: String, Sendable, CaseIterable {
+public enum VideoFrameKind: String, Sendable, CaseIterable {
     case root = "video.root"
     case segment = "video.segment"
 }

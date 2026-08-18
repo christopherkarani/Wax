@@ -163,30 +163,12 @@ public actor Memory {
     public func search(_ query: String, options: SearchOptions = .default) async throws -> Results {
         let frameFilter = FrameFilter(includeSurrogates: options.includeSurrogates)
         let mappedTimeRange = options.timeRange.map { SearchTimeRange(after: $0.afterMs, before: $0.beforeMs) }
-        let directMode: MemoryOrchestrator.DirectSearchMode = switch options.mode {
-        case .textOnly:
-            .text
-        case .vectorOnly:
-            .vector
-        case .hybrid(let alpha):
-            .hybrid(alpha: alpha)
-        }
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch options.mode {
-        case .textOnly:
-            .never
-        case .vectorOnly:
-            .always
-        case .hybrid:
-            .ifAvailable
-        }
-
         let execution = try await orchestrator.recallExecution(
             query: query,
-            embeddingPolicy: embeddingPolicy,
+            mode: options.mode,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
-            topK: options.topK,
-            mode: directMode
+            topK: options.topK
         )
         var results = execution.context
         results.diagnostics = RAGContext.Diagnostics(

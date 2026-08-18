@@ -189,7 +189,7 @@ import Wax
         try await orchestrator.remember("unique lexical canary 7f3a91 stored for hybrid recall")
         try await orchestrator.flush()
 
-        let hits = try await orchestrator.search(query: "7f3a91", mode: .default, topK: 10)
+        let hits = try await orchestrator.search(query: "7f3a91", mode: .hybrid(), topK: 10)
         let top = try #require(hits.first)
         #expect(
             top.previewText?.contains("7f3a91") == true,

@@ -59,24 +59,18 @@ A bounded LRU cache (default capacity: 2,048) avoids re-embedding identical text
 let context = try await orchestrator.recall(query: "project timeline")
 ```
 
-### Embedding Policies
+### Retrieval Mode
 
-Control when query embeddings are computed:
-
-| Policy | Behavior |
-|--------|----------|
-| `.never` | Text-only search (no vector lane) |
-| `.ifAvailable` | Use vector search if an embedder is configured; otherwise fall back to text |
-| `.always` | Require vector search; throw if no embedder |
+Hosts name ``Memory/RetrievalMode`` (`textOnly` / `vectorOnly` / `hybrid`). Hybrid may fall back to text when the vector lane is unavailable; `vectorOnly` throws.
 
 ```swift
 let context = try await orchestrator.recall(
     query: "timeline",
-    embeddingPolicy: .ifAvailable
+    mode: .hybrid()
 )
 ```
 
-When the vector lane is unavailable under `.ifAvailable`, the search falls back to the text lane. `recallExecution(...)` reports the requested vs. effective mode and the query-embedding state; the public ``Memory/search(_:options:)`` surfaces the same information via ``RAGContext/diagnostics``.
+`recallExecution(...)` reports the requested vs. effective mode and the query-embedding state; the public ``Memory/search(_:options:)`` surfaces the same information via ``RAGContext/diagnostics``.
 
 If query embedding times out, a circuit breaker pauses query embedding for `queryEmbeddingCircuitCooldown` (default 60s), then half-opens and retries — a single success closes it again.
 
@@ -87,13 +81,12 @@ Restrict recall to specific frames:
 ```swift
 let context = try await orchestrator.recall(
     query: "meeting notes",
-    embeddingPolicy: .ifAvailable,
+    mode: .hybrid(),
     frameFilter: FrameFilter(
         metadataFilter: MetadataFilter(requiredEntries: ["kind": "meeting"])
     ),
     timeRange: SearchTimeRange(after: weekAgoMs, before: nil),
-    topK: nil,
-    mode: nil
+    topK: nil
 )
 ```
 

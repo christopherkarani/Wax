@@ -5,65 +5,65 @@ import WaxVectorSearch
 ///
 /// This configuration is intentionally host-app tunable: it trades off recall quality, latency,
 /// battery, and store size for on-device RAG over photos.
-package struct PhotoRAGConfig: Sendable, Equatable {
+public struct PhotoRAGConfig: Sendable, Equatable {
     /// Pipeline version string stamped into frame metadata for migration tracking.
-    package var pipelineVersion: String
+    public var pipelineVersion: String
 
     // MARK: - Ingest
 
     /// Maximum number of concurrent asset ingestion tasks.
-    package var ingestConcurrency: Int
+    public var ingestConcurrency: Int
     /// Maximum pixel dimension for the image used to compute the global embedding.
-    package var embedMaxPixelSize: Int
+    public var embedMaxPixelSize: Int
     /// Maximum pixel dimension for the image used for OCR.
-    package var ocrMaxPixelSize: Int
+    public var ocrMaxPixelSize: Int
     /// Maximum pixel dimension for returned thumbnail images.
-    package var thumbnailMaxPixelSize: Int
+    public var thumbnailMaxPixelSize: Int
     /// Whether to run OCR on ingested photos.
-    package var enableOCR: Bool
+    public var enableOCR: Bool
     /// Whether to compute per-region crop embeddings for spatial matching.
-    package var enableRegionEmbeddings: Bool
+    public var enableRegionEmbeddings: Bool
     /// Maximum number of region crops to embed per photo.
-    package var maxRegionsPerPhoto: Int
+    public var maxRegionsPerPhoto: Int
 
     // MARK: - OCR limits
 
     /// Maximum OCR text blocks stored per photo during ingest.
-    package var maxOCRBlocksPerPhoto: Int
+    public var maxOCRBlocksPerPhoto: Int
     /// Maximum lines in the OCR summary frame.
-    package var maxOCRSummaryLines: Int
+    public var maxOCRSummaryLines: Int
     /// Maximum concurrent region embedding tasks during ingest.
-    package var regionEmbeddingConcurrency: Int
+    public var regionEmbeddingConcurrency: Int
 
     // MARK: - Search
 
     /// Number of candidate results fetched from the search engine before filtering.
-    package var searchTopK: Int
+    public var searchTopK: Int
     /// Balance between text (BM25) and vector search in hybrid mode. 0.0 = vector only, 1.0 = text only.
-    package var hybridAlpha: Float
+    public var hybridAlpha: Float
     /// Preferred vector search engine (auto, Metal GPU, or CPU-only).
-    package var vectorEnginePreference: VectorEnginePreference
+    public var vectorEnginePreference: VectorEnginePreference
     /// Weight for text embedding when fusing text + image query embeddings (0.0–1.0).
     /// The image weight is `1.0 - textEmbeddingWeight`.
-    package var textEmbeddingWeight: Float
+    public var textEmbeddingWeight: Float
     /// When true, validates that all providers declare `.onDeviceOnly` execution mode.
-    package var requireOnDeviceProviders: Bool
+    public var requireOnDeviceProviders: Bool
 
     // MARK: - Output
 
     /// Whether to attach PNG thumbnail bytes to recalled items.
-    package var includeThumbnailsInContext: Bool
+    public var includeThumbnailsInContext: Bool
     /// Whether to attach region crop bytes to recalled items.
-    package var includeRegionCropsInContext: Bool
+    public var includeRegionCropsInContext: Bool
     /// Maximum pixel dimension for region crop images in output.
-    package var regionCropMaxPixelSize: Int
+    public var regionCropMaxPixelSize: Int
 
     // MARK: - Caching
 
     /// LRU cache capacity for query text embeddings. Set to 0 to disable caching.
-    package var queryEmbeddingCacheCapacity: Int
+    public var queryEmbeddingCacheCapacity: Int
 
-    package init(
+    public init(
         pipelineVersion: String = "photo_rag_v1",
         ingestConcurrency: Int = 2,
         embedMaxPixelSize: Int = 512,
@@ -115,5 +115,5 @@ package struct PhotoRAGConfig: Sendable, Equatable {
         return min(1, max(0, value))
     }
 
-    package static let `default` = PhotoRAGConfig()
+    public static let `default` = PhotoRAGConfig()
 }

@@ -138,27 +138,16 @@ private extension WaxMCPTools {
         return "execution_failed"
     }
 
-    static func compatSearchMode(modeRaw: String, alpha: Double?) throws -> MemoryOrchestrator.DirectSearchMode {
+    static func compatSearchMode(modeRaw: String, alpha: Double?) throws -> Memory.RetrievalMode {
         switch modeRaw {
         case "text":
-            return .text
+            return .textOnly
         case "vector":
-            return .vector
+            return .vectorOnly
         case "hybrid":
             return .hybrid(alpha: Float(alpha ?? 0.5))
         default:
             throw ToolValidationError.invalid("mode must be one of: text, vector, hybrid")
-        }
-    }
-
-    static func compatEmbeddingPolicy(for mode: MemoryOrchestrator.DirectSearchMode) -> MemoryOrchestrator.QueryEmbeddingPolicy {
-        switch mode {
-        case .text:
-            return .never
-        case .vector:
-            return .always
-        case .hybrid:
-            return .ifAvailable
         }
     }
 
@@ -883,28 +872,25 @@ private extension WaxMCPTools {
         guard (1...200).contains(effectiveTopK) else {
             throw ToolValidationError.invalid("search_top_k must be between 1 and 200")
         }
-        let directMode = try compatSearchMode(
+        let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "hybrid",
             alpha: try args.optionalDouble("alpha")
         )
-        let embeddingPolicy = compatEmbeddingPolicy(for: directMode)
         let sessionExecution = try await memory.recallExecution(
             query: query,
-            embeddingPolicy: embeddingPolicy,
+            mode: mode,
             frameFilter: filters.frameFilter,
             timeRange: filters.timeRange,
-            topK: effectiveTopK,
-            mode: directMode
+            topK: effectiveTopK
         )
         let durableExecution: MemoryOrchestrator.RecallExecution
         if filters.sessionID != nil {
             durableExecution = try await memory.recallExecution(
                 query: query,
-                embeddingPolicy: embeddingPolicy,
+                mode: mode,
                 frameFilter: nil,
                 timeRange: filters.timeRange,
-                topK: effectiveTopK,
-                mode: directMode
+                topK: effectiveTopK
             )
         } else {
             durableExecution = sessionExecution
@@ -1474,11 +1460,10 @@ private extension WaxMCPTools {
         }
         let execution = try await memory.recallExecution(
             query: query,
-            embeddingPolicy: compatEmbeddingPolicy(for: mode),
+            mode: mode,
             frameFilter: frameFilter,
             timeRange: nil,
-            topK: limit,
-            mode: mode
+            topK: limit
         )
         let documents = try await memory.corpusSourceDocuments()
         let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
@@ -1791,7 +1776,7 @@ private extension WaxMCPTools {
         guard (1...200).contains(topK) else {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
-        let corpusNoEmbedder = mode == .text ? true : noEmbedder
+        let corpusNoEmbedder = mode == .textOnly ? true : noEmbedder
         let sessionsDirectoryURL = try MCPPathing.resolveDirectoryURL(sessionsDirRaw)
         let corpusStoreURL = try MCPPathing.resolveStoreURL(corpusStoreRaw)
         let buildSummary: CorpusBuildSummary?

@@ -1,8 +1,9 @@
 import Foundation
 import Dispatch
 import Testing
-import Wax
 import WaxCore
+@testable import Wax
+@testable import WaxCore
 @testable import wax_cli
 #if canImport(Darwin)
 import Darwin
@@ -100,7 +101,7 @@ struct WaxCLIMemoryTests {
             )
             try await memory.flush()
 
-            let hits = try await memory.search(query: "WAL durability", mode: .text, topK: 10, frameFilter: nil)
+            let hits = try await memory.search(query: "WAL durability", mode: .textOnly, topK: 10, frameFilter: nil)
             #expect(hits.count > 0, "search should return at least one hit")
             #expect(hits[0].score > 0, "search hit score should be greater than zero")
         }
@@ -374,6 +375,33 @@ struct WaxCLIMemoryTests {
                 _ = try VectorStoreOptions.parse(arguments)
             }
         }
+    }
+
+    @Test func brokerShutdownCompletedTreatsHeldStoreLockAsIncomplete() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wx-shutdown-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.wax")
+        #expect(FileManager.default.createFile(atPath: storeURL.path, contents: Data()))
+        let missingSocket = root.appendingPathComponent("broker.sock").path
+
+        let held = try FileLock.acquireExclusiveOrCreate(at: storeURL, timeout: .seconds(1))
+        defer { try? held.release() }
+
+        let stillBusy = try AgentBrokerClient.brokerShutdownCompleted(
+            socketPath: missingSocket,
+            storePath: storeURL.path
+        )
+        #expect(stillBusy == false)
+
+        try held.release()
+        let released = try AgentBrokerClient.brokerShutdownCompleted(
+            socketPath: missingSocket,
+            storePath: storeURL.path
+        )
+        #expect(released == true)
     }
 
     @Test func brokerStatsHonorAccessStatsFeatureFlag() throws {
@@ -805,7 +833,36 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.projectRules.contains("handoff_latest"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_start"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("task_state"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("compact_context"))
+        #expect(WaxMCPAgentPlaybook.soulRules.contains("## Memory (Wax)"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
+    }
+
+    @Test func projectRulesPlaybookStaysInLockstepWithDocs() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let publicRules = repoRoot.appendingPathComponent(
+            "Resources/skills/public/wax-mcp/references/project-rules.md"
+        )
+        let npmRules = repoRoot.appendingPathComponent(
+            "Resources/npm/waxmcp/skills/wax-mcp/references/project-rules.md"
+        )
+        let readme = repoRoot.appendingPathComponent("README.md")
+
+        let publicText = try String(contentsOf: publicRules, encoding: .utf8)
+        let npmText = try String(contentsOf: npmRules, encoding: .utf8)
+        let readmeText = try String(contentsOf: readme, encoding: .utf8)
+
+        #expect(publicText == npmText)
+        #expect(publicText.contains(WaxMCPAgentPlaybook.projectRules))
+        #expect(publicText.contains(WaxMCPAgentPlaybook.soulRules))
+        #expect(readmeText.contains(WaxMCPAgentPlaybook.projectRules))
+        #expect(readmeText.contains(WaxMCPAgentPlaybook.soulRules))
+        #expect(readmeText.contains("Paste into AGENTS.md / CLAUDE.md / Cursor rules"))
+        #expect(readmeText.contains("Paste into Hermes / OpenClaw SOUL.md"))
     }
 
     @Test func embedderRuntimeOptionsOverrideEnvironment() throws {

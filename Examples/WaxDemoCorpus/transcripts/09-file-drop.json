@@ -1,0 +1,18 @@
+{
+  "id": "09-file-drop",
+  "title": "File drop",
+  "spoken": "Drop the markdown notes and the invoice PDF. File RAG should find Fog Latte and the offline policy.",
+  "duration_ms": 6063,
+  "chunks": [
+    {
+      "start_ms": 0,
+      "end_ms": 3031,
+      "text": "Drop the markdown notes and the invoice PDF."
+    },
+    {
+      "start_ms": 3031,
+      "end_ms": 6063,
+      "text": "File RAG should find Fog Latte and the offline policy."
+    }
+  ]
+}

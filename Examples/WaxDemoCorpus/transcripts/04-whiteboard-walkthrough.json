@@ -1,0 +1,18 @@
+{
+  "id": "04-whiteboard-walkthrough",
+  "title": "Whiteboard",
+  "spoken": "Board says ship Friday, offline only, North Harbor. That is the photo beat and this clip.",
+  "duration_ms": 5425,
+  "chunks": [
+    {
+      "start_ms": 0,
+      "end_ms": 2712,
+      "text": "Board says ship Friday, offline only, North Harbor."
+    },
+    {
+      "start_ms": 2712,
+      "end_ms": 5425,
+      "text": "That is the photo beat and this clip."
+    }
+  ]
+}

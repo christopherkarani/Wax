@@ -77,29 +77,43 @@ Write quality rules:
 - When a cross-session hit matters, cite provenance so the user knows which session store it came from.
 - Use `session_resume` only when continuing a known persisted `session_id` after a restart.
 - Use `compact_context` / `session_synthesize` / promotion tools only when the task needs long-horizon compaction or durable promotion, not as default chatter.
+- Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid can rank old test frames first.
+- `memory_get` IDs are `durable:<frame>` or `episodic:<session_id>:<frame>`. Never a bare frame number.
 
 ## Install / Host Setup (for humans and setup agents)
 
-MCP server:
+Stage binaries once:
 
 ```bash
-npx -y waxmcp@latest mcp install --scope user
+npx -y waxmcp@latest install
 ```
 
-That command stages the runtime, registers the MCP server, and stages this skill
-under `~/.local/share/waxmcp/skills/wax-mcp` (or `$WAX_MCP_INSTALL_ROOT/../skills`
-when the install root is overridden).
+Then wire the **host**, not a new prompt:
 
-Skill install (Claude Code):
+| Host | What to do |
+|------|------------|
+| Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
+| Codex | HTTP URL in `~/.codex/config.toml` + copy this skill to `~/.codex/skills/wax-mcp` |
+| Cursor | HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
+| Hermes | HTTP + `memory.provider: wax-memory` + copy this skill + append the SOUL.md stanza to `~/.hermes/SOUL.md` |
+| OpenClaw | HTTP + memory plugin + append the SOUL.md stanza to workspace `SOUL.md` |
+| Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
+
+Two or more clients must share **one** HTTP server on `http://127.0.0.1:3000/mcp`. Snippets and smoke test: `Resources/docs/wax-mcp-hosts.md`.
+
+The npm launcher serves MCP. It does **not** implement `mcp install --scope`.
 
 ```bash
+# Claude skill (if wax-cli install did not auto-register)
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 # or from source
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
 ```
 
-Project rules fallback: paste `references/project-rules.md` into `CLAUDE.md` or
-`AGENTS.md` when the host does not load skills automatically.
+Project rules fallback: paste the AGENTS.md fence from
+`references/project-rules.md` into `CLAUDE.md` or `AGENTS.md` when the host
+does not load skills. Hermes / OpenClaw: append the SOUL.md fence instead of
+replacing the soul.
 
 ## Quick Tool Map
 

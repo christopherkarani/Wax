@@ -145,8 +145,14 @@ func memoryUnavailableKeepsIndexAndThrowsVectorOnly() async throws {
         #expect(hybrid.diagnostics?.effectiveMode == "text")
         #expect(hybrid.diagnostics?.queryEmbeddingState == .noEmbedder)
 
-        await #expect(throws: WaxError.self) {
+        do {
             _ = try await memory.search("index remains", options: .init(mode: .vectorOnly))
+            Issue.record("vectorOnly must throw when the embedder is unavailable")
+        } catch let error as WaxError {
+            guard case .missingEmbedder = error else {
+                Issue.record("expected WaxError.missingEmbedder, got \(error)")
+                return
+            }
         }
 
         try await memory.close()
