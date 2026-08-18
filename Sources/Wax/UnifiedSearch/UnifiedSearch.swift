@@ -95,8 +95,10 @@ extension Wax {
         }
 
 
-        async let textResultsAsync: [TextSearchResult] = {
-            guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
+        async let textLaneAsync: (results: [TextSearchResult], isORFallbackOnly: Bool) = {
+            guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else {
+                return ([], false)
+            }
             let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
             let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
             let queryTokenCount = Self.normalizedFTSTokens(from: trimmedQuery, maxTokens: 16).count
@@ -135,22 +137,25 @@ extension Wax {
                     try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
                 }
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
-                    return Array(base.prefix(candidateLimit))
+                    return (Array(base.prefix(candidateLimit)), false)
                 }
                 let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
                 if base.isEmpty {
-                    return Self.scoredAsORFallbackOnly(
-                        Array(fallback.prefix(candidateLimit)),
-                        tokenCount: queryTokenCount
+                    return (
+                        Self.scoredAsORFallbackOnly(
+                            Array(fallback.prefix(candidateLimit)),
+                            tokenCount: queryTokenCount
+                        ),
+                        true
                     )
                 }
-                return merged(base: base, fallback: fallback, limit: candidateLimit)
+                return (merged(base: base, fallback: fallback, limit: candidateLimit), false)
             } catch {
                 guard let fallbackQuery else {
                     throw error
                 }
                 let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
-                return Self.scoredAsORFallbackOnly(fallback, tokenCount: queryTokenCount)
+                return (Self.scoredAsORFallbackOnly(fallback, tokenCount: queryTokenCount), true)
             }
         }()
 
@@ -213,7 +218,9 @@ extension Wax {
             )
         }()
 
-        let textResults = try await textResultsAsync
+        let textLane = try await textLaneAsync
+        let textResults = textLane.results
+        let textLaneIsORFallbackOnly = textLane.isORFallbackOnly
         var vectorResults = try await vectorResultsAsync
         vectorResults.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
@@ -379,14 +386,16 @@ extension Wax {
                 diagnosticsTopK: diagnosticsTopK
             )
 
-            // Lexical exclusive rank-1 floor: default hybrid must not bury an
-            // exclusive FTS hit under an exclusive vector neighbor.
+            // Factual identifier path only: exclusive FTS rank-1 must not lose
+            // to an exclusive vector neighbor. Skip OR-fallback-only rank-1 even
+            // on factual. Semantic/exploratory keep AdaptiveFusion.
             var fusedPairs = fused.map { ($0.frameId, $0.score) }
             HybridSearch.applyExclusiveTextRank1Floor(
                 merged: &fusedPairs,
                 textFrameIds: textIds,
                 vectorFrameIds: vectorIds,
-                alpha: clampedAlpha
+                applyFloor: queryType == .factual,
+                textRank1IsORFallbackOnly: textLaneIsORFallbackOnly
             )
             let totalWeight = lists.reduce(Float(0)) { $0 + max(0, $1.weight) }
             HybridSearch.publishNormalizedRRFScores(
