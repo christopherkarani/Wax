@@ -2738,6 +2738,26 @@ package actor Wax {
         }
     }
 
+    /// Live frames that should have vectors when a provider is active.
+    ///
+    /// Single-chunk remember writes only a searchable document. Count those
+    /// alongside chunk frames so reopen can mark `.degraded` when some saved
+    /// text has no vectors.
+    package func liveChunkCount() async -> UInt64 {
+        await withReadLock {
+            var count: UInt64 = 0
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+                guard frame.role == .chunk || frame.role == .document else { continue }
+                guard frame.kind != "surrogate" else { continue }
+                let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if frame.role == .document, searchText.isEmpty { continue }
+                count += 1
+            }
+            return count
+        }
+    }
+
     package func memoryBinding() async -> MemoryBinding? {
         await withReadLock {
             toc.memoryBinding

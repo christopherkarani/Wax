@@ -1,13 +1,13 @@
 import Foundation
 
-/// Controls how much context is assembled for downstream models/agents.
-package struct ContextBudget: Sendable, Equatable {
-    package var maxTextTokens: Int
-    package var maxImages: Int
-    package var maxRegions: Int
-    package var maxOCRLinesPerItem: Int
+/// Token and image limits for assembled ``PhotoMemory`` recall context.
+public struct PhotoContextBudget: Sendable, Equatable {
+    public var maxTextTokens: Int
+    public var maxImages: Int
+    public var maxRegions: Int
+    public var maxOCRLinesPerItem: Int
 
-    package init(
+    public init(
         maxTextTokens: Int = 1_200,
         maxImages: Int = 6,
         maxRegions: Int = 8,
@@ -19,16 +19,16 @@ package struct ContextBudget: Sendable, Equatable {
         self.maxOCRLinesPerItem = max(0, maxOCRLinesPerItem)
     }
 
-    package static let `default` = ContextBudget()
+    public static let `default` = PhotoContextBudget()
 }
 
 /// Optional filters applied during photo recall.
-package struct PhotoFilters: Sendable, Equatable {
-    package var assetIDs: Set<String>?
-    package var source: PhotoSource?
-    package var isLocal: Bool?
+public struct PhotoFilters: Sendable, Equatable {
+    public var assetIDs: Set<String>?
+    public var source: PhotoSource?
+    public var isLocal: Bool?
 
-    package init(
+    public init(
         assetIDs: Set<String>? = nil,
         source: PhotoSource? = nil,
         isLocal: Bool? = nil
@@ -38,9 +38,9 @@ package struct PhotoFilters: Sendable, Equatable {
         self.isLocal = isLocal
     }
 
-    package static let none = PhotoFilters()
+    public static let none = PhotoFilters()
 
-    package var isEmpty: Bool {
+    public var isEmpty: Bool {
         assetIDs == nil && source == nil && isLocal == nil
     }
 
@@ -51,56 +51,56 @@ package struct PhotoFilters: Sendable, Equatable {
     }
 }
 
-/// Source backing a photo record in the package-only Photo RAG pipeline.
-package enum PhotoSource: String, Sendable, Equatable {
+/// Source backing a photo record ingested by ``PhotoMemory``.
+public enum PhotoSource: String, Sendable, Equatable {
     case photos
     case file
 }
 
 /// A GPS coordinate used for location-based photo queries.
-package struct PhotoCoordinate: Sendable, Equatable {
+public struct PhotoCoordinate: Sendable, Equatable {
     /// Latitude in degrees (-90 to 90).
-    package var latitude: Double
+    public var latitude: Double
     /// Longitude in degrees (-180 to 180).
-    package var longitude: Double
+    public var longitude: Double
 
-    package init(latitude: Double, longitude: Double) {
+    public init(latitude: Double, longitude: Double) {
         self.latitude = min(90, max(-90, latitude))
         self.longitude = min(180, max(-180, longitude))
     }
 }
 
 /// A location-radius query for finding photos near a GPS coordinate.
-package struct PhotoLocationQuery: Sendable, Equatable {
+public struct PhotoLocationQuery: Sendable, Equatable {
     /// Center point of the search area.
-    package var center: PhotoCoordinate
+    public var center: PhotoCoordinate
     /// Search radius in meters from the center point.
-    package var radiusMeters: Double
+    public var radiusMeters: Double
 
-    package init(center: PhotoCoordinate, radiusMeters: Double) {
+    public init(center: PhotoCoordinate, radiusMeters: Double) {
         self.center = center
         self.radiusMeters = max(0, radiusMeters)
     }
 }
 
 /// Scope of a Photos library sync operation.
-package enum PhotoScope: Sendable, Equatable {
+public enum PhotoScope: Sendable, Equatable {
     /// Sync all photos in the library.
     case fullLibrary
     /// Sync only the specified asset identifiers.
     case assetIDs([String])
 }
 
-/// A local image file to ingest into the package-only Photo RAG pipeline.
-package struct PhotoFile: Sendable, Equatable {
+/// A local image file to ingest into ``PhotoMemory``.
+public struct PhotoFile: Sendable, Equatable {
     /// Stable caller-provided identifier used as the photo asset ID in Wax metadata.
-    package var id: String
+    public var id: String
     /// Local file URL for the image bytes.
-    package var url: URL
+    public var url: URL
     /// Optional capture date when no image metadata timestamp is available.
-    package var captureDate: Date?
+    public var captureDate: Date?
 
-    package init(id: String, url: URL, captureDate: Date? = nil) {
+    public init(id: String, url: URL, captureDate: Date? = nil) {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         self.id = trimmed.isEmpty ? url.standardizedFileURL.absoluteString : trimmed
         self.url = url
@@ -109,7 +109,7 @@ package struct PhotoFile: Sendable, Equatable {
 }
 
 /// Errors thrown during photo ingestion.
-package enum PhotoIngestError: Error, Sendable, Equatable {
+public enum PhotoIngestError: Error, Sendable, Equatable {
     case fileMissing(id: String, url: URL)
     case invalidImage(reason: String)
     case embedderDimensionMismatch(expected: Int, got: Int)
@@ -118,31 +118,31 @@ package enum PhotoIngestError: Error, Sendable, Equatable {
 /// A Sendable wrapper for query-time images.
 ///
 /// The framework decodes this into a `CGImage` internally for embedding.
-package struct PhotoQueryImage: Sendable, Equatable {
-    package enum Format: Sendable, Equatable {
+public struct PhotoQueryImage: Sendable, Equatable {
+    public enum Format: Sendable, Equatable {
         case jpeg
         case png
         case heic
         case other(uti: String)
     }
 
-    package var data: Data
-    package var format: Format
+    public var data: Data
+    public var format: Format
 
-    package init(data: Data, format: Format) {
+    public init(data: Data, format: Format) {
         self.data = data
         self.format = format
     }
 }
 
 /// A Sendable wrapper for returning image pixels as part of a RAG context.
-package struct PhotoPixel: Sendable, Equatable {
-    package var data: Data
-    package var format: PhotoQueryImage.Format
-    package var width: Int
-    package var height: Int
+public struct PhotoPixel: Sendable, Equatable {
+    public var data: Data
+    public var format: PhotoQueryImage.Format
+    public var width: Int
+    public var height: Int
 
-    package init(data: Data, format: PhotoQueryImage.Format, width: Int, height: Int) {
+    public init(data: Data, format: PhotoQueryImage.Format, width: Int, height: Int) {
         self.data = data
         self.format = format
         self.width = max(0, width)
@@ -151,13 +151,13 @@ package struct PhotoPixel: Sendable, Equatable {
 }
 
 /// Normalized rectangle in [0, 1] coordinates with **top-left** origin.
-package struct PhotoNormalizedRect: Sendable, Equatable {
-    package var x: Double
-    package var y: Double
-    package var width: Double
-    package var height: Double
+public struct PhotoNormalizedRect: Sendable, Equatable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
 
-    package init(x: Double, y: Double, width: Double, height: Double) {
+    public init(x: Double, y: Double, width: Double, height: Double) {
         self.x = x
         self.y = y
         self.width = width
@@ -165,23 +165,24 @@ package struct PhotoNormalizedRect: Sendable, Equatable {
     }
 }
 
-package struct PhotoQuery: Sendable, Equatable {
-    package var text: String?
-    package var image: PhotoQueryImage?
-    package var timeRange: ClosedRange<Date>?
-    package var location: PhotoLocationQuery?
-    package var filters: PhotoFilters
-    package var resultLimit: Int
-    package var contextBudget: ContextBudget
+/// A photo recall query with optional text, image, time, location, and result-budget constraints.
+public struct PhotoQuery: Sendable, Equatable {
+    public var text: String?
+    public var image: PhotoQueryImage?
+    public var timeRange: ClosedRange<Date>?
+    public var location: PhotoLocationQuery?
+    public var filters: PhotoFilters
+    public var resultLimit: Int
+    public var contextBudget: PhotoContextBudget
 
-    package init(
+    public init(
         text: String? = nil,
         image: PhotoQueryImage? = nil,
         timeRange: ClosedRange<Date>? = nil,
         location: PhotoLocationQuery? = nil,
         filters: PhotoFilters = .none,
         resultLimit: Int = 12,
-        contextBudget: ContextBudget = .default
+        contextBudget: PhotoContextBudget = .default
     ) {
         self.text = text
         self.image = image
@@ -193,56 +194,58 @@ package struct PhotoQuery: Sendable, Equatable {
     }
 }
 
-package struct PhotoRAGContext: Sendable, Equatable {
-    package struct Diagnostics: Sendable, Equatable {
-        package var usedTextTokens: Int
-        package var degradedResultCount: Int
-        package var clarifyingQuestion: String?
+/// Ranked photo recall result assembled for a ``PhotoQuery``.
+public struct PhotoRAGContext: Sendable, Equatable {
+    public struct Diagnostics: Sendable, Equatable {
+        public var usedTextTokens: Int
+        public var degradedResultCount: Int
+        public var clarifyingQuestion: String?
 
-        package init(usedTextTokens: Int = 0, degradedResultCount: Int = 0, clarifyingQuestion: String? = nil) {
+        public init(usedTextTokens: Int = 0, degradedResultCount: Int = 0, clarifyingQuestion: String? = nil) {
             self.usedTextTokens = max(0, usedTextTokens)
             self.degradedResultCount = max(0, degradedResultCount)
             self.clarifyingQuestion = clarifyingQuestion
         }
     }
 
-    package var query: PhotoQuery
-    package var items: [PhotoRAGItem]
-    package var diagnostics: Diagnostics
+    public var query: PhotoQuery
+    public var items: [PhotoRAGItem]
+    public var diagnostics: Diagnostics
 
-    package init(query: PhotoQuery, items: [PhotoRAGItem], diagnostics: Diagnostics = .init()) {
+    public init(query: PhotoQuery, items: [PhotoRAGItem], diagnostics: Diagnostics = .init()) {
         self.query = query
         self.items = items
         self.diagnostics = diagnostics
     }
 }
 
-package struct PhotoRAGItem: Sendable, Equatable {
-    package enum Evidence: Sendable, Equatable {
+/// A single ranked photo hit in a ``PhotoRAGContext``.
+public struct PhotoRAGItem: Sendable, Equatable {
+    public enum Evidence: Sendable, Equatable {
         case vector
         case text(snippet: String?)
         case region(bbox: PhotoNormalizedRect)
         case timeline
     }
 
-    package struct RegionContext: Sendable, Equatable {
-        package var bbox: PhotoNormalizedRect
-        package var crop: PhotoPixel?
+    public struct RegionContext: Sendable, Equatable {
+        public var bbox: PhotoNormalizedRect
+        public var crop: PhotoPixel?
 
-        package init(bbox: PhotoNormalizedRect, crop: PhotoPixel? = nil) {
+        public init(bbox: PhotoNormalizedRect, crop: PhotoPixel? = nil) {
             self.bbox = bbox
             self.crop = crop
         }
     }
 
-    package var assetID: String
-    package var score: Float
-    package var evidence: [Evidence]
-    package var summaryText: String
-    package var thumbnail: PhotoPixel?
-    package var regions: [RegionContext]
+    public var assetID: String
+    public var score: Float
+    public var evidence: [Evidence]
+    public var summaryText: String
+    public var thumbnail: PhotoPixel?
+    public var regions: [RegionContext]
 
-    package init(
+    public init(
         assetID: String,
         score: Float,
         evidence: [Evidence],

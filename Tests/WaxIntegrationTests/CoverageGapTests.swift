@@ -167,7 +167,7 @@ func photoRAGDeleteRemovesAssetFrames() async throws {
             location: nil,
             filters: .none,
             resultLimit: 10,
-            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
         )
 
         let ctx = try await orchestrator.recall(query)
@@ -441,7 +441,7 @@ func photoRAGRecallOnEmptyStoreReturnsEmptyContext() async throws {
             location: nil,
             filters: .none,
             resultLimit: 5,
-            contextBudget: ContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+            contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
         )
 
         let ctx = try await orchestrator.recall(query)

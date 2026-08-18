@@ -8,7 +8,7 @@ Placeholders:
 - <TOP_K>
 
 Steps:
-1. Open Memory (built-in MiniLM is auto-wired on iOS 18/macOS 15+).
+1. Open Memory (`.automatic` loads MiniLM in the background and live-attaches).
 2. Search with `.hybrid(alpha:)`.
 3. Check `results.diagnostics` to confirm the vector lane actually ran.
 

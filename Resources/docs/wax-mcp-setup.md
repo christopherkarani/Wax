@@ -1,12 +1,13 @@
 # Wax MCP Setup
 
+## Pick a host
+
+- **Claude Code only:** one-command below (stdio).
+- **Codex, Cursor, Hermes, or more than one client:** one shared HTTP server, then a per-host snippet. See [wax-mcp-hosts.md](wax-mcp-hosts.md).
+
 ## One-command install into Claude Code
 
-```bash
-npx -y waxmcp@latest mcp install --scope user
-```
-
-From a local checkout (development):
+From a checkout (this is the real Claude registrar):
 
 ```bash
 swift run --traits MCPServer wax-cli mcp install --scope user
@@ -23,6 +24,8 @@ This will:
 
 Skip skill staging with `--skip-skill` if you only want the MCP server.
 
+The npm launcher (`npx waxmcp`) **serves** MCP. It does not implement `mcp install --scope`. Use `wax-cli mcp install` for Claude, or [wax-mcp-hosts.md](wax-mcp-hosts.md) for everyone else.
+
 ## How agents learn the playbook
 
 Wax teaches agents at three layers:
@@ -33,7 +36,7 @@ Wax teaches agents at three layers:
 | `wax-mcp` skill | Hosts that load skills | Full operator playbook + install notes |
 | Project rules (`CLAUDE.md` / `AGENTS.md`) | Always-on project instructions | Same workflow rules as a paste block |
 
-You usually only need step 1. Use the skill or project rules when the host ignores MCP instructions or you want stronger always-on enforcement.
+You usually only need the Claude one-command, or the HTTP + host snippet in [wax-mcp-hosts.md](wax-mcp-hosts.md). Use the skill or project rules when the host ignores MCP instructions.
 
 ### Skill: agent operator vs Swift framework
 
@@ -56,28 +59,13 @@ The published `waxmcp` npm package also ships `skills/wax-mcp` so installs do no
 
 ## Recommended project rules
 
-Paste this into your repo prompt, `CLAUDE.md`, or `AGENTS.md` after installing Wax:
+Do not invent a third playbook. Copy the fences from
+[`Resources/skills/public/wax-mcp/references/project-rules.md`](../skills/public/wax-mcp/references/project-rules.md):
 
-```text
-Use the Wax MCP server for persistent memory in this repo.
+- **AGENTS.md / CLAUDE.md / Cursor rules** — full operator block
+- **Hermes / OpenClaw `SOUL.md`** — short Memory section; append, do not replace the soul
 
-Workflow rules:
-- At session start, call `handoff_latest` first to load prior context, then call `session_start` once and keep the returned `session_id`. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
-- Use `remember` to store decisions, discoveries, and short factual notes. If the memory is session-scoped, pass `session_id` as a top-level argument. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits. `recall` with `session_id` merges that session with durable long-term memory.
-- Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-- Use `handoff` near the end of the session with `content`, optional `project`, and `pending_tasks`, then call `session_end`.
-- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
-- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
-
-Behavior expectations:
-- Read existing handoffs and recall results before asking me to restate prior context.
-- Keep memory writes concise, factual, and scoped to the task.
-- When a cross-session result looks relevant, cite the provenance metadata so we know which session store it came from.
-```
-
-The same text ships in `Resources/skills/public/wax-mcp/references/project-rules.md`.
+The README [Agent Quick Start](../../README.md#agent-quick-start) shows both as copy-paste `<details>`.
 
 ## Run doctor
 
@@ -129,9 +117,10 @@ and the operator skill at:
 3. `skills/wax-mcp/`
 
 For users of the published package, no local Wax build is required.
-Running `npx -y waxmcp@latest mcp install --scope user` stages those bundled artifacts into a
-stable local runtime directory and registers the staged `wax-mcp` binary, so steady-state
-Claude/Codex sessions do not depend on raw `npx`.
+Stage binaries with `npx -y waxmcp@latest install`, then either
+`swift run --traits MCPServer wax-cli mcp install --scope user` (Claude stdio)
+or the shared HTTP path in [wax-mcp-hosts.md](wax-mcp-hosts.md).
+Steady-state sessions should call the staged `wax-mcp` binary, not raw `npx`.
 
 For local development:
 

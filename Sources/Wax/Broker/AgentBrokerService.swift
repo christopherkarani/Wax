@@ -21,11 +21,15 @@ package actor AgentBrokerService {
     let sessionRootURL: URL
     let corpusStoreURL: URL
     let noEmbedder: Bool
+    let requireVector: Bool
     let embedderChoice: String
     let embedderTuning: CommandLineEmbedderRuntimeTuning
     let enableAccessStatsScoring: Bool
     let scopeContext: MemoryScopeContext
     let promotionSettings: BrokerPromotionSettings
+    let embeddingRequest: EmbeddingOpenRequest
+    let readiness: EmbeddingReadiness
+    let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     var activeSessions: [UUID: SessionState] = [:]
     var pendingRememberWrites: [PendingRememberWrite] = []
@@ -38,11 +42,14 @@ package actor AgentBrokerService {
         requireVector: Bool,
         enableAccessStatsScoring: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
-        embedderOverride: (any EmbeddingProvider)? = nil
+        embedderOverride: (any EmbeddingProvider)? = nil,
+        readiness: EmbeddingReadiness = .shared,
+        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
         self.noEmbedder = noEmbedder
+        self.requireVector = requireVector
         self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
         self.enableAccessStatsScoring = enableAccessStatsScoring
@@ -58,38 +65,46 @@ package actor AgentBrokerService {
         let corpusFileName = ".corpus-\(Self.stableHash(longTermStoreURL.path)).wax"
         self.corpusStoreURL = sessionRootURL.deletingLastPathComponent().appendingPathComponent(corpusFileName)
 
-        let embedder: (any EmbeddingProvider)?
+        if requireVector, noEmbedder {
+            throw BrokerStartupError("Vector search required but --no-embedder was set.")
+        }
+        let request: EmbeddingOpenRequest
         if let embedderOverride {
-            embedder = embedderOverride
+            request = .custom(embedderOverride)
         } else {
-            embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-                noEmbedder: noEmbedder,
-                embedderChoice: embedderChoice,
-                tuning: embedderTuning
-            )
-        }
-        if requireVector {
-            if noEmbedder {
-                throw BrokerStartupError("Vector search required but --no-embedder was set.")
-            }
-            if embedder == nil {
-                throw BrokerStartupError("Vector search required but the embedding provider is unavailable.")
+            do {
+                request = try HostEmbeddingReadiness.request(
+                    noEmbedder: noEmbedder,
+                    requireVector: requireVector,
+                    embedderChoice: embedderChoice,
+                    options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+                )
+            } catch {
+                throw BrokerStartupError(error.localizedDescription)
             }
         }
+        self.embeddingRequest = request
+        self.readiness = readiness
+        self.factoryOverride = factoryOverride
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
+        do {
+            self.longTermMemory = try await EmbeddingReadinessBinding.openOrchestrator(
+                at: longTermStoreURL,
+                config: config,
+                request: request,
+                waxOptions: CommandLineEmbedderFactory.waxOptions(),
+                readiness: readiness,
+                factoryOverride: factoryOverride
+            )
+        } catch {
+            if requireVector {
+                throw BrokerStartupError("Vector search required but the embedding provider is unavailable.")
+            }
+            throw error
         }
-        self.longTermMemory = try await MemoryOrchestrator(
-            at: longTermStoreURL,
-            config: config,
-            embedder: embedder,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
-        )
     }
 
     package func close() async throws {
@@ -305,11 +320,12 @@ extension AgentBrokerService {
         }
 
         let before = await memory.runtimeStats()
-        if !noEmbedder, before.vectorSearchEnabled, !before.queryEmbedderReady {
+        if !noEmbedder, before.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() {
             let capturedSessionID = sessionID
             let capturedContent = content
             let capturedMetadata = metadata
             let task = Task<Void, Error> {
+                try await memory.waitUntilReadyForRemember()
                 _ = try await self.completeRemember(
                     memory: memory,
                     content: capturedContent,
@@ -398,33 +414,22 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
         }
         let effectiveTopK = requestedTopK ?? limit
-        let embeddingPolicy: MemoryOrchestrator.QueryEmbeddingPolicy = switch mode {
-        case .text?:
-            .never
-        case .vector?:
-            .always
-        case .hybrid?, nil:
-            .ifAvailable
-        }
-
         let durableExecution = try await longTermMemory.recallExecution(
             query: query,
-            embeddingPolicy: embeddingPolicy,
+            mode: mode,
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange,
-            topK: effectiveTopK,
-            mode: mode
+            topK: effectiveTopK
         )
         let sessionExecution: MemoryOrchestrator.RecallExecution?
         var sessionItems: [RAGContext.Item] = []
         if let sessionMemory {
             let execution = try await sessionMemory.recallExecution(
                 query: query,
-                embeddingPolicy: embeddingPolicy,
+                mode: mode,
                 frameFilter: parsedFilters.frameFilter,
                 timeRange: parsedFilters.timeRange,
-                topK: effectiveTopK,
-                mode: mode
+                topK: effectiveTopK
             )
             sessionExecution = execution
             sessionItems = execution.context.items
@@ -1009,6 +1014,7 @@ extension AgentBrokerService {
             "diskBytes": .from(diskBytes),
             "storePath": .string(stats.storeURL.path),
             "vectorSearchEnabled": .from(stats.vectorSearchEnabled),
+            "embeddingStatus": .string(stats.embeddingStatus.wireName),
             "queryEmbeddingAvailable": .from(
                 stats.vectorSearchEnabled && stats.queryEmbedderReady && !stats.queryEmbeddingCircuitOpen
             ),
@@ -1550,8 +1556,8 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
         }
         let corpusNoEmbedder: Bool = switch mode {
-        case .text: true
-        case .vector: false
+        case .textOnly: true
+        case .vectorOnly: false
         case .hybrid: noEmbedder
         }
         let buildSummary: BrokerCorpusBuildSummary?
@@ -1876,7 +1882,7 @@ extension AgentBrokerService {
 
     func layeredMemorySearch(
         query: String,
-        mode: MemoryOrchestrator.DirectSearchMode,
+        mode: Memory.RetrievalMode,
         topK: Int,
         sessionID: UUID?,
         includeWorking: Bool,
@@ -2074,7 +2080,7 @@ extension AgentBrokerService {
     func assembleCompactContext(
         query: String,
         sessionID: UUID?,
-        mode: MemoryOrchestrator.DirectSearchMode,
+        mode: Memory.RetrievalMode,
         tokenBudget: Int,
         maxItems: Int
     ) async throws -> CompactContextAssembly {
@@ -2086,11 +2092,10 @@ extension AgentBrokerService {
         if let sessionID, let state = activeSessions[sessionID] {
             let execution = try await state.memory.recallExecution(
                 query: query,
-                embeddingPolicy: mode == .text ? .never : .ifAvailable,
+                mode: mode,
                 frameFilter: nil,
                 timeRange: nil,
-                topK: min(4, maxItems),
-                mode: mode
+                topK: min(4, maxItems)
             )
             for item in execution.context.items {
                 let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: state.memory)
@@ -2136,11 +2141,10 @@ extension AgentBrokerService {
 
         let longExecution = try await longTermMemory.recallExecution(
             query: query,
-            embeddingPolicy: mode == .text ? .never : .ifAvailable,
+            mode: mode,
             frameFilter: nil,
             timeRange: nil,
-            topK: min(4, maxItems),
-            mode: mode
+            topK: min(4, maxItems)
         )
         for item in longExecution.context.items {
             let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: longTermMemory)
@@ -2177,11 +2181,10 @@ extension AgentBrokerService {
             ) { memory in
                 let items = try await memory.recallExecution(
                     query: query,
-                    embeddingPolicy: mode == .text ? .never : .ifAvailable,
+                    mode: mode,
                     frameFilter: nil,
                     timeRange: nil,
-                    topK: 2,
-                    mode: mode
+                    topK: 2
                 ).context.items
                 var hits: [LayeredMemoryHit] = []
                 hits.reserveCapacity(items.count)
@@ -2470,6 +2473,7 @@ extension AgentBrokerService {
         try FileManager.default.removeItem(at: url)
     }
 
+
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
         guard let sessionID else {
             return longTermMemory
@@ -2488,24 +2492,17 @@ extension AgentBrokerService {
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = false
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
-        }
-        return try await MemoryOrchestrator(
+        return try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
-            embedder: embedder,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
+            request: embeddingRequest,
+            waxOptions: CommandLineEmbedderFactory.waxOptions(),
+            readiness: readiness,
+            factoryOverride: factoryOverride
         )
     }
 
@@ -2515,24 +2512,23 @@ extension AgentBrokerService {
         noEmbedder: Bool,
         body: (MemoryOrchestrator) async throws -> T
     ) async throws -> T {
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
-        }
-        let memory = try await MemoryOrchestrator(
+        let request = try HostEmbeddingReadiness.request(
+            noEmbedder: noEmbedder,
+            requireVector: false,
+            embedderChoice: embedderChoice,
+            options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+        )
+        let memory = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
-            embedder: embedder,
-            waxOptions: CommandLineEmbedderFactory.waxOptions()
+            request: request,
+            waxOptions: CommandLineEmbedderFactory.waxOptions(),
+            readiness: readiness,
+            factoryOverride: noEmbedder ? nil : factoryOverride
         )
         do {
             let result = try await body(memory)
@@ -2794,7 +2790,7 @@ extension AgentBrokerService {
         )
     }
 
-    func parseRecallMode(_ args: BrokerArguments) throws -> MemoryOrchestrator.DirectSearchMode? {
+    func parseRecallMode(_ args: BrokerArguments) throws -> Memory.RetrievalMode? {
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let alpha = try args.optionalDouble("alpha")
 
@@ -2810,9 +2806,9 @@ extension AgentBrokerService {
 
         switch modeRaw {
         case "text":
-            return .text
+            return .textOnly
         case "vector":
-            return .vector
+            return .vectorOnly
         case "hybrid":
             return .hybrid(alpha: try validatedHybridAlpha(alpha ?? 0.5))
         default:
@@ -2823,7 +2819,7 @@ extension AgentBrokerService {
     func parseSearchMode(
         modeRaw: String?,
         alpha: Double?
-    ) throws -> MemoryOrchestrator.DirectSearchMode {
+    ) throws -> Memory.RetrievalMode {
         let resolvedMode = modeRaw ?? "text"
         if alpha != nil, resolvedMode != "hybrid" {
             throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
@@ -2831,9 +2827,9 @@ extension AgentBrokerService {
         let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
         switch resolvedMode {
         case "text":
-            return .text
+            return .textOnly
         case "vector":
-            return .vector
+            return .vectorOnly
         case "hybrid":
             return .hybrid(alpha: validatedAlpha)
         default:

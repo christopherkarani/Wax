@@ -139,7 +139,7 @@ func diagnosticsExample(memory: Memory) async throws {
     }
 
     let stats = await memory.stats()
-    print(stats.vectorSearchEnabled, stats.queryEmbedderConfigured)
+    print(stats.vectorSearchEnabled, stats.queryEmbedderConfigured, stats.embeddingStatus)
 }
 ```
 

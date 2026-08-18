@@ -38,8 +38,14 @@ waxIntegrationLinuxExcludes = [
     "RAGConfigClampingTests.swift",
     "RememberDedupBenchmarks.swift",
     "SessionRuntimeStatsBenchmarks.swift",
+    "StructuredMemoryCRUDTests.swift",
+    "StructuredMemorySchemaTests.swift",
     "SurrogateSourceBenchmarks.swift",
+    "TextSearchEngineTests.swift",
     "UnifiedSearchTests.swift",
+    "VersionRelationTests.swift",
+    "BertTokenizerFastPathTests.swift",
+    "HybridVectorEngineBenchmark.swift",
     "VectorSearchEngineTests.swift",
     "VideoRAGDeleteVectorDurabilityTests.swift",
     "VideoRAGFileIngestIntegrationTests.swift",
@@ -238,6 +244,7 @@ let package = Package(
             dependencies: [
                 "Wax",
                 "WaxCore",
+                "WaxVectorSearch",
                 .product(
                     name: "MCP",
                     package: "swift-sdk",
@@ -391,6 +398,7 @@ let package = Package(
             name: "WaxCLITests",
             dependencies: [
                 "Wax",
+                "WaxCore",
                 "wax-cli",
                 .product(name: "Testing", package: "swift-testing"),
             ],

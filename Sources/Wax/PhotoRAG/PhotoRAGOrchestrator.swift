@@ -492,8 +492,8 @@ package actor PhotoRAGOrchestrator {
 
         for frameId in toDelete {
             try await wax.delete(frameId: frameId)
-            try await session.removeVector(frameId: frameId)
         }
+        try await removeSearchIndexes(frameIds: toDelete)
         try await session.commit()
         try await rebuildIndex()
     }
@@ -511,14 +511,31 @@ package actor PhotoRAGOrchestrator {
             ids.append(contentsOf: refs.regions)
             ids.append(contentsOf: refs.ocrBlocks)
         }
-        for frameId in ids {
+        try await removeSearchIndexes(frameIds: ids)
+    }
+
+    /// Drops vector and text postings for frames that must no longer be searchable.
+    /// Text cleanup is required: otherwise BM25 keeps ranking deleted/superseded
+    /// OCR frames and live re-ingests of the same asset disappear from recall.
+    private func removeSearchIndexes(frameIds: [UInt64]) async throws {
+        for frameId in frameIds {
             try await session.removeVector(frameId: frameId)
+            try await session.removeText(frameId: frameId)
         }
     }
 
     /// Flush pending writes to disk.
     package func flush() async throws {
         try await session.commit()
+    }
+
+    /// Flush pending writes, then close the session and the underlying store.
+    ///
+    /// The orchestrator must not be used after `close()` returns.
+    package func close() async throws {
+        try await flush()
+        await session.close()
+        try await wax.close()
     }
 
     // MARK: - Ingest internals
@@ -687,7 +704,7 @@ package actor PhotoRAGOrchestrator {
             addDerived(kind: FrameKind.tags, text: derivedTagsText, searchable: true)
         }
 
-        // OCR block frames (not indexed) + one summary frame (indexed)
+        // OCR summary + per-block frames; both are text-indexed.
         if !ocrBlocks.isEmpty {
             // Summary
             let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
@@ -695,7 +712,8 @@ package actor PhotoRAGOrchestrator {
                 addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
             }
 
-            // Blocks
+            // Blocks — also text-indexed so serials and short OCR tokens stay findable
+            // even when they are not selected into the summary.
             for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
@@ -704,10 +722,14 @@ package actor PhotoRAGOrchestrator {
                     meta.entries["photo.ocr.language"] = lang
                 }
                 let text = block.text
+                let idx = derivedContents.count
                 derivedContents.append(Data(text.utf8))
                 var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
                 subset.role = FrameRole.blob
                 derivedOptions.append(subset)
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    derivedTextsForIndex.append((frameIndex: idx, text: text))
+                }
             }
         }
 
@@ -961,10 +983,14 @@ package actor PhotoRAGOrchestrator {
                 if let lang = block.language {
                     meta.entries["photo.ocr.language"] = lang
                 }
+                let idx = derivedContents.count
                 derivedContents.append(Data(block.text.utf8))
                 var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
                 subset.role = FrameRole.blob
                 derivedOptions.append(subset)
+                if !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    derivedTextsForIndex.append((frameIndex: idx, text: block.text))
+                }
             }
         }
 
@@ -1162,10 +1188,9 @@ package actor PhotoRAGOrchestrator {
         await sweepRetiredVectors(retiredVectorIds)
     }
 
-    /// Removes vectors for frames outside the live index (superseded trees, deleted
-    /// frames). Stores written before vector cleanup existed can otherwise keep serving
-    /// ghost hits for retired frames. Best-effort: a sweep failure must not block
-    /// opening or reindexing the store.
+    /// Removes vectors and text postings for frames outside the live index
+    /// (superseded trees, deleted frames). Best-effort: a sweep failure must not
+    /// block opening or reindexing the store.
     private func sweepRetiredVectors(_ frameIds: Set<UInt64>) async {
         guard !frameIds.isEmpty else { return }
         for frameId in frameIds {
@@ -1176,6 +1201,15 @@ package actor PhotoRAGOrchestrator {
                     error,
                     context: "PhotoRAG retired-vector sweep",
                     fallback: "stale vector may remain in the committed index"
+                )
+            }
+            do {
+                try await session.removeText(frameId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "PhotoRAG retired-text sweep",
+                    fallback: "stale text posting may remain in the committed index"
                 )
             }
         }

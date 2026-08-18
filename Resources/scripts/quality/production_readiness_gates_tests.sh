@@ -71,6 +71,58 @@ assert_rejects_skip_output \
   "swift-testing-test-skipped" \
   "Test testRequiresFixture() skipped: requires local fixture"
 
+assert_accepts_expected_skip() {
+  local name="$1"
+  local output="$2"
+  local log_file="$TMP_DIR/$name.log"
+  printf '%s\n' "$output" >"$log_file"
+
+  local captured
+  if ! captured="$(assert_no_skips "$log_file")"; then
+    echo "FAIL: expected allowlisted skip to pass for $name" >&2
+    return 1
+  fi
+  if [[ "$captured" != *"EXPECTED_SKIPS:"* ]]; then
+    echo "FAIL: expected allowlisted skip acknowledgement for $name, got: $captured" >&2
+    return 1
+  fi
+}
+
+assert_accepts_expected_skip \
+  "arctic-env-gated" \
+  'Suite ArcticEmbedderTests skipped: "Set WAX_TEST_ARCTIC=1 to run Arctic embedder tests"'
+
+assert_accepts_expected_skip \
+  "minilm-env-gated" \
+  'Test miniLMEmbedderProducesExpectedDimensions() skipped: "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"'
+
+assert_accepts_expected_skip \
+  "minilm-fixture-regen" \
+  'Test generateMiniLMBaselineFixture() skipped: "Set WAX_GENERATE_MINILM_FIXTURES=1 to regenerate MiniLM baseline fixtures"'
+
+assert_accepts_expected_skip \
+  "waxrepo-trait-gated" \
+  'Test waxRepoSearchQueryRunsOneShotAndExits() skipped: "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"'
+
+assert_accepts_expected_skip \
+  "mcp-trait-gated" \
+  'Test mcpDoctorRecognizesRenamedToolSurface() skipped: "Build with --traits default,MCPServer to run wax-mcp smoke tests"'
+
+skip_regex="$(full_gate_skip_regex)"
+while IFS= read -r class_name; do
+  [[ -n "$class_name" ]] || continue
+  if [[ ! "$class_name" =~ $skip_regex ]]; then
+    echo "FAIL: full-gate skip regex does not cover XCTest class $class_name" >&2
+    echo "regex: $skip_regex" >&2
+    exit 1
+  fi
+done < <(
+  grep -R --include='*.swift' -h -E 'final class [A-Za-z0-9_]+(Benchmark|Benchmarks|BenchmarkHarness|StabilityTests): XCTestCase' \
+    "$ROOT_DIR/Tests" \
+    | sed -E 's/.*final class ([A-Za-z0-9_]+): XCTestCase.*/\1/' \
+    | sort -u
+)
+
 DEFAULT_TEST_LIST="$TMP_DIR/default-tests.txt"
 cat >"$DEFAULT_TEST_LIST" <<'EOF'
 waxTests.PackageTraitManifestTests/waxMCPProductEnablesMiniLMCompileDefine()

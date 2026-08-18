@@ -79,12 +79,36 @@ public struct BuiltInEmbeddingProviderOptions: Sendable, Equatable, Codable {
             computeUnitsOrder: computeUnitsOrder.map(\.commandLineValue)
         )
     }
+
+    package init(tuning: CommandLineEmbedderRuntimeTuning) {
+        self.init(
+            batchSize: tuning.batchSize,
+            prewarmBatchSize: tuning.prewarmBatchSize,
+            allowLowPrecisionGPU: tuning.allowLowPrecisionGPU,
+            timeoutSeconds: tuning.timeoutSeconds,
+            computeUnitsOrder: tuning.computeUnitsOrder.map { unit in
+                switch unit {
+                case .cpuOnly:
+                    .cpuOnly
+                case .cpuAndGPU:
+                    .cpuAndGPU
+                case .cpuAndNeuralEngine:
+                    .cpuAndNeuralEngine
+                case .all:
+                    .all
+                }
+            }
+        )
+    }
 }
 
 /// Errors thrown while constructing built-in Wax embedding providers.
 public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
     /// The requested provider is unavailable in the current build or platform.
     case unavailable(BuiltInEmbeddingProvider)
+    /// The provider did not finish compiling within the configured wait timeout.
+    /// Compile work is kept and a later wait can reuse it.
+    case timedOut(BuiltInEmbeddingProvider)
 
     public var errorDescription: String? {
         switch self {
@@ -96,6 +120,8 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
                 "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
+        case .timedOut(let provider):
+            return "\(provider.rawValue) embeddings timed out while loading. Retry; the compile is kept and a later open can reuse it."
         }
     }
 }
@@ -111,15 +137,15 @@ public enum BuiltInEmbeddings {
         _ provider: BuiltInEmbeddingProvider,
         options: BuiltInEmbeddingProviderOptions = .default
     ) async throws -> any EmbeddingProvider {
-        guard let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: false,
-            embedderChoice: provider.commandLineChoice,
-            tuning: options.tuning
-        ) else {
-            throw BuiltInEmbeddingProviderError.unavailable(provider)
+        do {
+            return try await EmbeddingReadiness.shared.compile(
+                key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
+                timeout: options.tuning.timeoutDuration
+            ) {
+                try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: false)
+            }
+        } catch is EmbeddingReadiness.WaitError {
+            throw BuiltInEmbeddingProviderError.timedOut(provider)
         }
-        // Materialize deferred CLI embedders and verify finite output before handoff.
-        _ = try await embedder.embed("wax")
-        return embedder
     }
 }

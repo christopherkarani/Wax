@@ -5,19 +5,10 @@ import WaxVectorSearch
 /// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
 package actor MemoryOrchestrator {
     /// Policy controlling when to compute query embeddings for vector search.
-    package enum QueryEmbeddingPolicy: Sendable, Equatable {
+    private enum QueryEmbeddingPolicy: Sendable, Equatable {
         case never
         case ifAvailable
         case always
-    }
-
-    /// Direct search mode for raw candidate retrieval.
-    package enum DirectSearchMode: Sendable, Equatable {
-        case text
-        case vector
-        case hybrid(alpha: Float)
-
-        package static let `default`: DirectSearchMode = .hybrid(alpha: 0.5)
     }
 
     package enum QueryEmbeddingState: String, Sendable, Equatable {
@@ -108,6 +99,7 @@ package actor MemoryOrchestrator {
         package var structuredMemoryEnabled: Bool
         package var accessStatsScoringEnabled: Bool
         package var embedderIdentity: EmbeddingIdentity?
+        package var embeddingStatus: EmbeddingStatus
 
         package init(
             frameCount: UInt64,
@@ -121,7 +113,8 @@ package actor MemoryOrchestrator {
             queryEmbeddingCircuitOpen: Bool,
             structuredMemoryEnabled: Bool,
             accessStatsScoringEnabled: Bool,
-            embedderIdentity: EmbeddingIdentity?
+            embedderIdentity: EmbeddingIdentity?,
+            embeddingStatus: EmbeddingStatus = .disabled
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -135,6 +128,7 @@ package actor MemoryOrchestrator {
             self.structuredMemoryEnabled = structuredMemoryEnabled
             self.accessStatsScoringEnabled = accessStatsScoringEnabled
             self.embedderIdentity = embedderIdentity
+            self.embeddingStatus = embeddingStatus
         }
     }
 
@@ -196,8 +190,17 @@ package actor MemoryOrchestrator {
     private let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
-    private let embedder: (any EmbeddingProvider)?
-    private let embeddingCache: EmbeddingMemoizer?
+    private var embedder: (any EmbeddingProvider)?
+    private var embeddingCache: EmbeddingMemoizer?
+    private var embeddingStatus: EmbeddingStatus
+    private var wroteWithoutEmbeddings = false
+    private var isClosed = false
+    private var readinessFollowTask: Task<Void, Never>?
+    package var searchSnapshotHoldForTesting: Duration? = nil
+
+    package func setSearchSnapshotHoldForTesting(_ duration: Duration?) {
+        searchSnapshotHoldForTesting = duration
+    }
     private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
@@ -210,6 +213,15 @@ package actor MemoryOrchestrator {
     private var queryEmbeddingCircuitOpen: Bool {
         guard let openedAt = queryEmbeddingCircuitOpenedAt else { return false }
         return ContinuousClock.now - openedAt < config.queryEmbeddingCircuitCooldown
+    }
+
+    private var requiresEmbedderForSave: Bool {
+        switch embeddingStatus {
+        case .active, .degraded, .unavailable:
+            true
+        case .disabled, .loading:
+            false
+        }
     }
     private var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
     private var lastStructuredSystemMs: Int64?
@@ -234,7 +246,8 @@ package actor MemoryOrchestrator {
         at url: URL,
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil,
-        waxOptions: WaxOptions = .init()
+        waxOptions: WaxOptions = .init(),
+        initialEmbeddingStatus: EmbeddingStatus? = nil
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
@@ -267,15 +280,38 @@ package actor MemoryOrchestrator {
         // Auto-disable vector search when no embedder is provided and no pre-existing
         // vector index exists. This lets the simple `MemoryOrchestrator(at:)` initializer
         // work out-of-the-box with text-only search instead of throwing an error.
+        // Callers that pass `initialEmbeddingStatus` own the missing-provider rule
+        // (index remains + unavailable / loading + live attach).
         var resolvedConfig = config
         let existingMemoryBinding = await wax.memoryBinding()
-        if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
+        var resolvedStatus: EmbeddingStatus
+        if let initialEmbeddingStatus {
+            resolvedStatus = initialEmbeddingStatus
+            if case .disabled = initialEmbeddingStatus {
+                resolvedConfig.enableVectorSearch = false
+            }
+        } else if resolvedConfig.enableVectorSearch, embedder == nil, await wax.committedVecIndexManifest() == nil {
             resolvedConfig.enableVectorSearch = false
+            resolvedStatus = .disabled
             WaxDiagnostics.logSwallowed(
                 WaxError.io("vector search requested but no EmbeddingProvider configured"),
                 context: "MemoryOrchestrator init",
                 fallback: "text-only search; Memory(at:) auto-wires the built-in MiniLM embedder on iOS 18/macOS 15+"
             )
+        } else if let embedder {
+            resolvedStatus = .active(embedder.identity)
+        } else if resolvedConfig.enableVectorSearch {
+            resolvedStatus = .unavailable(reason: "no embedding provider")
+        } else {
+            resolvedStatus = .disabled
+        }
+        if embedder != nil, await Self.storeHasUnembeddedChunks(wax) {
+            switch resolvedStatus {
+            case .active(let identity), .degraded(let identity, _):
+                resolvedStatus = .degraded(identity, reason: "some saved frames have no vectors")
+            default:
+                break
+            }
         }
         if let identity = embedder?.identity,
            let binding = existingMemoryBinding,
@@ -288,6 +324,7 @@ package actor MemoryOrchestrator {
         self.config = resolvedConfig
         self.ragBuilder = FastRAGContextBuilder()
         self.embedder = embedder
+        self.embeddingStatus = resolvedStatus
         self.embeddingCache = EmbeddingMemoizer.fromConfig(
             capacity: resolvedConfig.embeddingCacheCapacity,
             enabled: embedder != nil
@@ -412,7 +449,10 @@ package actor MemoryOrchestrator {
         }
 
         if useVectorSearch, localEmbedder == nil {
-            throw WaxError.missingEmbedder
+            if requiresEmbedderForSave {
+                throw WaxError.missingEmbedder
+            }
+            wroteWithoutEmbeddings = true
         }
 
         if chunkCount == 1 {
@@ -424,10 +464,7 @@ package actor MemoryOrchestrator {
             docOptions.searchText = chunk
 
             let chunkEmbedding: [Float]?
-            if useVectorSearch {
-                guard let localEmbedder else {
-                    throw WaxError.missingEmbedder
-                }
+            if useVectorSearch, let localEmbedder {
                 chunkEmbedding = try await Self.embedOne(
                     chunk,
                     embedder: localEmbedder,
@@ -533,7 +570,8 @@ package actor MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared batches, got \(preparedBatchCount)"
             )
         }
-        if useVectorSearch, preparedEmbeddingsByBatch.count != batchRanges.count {
+        let writeVectors = useVectorSearch && localEmbedder != nil
+        if writeVectors, preparedEmbeddingsByBatch.count != batchRanges.count {
             throw WaxError.io(
                 "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
@@ -567,7 +605,7 @@ package actor MemoryOrchestrator {
                 options.append(option)
             }
 
-            if useVectorSearch {
+            if writeVectors {
                 guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
                     throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
                 }
@@ -896,7 +934,6 @@ package actor MemoryOrchestrator {
     package func recall(query: String) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: .ifAvailable,
             frameFilter: nil,
             timeRange: nil,
             topK: nil,
@@ -907,7 +944,6 @@ package actor MemoryOrchestrator {
     package func recall(query: String, frameFilter: FrameFilter?) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: .ifAvailable,
             frameFilter: frameFilter,
             timeRange: nil,
             topK: nil,
@@ -919,28 +955,15 @@ package actor MemoryOrchestrator {
         return try await buildRecallContext(query: query, embedding: embedding)
     }
 
-    package func recall(query: String, embeddingPolicy: QueryEmbeddingPolicy) async throws -> RAGContext {
-        try await executeRecall(
-            query: query,
-            embeddingPolicy: embeddingPolicy,
-            frameFilter: nil,
-            timeRange: nil,
-            topK: nil,
-            requestedMode: nil
-        ).context
-    }
-
     package func recall(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
+        mode: Memory.RetrievalMode,
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
+        topK: Int? = nil
     ) async throws -> RAGContext {
         try await executeRecall(
             query: query,
-            embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: timeRange,
             topK: topK,
@@ -950,15 +973,13 @@ package actor MemoryOrchestrator {
 
     package func recallExecution(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
-        frameFilter: FrameFilter?,
-        timeRange: SearchTimeRange?,
-        topK: Int?,
-        mode: DirectSearchMode?
+        mode: Memory.RetrievalMode? = nil,
+        frameFilter: FrameFilter? = nil,
+        timeRange: SearchTimeRange? = nil,
+        topK: Int? = nil
     ) async throws -> RecallExecution {
         try await executeRecall(
             query: query,
-            embeddingPolicy: embeddingPolicy,
             frameFilter: frameFilter,
             timeRange: timeRange,
             topK: topK,
@@ -1019,12 +1040,14 @@ package actor MemoryOrchestrator {
     ///
     /// - Parameters:
     ///   - query: Query text.
-    ///   - mode: Text-only or hybrid retrieval.
+    ///   - mode: ``Memory/RetrievalMode`` — text-only, vector-only, or hybrid.
+    ///     Hybrid may fall back to text when the vector lane is unavailable.
+    ///     `vectorOnly` throws if vector search is disabled or no embedder is configured.
     ///   - topK: Maximum number of hits to return.
     /// - Returns: Ranked raw hits.
     package func search(
         query: String,
-        mode: DirectSearchMode = .default,
+        mode: Memory.RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1040,7 +1063,7 @@ package actor MemoryOrchestrator {
 
     package func searchExecution(
         query: String,
-        mode: DirectSearchMode = .default,
+        mode: Memory.RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1066,16 +1089,16 @@ package actor MemoryOrchestrator {
 
         let preference = config.vectorEnginePreference
 
-        let policy: QueryEmbeddingPolicy = switch mode {
-        case .text:
-            .never
-        case .vector:
-            .always
-        case .hybrid:
-            .ifAvailable
+        let snapshotEmbedder = embedderForCurrentSearch()
+        if let hold = searchSnapshotHoldForTesting {
+            try await Task.sleep(for: hold)
         }
-        let queryEmbedding = try await queryEmbeddingResult(for: trimmed, policy: policy)
-        let searchMode = Self.resolveSearchMode(
+        let queryEmbedding = try await queryEmbeddingResult(
+            for: trimmed,
+            policy: Self.queryEmbeddingPolicy(for: mode),
+            embedder: snapshotEmbedder
+        )
+        let searchMode = try Self.resolveSearchMode(
             requested: Self.searchMode(from: mode),
             embeddingAvailable: queryEmbedding.embedding != nil
         )
@@ -1132,26 +1155,43 @@ package actor MemoryOrchestrator {
             wal: walStats,
             storeURL: storeURL,
             vectorSearchEnabled: config.enableVectorSearch,
-            queryEmbedderConfigured: embedder != nil,
+            queryEmbedderConfigured: embeddingStatus.isQueryEmbedderConfigured,
             queryEmbedderReady: await isQueryEmbedderReady(),
             queryEmbeddingCircuitOpen: queryEmbeddingCircuitOpen,
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
-            embedderIdentity: embedder?.identity
+            embedderIdentity: embeddingStatus.identity,
+            embeddingStatus: embeddingStatus
         )
     }
 
-    /// True when query embedding can run now.
-    ///
-    /// A deferred command-line embedder is configured (`embedder != nil`) before
-    /// its inner provider has loaded. Cold remember must wait on this, not on
-    /// mere configuration.
+    /// True when query embedding can run now (``.active`` / ``.degraded``).
     package func isQueryEmbedderReady() async -> Bool {
-        guard let embedder else { return false }
-        if let readiness = embedder as? any QueryEmbedderReadiness {
-            return await readiness.isQueryEmbedderReady()
+        embeddingStatus.isQueryEmbedderConfigured
+    }
+
+    package func shouldDeferRememberUntilEmbedderReady() async -> Bool {
+        guard config.enableVectorSearch else { return false }
+        if case .loading = embeddingStatus { return true }
+        return false
+    }
+
+    /// Wait until automatic compile has attached, or throw if it failed.
+    ///
+    /// Do not call ``remember(_:metadata:)`` while status is ``.loading`` and
+    /// `embedder == nil` — that path persists text-only and is not backfilled.
+    package func waitUntilReadyForRemember() async throws {
+        if let readinessFollowTask {
+            await readinessFollowTask.value
         }
-        return true
+        switch embeddingStatus {
+        case .active, .degraded, .disabled:
+            return
+        case .loading:
+            throw WaxError.io("embedding provider is still loading")
+        case .unavailable(let reason):
+            throw WaxError.io(reason)
+        }
     }
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
@@ -1450,17 +1490,17 @@ package actor MemoryOrchestrator {
 
     private func executeRecall(
         query: String,
-        embeddingPolicy: QueryEmbeddingPolicy,
         frameFilter: FrameFilter?,
         timeRange: SearchTimeRange?,
         topK: Int?,
-        requestedMode: DirectSearchMode?
+        requestedMode: Memory.RetrievalMode?
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
         let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let embeddingPolicy = requestedMode.map(Self.queryEmbeddingPolicy(for:)) ?? .ifAvailable
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
-            let modeSummary = Self.modeSummary(requestedSearchMode)
+            let modeSummary = requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode)
             return RecallExecution(
                 context: RAGContext(query: query, items: [], totalTokens: 0),
                 requestedModeSummary: modeSummary,
@@ -1469,8 +1509,16 @@ package actor MemoryOrchestrator {
             )
         }
 
-        let queryEmbedding = try await queryEmbeddingResult(for: trimmedQuery, policy: embeddingPolicy)
-        let effectiveSearchMode = Self.resolveSearchMode(
+        let snapshotEmbedder = embedderForCurrentSearch()
+        if let hold = searchSnapshotHoldForTesting {
+            try await Task.sleep(for: hold)
+        }
+        let queryEmbedding = try await queryEmbeddingResult(
+            for: trimmedQuery,
+            policy: embeddingPolicy,
+            embedder: snapshotEmbedder
+        )
+        let effectiveSearchMode = try Self.resolveSearchMode(
             requested: requestedSearchMode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
@@ -1497,23 +1545,34 @@ package actor MemoryOrchestrator {
         let state: QueryEmbeddingState
     }
 
-    private static func searchMode(from mode: DirectSearchMode) -> SearchMode {
+    private static func queryEmbeddingPolicy(for mode: Memory.RetrievalMode) -> QueryEmbeddingPolicy {
         switch mode {
-        case .text:
+        case .textOnly:
+            .never
+        case .vectorOnly:
+            .always
+        case .hybrid:
+            .ifAvailable
+        }
+    }
+
+    private static func searchMode(from mode: Memory.RetrievalMode) -> SearchMode {
+        switch mode {
+        case .textOnly:
             .textOnly
-        case .vector:
+        case .vectorOnly:
             .vectorOnly
         case .hybrid(let alpha):
             .hybrid(alpha: clampHybridAlpha(alpha))
         }
     }
 
-    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) -> SearchMode {
+    private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) throws -> SearchMode {
         switch requested {
         case .textOnly:
             .textOnly
         case .vectorOnly where !embeddingAvailable:
-            .textOnly
+            throw WaxError.missingEmbedder
         case .vectorOnly:
             .vectorOnly
         case .hybrid where !embeddingAvailable:
@@ -1534,14 +1593,14 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private static func modeSummary(_ mode: DirectSearchMode) -> String {
+    private static func modeSummary(_ mode: Memory.RetrievalMode) -> String {
         switch mode {
-        case .text:
+        case .textOnly:
             return "text"
-        case .vector:
+        case .vectorOnly:
             return "vector"
         case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
+            return "hybrid(alpha=\(String(format: "%.3f", Double(clampHybridAlpha(alpha)))))"
         }
     }
 
@@ -1640,6 +1699,9 @@ package actor MemoryOrchestrator {
     }
 
     package func close() async throws {
+        isClosed = true
+        readinessFollowTask?.cancel()
+        readinessFollowTask = nil
         try await flush()
         if let enrichmentPipeline {
             do {
@@ -1922,12 +1984,115 @@ package actor MemoryOrchestrator {
     #endif
 
     private func queryEmbedding(for query: String, policy: QueryEmbeddingPolicy) async throws -> [Float]? {
-        try await queryEmbeddingResult(for: query, policy: policy).embedding
+        try await queryEmbeddingResult(
+            for: query,
+            policy: policy,
+            embedder: embedderForCurrentSearch()
+        ).embedding
+    }
+
+    private func embedderForCurrentSearch() -> (any EmbeddingProvider)? {
+        switch embeddingStatus {
+        case .active, .degraded:
+            embedder
+        case .disabled, .loading, .unavailable:
+            nil
+        }
+    }
+
+    package func followReadiness(_ session: EmbeddingReadinessSession) {
+        readinessFollowTask?.cancel()
+        readinessFollowTask = Task {
+            let result = await session.waitUntilCompileFinished()
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let provider):
+                await self.attachEmbedder(provider)
+            case .failure(let error):
+                self.markUnavailable(error.localizedDescription)
+            }
+        }
+    }
+
+    package func attachEmbedder(_ provider: any EmbeddingProvider) async {
+        guard !isClosed else { return }
+        if config.requireOnDeviceProviders {
+            do {
+                try ProviderValidation.validateOnDevice(
+                    [.init(name: "embedding provider", executionMode: provider.executionMode)],
+                    orchestratorName: "MemoryOrchestrator"
+                )
+            } catch {
+                markUnavailable(error.localizedDescription)
+                return
+            }
+        }
+        let binding = await wax.memoryBinding()
+        guard !isClosed else { return }
+        if let identity = provider.identity,
+           let binding,
+           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
+            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+            markUnavailable("memory binding mismatch with embedder identity (\(mismatch))")
+            return
+        }
+        if config.enableVectorSearch {
+            do {
+                try await session.ensureVectorEngine(dimensions: provider.dimensions)
+            } catch {
+                markUnavailable(error.localizedDescription)
+                return
+            }
+        }
+        guard !isClosed else { return }
+        embedder = provider
+        if embeddingCache == nil {
+            embeddingCache = EmbeddingMemoizer.fromConfig(
+                capacity: config.embeddingCacheCapacity,
+                enabled: true
+            )
+        }
+        let lacksVectors: Bool
+        if wroteWithoutEmbeddings {
+            lacksVectors = true
+        } else {
+            lacksVectors = await framesLackVectors()
+        }
+        guard !isClosed else { return }
+        if lacksVectors {
+            embeddingStatus = .degraded(provider.identity, reason: "some saved frames have no vectors")
+        } else {
+            embeddingStatus = .active(provider.identity)
+        }
+    }
+
+    package func markUnavailable(_ reason: String) {
+        embedder = nil
+        embeddingStatus = .unavailable(reason: reason)
+    }
+
+    package func markUnavailableIfStillLoading(_ reason: String) {
+        guard case .loading = embeddingStatus else { return }
+        embeddingStatus = .unavailable(reason: reason)
+    }
+
+    private func framesLackVectors() async -> Bool {
+        if wroteWithoutEmbeddings { return true }
+        return await Self.storeHasUnembeddedChunks(wax)
+    }
+
+    private static func storeHasUnembeddedChunks(_ wax: Wax) async -> Bool {
+        let chunks = await wax.liveChunkCount()
+        guard chunks > 0 else { return false }
+        let pending = UInt64(await wax.pendingEmbeddingMutations().count)
+        let indexed = await wax.committedVecIndexManifest()?.vectorCount ?? 0
+        return chunks > indexed + pending
     }
 
     private func queryEmbeddingResult(
         for query: String,
-        policy: QueryEmbeddingPolicy
+        policy: QueryEmbeddingPolicy,
+        embedder: (any EmbeddingProvider)?
     ) async throws -> QueryEmbeddingResult {
         switch policy {
         case .never:
@@ -1966,10 +2131,10 @@ package actor MemoryOrchestrator {
             }
         case .always:
             guard config.enableVectorSearch else {
-                throw WaxError.io("query embedding requested but vector search is disabled")
+                throw WaxError.featureDisabled(feature: "vector search")
             }
             guard let embedder else {
-                throw WaxError.io("query embedding requested but no EmbeddingProvider configured")
+                throw WaxError.missingEmbedder
             }
             guard !queryEmbeddingCircuitOpen else {
                 throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")

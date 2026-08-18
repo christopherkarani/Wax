@@ -260,7 +260,7 @@ extension Wax {
             let rankingDiagnostics: SearchResponse.RankingDiagnostics?
         }
 
-        let baseResults: [BaseResult]
+        var baseResults: [BaseResult]
         switch request.mode {
         case .textOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
@@ -430,6 +430,26 @@ extension Wax {
             }
         }
 
+        // For a lexical/vector query, `filters.frame_ids` is an allowlist of
+        // frames to consider, not only a post-filter on FTS hits. Deleted rows
+        // drop out of the text index after a durable reopen; still surface
+        // those IDs so include_deleted / include_superseded can return them.
+        // Constraint-only queries (no text) already rank via timeline — do not
+        // reinsert the allowlist in ID order and scramble that ranking.
+        let hasLexicalOrVectorQuery = (request.query?.isEmpty == false) || request.embedding != nil
+        if hasLexicalOrVectorQuery, let allowlist = filter.frameIds, !allowlist.isEmpty {
+            let seen = Set(baseResults.map(\.frameId))
+            for frameId in allowlist.sorted() where !seen.contains(frameId) {
+                baseResults.append(
+                    BaseResult(
+                        frameId: frameId,
+                        score: 0,
+                        sources: [],
+                        rankingDiagnostics: nil
+                    )
+                )
+            }
+        }
 
         struct PendingResult {
             let frameId: UInt64

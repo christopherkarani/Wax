@@ -1,0 +1,408 @@
+{
+  "theme": "North Harbor Workshop \u2014 week of 2026-08-10",
+  "store": "harbor-week.wax",
+  "counts": {
+    "images": 10,
+    "videos": 10,
+    "files": 10
+  },
+  "photos": [
+    {
+      "filename": "01-whiteboard-ship-friday.png",
+      "title": "Harbor whiteboard",
+      "tokens": [
+        "ship Friday",
+        "North Harbor",
+        "Offline only"
+      ],
+      "renderer": "whiteboard"
+    },
+    {
+      "filename": "02-nameplate-serial.png",
+      "title": "Bench radio nameplate",
+      "tokens": [
+        "WAX-HB-4419",
+        "Harbor Workshop"
+      ],
+      "renderer": "nameplate"
+    },
+    {
+      "filename": "03-receipt-cedar-loft.png",
+      "title": "Cedar Loft receipt",
+      "tokens": [
+        "Fog Latte",
+        "Cedar Loft"
+      ],
+      "renderer": "receipt"
+    },
+    {
+      "filename": "04-sticky-dock-code.png",
+      "title": "Dock-code sticky",
+      "tokens": [
+        "NH-19",
+        "Harbor Workshop"
+      ],
+      "renderer": "sticky"
+    },
+    {
+      "filename": "05-shipping-label.png",
+      "title": "ANE-7 shipping label",
+      "tokens": [
+        "PO-NH-8821",
+        "ANE-7"
+      ],
+      "renderer": "shipping"
+    },
+    {
+      "filename": "06-minilm-error.png",
+      "title": "MiniLM load error",
+      "tokens": [
+        "harbor-week.wax",
+        "MiniLM"
+      ],
+      "renderer": "terminal"
+    },
+    {
+      "filename": "07-calendar-hn-tape.png",
+      "title": "HN tape calendar card",
+      "tokens": [
+        "Record HN tape",
+        "Fri Aug 15"
+      ],
+      "renderer": "calendar"
+    },
+    {
+      "filename": "08-card-mira-chen.png",
+      "title": "Mira Chen card",
+      "tokens": [
+        "Mira Chen",
+        "northharbor.dev"
+      ],
+      "renderer": "bizcard"
+    },
+    {
+      "filename": "09-packing-slip.png",
+      "title": "Packing slip",
+      "tokens": [
+        "LOT NH-17",
+        "ANE-7"
+      ],
+      "renderer": "packing"
+    },
+    {
+      "filename": "10-lab-notebook.png",
+      "title": "Lab notebook",
+      "tokens": [
+        "Recall 50ms",
+        "vector ON"
+      ],
+      "renderer": "notebook"
+    }
+  ],
+  "videos": [
+    {
+      "filename": "01-standup-ship-friday.mp4",
+      "title": "Standup",
+      "spoken": "We ship Friday. Stay offline. No cloud index.",
+      "tokens": [
+        "ship Friday",
+        "offline"
+      ],
+      "still": "01-whiteboard-ship-friday.png"
+    },
+    {
+      "filename": "02-bench-serial.mp4",
+      "title": "Bench radio",
+      "spoken": "The bench radio serial is WAX-HB-4419. Harbor Workshop, left shelf.",
+      "tokens": [
+        "WAX-HB-4419",
+        "Harbor Workshop"
+      ],
+      "still": "02-nameplate-serial.png"
+    },
+    {
+      "filename": "03-voice-memo-offline.mp4",
+      "title": "Voice memo",
+      "spoken": "All recall stays on this Mac. The store is one local file, harbor-week.wax. Nothing is uploaded.",
+      "tokens": [
+        "harbor-week.wax",
+        "Nothing is uploaded"
+      ],
+      "still": "06-minilm-error.png"
+    },
+    {
+      "filename": "04-whiteboard-walkthrough.mp4",
+      "title": "Whiteboard",
+      "spoken": "Board says ship Friday, offline only, North Harbor. That is the photo beat and this clip.",
+      "tokens": [
+        "ship Friday",
+        "North Harbor"
+      ],
+      "still": "01-whiteboard-ship-friday.png"
+    },
+    {
+      "filename": "05-unbox-cooling-plate.mp4",
+      "title": "Unbox",
+      "spoken": "Purchase order PO-NH-8821. The ANE-7 cooling plate arrived. Lot NH-17.",
+      "tokens": [
+        "PO-NH-8821",
+        "ANE-7"
+      ],
+      "still": "05-shipping-label.png"
+    },
+    {
+      "filename": "06-coffee-run.mp4",
+      "title": "Coffee run",
+      "spoken": "Cedar Loft, the usual Fog Latte. Keep the receipt for photo RAG.",
+      "tokens": [
+        "Cedar Loft",
+        "Fog Latte"
+      ],
+      "still": "03-receipt-cedar-loft.png"
+    },
+    {
+      "filename": "07-hn-rehearsal.mp4",
+      "title": "HN rehearsal",
+      "spoken": "Search the camera roll for the serial, then ask Foundation Models. Record HN tape Friday at four.",
+      "tokens": [
+        "Record HN tape",
+        "serial"
+      ],
+      "still": "07-calendar-hn-tape.png"
+    },
+    {
+      "filename": "08-paraphrase-test.mp4",
+      "title": "Paraphrase",
+      "spoken": "Ask how we keep memory on the device. Do not use the filename. Vector search should still land.",
+      "tokens": [
+        "keep memory on the device",
+        "Vector search"
+      ],
+      "still": "10-lab-notebook.png"
+    },
+    {
+      "filename": "09-file-drop.mp4",
+      "title": "File drop",
+      "spoken": "Drop the markdown notes and the invoice PDF. File RAG should find Fog Latte and the offline policy.",
+      "tokens": [
+        "invoice PDF",
+        "offline policy"
+      ],
+      "still": "03-receipt-cedar-loft.png"
+    },
+    {
+      "filename": "10-close-flush.mp4",
+      "title": "Flush",
+      "spoken": "Flush the store. Harbor week is in harbor-week.wax. Mira Chen signs the report.",
+      "tokens": [
+        "harbor-week.wax",
+        "Mira Chen"
+      ],
+      "still": "08-card-mira-chen.png"
+    }
+  ],
+  "files": [
+    {
+      "filename": "01-offline-policy.md",
+      "kind": "markdown",
+      "title": "North Harbor offline policy",
+      "tokens": [
+        "offline-only",
+        "harbor-week.wax",
+        "no cloud index"
+      ]
+    },
+    {
+      "filename": "02-standup-2026-08-12.md",
+      "kind": "markdown",
+      "title": "Standup 12 Aug",
+      "tokens": [
+        "ship Friday",
+        "Mira Chen",
+        "WAX-HB-4419"
+      ]
+    },
+    {
+      "filename": "03-architecture-harbor.md",
+      "kind": "markdown",
+      "title": "Harbor retrieval architecture",
+      "tokens": [
+        "MiniLM",
+        "Hybrid search",
+        "Photo RAG"
+      ]
+    },
+    {
+      "filename": "04-changelog-harbor.md",
+      "kind": "markdown",
+      "title": "Harbor week changelog",
+      "tokens": [
+        "on-device retrieval",
+        "paraphrase",
+        "harbor-week.wax"
+      ]
+    },
+    {
+      "filename": "05-demo-queries.md",
+      "kind": "markdown",
+      "title": "Harbor demo queries",
+      "tokens": [
+        "Record HN tape",
+        "Fog Latte",
+        "ANE-7"
+      ]
+    },
+    {
+      "filename": "06-loft-access.md",
+      "kind": "markdown",
+      "title": "Loft access",
+      "tokens": [
+        "NH-19",
+        "Cedar Loft",
+        "North Harbor"
+      ]
+    },
+    {
+      "filename": "07-invoice-cedar-loft.pdf",
+      "kind": "pdf",
+      "title": "Cedar Loft invoice",
+      "tokens": [
+        "Fog Latte",
+        "Cedar Loft",
+        "INV-CL-640"
+      ]
+    },
+    {
+      "filename": "08-po-nh-8821.pdf",
+      "kind": "pdf",
+      "title": "Purchase order NH-8821",
+      "tokens": [
+        "PO-NH-8821",
+        "ANE-7",
+        "Harbor Workshop"
+      ]
+    },
+    {
+      "filename": "09-nameplate-spec.pdf",
+      "kind": "pdf",
+      "title": "Nameplate spec",
+      "tokens": [
+        "WAX-HB-4419",
+        "Harbor Workshop",
+        "bench radio"
+      ]
+    },
+    {
+      "filename": "10-harbor-week-report.pdf",
+      "kind": "pdf",
+      "title": "Harbor week report",
+      "tokens": [
+        "harbor-week.wax",
+        "ship Friday",
+        "on-device"
+      ]
+    }
+  ],
+  "demo_beats": [
+    {
+      "surface": "photo",
+      "query": "WAX-HB-4419",
+      "why": "OCR serial on the nameplate",
+      "expect": [
+        "02-nameplate-serial.png",
+        "09-nameplate-spec.pdf",
+        "02-bench-serial.mp4"
+      ]
+    },
+    {
+      "surface": "photo",
+      "query": "Fog Latte",
+      "why": "Receipt OCR plus invoice text",
+      "expect": [
+        "03-receipt-cedar-loft.png",
+        "07-invoice-cedar-loft.pdf",
+        "06-coffee-run.mp4"
+      ]
+    },
+    {
+      "surface": "photo",
+      "query": "PO-NH-8821",
+      "why": "Shipping label and purchase order",
+      "expect": [
+        "05-shipping-label.png",
+        "08-po-nh-8821.pdf",
+        "05-unbox-cooling-plate.mp4"
+      ]
+    },
+    {
+      "surface": "file",
+      "query": "what is the offline policy",
+      "why": "Markdown file RAG",
+      "expect": [
+        "01-offline-policy.md",
+        "10-harbor-week-report.pdf",
+        "03-voice-memo-offline.mp4"
+      ]
+    },
+    {
+      "surface": "file",
+      "query": "Mira Chen",
+      "why": "Card + standup note",
+      "expect": [
+        "08-card-mira-chen.png",
+        "02-standup-2026-08-12.md",
+        "10-close-flush.mp4"
+      ]
+    },
+    {
+      "surface": "video",
+      "query": "when do we ship",
+      "why": "Transcript: ship Friday",
+      "expect": [
+        "01-standup-ship-friday.mp4",
+        "04-whiteboard-walkthrough.mp4",
+        "02-standup-2026-08-12.md"
+      ]
+    },
+    {
+      "surface": "video",
+      "query": "bench radio serial",
+      "why": "Spoken WAX-HB-4419",
+      "expect": [
+        "02-bench-serial.mp4",
+        "09-nameplate-spec.pdf"
+      ]
+    },
+    {
+      "surface": "vector",
+      "query": "how do we keep memory on the device",
+      "why": "Paraphrase, not a filename",
+      "expect": [
+        "01-offline-policy.md",
+        "04-changelog-harbor.md",
+        "03-voice-memo-offline.mp4",
+        "08-paraphrase-test.mp4"
+      ]
+    },
+    {
+      "surface": "cross",
+      "query": "ANE-7 cooling plate",
+      "why": "Photo + PDF + video",
+      "expect": [
+        "05-shipping-label.png",
+        "08-po-nh-8821.pdf",
+        "05-unbox-cooling-plate.mp4"
+      ]
+    },
+    {
+      "surface": "close",
+      "query": "harbor-week.wax",
+      "why": "Store name across surfaces",
+      "expect": [
+        "06-minilm-error.png",
+        "01-offline-policy.md",
+        "10-close-flush.mp4"
+      ]
+    }
+  ]
+}
