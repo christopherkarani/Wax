@@ -91,20 +91,61 @@ import Wax
         textResults: [(textCanary, 0.9)],
         vectorResults: [(vectorNeighbor, 0.95)],
         k: 60,
-        alpha: 0.5
+        alpha: 0.5,
+        applyFloor: true
     )
 
     #expect(merged.first?.0 == textCanary)
 }
 
-@Test func rrfPublishedScoresDescendAndAreThresholdable() {
+@Test func rrfSemanticExclusiveVectorRank1StaysAheadOfExclusiveTextAtDefaultAlpha() {
+    // Semantic path must not run the exclusive-text floor. Equal-weight RRF at
+    // alpha 0.5 then keeps the lower-id exclusive vector neighbor ahead.
+    let textCanary: UInt64 = 1706
+    let vectorNeighbor: UInt64 = 1
+    let merged = HybridSearch.rrfFusion(
+        textResults: [(textCanary, 0.9)],
+        vectorResults: [(vectorNeighbor, 0.95)],
+        k: 60,
+        alpha: 0.5,
+        applyFloor: false
+    )
+
+    #expect(merged.first?.0 == vectorNeighbor)
+}
+
+@Test func rrfFactualExclusiveListsPromoteTextRank1() {
+    // Exclusive lists: text top absent from vector, vector top absent from text.
+    var merged: [(UInt64, Float)] = [(1, 0.02), (1706, 0.019), (2, 0.01)]
+    HybridSearch.applyExclusiveTextRank1Floor(
+        merged: &merged,
+        textFrameIds: [1706, 99],
+        vectorFrameIds: [1, 2],
+        applyFloor: true
+    )
+    #expect(merged.map(\.0) == [1706, 1, 2])
+}
+
+@Test func rrfSemanticExclusiveListsKeepVectorRank1() {
+    var merged: [(UInt64, Float)] = [(1, 0.02), (1706, 0.019), (2, 0.01)]
+    HybridSearch.applyExclusiveTextRank1Floor(
+        merged: &merged,
+        textFrameIds: [1706, 99],
+        vectorFrameIds: [1, 2],
+        applyFloor: false
+    )
+    #expect(merged.map(\.0) == [1, 1706, 2])
+}
+
+@Test func rrfPublishedScoresDescendAndStayInZeroToOneAfterFusion() {
     let textCanary: UInt64 = 1706
     let vectorNeighbor: UInt64 = 1
     let merged = HybridSearch.rrfFusion(
         textResults: [(textCanary, 0.9), (2, 0.4)],
         vectorResults: [(vectorNeighbor, 0.95), (3, 0.8)],
         k: 60,
-        alpha: 0.5
+        alpha: 0.5,
+        applyFloor: true
     )
 
     #expect(merged.first?.0 == textCanary)
@@ -112,10 +153,6 @@ import Wax
     for (previous, next) in zip(merged, merged.dropFirst()) {
         #expect(previous.1 >= next.1)
     }
-    // Independent of raw RRF (≈ weight/(k+1) ≈ 0.008): rank-1 must be
-    // usable as a 0–1 threshold the way text scores already are.
-    #expect(merged[0].1 >= 0.5)
-    #expect(merged[0].1 <= 1.0)
     #expect(merged.allSatisfy { (0...1).contains($0.1) })
 }
 
