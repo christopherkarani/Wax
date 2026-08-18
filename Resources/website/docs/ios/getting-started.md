@@ -127,6 +127,7 @@ func waxPrintSearchDiagnostics(storeURL: URL) async throws {
     let stats = await memory.stats()
     print(stats.vectorSearchEnabled)
     print(stats.queryEmbedderConfigured)
+    print(stats.embeddingStatus)
     try await memory.close()
 }
 ```

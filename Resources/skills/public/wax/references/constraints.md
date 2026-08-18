@@ -11,7 +11,7 @@
 
 ## Vector Search and Embeddings
 - Built-in embedders (MiniLM, Arctic) require iOS 18/macOS 15+ and their package traits (`MiniLMEmbeddings` on by default, `ArcticEmbeddings` opt-in). Source: `Sources/Wax/BuiltInEmbeddings.swift`.
-- `Memory(at:)` auto-wires the built-in MiniLM embedder when vector search is enabled and the platform supports it; otherwise the store runs text-only. Source: `Sources/Wax/Memory.swift`.
+- `Memory(at:)` opens with `.automatic` embedding: the store is usable while MiniLM loads, then live-attaches. If the provider cannot activate, `stats().embeddingStatus` is `unavailable` (hybrid is text; the vector index remains). Source: `Sources/Wax/Memory.swift`.
 - On a fresh store with vector search enabled but no embedder, vector search is auto-disabled (text-only); `memory.stats().vectorSearchEnabled` reports the effective state. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
 - `RetrievalMode.hybrid` (default) falls back to the text lane when the vector lane is unavailable; `RetrievalMode.vectorOnly` throws. `RAGContext.diagnostics` reports requested vs. effective mode. Source: `Sources/Wax/Memory.swift`.
 - If query embedding times out, a circuit breaker pauses query embedding for a cooldown (default 60s), then half-opens and retries; a success closes it. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.

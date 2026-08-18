@@ -2735,6 +2735,19 @@ package actor Wax {
         }
     }
 
+    /// Live chunk frames that should have vectors when a provider is active.
+    package func liveChunkCount() async -> UInt64 {
+        await withReadLock {
+            var count: UInt64 = 0
+            for frame in toc.frames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+                guard frame.role == .chunk, frame.kind != "surrogate" else { continue }
+                count += 1
+            }
+            return count
+        }
+    }
+
     package func memoryBinding() async -> MemoryBinding? {
         await withReadLock {
             toc.memoryBinding

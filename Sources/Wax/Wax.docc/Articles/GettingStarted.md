@@ -106,6 +106,7 @@ func printDocsMemoryStats(memory: Memory) async {
     let stats = await memory.stats()
     print(stats.vectorSearchEnabled)
     print(stats.queryEmbedderConfigured)
+    print(stats.embeddingStatus)
 }
 ```
 

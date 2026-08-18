@@ -1195,6 +1195,7 @@ private extension WaxMCPTools {
             "pendingFrames": .int(Int(stats.pendingFrames)),
             "storePath": .string(stats.storeURL.path),
             "vectorSearchEnabled": .bool(stats.vectorSearchEnabled),
+            "embeddingStatus": .string(stats.embeddingStatus.wireName),
             "queryEmbeddingAvailable": .bool(
                 stats.vectorSearchEnabled && stats.queryEmbedderConfigured && !stats.queryEmbeddingCircuitOpen
             ),

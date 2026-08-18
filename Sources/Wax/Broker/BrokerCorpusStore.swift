@@ -439,21 +439,18 @@ private extension BrokerCorpusStoreBuilder {
         embedderTuning: CommandLineEmbedderRuntimeTuning,
         structuredMemoryEnabled: Bool
     ) async throws -> MemoryOrchestrator {
-        let embedder = try await CommandLineEmbedderFactory.buildEmbedder(
-            noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
-            tuning: embedderTuning
-        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
-        if embedder == nil {
-            config.enableVectorSearch = false
-            config.rag.searchMode = .textOnly
-        }
-        return try await MemoryOrchestrator(
+        let request = try HostEmbeddingReadiness.request(
+            noEmbedder: noEmbedder,
+            requireVector: false,
+            embedderChoice: embedderChoice,
+            options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+        )
+        return try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
-            embedder: embedder,
+            request: request,
             waxOptions: CommandLineEmbedderFactory.waxOptions()
         )
     }
