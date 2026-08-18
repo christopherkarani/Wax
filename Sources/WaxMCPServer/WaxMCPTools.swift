@@ -442,6 +442,15 @@ extension WaxMCPTools {
             return errorResult(message: error.localizedDescription, code: "execution_failed")
         }
     }
+
+    /// Isolated test seam for corpus_search rebuild defaults (path overrides stay off the public argument surface).
+    static func corpusSearchForTests(
+        _ arguments: [String: Value]?,
+        noEmbedder: Bool,
+        embedderChoice: String
+    ) async throws -> CallTool.Result {
+        try await compatCorpusSearch(arguments, noEmbedder: noEmbedder, embedderChoice: embedderChoice)
+    }
 }
 
 private extension WaxMCPTools {
@@ -1750,7 +1759,7 @@ private extension WaxMCPTools {
         let query = try args.requiredString("query")
         let sessionsDirRaw = try args.optionalString("sessions_dir") ?? "~/.wax/sessions"
         let corpusStoreRaw = try args.optionalString("corpus_store_path") ?? "~/.wax/corpus.wax"
-        let rebuild = try args.optionalBool("rebuild") ?? true
+        let rebuild = try args.optionalBool("rebuild") ?? false
         let recursive = try args.optionalBool("recursive") ?? true
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "text",
