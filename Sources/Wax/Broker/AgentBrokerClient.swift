@@ -28,7 +28,7 @@ package enum AgentBrokerClient {
         envKey: "WAX_BROKER_SHUTDOWN_TIMEOUT_SECS",
         defaultValue: 2.0
     )
-    private static let responseTimeoutSeconds = configuredSeconds(
+    package static let responseTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_RESPONSE_TIMEOUT_SECS",
         defaultValue: 30.0
     )
@@ -77,15 +77,17 @@ package enum AgentBrokerClient {
         if let response = try sendIfAvailable(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath,
-            timeoutSeconds: min(5.0, responseTimeoutSeconds)
+            timeoutSeconds: min(5.0, responseTimeoutSeconds),
+            treatTimeoutAsUnavailable: true
         ), response.ok {
             return false
         }
 
-        if isConnectable(socketPath: configuration.socketPath) {
+        if isSocketLive(socketPath: configuration.socketPath) {
             if let response = try sendIfAvailable(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
-                socketPath: configuration.socketPath
+                socketPath: configuration.socketPath,
+                treatTimeoutAsUnavailable: true
             ), response.ok {
                 return false
             }
@@ -147,7 +149,12 @@ package enum AgentBrokerClient {
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath
             ), response.ok {
-                return true
+                if !process.isRunning {
+                    return false
+                }
+                // Bind-first loser may still be exiting after the winner answered.
+                Thread.sleep(forTimeInterval: 0.05)
+                return process.isRunning
             }
 
             if !process.isRunning {
@@ -220,7 +227,9 @@ package enum AgentBrokerClient {
         return true
     }
 
-    private static func isConnectable(socketPath: String) -> Bool {
+    /// Returns whether a Unix-domain listener is accepting connections at `socketPath`.
+    /// Never creates, replaces, or unlinks the path.
+    package static func isSocketLive(socketPath: String) -> Bool {
         guard FileManager.default.fileExists(atPath: socketPath) else { return false }
         let fd = socket(AF_UNIX, unixStreamSocketType, 0)
         guard fd >= 0 else { return false }
@@ -250,7 +259,8 @@ package enum AgentBrokerClient {
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,
         socketPath: String,
-        timeoutSeconds: Double? = nil
+        timeoutSeconds: Double? = nil,
+        treatTimeoutAsUnavailable: Bool = false
     ) throws -> AgentBrokerResponse? {
         guard FileManager.default.fileExists(atPath: socketPath) else {
             return nil
@@ -286,7 +296,6 @@ package enum AgentBrokerClient {
         }
         guard connectResult == 0 else {
             if errno == ECONNREFUSED || errno == ENOENT {
-                try? FileManager.default.removeItem(atPath: socketPath)
                 return nil
             }
             throw BrokerClientError("Unable to connect to broker socket at \(socketPath)")
@@ -298,19 +307,30 @@ package enum AgentBrokerClient {
         handle.write(Data([0x0A]))
         shutdown(fd, socketShutdownWrite)
 
-        guard let line = try readSocketResponseLine(fd: fd, timeoutSeconds: timeoutSeconds ?? responseTimeoutSeconds) else {
+        guard let line = try readSocketResponseLine(
+            fd: fd,
+            timeoutSeconds: timeoutSeconds ?? responseTimeoutSeconds,
+            treatTimeoutAsUnavailable: treatTimeoutAsUnavailable
+        ) else {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
     }
 
-    private static func readSocketResponseLine(fd: Int32, timeoutSeconds: Double? = nil) throws -> String? {
+    private static func readSocketResponseLine(
+        fd: Int32,
+        timeoutSeconds: Double? = nil,
+        treatTimeoutAsUnavailable: Bool = false
+    ) throws -> String? {
         var buffer = Data()
         let timeoutMS = Int32((timeoutSeconds ?? responseTimeoutSeconds) * 1000)
         while true {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, timeoutMS)
             if pollResult == 0 {
+                if treatTimeoutAsUnavailable {
+                    return nil
+                }
                 throw BrokerClientError("Timed out waiting for broker response")
             }
             if pollResult < 0 {

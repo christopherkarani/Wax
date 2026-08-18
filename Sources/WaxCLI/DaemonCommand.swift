@@ -65,6 +65,10 @@ struct DaemonCommand: AsyncParsableCommand {
                 )
             }
             try await service.close()
+        } catch is BrokerStoreBusyDuringShutdown {
+            throw CLIError(
+                "Broker still has in-flight clients after shutdown drain; not closing the store"
+            )
         } catch {
             try? await service.close()
             throw error
@@ -80,6 +84,7 @@ private extension DaemonCommand {
     #endif
     var socketClientReadTimeoutMS: Int32 { 1_000 }
     var maxSocketRequestBytes: Int { 1_048_576 }
+    var socketInflightDrainSeconds: TimeInterval { AgentBrokerClient.responseTimeoutSeconds }
 
     func runLoop(
         service: AgentBrokerService,
@@ -129,18 +134,20 @@ private extension DaemonCommand {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        if isLiveBrokerSocket(at: socketURL.path) {
+        if AgentBrokerClient.isSocketLive(socketPath: socketURL.path) {
             throw CLIError("Broker already running at \(socketURL.path)")
         }
-        try removeExistingSocket(at: socketURL.path)
 
         let listener = socket(AF_UNIX, unixStreamSocketType, 0)
         guard listener >= 0 else {
             throw CLIError("Unable to create broker socket: \(String(cString: strerror(errno)))")
         }
+        var boundOwnSocket = false
         defer {
             close(listener)
-            unlink(socketURL.path)
+            if boundOwnSocket {
+                unlink(socketURL.path)
+            }
         }
 
         var address = sockaddr_un()
@@ -160,14 +167,18 @@ private extension DaemonCommand {
             }
         }
 
-        let bindResult = withUnsafePointer(to: &address) { pointer -> Int32 in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                bind(listener, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        var bindResult = bindUnixSocket(listener, address: &address)
+        if bindResult != 0, errno == EADDRINUSE {
+            if AgentBrokerClient.isSocketLive(socketPath: socketURL.path) {
+                throw CLIError("Broker already running at \(socketURL.path)")
             }
+            try removeExistingSocket(at: socketURL.path)
+            bindResult = bindUnixSocket(listener, address: &address)
         }
         guard bindResult == 0 else {
             throw CLIError("Unable to bind broker socket at \(socketURL.path): \(String(cString: strerror(errno)))")
         }
+        boundOwnSocket = true
         guard listen(listener, 16) == 0 else {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
@@ -175,45 +186,70 @@ private extension DaemonCommand {
         let inflight = SocketInflight()
         let pollSliceMS: Int32 = 200
         var lastActivity = Date()
-        while !inflight.shouldStop {
-            var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, pollSliceMS)
-            if pollResult == 0 {
-                if idleTimeoutSeconds > 0,
-                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
-                   !inflight.isBusy {
-                    return
-                }
-                continue
-            }
-            if pollResult < 0 {
-                if errno == EINTR { continue }
-                throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
-            }
-
-            let client = accept(listener, nil, nil)
-            if client < 0 {
-                if errno == EINTR { continue }
-                throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
-            }
-
-            lastActivity = Date()
-            inflight.enter()
-            Task {
-                defer { inflight.leave() }
-                do {
-                    let shouldExit = try await handleSocketClient(service: service, fd: client)
-                    if shouldExit {
-                        inflight.requestStop()
+        var loopError: Error?
+        do {
+            while !inflight.shouldStop {
+                var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+                let pollResult = poll(&descriptor, 1, pollSliceMS)
+                if pollResult == 0 {
+                    if idleTimeoutSeconds > 0,
+                       Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                       !inflight.isBusy {
+                        break
                     }
-                } catch {
-                    close(client)
+                    continue
+                }
+                if pollResult < 0 {
+                    if errno == EINTR { continue }
+                    throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
+                }
+
+                let client = accept(listener, nil, nil)
+                if client < 0 {
+                    if errno == EINTR { continue }
+                    throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
+                }
+
+                lastActivity = Date()
+                inflight.enter()
+                Task {
+                    defer { inflight.leave() }
+                    do {
+                        let shouldExit = try await handleSocketClient(service: service, fd: client)
+                        if shouldExit {
+                            inflight.requestStop()
+                        }
+                    } catch {
+                        // FileHandle owns the accepted fd. A dead peer must not
+                        // double-close it or skip inflight.leave().
+                    }
                 }
             }
+        } catch {
+            loopError = error
         }
-        let drainDeadline = Date().addingTimeInterval(2)
+
+        try await drainSocketInflight(inflight)
+        if let loopError {
+            throw loopError
+        }
+    }
+
+    func drainSocketInflight(_ inflight: SocketInflight) async throws {
+        let drainDeadline = Date().addingTimeInterval(socketInflightDrainSeconds)
         while inflight.isBusy, Date() < drainDeadline {
             try await Task.sleep(for: .milliseconds(20))
+        }
+        if inflight.isBusy {
+            throw BrokerStoreBusyDuringShutdown()
+        }
+    }
+
+    func bindUnixSocket(_ listener: Int32, address: inout sockaddr_un) -> Int32 {
+        withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(listener, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
         }
     }
 
@@ -305,33 +341,6 @@ private extension DaemonCommand {
         return line.isEmpty ? nil : line
     }
 
-    func isLiveBrokerSocket(at path: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: path) else { return false }
-        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-
-        var address = sockaddr_un()
-        #if canImport(Darwin)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        #endif
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Array(path.utf8)
-        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
-        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
-            buffer.initializeMemory(as: CChar.self, repeating: 0)
-            for (index, byte) in pathBytes.enumerated() {
-                buffer[index] = byte
-            }
-        }
-        let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        return connectResult == 0
-    }
-
     func removeExistingSocket(at path: String) throws {
         var existing = stat()
         if lstat(path, &existing) != 0 {
@@ -356,6 +365,7 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+private struct BrokerStoreBusyDuringShutdown: Error {}
 
 private final class SocketInflight: @unchecked Sendable {
     private let lock = NSLock()
