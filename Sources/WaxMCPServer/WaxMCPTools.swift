@@ -964,22 +964,32 @@ private extension WaxMCPTools {
             frameFilter: filters.frameFilter,
             timeRange: filters.timeRange
         )
-        let rows: [Value] = execution.hits.enumerated().map { index, hit in
-            [
-                "rank": .int(index + 1),
-                "frameId": .int(Int(hit.frameId)),
+        let documents = try await memory.corpusSourceDocuments()
+        let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
+        var rows: [Value] = []
+        var recordedHits: [(frameID: UInt64, score: Float)] = []
+        for hit in execution.hits {
+            guard let document = try await compatDocument(
+                for: hit.frameId,
+                in: documentByFrameID,
+                memory: memory
+            ) else { continue }
+            rows.append([
+                "rank": .int(rows.count + 1),
+                "frameId": .int(Int(document.frameId)),
                 "score": .double(Double(hit.score)),
                 "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "preview": .string(hit.previewText ?? ""),
                 "metadata": .object(hit.metadata.mapValues(Value.string)),
                 "explanations": .array(hit.explanations.map(Value.string)),
-            ]
+            ])
+            recordedHits.append((frameID: document.frameId, score: hit.score))
         }
         if let sessionID = filters.sessionID {
-            for hit in execution.hits {
+            for hit in recordedHits {
                 await sessionRegistry.recordRetrievalHit(
                     sessionID: sessionID,
-                    frameID: hit.frameId,
+                    frameID: hit.frameID,
                     query: query,
                     score: hit.score
                 )

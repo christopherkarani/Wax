@@ -6667,9 +6667,10 @@ struct WaxMCPProcessTests {
             #expect(search.ok == true)
             let searchPayload = try #require(search.payload?.objectValue)
             let searchResults = try #require(searchPayload["results"]?.arrayValue)
-            let rawFrameID = try #require(searchResults.compactMap { result -> UInt64? in
+            let rawFrameIDs = searchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frameId"]?.intValue.map(UInt64.init)
-            }.first)
+            }
+            let rawFrameID = try #require(rawFrameIDs.first)
 
             let memorySearch = await service.handle(.init(
                 command: "memory_search",
@@ -6686,16 +6687,16 @@ struct WaxMCPProcessTests {
             #expect(memorySearch.ok == true)
             let memorySearchPayload = try #require(memorySearch.payload?.objectValue)
             let memorySearchResults = try #require(memorySearchPayload["results"]?.arrayValue)
-            let canonicalFrameID = try #require(memorySearchResults.compactMap { result -> UInt64? in
+            let canonicalFrameIDs = memorySearchResults.compactMap { result -> UInt64? in
                 result.objectValue?["frame_id"]?.intValue.map(UInt64.init)
-            }.first)
-            #expect(canonicalFrameID != rawFrameID)
+            }
+            let canonicalFrameID = try #require(canonicalFrameIDs.first)
+            #expect(canonicalFrameID == rawFrameID)
 
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
             let signals = BrokerSessionPersistence.recallSignals(
                 from: try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
             )
-            #expect(signals[rawFrameID] == nil)
             let signal = try #require(signals[canonicalFrameID])
             #expect(signal.recallCount == 2)
             #expect(signal.uniqueQueryCount == 1)
@@ -7531,6 +7532,146 @@ struct WaxMCPProcessTests {
             let preview = object["preview"] as? String ?? ""
             return preview.contains("UNLOCKED") && preview.contains("MATCH")
         })
+    }
+}
+
+@Test
+func memory_searchAndSearchShareTheSameGettableFrameIdAfterRemember() async throws {
+    try await withMemory { memory in
+        let started = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
+            memory: memory
+        )
+        #expect(started.isError != true)
+        let sessionID = try requireString(try parseJSONText(in: started), key: "session_id")
+        let canary = "ID_SKEW_CANARY_7f3a91"
+        let content = "\(canary) remembered text agents must load via memory_get"
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(remember.isError != true)
+
+        let search = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "search",
+                arguments: [
+                    "query": .string(canary),
+                    "mode": .string("text"),
+                    "topK": .int(5),
+                    "session_id": .string(sessionID),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(search.isError != true, "search failed: \(firstText(in: search))")
+        let searchJSON = try parseJSONResource(in: search, uriSuffix: "search-summary")
+        let searchResults = try requireArray(searchJSON, key: "results")
+        #expect(!searchResults.isEmpty, "search returned no hits: \(firstText(in: search))")
+        let searchHit = try requireObject(try #require(searchResults.first))
+        let searchFrameID = try requireInt(searchHit, key: "frameId")
+
+        let memorySearch = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_search",
+                arguments: [
+                    "query": .string(canary),
+                    "mode": .string("text"),
+                    "topK": .int(5),
+                    "session_id": .string(sessionID),
+                    "include_working": .bool(true),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(memorySearch.isError != true, "memory_search failed: \(firstText(in: memorySearch))")
+        let memoryJSON = try parseJSONResource(in: memorySearch, uriSuffix: "memory-search-summary")
+        let memoryResults = try requireArray(memoryJSON, key: "results")
+        #expect(!memoryResults.isEmpty, "memory_search returned no hits: \(firstText(in: memorySearch))")
+        let memoryHit = try requireObject(try #require(memoryResults.first))
+        let memoryFrameID = try requireInt(memoryHit, key: "frame_id")
+        let memoryID = try requireString(memoryHit, key: "memory_id")
+
+        #expect(searchFrameID == memoryFrameID)
+        #expect(memoryID == "working:\(sessionID):\(memoryFrameID)")
+
+        let get = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_get", arguments: ["memory_id": .string(memoryID)]),
+            memory: memory
+        )
+        #expect(get.isError != true)
+        #expect(firstText(in: get).contains(canary))
+        #expect(firstText(in: get).contains("remembered text agents must load"))
+
+        let searchBuiltMemoryID = "working:\(sessionID):\(searchFrameID)"
+        let getFromSearch = await WaxMCPTools.handleCall(
+            params: .init(name: "memory_get", arguments: ["memory_id": .string(searchBuiltMemoryID)]),
+            memory: memory
+        )
+        #expect(getFromSearch.isError != true)
+        #expect(firstText(in: getFromSearch).contains(canary))
+    }
+}
+
+@Test
+func brokerSearchOmitsRawChunkIdWhenCanonicalizationFails() async throws {
+    try await withAgentBrokerService { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        #expect(started.ok == true)
+        let sessionIDString = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        let sessionID = try #require(UUID(uuidString: sessionIDString))
+        let state = try #require(await service.activeSessions[sessionID])
+
+        let anchor = "CANON_FAIL_OMIT_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let content = Array(
+            repeating: "\(anchor) broker search must not republish a raw chunk id when document-frame lookup fails.",
+            count: 80
+        ).joined(separator: " ")
+        let append = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string(content),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(append.ok == true)
+
+        let execution = try await state.memory.searchExecution(
+            query: anchor,
+            mode: .text,
+            topK: 10
+        )
+        #expect(!execution.hits.isEmpty, "expected indexed hits before forcing canonicalization failure")
+        let rawHitFrameIDs = Set(execution.hits.map(\.frameId))
+        #expect(!rawHitFrameIDs.isEmpty)
+
+        await service.setTestFailCanonicalDocumentFrameIDs(rawHitFrameIDs)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(anchor),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionIDString),
+            ]
+        ))
+        #expect(search.ok == true)
+        let results = try #require(search.payload?.objectValue?["results"]?.arrayValue)
+        let emitted = Set(results.compactMap { result -> UInt64? in
+            result.objectValue?["frameId"]?.intValue.map(UInt64.init)
+        })
+        #expect(emitted.isDisjoint(with: rawHitFrameIDs))
+        #expect(emitted.isEmpty)
     }
 }
 

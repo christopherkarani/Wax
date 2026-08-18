@@ -23,6 +23,8 @@ package actor AgentBrokerService {
     let promotionSettings: BrokerPromotionSettings
     let brokerInstanceID = UUID().uuidString
     var activeSessions: [UUID: SessionState] = [:]
+    /// Test-only: treat these hit ids as canonicalization failures.
+    var testFailCanonicalDocumentFrameIDs: Set<UInt64> = []
 
     package init(
         storePath: String,
@@ -413,16 +415,18 @@ extension AgentBrokerService {
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
-        let rows: [AgentBrokerValue] = execution.hits.enumerated().map { index, hit in
-            .object([
-                "rank": .from(index + 1),
-                "frameId": .from(hit.frameId),
+        var rows: [AgentBrokerValue] = []
+        for hit in execution.hits {
+            guard let frameId = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) else { continue }
+            rows.append(.object([
+                "rank": .from(rows.count + 1),
+                "frameId": .from(frameId),
                 "score": .double(Double(hit.score)),
                 "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "preview": .string(hit.previewText ?? ""),
                 "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
                 "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
-            ])
+            ]))
         }
         if let sessionID = parsedFilters.sessionId {
             try await refreshSessionManifest(sessionID)
@@ -2771,10 +2775,17 @@ extension AgentBrokerService {
         return frameID
     }
 
+    package func setTestFailCanonicalDocumentFrameIDs(_ ids: Set<UInt64>) {
+        testFailCanonicalDocumentFrameIDs = ids
+    }
+
     func bestEffortCanonicalDocumentFrameID(
         for frameID: UInt64,
         memory: MemoryOrchestrator
     ) async -> UInt64? {
+        if testFailCanonicalDocumentFrameIDs.contains(frameID) {
+            return nil
+        }
         do {
             return try await canonicalDocumentFrameID(for: frameID, memory: memory)
         } catch {
