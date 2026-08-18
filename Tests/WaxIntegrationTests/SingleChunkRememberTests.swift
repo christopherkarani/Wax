@@ -191,3 +191,26 @@ func singleChunkRememberIndexesDocumentForVectorSearch() async throws {
         try await orchestrator.close()
     }
 }
+
+@Test
+func singleChunkRememberIsEligibleForSurrogateMaintenance() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = true
+
+        let content = "surrogate-canary-b4e18c single-chunk remember must still be a surrogate source"
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        #expect(chunks.count == 1)
+
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
+        try await orchestrator.remember(content, metadata: ["source": "single-chunk-surrogate"])
+        try await orchestrator.flush()
+
+        let report = try await orchestrator.optimizeSurrogates()
+        #expect(report.generatedSurrogates == 1)
+        #expect(report.eligibleFrames == 1)
+
+        try await orchestrator.close()
+    }
+}
