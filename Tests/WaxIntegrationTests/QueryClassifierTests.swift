@@ -17,3 +17,17 @@ import Wax
     #expect(RuleBasedQueryClassifier.classify("Tell me about the project") == .exploratory)
 }
 
+@Test func hexCanaryQueryClassifiesAsFactual() {
+    #expect(RuleBasedQueryClassifier.classify("7f3a91") == .factual)
+    #expect(RuleBasedQueryClassifier.classify("DEADBEEF") == .factual)
+}
+
+@Test func singleTokenIdentifierQueryClassifiesAsFactual() {
+    #expect(RuleBasedQueryClassifier.classify("canary-token") == .factual)
+    #expect(RuleBasedQueryClassifier.classify("user_id") == .factual)
+}
+
+@Test func ordinarySingleWordStaysExploratory() {
+    #expect(RuleBasedQueryClassifier.classify("Swift") == .exploratory)
+}
+

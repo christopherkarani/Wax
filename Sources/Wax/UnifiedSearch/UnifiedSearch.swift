@@ -358,12 +358,28 @@ extension Wax {
             if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
             if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds)) }
 
-            let fused = Self.rrfFusionResults(
+            var fused = Self.rrfFusionResults(
                 lists: lists,
                 k: request.rrfK,
                 includeDiagnostics: diagnosticsEnabled,
                 diagnosticsTopK: diagnosticsTopK
             )
+
+            // Lexical exclusive rank-1 floor: default hybrid must not bury an
+            // exclusive FTS hit under an exclusive vector neighbor.
+            var fusedPairs = fused.map { ($0.frameId, $0.score) }
+            HybridSearch.applyExclusiveTextRank1Floor(
+                merged: &fusedPairs,
+                textFrameIds: textIds,
+                vectorFrameIds: vectorIds,
+                alpha: clampedAlpha
+            )
+            let fusedById = Dictionary(uniqueKeysWithValues: fused.map { ($0.frameId, $0) })
+            fused = fusedPairs.compactMap { pair in
+                guard var entry = fusedById[pair.0] else { return nil }
+                entry.score = pair.1
+                return entry
+            }
 
             let timelineSet = Set(timelineIds)
             let structuredSet = Set(structuredIds)
