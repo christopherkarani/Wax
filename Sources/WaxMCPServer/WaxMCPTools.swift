@@ -1750,7 +1750,7 @@ private extension WaxMCPTools {
         let query = try args.requiredString("query")
         let sessionsDirRaw = try args.optionalString("sessions_dir") ?? "~/.wax/sessions"
         let corpusStoreRaw = try args.optionalString("corpus_store_path") ?? "~/.wax/corpus.wax"
-        let rebuild = try args.optionalBool("rebuild") ?? true
+        let rebuild = try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild
         let recursive = try args.optionalBool("recursive") ?? true
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "text",
