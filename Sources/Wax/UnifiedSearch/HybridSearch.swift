@@ -9,16 +9,64 @@ package enum HybridSearch {
         textResults: [(UInt64, Float)],
         vectorResults: [(UInt64, Float)],
         k: Int = 60,
-        alpha: Float = 0.5
+        alpha: Float = 0.5,
+        applyFloor: Bool = false
     ) -> [(UInt64, Float)] {
         let clampedAlpha = min(1, max(0, alpha))
-        return rrfFusion(
+        var merged = rrfFusion(
             lists: [
                 (weight: clampedAlpha, frameIds: textResults.map(\.0)),
                 (weight: 1 - clampedAlpha, frameIds: vectorResults.map(\.0)),
             ],
             k: k
         )
+        applyExclusiveTextRank1Floor(
+            merged: &merged,
+            textFrameIds: textResults.map(\.0),
+            vectorFrameIds: vectorResults.map(\.0),
+            applyFloor: applyFloor
+        )
+        return merged
+    }
+
+    /// Factual identifier queries: exclusive text rank-1 cannot lose to an
+    /// exclusive vector-only neighbor. Ranking order only; score scale unchanged
+    /// except a `nextUp` bump so later score-sorts keep the same order.
+    /// Semantic / exploratory callers must pass `applyFloor: false`.
+    package static func applyExclusiveTextRank1Floor(
+        merged: inout [(UInt64, Float)],
+        textFrameIds: [UInt64],
+        vectorFrameIds: [UInt64],
+        applyFloor: Bool
+    ) {
+        guard applyFloor,
+              let lift = exclusiveTextRank1FloorIndices(
+                  mergedFrameIds: merged.map(\.0),
+                  textFrameIds: textFrameIds,
+                  vectorFrameIds: vectorFrameIds
+              )
+        else { return }
+
+        let lifted = (merged[lift.textIndex].0, merged[lift.vectorIndex].1.nextUp)
+        merged.remove(at: lift.textIndex)
+        merged.insert(lifted, at: lift.vectorIndex)
+    }
+
+    /// Location of an exclusive text rank-1 buried under exclusive vector rank-1.
+    package static func exclusiveTextRank1FloorIndices(
+        mergedFrameIds: [UInt64],
+        textFrameIds: [UInt64],
+        vectorFrameIds: [UInt64]
+    ) -> (textIndex: Int, vectorIndex: Int)? {
+        guard let textTop = textFrameIds.first,
+              let vectorTop = vectorFrameIds.first,
+              !vectorFrameIds.contains(textTop),
+              !textFrameIds.contains(vectorTop),
+              let textIndex = mergedFrameIds.firstIndex(of: textTop),
+              let vectorIndex = mergedFrameIds.firstIndex(of: vectorTop),
+              textIndex > vectorIndex
+        else { return nil }
+        return (textIndex, vectorIndex)
     }
 
     /// Multi-list weighted RRF (e.g., text + vector + timeline).
