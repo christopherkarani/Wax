@@ -21,10 +21,10 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 
 1. **Start**
    - Call `handoff_latest` first (optionally with `project`) to load prior context.
-   - Call `session_start` once.
+   - Call `session_start` once. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
    - Keep the returned `session_id` for the rest of the session.
 2. **Work**
-   - Before answering from memory, call `recall` (default) or `search` (raw hits).
+   - Before answering from memory, call `recall` (default) or `search` (raw hits). `recall` with `session_id` merges that session with durable long-term memory.
    - When you learn something durable, call `remember` with concise factual text.
    - For session-scoped writes, pass `session_id` as a **top-level** argument.
    - Never put `session_id` inside `metadata`.

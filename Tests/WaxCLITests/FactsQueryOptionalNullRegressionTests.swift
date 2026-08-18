@@ -9,8 +9,15 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
         .deletingLastPathComponent() // WaxCLITests
         .deletingLastPathComponent() // Tests
         .deletingLastPathComponent() // repo
-    let binary = repoRoot.appendingPathComponent(".build/debug/wax-cli")
-    try #require(FileManager.default.isExecutableFile(atPath: binary.path))
+    let candidates = [
+        repoRoot.appendingPathComponent(".build/debug/wax-cli"),
+        repoRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
+        repoRoot.appendingPathComponent(".build/x86_64-unknown-linux-gnu/debug/wax-cli"),
+        repoRoot.appendingPathComponent(".build/aarch64-unknown-linux-gnu/debug/wax-cli"),
+    ]
+    let binary = try #require(candidates.first {
+        FileManager.default.isExecutableFile(atPath: $0.path)
+    })
 
     let store = FileManager.default.temporaryDirectory
         .appendingPathComponent("facts-null-\(UUID().uuidString).wax")

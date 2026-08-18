@@ -95,10 +95,13 @@ extension Wax {
         }
 
 
-        async let textResultsAsync: [TextSearchResult] = {
-            guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else { return [] }
+        async let textLaneAsync: (results: [TextSearchResult], isORFallbackOnly: Bool) = {
+            guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else {
+                return ([], false)
+            }
             let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
             let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
+            let queryTokenCount = Self.normalizedFTSTokens(from: trimmedQuery, maxTokens: 16).count
 
             func merged(
                 base: [TextSearchResult],
@@ -106,7 +109,10 @@ extension Wax {
                 limit: Int
             ) -> [TextSearchResult] {
                 guard !base.isEmpty else {
-                    return Array(fallback.prefix(limit))
+                    return Self.scoredAsORFallbackOnly(
+                        Array(fallback.prefix(limit)),
+                        tokenCount: queryTokenCount
+                    )
                 }
                 if base.count >= limit { return Array(base.prefix(limit)) }
 
@@ -115,7 +121,9 @@ extension Wax {
                 combined.reserveCapacity(limit)
                 for candidate in fallback {
                     guard !seen.contains(candidate.frameId) else { continue }
-                    combined.append(candidate)
+                    combined.append(
+                        Self.scoredAsORFallbackOnly(candidate, tokenCount: queryTokenCount)
+                    )
                     seen.insert(candidate.frameId)
                     if combined.count >= limit { break }
                 }
@@ -129,18 +137,25 @@ extension Wax {
                     try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
                 }
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
-                    return Array(base.prefix(candidateLimit))
+                    return (Array(base.prefix(candidateLimit)), false)
                 }
                 let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
                 if base.isEmpty {
-                    return Array(fallback.prefix(candidateLimit))
+                    return (
+                        Self.scoredAsORFallbackOnly(
+                            Array(fallback.prefix(candidateLimit)),
+                            tokenCount: queryTokenCount
+                        ),
+                        true
+                    )
                 }
-                return merged(base: base, fallback: fallback, limit: candidateLimit)
+                return (merged(base: base, fallback: fallback, limit: candidateLimit), false)
             } catch {
                 guard let fallbackQuery else {
                     throw error
                 }
-                return try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
+                let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)
+                return (Self.scoredAsORFallbackOnly(fallback, tokenCount: queryTokenCount), true)
             }
         }()
 
@@ -203,8 +218,14 @@ extension Wax {
             )
         }()
 
-        let textResults = try await textResultsAsync
-        let vectorResults = try await vectorResultsAsync
+        let textLane = try await textLaneAsync
+        let textResults = textLane.results
+        let textLaneIsORFallbackOnly = textLane.isORFallbackOnly
+        var vectorResults = try await vectorResultsAsync
+        vectorResults.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameId < rhs.frameId
+        }
         let structuredFrameIds = try await structuredFrameIdsAsync
 
         var timelineFrameIds: [UInt64] = []
@@ -358,12 +379,36 @@ extension Wax {
             if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
             if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds)) }
 
-            let fused = Self.rrfFusionResults(
+            var fused = Self.rrfFusionResults(
                 lists: lists,
                 k: request.rrfK,
                 includeDiagnostics: diagnosticsEnabled,
                 diagnosticsTopK: diagnosticsTopK
             )
+
+            // Factual identifier path only: exclusive FTS rank-1 must not lose
+            // to an exclusive vector neighbor. Skip OR-fallback-only rank-1 even
+            // on factual. Semantic/exploratory keep AdaptiveFusion.
+            var fusedPairs = fused.map { ($0.frameId, $0.score) }
+            HybridSearch.applyExclusiveTextRank1Floor(
+                merged: &fusedPairs,
+                textFrameIds: textIds,
+                vectorFrameIds: vectorIds,
+                applyFloor: queryType == .factual,
+                textRank1IsORFallbackOnly: textLaneIsORFallbackOnly
+            )
+            let totalWeight = lists.reduce(Float(0)) { $0 + max(0, $1.weight) }
+            HybridSearch.publishNormalizedRRFScores(
+                &fusedPairs,
+                k: request.rrfK,
+                totalWeight: totalWeight
+            )
+            let fusedById = Dictionary(uniqueKeysWithValues: fused.map { ($0.frameId, $0) })
+            fused = fusedPairs.compactMap { pair in
+                guard var entry = fusedById[pair.0] else { return nil }
+                entry.score = pair.1
+                return entry
+            }
 
             let timelineSet = Set(timelineIds)
             let structuredSet = Set(structuredIds)
@@ -640,7 +685,11 @@ extension Wax {
             if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
             if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
             return lhs.index < rhs.index
-        }.map(\.result)
+        }.map { item -> SearchResponse.Result in
+            var result = item.result
+            result.score = item.composite
+            return result
+        }
 
         if cappedWindow == results.count {
             return rankedHead
@@ -700,6 +749,35 @@ extension Wax {
             ordered.append(normalized)
         }
         return ordered
+    }
+
+    /// OR-fallback-only hits cannot publish a saturated 1.0 for a 1-of-N overlap.
+    private static func orFallbackOnlyScoreScale(tokenCount: Int) -> Double {
+        let n = max(tokenCount, 1)
+        guard n > 1 else { return 1 }
+        return 1 / Double(n)
+    }
+
+    private static func scoredAsORFallbackOnly(
+        _ result: TextSearchResult,
+        tokenCount: Int
+    ) -> TextSearchResult {
+        let scale = orFallbackOnlyScoreScale(tokenCount: tokenCount)
+        guard scale < 1 else { return result }
+        return TextSearchResult(
+            frameId: result.frameId,
+            score: result.score * scale,
+            snippet: result.snippet
+        )
+    }
+
+    private static func scoredAsORFallbackOnly(
+        _ results: [TextSearchResult],
+        tokenCount: Int
+    ) -> [TextSearchResult] {
+        let scale = orFallbackOnlyScoreScale(tokenCount: tokenCount)
+        guard scale < 1 else { return results }
+        return results.map { scoredAsORFallbackOnly($0, tokenCount: tokenCount) }
     }
 
     private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
@@ -1086,6 +1164,7 @@ extension Wax {
         rerankedHead.reserveCapacity(cappedWindow)
         for (rank, candidate) in scoredHead.enumerated() {
             var result = results[candidate.index]
+            result.score = candidate.score
             if var diagnostics = result.rankingDiagnostics {
                 diagnostics.tieBreakReason = rank == 0 ? .topResult : .rerankComposite
                 result.rankingDiagnostics = diagnostics

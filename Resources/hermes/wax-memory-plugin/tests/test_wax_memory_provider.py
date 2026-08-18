@@ -110,6 +110,15 @@ class AvailabilityTests(unittest.TestCase):
         self.assertTrue(provider.is_available())
         self.assertEqual(client.calls, [])
 
+    def test_is_available_without_injected_client_does_not_construct_probe(self) -> None:
+        with mock.patch.object(plugin, "_HAS_HTTP", True), mock.patch.object(
+            plugin, "_WaxHTTPClient"
+        ) as http_cls, mock.patch.object(plugin, "_WaxMCPManager") as mgr_cls:
+            provider = plugin.WaxMemoryProvider()
+            self.assertTrue(provider.is_available())
+            http_cls.return_value.call_tool.assert_not_called()
+            mgr_cls.return_value.probe.assert_not_called()
+
     def test_unavailable_reason_when_http_stack_missing(self) -> None:
         with mock.patch.object(plugin, "_HAS_HTTP", False):
             provider = plugin.WaxMemoryProvider()
@@ -162,6 +171,49 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertIn("Synthesized Harbor handoff", client.last_args("handoff")["content"])
         self.assertTrue(client.closed)
 
+    def test_session_end_waits_for_inflight_remember_before_close(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        order: list[str] = []
+        client = FakeClient()
+        orig = client.call_tool
+
+        def slow(tool_name: str, arguments: dict) -> dict:
+            if tool_name == "remember":
+                order.append("remember-start")
+                started.set()
+                self.assertTrue(release.wait(2), "remember was not released")
+                order.append("remember-done")
+            elif tool_name == "session_end":
+                order.append("session_end")
+            return orig(tool_name, arguments)
+
+        client.call_tool = slow  # type: ignore[method-assign]
+        provider = _provider(client)
+        provider.initialize("sess-1", platform="cli")
+        provider.sync_turn("What is the dock code?", "4412", session_id="sess-1")
+        self.assertTrue(started.wait(1), "remember never started")
+
+        ended = threading.Event()
+
+        def end_session() -> None:
+            provider.on_session_end([])
+            order.append("on_session_end-returned")
+            ended.set()
+
+        worker = threading.Thread(target=end_session)
+        worker.start()
+        time.sleep(0.05)
+        self.assertNotIn("session_end", order)
+        self.assertFalse(client.closed)
+        release.set()
+        self.assertTrue(ended.wait(2), "on_session_end did not finish")
+        worker.join(timeout=2)
+        self.assertIn("remember-done", order)
+        self.assertIn("session_end", order)
+        self.assertLess(order.index("remember-done"), order.index("session_end"))
+        self.assertTrue(client.closed)
+
 
 class ToolRoutingTests(unittest.TestCase):
     def test_core_tools_do_not_include_session_lifecycle(self) -> None:
@@ -170,6 +222,11 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertIn("wax_recall", names)
         self.assertNotIn("wax_session_start", names)
         self.assertNotIn("wax_compact_context", names)
+
+    def test_structured_tools_on_by_default(self) -> None:
+        names = {schema["name"] for schema in _provider().get_tool_schemas()}
+        self.assertIn("wax_entity_upsert", names)
+        self.assertIn("wax_facts_query", names)
 
     def test_remember_memory_type_matches_wax_mcp(self) -> None:
         remember = next(
@@ -262,6 +319,53 @@ class PrefetchAndSyncTests(unittest.TestCase):
         self.assertEqual(args["memory_type"], "note")
         self.assertEqual(args["durability"], "working")
 
+    def test_sync_turn_returns_before_remember_completes(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        client = FakeClient()
+        orig = client.call_tool
+
+        def slow(tool_name: str, arguments: dict) -> dict:
+            if tool_name == "remember":
+                started.set()
+                self.assertTrue(release.wait(2), "remember was not released")
+            return orig(tool_name, arguments)
+
+        client.call_tool = slow  # type: ignore[method-assign]
+        provider = _provider(client)
+        provider.initialize("sess-1", platform="cli")
+        started_at = time.time()
+        provider.sync_turn("What is the dock code?", "4412", session_id="sess-1")
+        self.assertLess(time.time() - started_at, 0.5)
+        self.assertTrue(started.wait(1), "remember never started")
+        release.set()
+        provider._join_background()
+        self.assertEqual(client.last_args("remember")["memory_type"], "note")
+
+    def test_prefetch_does_not_publish_after_session_switch(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        client = FakeClient()
+        orig = client.call_tool
+
+        def slow(tool_name: str, arguments: dict) -> dict:
+            if tool_name == "recall" and arguments.get("session_id") == "old-sess":
+                started.set()
+                self.assertTrue(release.wait(2), "old recall was not released")
+                return {"ok": True, "text": "OLD SESSION CONTEXT", "raw": {}}
+            return orig(tool_name, arguments)
+
+        client.call_tool = slow  # type: ignore[method-assign]
+        provider = _provider(client)
+        provider.initialize("old-sess", platform="cli")
+        provider.queue_prefetch("invoice total", session_id="old-sess")
+        self.assertTrue(started.wait(1), "old recall never started")
+        provider.on_session_switch("new-sess", parent_session_id="old-sess")
+        release.set()
+        provider._join_background()
+        self.assertIsNone(provider.recall_status())
+        self.assertNotIn("OLD SESSION CONTEXT", provider.prefetch("invoice total", session_id="new-sess"))
+
 
 class MemoryWriteAndBackupTests(unittest.TestCase):
     def test_memory_write_mirrors_user_preference(self) -> None:
@@ -293,6 +397,23 @@ class PackagingTests(unittest.TestCase):
         text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
         self.assertIn("on_session_end", text)
         self.assertIn("on_session_switch", text)
+
+    def test_register_binds_memory_provider(self) -> None:
+        bound: list[object] = []
+
+        class Ctx:
+            def register_memory_provider(self, provider: object) -> None:
+                bound.append(provider)
+
+        plugin.register(Ctx())
+        self.assertEqual(len(bound), 1)
+        self.assertIsInstance(bound[0], plugin.WaxMemoryProvider)
+
+    def test_requests_is_the_only_http_stack(self) -> None:
+        source = (PLUGIN_DIR / "hermes_wax_memory.py").read_text(encoding="utf-8")
+        self.assertNotIn("import httpx", source)
+        self.assertNotIn("urllib.request", source)
+        self.assertFalse(hasattr(plugin, "_HAS_HTTPX"))
 
 
 if __name__ == "__main__":

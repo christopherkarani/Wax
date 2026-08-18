@@ -31,7 +31,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "recall",
-            description: "Preferred read path: assemble RAG context for a query. Call after handoff_latest/session_start when answering from memory.",
+            description: "Preferred read path: assemble RAG context for a query. Call after handoff_latest/session_start when answering from memory. Passing session_id merges that session with durable long-term memory.",
             inputSchema: waxRecall
         ),
         Tool(
@@ -61,7 +61,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "corpus_search",
-            description: "Search broker-managed session history with provenance. Use for cross-session retrieval; cite provenance when results matter.",
+            description: "Search broker-managed session history and the long-term store with provenance. Use for cross-session retrieval; cite provenance when results matter.",
             inputSchema: waxCorpusSearch
         ),
         Tool(
@@ -71,7 +71,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_start",
-            description: "Create a broker-managed virtual session and return session_id. Call after handoff_latest at session start; keep session_id for later tools.",
+            description: "Create a broker-managed virtual session and return session_id. Call after handoff_latest at session start; keep session_id for later tools. The same agent_id+run_id reuses the active session instead of minting a sibling.",
             inputSchema: waxSessionStart
         ),
         Tool(
@@ -221,7 +221,7 @@ enum ToolSchemas {
             ],
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID for scoped recall.",
+                "description": "Optional session UUID. When set, recall merges that session with durable long-term memory.",
             ],
             "mode": [
                 "type": "string",
@@ -411,7 +411,7 @@ enum ToolSchemas {
             ],
             "rebuild": [
                 "type": "boolean",
-                "description": "Rebuild the broker-managed shared corpus before searching. Default: true.",
+                "description": "Rebuild the broker-managed shared corpus before searching. Default: \(AgentBrokerCommandSurface.corpusSearchDefaultRebuild). Rebuilds automatically when the corpus store is missing.",
             ],
             "recursive": [
                 "type": "boolean",
@@ -440,8 +440,8 @@ enum ToolSchemas {
     static let waxSessionStart: Value = objectSchema(
         properties: [
             "session_id": ["type": "string", "description": "Optional explicit session UUID. If it already exists, use session_resume instead."],
-            "agent_id": ["type": "string", "description": "Stable agent identifier for long-running runtimes."],
-            "run_id": ["type": "string", "description": "Stable run identifier for the current autonomous run."],
+            "agent_id": ["type": "string", "description": "Stable agent identifier for long-running runtimes. Combined with run_id, reuses the active session."],
+            "run_id": ["type": "string", "description": "Stable run identifier for the current autonomous run. Combined with agent_id, reuses the active session."],
         ],
         required: []
     )

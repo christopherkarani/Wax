@@ -362,6 +362,19 @@ package actor FTS5SearchEngine {
     }
 
     package func retractFact(factId: FactRowID, atMs: Int64) async throws {
+        let dbQueue = self.dbQueue
+        let factExists = try await io.run {
+            try dbQueue.read { db in
+                try Int64.fetchOne(
+                    db,
+                    sql: "SELECT fact_id FROM sm_fact WHERE fact_id = ?",
+                    arguments: [factId.rawValue]
+                ) != nil
+            }
+        }
+        guard factExists else {
+            throw WaxError.io("fact_id has no open spans")
+        }
         enqueueStructuredOp(.retractFact(factId: factId, atMs: atMs))
         try await flushPendingStructuredOpsIfThresholdExceeded()
         try await flushPendingStructuredOpsIfNeeded()

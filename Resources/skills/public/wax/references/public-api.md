@@ -50,6 +50,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 - `RAGContext.Diagnostics`: `requestedMode: String`, `effectiveMode: String` (`"text"`, `"vector"`, `"hybrid(alpha=…)"`), `queryEmbeddingState: QueryEmbeddingState`.
 - `RAGContext.QueryEmbeddingState`: `.notRequested`, `.available`, `.timeout`, `.circuitOpen`, `.noEmbedder`, `.vectorDisabled`, `.failed`.
 - `RAGContext.Item`: `kind` (`.snippet`/`.expanded`/`.surrogate`), `frameId`, `score`, `sources` (`.text`/`.vector`/`.timeline`/`.structured`/`.unknown`), `text`, `metadata`, `explanations`.
+  - `score` is the rank key used to order hits. It is not a probability. Hybrid fusion may scale fused ranks to `0...1`; intent or semantic rerank may then write an unbounded composite onto the same field.
 
 ### Memory.Stats
 

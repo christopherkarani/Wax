@@ -59,6 +59,24 @@ struct WaxCLIMemoryTests {
 
     // MARK: - Tests
 
+    @Test func singleChunkRememberAddsOneFrame() async throws {
+        try await withCLIMemory { memory in
+            let content = "cli canary-7f3a91 single-chunk remember"
+            let before = await memory.runtimeStats()
+            try await memory.remember(content, metadata: ["source": "cli-single-chunk"])
+            try await memory.flush()
+            let after = await memory.runtimeStats()
+            let added = after.frameCount - before.frameCount
+            #expect(added == 1)
+            #expect(after.frameCount == before.frameCount + 1)
+
+            try await memory.remember(content, metadata: ["source": "cli-single-chunk"])
+            try await memory.flush()
+            let afterDuplicate = await memory.runtimeStats()
+            #expect(afterDuplicate.frameCount == after.frameCount)
+        }
+    }
+
     @Test func rememberFlushRecallRoundTrip() async throws {
         try await withCLIMemory { memory in
             try await memory.remember(
