@@ -125,11 +125,17 @@ package struct BrokerSessionRecallSignals: Sendable, Equatable {
 
 package enum BrokerSessionPersistenceError: LocalizedError, Equatable {
     case manifestNotFound(sessionID: UUID)
+    case manifestUnreadable(sessionID: UUID?)
 
     package var errorDescription: String? {
         switch self {
         case .manifestNotFound(let sessionID):
             return "No session manifest found for session_id \(sessionID.uuidString)"
+        case .manifestUnreadable(let sessionID):
+            if let sessionID {
+                return "Unable to read session manifest for session_id \(sessionID.uuidString)"
+            }
+            return "Unable to read session manifest"
         }
     }
 }
@@ -158,14 +164,17 @@ package enum BrokerSessionPersistence {
 
     package static func loadManifest(at url: URL) throws -> BrokerSessionManifest {
         let sessionID = UUID(uuidString: url.deletingPathExtension().lastPathComponent)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if let sessionID {
+                throw BrokerSessionPersistenceError.manifestNotFound(sessionID: sessionID)
+            }
+            throw BrokerSessionPersistenceError.manifestUnreadable(sessionID: nil)
+        }
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            if let sessionID {
-                throw BrokerSessionPersistenceError.manifestNotFound(sessionID: sessionID)
-            }
-            throw error
+            throw BrokerSessionPersistenceError.manifestUnreadable(sessionID: sessionID)
         }
         return try decoder.decode(BrokerSessionManifest.self, from: data)
     }
