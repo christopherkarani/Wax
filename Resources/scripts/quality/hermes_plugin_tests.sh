@@ -22,6 +22,7 @@ grep -Fq 'HERMES_HOME' "$ROOT_DIR/Resources/npm/waxmcp/bin/waxmcp.js" \
 
 runtime_files=(
   hermes_wax_memory.py
+  wax_memory_schemas.py
   __init__.py
   plugin.yaml
   pyproject.toml

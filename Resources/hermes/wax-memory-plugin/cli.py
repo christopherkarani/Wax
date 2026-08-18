@@ -9,7 +9,6 @@ from typing import Any
 from hermes_wax_memory import (
     DEFAULT_ENDPOINT,
     WaxMemoryProvider,
-    _WaxMCPManager,
     load_plugin_config,
     resolve_endpoint,
 )
@@ -20,20 +19,19 @@ def _print_status(args: Any) -> None:
     config = load_plugin_config(hermes_home)
     endpoint = resolve_endpoint(config)
     provider = WaxMemoryProvider(config=config)
-    manager = _WaxMCPManager(endpoint)
     print(f"provider: {provider.name}")
     print(f"available: {provider.is_available()}")
     if reason := provider.unavailable_reason():
         print(f"unavailable_reason: {reason}")
     print(f"endpoint: {endpoint}")
-    print(f"auto_start: {provider._auto_start_enabled()}")
-    print(f"structured_memory: {provider._structured_memory_enabled()}")
-    info = manager.probe()
+    print(f"auto_start: {provider.auto_start_enabled()}")
+    print(f"structured_memory: {provider.structured_memory_enabled()}")
+    info = provider.probe_broker()
     print(f"reachable: {info.get('reachable', False)}")
     if info.get("reachable"):
         print(f"vector_search: {info.get('vector_search_enabled', False)}")
         print(f"frame_count: {info.get('frame_count', 0)}")
-        print(manager.diagnose_vector_search())
+        print(provider.diagnose_vector_search())
     else:
         print("broker: not running")
         print("hint: npx waxmcp --embedder minilm --transport http")

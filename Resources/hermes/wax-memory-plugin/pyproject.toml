@@ -31,4 +31,4 @@ Repository = "https://github.com/christopherkarani/Wax.git"
 wax-memory = "hermes_wax_memory:register"
 
 [tool.setuptools]
-py-modules = ["hermes_wax_memory", "cli"]
+py-modules = ["hermes_wax_memory", "wax_memory_schemas", "cli"]

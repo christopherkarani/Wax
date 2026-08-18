@@ -9,11 +9,31 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
+
+try:
+    from wax_memory_schemas import (
+        CORE_TOOL_NAMES,
+        EXTENDED_TOOL_NAMES,
+        STRUCTURED_TOOL_NAMES,
+        TOOL_SCHEMAS as _TOOL_SCHEMAS,
+        TOOLS_WITH_SESSION_ID,
+        WAX_MEMORY_TYPES,
+    )
+except ImportError:  # directory plugin loaded as a package
+    from .wax_memory_schemas import (
+        CORE_TOOL_NAMES,
+        EXTENDED_TOOL_NAMES,
+        STRUCTURED_TOOL_NAMES,
+        TOOL_SCHEMAS as _TOOL_SCHEMAS,
+        TOOLS_WITH_SESSION_ID,
+        WAX_MEMORY_TYPES,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -21,68 +41,10 @@ PLUGIN_VERSION = "0.1.26"
 DEFAULT_ENDPOINT = "http://127.0.0.1:3000/mcp"
 CONFIG_FILENAME = "wax-memory.json"
 MCP_PROTOCOL_VERSION = "2024-11-05"
-WAX_MEMORY_TYPES = [
-    "note",
-    "task_state",
-    "user_preference",
-    "decision",
-    "lesson",
-    "handoff",
-    "constraint",
-    "fact",
-]
-CORE_TOOL_NAMES = {
-    "wax_remember",
-    "wax_recall",
-    "wax_search",
-    "wax_handoff",
-    "wax_handoff_latest",
-    "wax_stats",
-}
-STRUCTURED_TOOL_NAMES = {
-    "wax_entity_upsert",
-    "wax_entity_resolve",
-    "wax_fact_assert",
-    "wax_fact_retract",
-    "wax_facts_query",
-}
-EXTENDED_TOOL_NAMES = {
-    "wax_compact_context",
-    "wax_markdown_export",
-    "wax_markdown_sync",
-    "wax_session_start",
-    "wax_session_end",
-    "wax_session_resume",
-    "wax_session_synthesize",
-    "wax_knowledge_capture",
-    "wax_corpus_search",
-    "wax_promote",
-}
-TOOLS_WITH_SESSION_ID = {
-    "remember",
-    "recall",
-    "search",
-    "handoff",
-    "compact_context",
-    "markdown_export",
-    "session_start",
-    "session_end",
-    "session_resume",
-    "session_synthesize",
-    "memory_append",
-    "memory_search",
-    "memory_get",
-    "memory_promote",
-    "promote",
-    "knowledge_capture",
-    "corpus_search",
-}
 
 try:
     from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
 except ImportError:
-    from abc import ABC, abstractmethod
-
     @dataclass(frozen=True)
     class RecallStatus:
         provider_label: str
@@ -105,107 +67,16 @@ except ImportError:
             return True
         return bool(_TRIVIAL_PROMPT_RE.match(stripped))
 
-    class MemoryProvider(ABC):
-        @property
-        @abstractmethod
-        def name(self) -> str:
-            return ""
-
-        @abstractmethod
-        def is_available(self) -> bool:
-            return False
-
-        @abstractmethod
-        def initialize(self, session_id: str, **kwargs) -> None:
-            pass
-
-        def unavailable_reason(self) -> str:
-            return ""
-
-        def system_prompt_block(self) -> str:
-            return ""
-
-        def prefetch(self, query: str, *, session_id: str = "") -> str:
-            return ""
-
-        def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-            return None
-
-        def recall_status(self) -> Optional[RecallStatus]:
-            return None
-
-        def sync_turn(
-            self,
-            user_content: str,
-            assistant_content: str,
-            *,
-            session_id: str = "",
-            messages: Optional[List[Dict[str, Any]]] = None,
-        ) -> None:
-            pass
-
-        @abstractmethod
-        def get_tool_schemas(self) -> List[Dict[str, Any]]:
-            return []
-
-        def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-            raise NotImplementedError
-
-        def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-            pass
-
-        def on_session_switch(
-            self,
-            new_session_id: str,
-            *,
-            parent_session_id: str = "",
-            reset: bool = False,
-            rewound: bool = False,
-            **kwargs,
-        ) -> None:
-            pass
-
-        def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-            return ""
-
-        def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
-            pass
-
-        def on_memory_write(
-            self,
-            action: str,
-            target: str,
-            content: str,
-            metadata: Optional[Dict[str, Any]] = None,
-        ) -> None:
-            pass
-
-        def backup_paths(self) -> List[str]:
-            return []
-
-        def shutdown(self) -> None:
-            pass
-
-        def get_config_schema(self) -> List[Dict[str, Any]]:
-            return []
-
-        def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-            pass
+    class MemoryProvider:
+        """Stand-in when Hermes is not installed (unit tests / standalone)."""
 
 
 try:
     import requests
-    _HAS_REQUESTS = True
+    _HAS_HTTP = True
 except ImportError:
-    _HAS_REQUESTS = False
-
-try:
-    import httpx
-    _HAS_HTTPX = True
-except ImportError:
-    _HAS_HTTPX = False
-
-_HAS_HTTP = _HAS_REQUESTS or _HAS_HTTPX
+    requests = None  # type: ignore[assignment]
+    _HAS_HTTP = False
 
 _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"^\s*(?:"
@@ -300,48 +171,19 @@ class _WaxHTTPClient:
         raise WaxMCPError("Empty MCP response")
 
     def _post(self, payload: Dict[str, Any], timeout: float, expect_body: bool = True) -> Dict[str, Any]:
+        if not _HAS_HTTP:
+            raise WaxMCPError("Install the requests package (pip install requests>=2.28)")
         headers = self._headers()
-        if _HAS_REQUESTS:
-            resp = requests.post(
-                self.endpoint, json=payload, headers=headers, timeout=timeout, stream=True,
-            )
+        with requests.post(
+            self.endpoint, json=payload, headers=headers, timeout=timeout,
+        ) as resp:
             resp.raise_for_status()
             session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
             if session:
                 self._session_id = session
             if not expect_body:
                 return {}
-            for line in resp.iter_lines(decode_unicode=True):
-                if line and line.startswith("data: "):
-                    data_str = line[6:]
-                    if data_str.strip():
-                        return json.loads(data_str)
-            text = resp.text or ""
-            if text.strip():
-                return self._parse_sse_or_json(text)
-            raise WaxMCPError("Empty SSE response")
-        if _HAS_HTTPX:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
-                if session:
-                    self._session_id = session
-                if not expect_body:
-                    return {}
-                return self._parse_sse_or_json(resp.text)
-        import urllib.request
-
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(self.endpoint, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            session = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
-            if session:
-                self._session_id = session
-            body = resp.read().decode("utf-8")
-            if not expect_body:
-                return {}
-            return self._parse_sse_or_json(body)
+            return self._parse_sse_or_json(resp.text or "")
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -395,17 +237,18 @@ class _WaxHTTPClient:
         }
 
     def close(self) -> None:
-        if self._session_id and _HAS_REQUESTS:
-            try:
-                requests.delete(
-                    self.endpoint,
-                    headers={"MCP-Session-Id": self._session_id},
-                    timeout=10.0,
-                )
-            except Exception:
-                pass
-        self._session_id = None
-        self._initialized = False
+        with self._lock:
+            if self._session_id and _HAS_HTTP:
+                try:
+                    requests.delete(
+                        self.endpoint,
+                        headers={"MCP-Session-Id": self._session_id},
+                        timeout=10.0,
+                    )
+                except Exception as exc:
+                    logger.debug("Wax HTTP session close failed: %s", exc)
+            self._session_id = None
+            self._initialized = False
 
 
 class _WaxMCPManager:
@@ -514,197 +357,6 @@ class _WaxMCPManager:
         )
 
 
-def _schema(name: str, description: str, properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
-    return {
-        "name": name,
-        "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-            "additionalProperties": False,
-        },
-    }
-
-
-_TOOL_SCHEMAS = {
-    "wax_remember": _schema(
-        "wax_remember",
-        "Store durable or working memory in Wax. Use for facts, decisions, lessons, and preferences.",
-        {
-            "content": {"type": "string", "description": "Text content to store."},
-            "session_id": {"type": "string"},
-            "metadata": {"type": "object", "additionalProperties": True},
-            "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
-            "durability": {"type": "string", "enum": ["ephemeral", "working", "durable", "locked"]},
-            "project": {"type": "string"},
-            "repo": {"type": "string"},
-            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "expires_in_days": {"type": "integer", "minimum": 1, "maximum": 3650},
-            "reviewed": {"type": "boolean"},
-            "locked": {"type": "boolean"},
-        },
-        ["content"],
-    ),
-    "wax_recall": _schema(
-        "wax_recall",
-        "Recall context from Wax using RAG assembly. Prefer hybrid mode unless a lexical search is required.",
-        {
-            "query": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "session_id": {"type": "string"},
-            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
-            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        },
-        ["query"],
-    ),
-    "wax_search": _schema(
-        "wax_search",
-        "Run direct Wax search and return ranked raw hits.",
-        {
-            "query": {"type": "string"},
-            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
-            "topK": {"type": "integer", "minimum": 1, "maximum": 200},
-            "session_id": {"type": "string"},
-            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        },
-        ["query"],
-    ),
-    "wax_handoff": _schema(
-        "wax_handoff",
-        "Store a cross-session handoff note for later retrieval.",
-        {
-            "content": {"type": "string"},
-            "session_id": {"type": "string"},
-            "project": {"type": "string"},
-            "pending_tasks": {"type": "array", "items": {"type": "string"}},
-        },
-        ["content"],
-    ),
-    "wax_handoff_latest": _schema(
-        "wax_handoff_latest",
-        "Fetch the latest handoff note, optionally scoped by project.",
-        {"project": {"type": "string"}},
-    ),
-    "wax_stats": _schema("wax_stats", "Return Wax runtime and storage statistics.", {}),
-    "wax_entity_upsert": _schema(
-        "wax_entity_upsert",
-        "Upsert a structured-memory entity by key.",
-        {
-            "key": {"type": "string"},
-            "kind": {"type": "string"},
-            "aliases": {"type": "array", "items": {"type": "string"}},
-        },
-        ["key", "kind"],
-    ),
-    "wax_entity_resolve": _schema(
-        "wax_entity_resolve",
-        "Resolve a structured-memory entity by alias.",
-        {"alias": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
-        ["alias"],
-    ),
-    "wax_fact_assert": _schema(
-        "wax_fact_assert",
-        "Assert a structured-memory fact (S-P-O triple).",
-        {
-            "subject": {"type": "string"},
-            "predicate": {"type": "string"},
-            "object": {"description": "Fact value: string, number, boolean, or typed object."},
-            "relation": {"type": "string", "enum": ["sets", "updates", "extends", "retracts"]},
-            "valid_from": {"type": "integer"},
-            "valid_to": {"type": "integer"},
-        },
-        ["subject", "predicate", "object"],
-    ),
-    "wax_fact_retract": _schema(
-        "wax_fact_retract",
-        "Retract a structured-memory fact by id.",
-        {"fact_id": {"type": "integer", "minimum": 0}, "at_ms": {"type": "integer"}},
-        ["fact_id"],
-    ),
-    "wax_facts_query": _schema(
-        "wax_facts_query",
-        "Query structured-memory facts by subject, predicate, or time.",
-        {
-            "subject": {"type": "string"},
-            "predicate": {"type": "string"},
-            "as_of": {"type": "integer"},
-            "system_as_of": {"type": "integer"},
-            "valid_as_of": {"type": "integer"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 500},
-        },
-    ),
-    "wax_compact_context": _schema(
-        "wax_compact_context",
-        "Assemble short, medium, and long-horizon memory into a token-budgeted checkpoint.",
-        {
-            "query": {"type": "string"},
-            "session_id": {"type": "string"},
-            "token_budget": {"type": "integer", "minimum": 128, "maximum": 32000},
-            "max_items": {"type": "integer", "minimum": 1, "maximum": 64},
-            "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
-            "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        },
-        ["query"],
-    ),
-    "wax_markdown_export": _schema(
-        "wax_markdown_export",
-        "Export Markdown projections (MEMORY.md, daily notes) from Wax.",
-        {"output_dir": {"type": "string"}, "session_id": {"type": "string"}},
-        ["output_dir"],
-    ),
-    "wax_markdown_sync": _schema(
-        "wax_markdown_sync",
-        "Import and reconcile Markdown projections back into Wax.",
-        {"root_dir": {"type": "string"}, "dry_run": {"type": "boolean"}},
-        ["root_dir"],
-    ),
-    "wax_session_start": _schema(
-        "wax_session_start",
-        "Create a broker-managed virtual session.",
-        {"session_id": {"type": "string"}, "agent_id": {"type": "string"}, "run_id": {"type": "string"}},
-    ),
-    "wax_session_end": _schema(
-        "wax_session_end",
-        "End an active broker-managed virtual session.",
-        {"session_id": {"type": "string"}},
-    ),
-    "wax_session_resume": _schema(
-        "wax_session_resume",
-        "Resume an existing broker-managed virtual session.",
-        {"session_id": {"type": "string"}},
-        ["session_id"],
-    ),
-    "wax_session_synthesize": _schema(
-        "wax_session_synthesize",
-        "Summarize the active session into handoff, lessons, and promotion candidates.",
-        {"session_id": {"type": "string"}, "max_candidates": {"type": "integer", "minimum": 1, "maximum": 12}},
-    ),
-    "wax_knowledge_capture": _schema(
-        "wax_knowledge_capture",
-        "Capture durable knowledge from a natural statement.",
-        {
-            "content": {"type": "string"},
-            "session_id": {"type": "string"},
-            "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
-            "kind": {"type": "string"},
-        },
-        ["content"],
-    ),
-    "wax_corpus_search": _schema(
-        "wax_corpus_search",
-        "Search broker-managed session history with provenance.",
-        {"query": {"type": "string"}, "session_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
-        ["query"],
-    ),
-    "wax_promote": _schema(
-        "wax_promote",
-        "Promote a working memory into durable memory.",
-        {"session_id": {"type": "string"}, "frame_id": {"type": "integer"}},
-    ),
-}
-
-
 class WaxMemoryProvider(MemoryProvider):
     """Hermes MemoryProvider that delegates to Wax MCP over HTTP."""
 
@@ -722,9 +374,9 @@ class WaxMemoryProvider(MemoryProvider):
         self._prefetch_text = ""
         self._prefetch_query = ""
         self._prefetch_count = 0
-        self._prefetch_thread: Optional[threading.Thread] = None
-        self._sync_thread: Optional[threading.Thread] = None
-        self._write_threads: List[threading.Thread] = []
+        self._generation = 0
+        self._pool: Optional[ThreadPoolExecutor] = None
+        self._in_flight: List[Future[None]] = []
 
     @property
     def name(self) -> str:
@@ -744,6 +396,18 @@ class WaxMemoryProvider(MemoryProvider):
         if "WAX_MCP_AUTO_START" in os.environ:
             return _truthy(os.environ.get("WAX_MCP_AUTO_START"), False)
         return _truthy(self._config.get("auto_start"), False)
+
+    def auto_start_enabled(self) -> bool:
+        return self._auto_start_enabled()
+
+    def structured_memory_enabled(self) -> bool:
+        return self._structured_memory_enabled()
+
+    def probe_broker(self) -> Dict[str, Any]:
+        return self._manager.probe()
+
+    def diagnose_vector_search(self) -> str:
+        return self._manager.diagnose_vector_search()
 
     def is_available(self) -> bool:
         if self._injected_client:
@@ -823,14 +487,24 @@ class WaxMemoryProvider(MemoryProvider):
     def _active_session(self, session_id: str = "") -> Optional[str]:
         return session_id or self._session_id
 
-    def _set_prefetch(self, query: str, text: str) -> None:
-        count = 0
-        if text:
-            count = max(1, text.count("\n") + 1) if text.strip() else 0
+    def _invalidate_prefetch(self) -> int:
         with self._prefetch_lock:
+            self._generation += 1
+            self._prefetch_text = ""
+            self._prefetch_query = ""
+            self._prefetch_count = 0
+            return self._generation
+
+    def _set_prefetch(self, query: str, text: str, generation: Optional[int] = None) -> str:
+        formatted = f"\n[Wax Memory Context]\n{text}\n" if text else ""
+        count = max(1, text.count("\n") + 1) if text and text.strip() else 0
+        with self._prefetch_lock:
+            if generation is not None and generation != self._generation:
+                return ""
             self._prefetch_query = query
-            self._prefetch_text = f"\n[Wax Memory Context]\n{text}\n" if text else ""
+            self._prefetch_text = formatted
             self._prefetch_count = count
+        return formatted
 
     def _tool_args(self, base: Dict[str, Any], session_id: str = "") -> Dict[str, Any]:
         args = dict(base)
@@ -851,18 +525,18 @@ class WaxMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
             return
+        with self._prefetch_lock:
+            self._generation += 1
+            generation = self._generation
 
         def _warm() -> None:
             try:
                 text = self._recall_text(query, session_id)
-                self._set_prefetch(query, text)
+                self._set_prefetch(query, text, generation)
             except Exception as exc:
                 logger.debug("Wax queue_prefetch failed: %s", exc)
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=2.0)
-        self._prefetch_thread = threading.Thread(target=_warm, daemon=True)
-        self._prefetch_thread.start()
+        self._spawn(_warm)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
@@ -872,15 +546,13 @@ class WaxMemoryProvider(MemoryProvider):
             cached_text = self._prefetch_text
         if cached_text and cached_query == query:
             return cached_text
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=1.0)
-            with self._prefetch_lock:
-                if self._prefetch_text and self._prefetch_query == query:
-                    return self._prefetch_text
+        self._join_background(timeout=1.0)
+        with self._prefetch_lock:
+            if self._prefetch_text and self._prefetch_query == query:
+                return self._prefetch_text
         try:
             text = self._recall_text(query, session_id)
-            self._set_prefetch(query, text)
-            return self._prefetch_text
+            return self._set_prefetch(query, text)
         except Exception as exc:
             logger.debug("Wax prefetch failed: %s", exc)
             return ""
@@ -891,18 +563,28 @@ class WaxMemoryProvider(MemoryProvider):
                 return None
             return RecallStatus(provider_label="Wax", count=self._prefetch_count, glyph="🧠")
 
+    def _ensure_pool(self) -> ThreadPoolExecutor:
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wax-mem")
+        return self._pool
+
+    def _close_pool(self) -> None:
+        pool = self._pool
+        self._pool = None
+        self._in_flight = []
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=False)
+
     def _spawn(self, target: Callable[[], None]) -> None:
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(target=target, daemon=True)
-        self._sync_thread.start()
-        self._write_threads.append(self._sync_thread)
+        future = self._ensure_pool().submit(target)
+        self._in_flight.append(future)
+        self._in_flight = [item for item in self._in_flight if not item.done()]
 
     def _join_background(self, timeout: float = 2.0) -> None:
-        threads = [self._sync_thread, self._prefetch_thread, *self._write_threads]
-        for thread in threads:
-            if thread and thread.is_alive():
-                thread.join(timeout=timeout)
+        pending = [item for item in self._in_flight if not item.done()]
+        if pending:
+            wait(pending, timeout=timeout)
+        self._in_flight = [item for item in self._in_flight if not item.done()]
 
     def sync_turn(
         self,
@@ -973,11 +655,9 @@ class WaxMemoryProvider(MemoryProvider):
         **kwargs,
     ) -> None:
         if rewound and new_session_id == (self._session_id or ""):
-            with self._prefetch_lock:
-                self._prefetch_text = ""
-                self._prefetch_query = ""
-                self._prefetch_count = 0
+            self._invalidate_prefetch()
             return
+        self._invalidate_prefetch()
         old = self._session_id
         if reset and old:
             try:
@@ -987,13 +667,11 @@ class WaxMemoryProvider(MemoryProvider):
             self._start_session(new_session_id, resume=False)
         else:
             self._start_session(new_session_id, resume=True)
-        with self._prefetch_lock:
-            self._prefetch_text = ""
-            self._prefetch_query = ""
-            self._prefetch_count = 0
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         logger.info("Wax on_session_end triggered")
+        self._invalidate_prefetch()
+        self._join_background()
         try:
             content = ""
             try:
@@ -1034,6 +712,7 @@ class WaxMemoryProvider(MemoryProvider):
         finally:
             self._session_id = None
             self._client.close()
+            self._close_pool()
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         try:
@@ -1132,6 +811,7 @@ class WaxMemoryProvider(MemoryProvider):
                 self._session_id = None
         self._client.close()
         self._manager.shutdown()
+        self._close_pool()
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
