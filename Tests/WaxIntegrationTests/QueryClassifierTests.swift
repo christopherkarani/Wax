@@ -36,3 +36,7 @@ import Wax
     #expect(RuleBasedQueryClassifier.classify("decade") == .exploratory)
 }
 
+@Test func operatorORFallbackQueryClassifiesAsExploratory() {
+    #expect(RuleBasedQueryClassifier.classify("adversarial-fp.md stash-drop deny") == .exploratory)
+}
+

@@ -137,7 +137,19 @@ import Wax
     #expect(merged.map(\.0) == [1, 1706, 2])
 }
 
-@Test func rrfPublishedScoresDescendAndStayInZeroToOneAfterFusion() {
+@Test func rrfORFallbackOnlyTextRank1IsNotFlooredEvenWhenFactual() {
+    var merged: [(UInt64, Float)] = [(1, 0.02), (1706, 0.019)]
+    HybridSearch.applyExclusiveTextRank1Floor(
+        merged: &merged,
+        textFrameIds: [1706],
+        vectorFrameIds: [1],
+        applyFloor: true,
+        textRank1IsORFallbackOnly: true
+    )
+    #expect(merged.map(\.0) == [1, 1706])
+}
+
+@Test func rrfPublishedScoresDescendAndAreThresholdable() {
     let textCanary: UInt64 = 1706
     let vectorNeighbor: UInt64 = 1
     let merged = HybridSearch.rrfFusion(
@@ -153,6 +165,10 @@ import Wax
     for (previous, next) in zip(merged, merged.dropFirst()) {
         #expect(previous.1 >= next.1)
     }
+    // Independent of raw RRF (≈ weight/(k+1) ≈ 0.008): rank-1 must be
+    // usable as a 0–1 threshold the way text scores already are.
+    #expect(merged[0].1 >= 0.5)
+    #expect(merged[0].1 <= 1.0)
     #expect(merged.allSatisfy { (0...1).contains($0.1) })
 }
 
