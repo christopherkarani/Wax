@@ -234,6 +234,11 @@ package enum EmbeddingOpenRequest: Sendable, Equatable {
 
 /// Opens a ``MemoryOrchestrator`` bound to embedding readiness (load, status, attach).
 package enum EmbeddingReadinessBinding {
+    /// Typed store/provider failures stay typed under `--require-vector`.
+    package static func isTypedOpenFailure(_ error: Error) -> Bool {
+        error is BuiltInEmbeddingProviderError || error is WaxError
+    }
+
     package static func openOrchestrator(
         at url: URL,
         config: OrchestratorConfig,
