@@ -1433,3 +1433,137 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+/// Unpunctuated `OR` is a Ranking token, not an FTS boolean. AND of both
+/// terms misses disjoint frames; OR fallback then publishes a 1-of-2 score.
+@Test func unpunctuatedBooleanWordsAreLiteralsNotFTSOperators() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let catsOnly = try await wax.put(Data("only cats live here".utf8))
+        try await text.index(frameId: catsOnly, text: "only cats live here")
+        let dogsOnly = try await wax.put(Data("only dogs live here".utf8))
+        try await text.index(frameId: dogsOnly, text: "only dogs live here")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(query: "cats OR dogs", mode: .textOnly, topK: 10)
+        )
+        let catsHit = try #require(response.results.first { $0.frameId == catsOnly })
+        let dogsHit = try #require(response.results.first { $0.frameId == dogsOnly })
+        #expect(catsHit.score <= 0.5)
+        #expect(dogsHit.score <= 0.5)
+
+        try await wax.close()
+    }
+}
+
+/// Temporal hybrid ranking publishes fused hits from text, vector, timeline,
+/// and structured lanes on the live `wax.search` path.
+@Test func hybridSearchFusesTextVectorTimelineAndStructuredLanes() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let timelineOnly = try await session.put(
+            Data("unrelated old filler note".utf8),
+            options: FrameMetaSubset(searchText: "unrelated old filler note"),
+            timestampMs: 1_000
+        )
+        try await session.indexText(frameId: timelineOnly, text: "unrelated old filler note")
+
+        let evidence = try await session.put(
+            Data("Structured evidence payload without the alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload"),
+            timestampMs: 2_000
+        )
+        try await session.indexText(frameId: evidence, text: "Structured evidence payload")
+
+        let vectorOnly = try await session.put(
+            Data("unrelated vector neighbor filler".utf8),
+            options: FrameMetaSubset(searchText: "unrelated vector neighbor filler"),
+            timestampMs: 3_000
+        )
+        try await session.indexText(frameId: vectorOnly, text: "unrelated vector neighbor filler")
+
+        let textHit = try await session.put(
+            Data("F027Alice last seen at the dock".utf8),
+            options: FrameMetaSubset(searchText: "F027Alice last seen at the dock"),
+            timestampMs: 4_000
+        )
+        try await session.indexText(frameId: textHit, text: "F027Alice last seen at the dock")
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f027-alice"),
+            kind: "person",
+            aliases: ["F027Alice"],
+            nowMs: 5_000
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f027-alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: 5_000),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidence,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: 5_000
+                ),
+            ]
+        )
+        try await session.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "when was F027Alice last seen",
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.5),
+                topK: 10,
+                enableRankingDiagnostics: true,
+                rankingDiagnosticsTopK: 10
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: DeterministicVectorResultsEngine(
+                    dimensions: 4,
+                    results: [(frameId: vectorOnly, score: 0.99)]
+                ),
+                structuredEngine: nil
+            )
+        )
+
+        let byID = Dictionary(uniqueKeysWithValues: response.results.map { ($0.frameId, $0) })
+        let textResult = try #require(byID[textHit])
+        let vectorResult = try #require(byID[vectorOnly])
+        let evidenceResult = try #require(byID[evidence])
+        let timelineResult = try #require(byID[timelineOnly])
+        #expect(textResult.sources.contains(.text))
+        #expect(vectorResult.sources.contains(.vector))
+        #expect(evidenceResult.sources.contains(.structuredMemory))
+        #expect(timelineResult.sources.contains(.timeline))
+        #expect(timelineResult.sources.contains(.text) == false)
+
+        let laneSources = Set(
+            response.results.compactMap(\.rankingDiagnostics).flatMap(\.laneContributions).map(\.source)
+        )
+        #expect(laneSources.contains(.text))
+        #expect(laneSources.contains(.vector))
+        #expect(laneSources.contains(.timeline))
+        #expect(laneSources.contains(.structuredMemory))
+
+        for (previous, next) in zip(response.results, response.results.dropFirst()) {
+            #expect(previous.score >= next.score)
+        }
+
+        await session.close()
+        try await wax.close()
+    }
+}

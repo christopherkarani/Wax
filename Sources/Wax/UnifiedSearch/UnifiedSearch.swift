@@ -137,11 +137,7 @@ extension Wax {
             }
 
             do {
-                let base = if primaryQuery == trimmedQuery {
-                    try await textEngine.search(query: primaryQuery, topK: candidateLimit)
-                } else {
-                    try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
-                }
+                let base = try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
                     return (Array(base.prefix(candidateLimit)), false)
                 }
@@ -887,7 +883,6 @@ extension Wax {
     }
 
     private static func primaryFTSQuery(from query: String, maxTokens: Int = 16) -> String? {
-        guard requiresSafeFTSNormalization(query) else { return query }
         let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
         let quotedTokens = tokens.map { token -> String in
             let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
@@ -1311,12 +1306,6 @@ extension Wax {
 
     private static func termContainsDigits(_ text: String) -> Bool {
         text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
-    }
-
-    private static func requiresSafeFTSNormalization(_ query: String) -> Bool {
-        query.unicodeScalars.contains { scalar in
-            scalar.isASCII && asciiPunctuationScalars.contains(scalar)
-        }
     }
 
     private static let ftsStopWords: Set<String> = [
