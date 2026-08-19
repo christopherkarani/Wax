@@ -703,6 +703,73 @@ func coldRememberPendingWriteSurfacesTypedFailureWhenEmbedderFails() async throw
     }
 }
 
+@Test
+func requireVectorOpenPreservesBuiltInTimeoutError() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-require-vector-timeout-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    do {
+        _ = try await AgentBrokerService(
+            storePath: storeURL.path,
+            sessionRootPath: sessionRootURL.path,
+            noEmbedder: false,
+            embedderChoice: "minilm",
+            requireVector: true,
+            readiness: EmbeddingReadiness()
+        ) {
+            throw BuiltInEmbeddingProviderError.timedOut(.miniLM)
+        }
+        Issue.record("require-vector open should preserve BuiltInEmbeddingProviderError.timedOut")
+    } catch let error as BuiltInEmbeddingProviderError {
+        #expect(error == .timedOut(.miniLM))
+    } catch {
+        Issue.record("expected BuiltInEmbeddingProviderError.timedOut, got \(error)")
+    }
+}
+
+@Test
+func requireVectorOpenPreservesLockUnavailableError() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-require-vector-lock-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    let holder = try await MemoryOrchestrator(at: storeURL, config: config)
+    defer { Task { try? await holder.close() } }
+
+    setenv("WAX_LOCK_TIMEOUT_SECS", "0.2", 1)
+    defer { unsetenv("WAX_LOCK_TIMEOUT_SECS") }
+
+    do {
+        _ = try await AgentBrokerService(
+            storePath: storeURL.path,
+            sessionRootPath: sessionRootURL.path,
+            noEmbedder: false,
+            embedderChoice: "minilm",
+            requireVector: true,
+            readiness: EmbeddingReadiness()
+        ) {
+            PendingRememberTestEmbedder()
+        }
+        Issue.record("require-vector open should preserve WaxError.lockUnavailable")
+    } catch let error as WaxError {
+        guard case .lockUnavailable = error else {
+            Issue.record("expected WaxError.lockUnavailable, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected WaxError.lockUnavailable, got \(error)")
+    }
+}
+
 private func recallItem(frameId: UInt64, score: Float, text: String) -> RAGContext.Item {
     RAGContext.Item(
         kind: .snippet,

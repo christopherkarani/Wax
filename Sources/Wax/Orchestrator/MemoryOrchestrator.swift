@@ -309,7 +309,7 @@ package actor MemoryOrchestrator {
             switch resolvedStatus {
             case .active(let identity), .degraded(let identity, _):
                 resolvedStatus = .degraded(identity, reason: "some saved frames have no vectors")
-            default:
+            case .disabled, .loading, .unavailable:
                 break
             }
         }
@@ -957,7 +957,7 @@ package actor MemoryOrchestrator {
 
     package func recall(
         query: String,
-        mode: Memory.RetrievalMode,
+        mode: RetrievalMode,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         topK: Int? = nil
@@ -973,7 +973,7 @@ package actor MemoryOrchestrator {
 
     package func recallExecution(
         query: String,
-        mode: Memory.RetrievalMode? = nil,
+        mode: RetrievalMode? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         topK: Int? = nil
@@ -1047,7 +1047,7 @@ package actor MemoryOrchestrator {
     /// - Returns: Ranked raw hits.
     package func search(
         query: String,
-        mode: Memory.RetrievalMode = .hybrid(),
+        mode: RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1063,7 +1063,7 @@ package actor MemoryOrchestrator {
 
     package func searchExecution(
         query: String,
-        mode: Memory.RetrievalMode = .hybrid(),
+        mode: RetrievalMode = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -1493,7 +1493,7 @@ package actor MemoryOrchestrator {
         frameFilter: FrameFilter?,
         timeRange: SearchTimeRange?,
         topK: Int?,
-        requestedMode: Memory.RetrievalMode?
+        requestedMode: RetrievalMode?
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
         let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
@@ -1545,7 +1545,7 @@ package actor MemoryOrchestrator {
         let state: QueryEmbeddingState
     }
 
-    private static func queryEmbeddingPolicy(for mode: Memory.RetrievalMode) -> QueryEmbeddingPolicy {
+    private static func queryEmbeddingPolicy(for mode: RetrievalMode) -> QueryEmbeddingPolicy {
         switch mode {
         case .textOnly:
             .never
@@ -1556,7 +1556,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private static func searchMode(from mode: Memory.RetrievalMode) -> SearchMode {
+    private static func searchMode(from mode: RetrievalMode) -> SearchMode {
         switch mode {
         case .textOnly:
             .textOnly
@@ -1593,7 +1593,7 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private static func modeSummary(_ mode: Memory.RetrievalMode) -> String {
+    private static func modeSummary(_ mode: RetrievalMode) -> String {
         switch mode {
         case .textOnly:
             return "text"

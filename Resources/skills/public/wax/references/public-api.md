@@ -35,7 +35,7 @@ Source: `Sources/Wax/Memory.swift`
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
 - `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: RetrievalMode` (`.hybrid()`).
-- `public enum RetrievalMode { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }`
+- `public enum RetrievalMode { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }` (module-scope; `Memory.RetrievalMode` is a typealias)
   - `.hybrid` degrades to the text lane when no embedder is available; `.vectorOnly` throws when vector search is unavailable. Check `RAGContext.diagnostics` for what actually ran.
 - `public struct TimeRange { afterMs: Int64?, beforeMs: Int64? }`
 
