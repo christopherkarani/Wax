@@ -322,4 +322,121 @@ struct VirtualSessionStoreTests {
             #expect(ended.activeCount == 1)
         }
     }
+
+    @Test
+    func refreshDuringEndLeavesDiskEndedAndSamePairStartMintsNewID() async throws {
+        try await withVirtualSessionStore { store, root in
+            let first = try await startSession(store, agentID: "end-race-agent", runID: "end-race-run")
+            let sessionID = first.state.id
+
+            let endTask = Task { try await store.end(sessionID: sessionID) }
+            for _ in 0..<200 {
+                try? store.refreshManifest(sessionID)
+            }
+            let ended = try await endTask.value
+            #expect(ended.ended == true)
+
+            let manifest = try BrokerSessionPersistence.loadManifest(rootURL: root, sessionID: sessionID)
+            #expect(manifest.status == .ended)
+
+            do {
+                try store.refreshManifest(sessionID)
+                Issue.record("refresh after end should fail closed")
+            } catch {
+                #expect(error.localizedDescription.contains("session_id is not active"))
+            }
+
+            do {
+                _ = try store.lookup(sessionID)
+                Issue.record("ended session_id should fail closed after evict")
+            } catch {
+                #expect(error.localizedDescription.contains("session_id is not active"))
+            }
+
+            let second = try await startSession(store, agentID: "end-race-agent", runID: "end-race-run")
+            #expect(second.state.id != sessionID)
+            #expect(second.resumed == false)
+        }
+    }
+
+    @Test
+    func concurrentSamePairStartsShareOneStoreAndOneActiveManifest() async throws {
+        try await withVirtualSessionStore { store, root in
+            async let firstStart = startSession(store, agentID: "race-agent", runID: "race-run")
+            async let secondStart = startSession(store, agentID: "race-agent", runID: "race-run")
+            let first = try await firstStart
+            let second = try await secondStart
+
+            #expect(first.state.id == second.state.id)
+            let waxFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .filter { $0.hasSuffix(".wax") }
+            #expect(waxFiles.count == 1)
+            let activeManifests = try BrokerSessionPersistence.listManifests(rootURL: root)
+                .filter { $0.status == .active }
+            #expect(activeManifests.count == 1)
+            #expect(activeManifests.first?.sessionID == first.state.id)
+        }
+    }
+
+    @Test
+    func resumeDoesNotMintWhenSessionWaxIsMissing() async throws {
+        try await withVirtualSessionStore { store, root in
+            let started = try await startSession(store, agentID: "missing-wax-agent", runID: "missing-wax-run")
+            let sessionID = started.state.id
+            let storeURL = started.state.storeURL
+            await store.closeAll()
+            try FileManager.default.removeItem(at: storeURL)
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: BrokerSessionPersistence.manifestURL(rootURL: root, sessionID: sessionID).path
+                )
+            )
+
+            do {
+                _ = try await store.resume(
+                    explicitSessionID: sessionID,
+                    agentID: nil,
+                    runID: nil
+                )
+                Issue.record("resume should throw when .wax is missing")
+            } catch {
+                #expect(error.localizedDescription.contains("session store is missing"))
+            }
+
+            let waxFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .filter { $0.hasSuffix(".wax") }
+            #expect(waxFiles.isEmpty)
+        }
+    }
+
+    @Test
+    func openExistingSessionMemoryDoesNotMint() async throws {
+        try await withVirtualSessionStore { store, root in
+            let missing = root.appendingPathComponent("ghost.wax")
+            do {
+                _ = try await store.openExistingSessionMemory(at: missing)
+                Issue.record("openExistingSessionMemory should throw when the file is missing")
+            } catch {
+                #expect(error.localizedDescription.contains("session store is missing"))
+            }
+            #expect(!FileManager.default.fileExists(atPath: missing.path))
+        }
+    }
+
+    @Test
+    func peekEndTargetAgreesWithEndAndDoesNotTearDown() async throws {
+        try await withVirtualSessionStore { store, _ in
+            #expect(try store.peekEndTarget(sessionID: nil) == nil)
+
+            let started = try await startSession(store, agentID: "peek-agent", runID: "peek-run")
+            #expect(try store.peekEndTarget(sessionID: nil) == started.state.id)
+            #expect(try store.peekEndTarget(sessionID: started.state.id) == started.state.id)
+            #expect(store.live[started.state.id] != nil)
+
+            let ended = try await store.end(sessionID: try store.peekEndTarget(sessionID: nil))
+            #expect(ended.sessionID == started.state.id)
+            #expect(ended.ended == true)
+            #expect(store.live.isEmpty)
+        }
+    }
 }

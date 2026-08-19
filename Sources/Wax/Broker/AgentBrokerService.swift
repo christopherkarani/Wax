@@ -273,7 +273,6 @@ extension AgentBrokerService {
     static let maxGraphIdentifierBytes = 256
     static let maxGraphKindBytes = 64
     static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
-    package static let defaultSessionLeaseSeconds = 300
     static let maxCompactContextTokenBudget = 32_000
 
     enum MemoryHorizon: String {
@@ -1135,15 +1134,7 @@ extension AgentBrokerService {
             runID: requestedRunID,
             inferredScope: inferredScope
         )
-        return renderSessionLifecycleResult(
-            state: result.state,
-            resumed: result.resumed,
-            recoveredLease: result.recoveredLease
-        )
-    }
-
-    func findActiveSession(agentID: String, runID: String) throws -> BrokerSessionManifest? {
-        try virtualSessions.findActive(agentID: agentID, runID: runID)
+        return renderSessionLifecycleResult(result)
     }
 
     func sessionResume(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -1156,38 +1147,28 @@ extension AgentBrokerService {
             agentID: requestedAgentID,
             runID: requestedRunID
         )
-        return renderSessionLifecycleResult(
-            state: result.state,
-            resumed: result.resumed,
-            recoveredLease: result.recoveredLease
-        )
+        return renderSessionLifecycleResult(result)
     }
 
     func sessionEnd(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
-        let sessionID = try parseOptionalSessionID(args)
-        if let sessionID {
-            guard virtualSessions.live[sessionID] != nil else {
-                throw BrokerValidationError.invalid(
-                    "session_id is not active in this broker process; call session_start again"
-                )
-            }
-            try await settlePendingRememberWrites(sessionID: sessionID)
-        } else if virtualSessions.live.count == 1, let only = virtualSessions.live.keys.first {
-            try await settlePendingRememberWrites(sessionID: only)
+        let requested = try parseOptionalSessionID(args)
+        guard let target = try virtualSessions.peekEndTarget(sessionID: requested) else {
+            return sessionEndPayload(.idle)
         }
-        let result = try await virtualSessions.end(sessionID: sessionID)
-        return sessionEndPayload(sessionID: result.sessionID, ended: result.ended)
+        try await settlePendingRememberWrites(sessionID: target)
+        let result = try await virtualSessions.end(sessionID: target)
+        return sessionEndPayload(result)
     }
 
-    private func sessionEndPayload(sessionID: UUID?, ended: Bool) -> AgentBrokerValue {
+    private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {
         .object([
             "status": .string("ok"),
-            "session_id": sessionID.map { .string($0.uuidString) } ?? .null,
-            "ended": .bool(ended),
+            "session_id": result.sessionID.map { .string($0.uuidString) } ?? .null,
+            "ended": .bool(result.ended),
             "active": .bool(false),
-            "remaining_active": .from(!activeSessions.isEmpty),
-            "active_session_count": .from(activeSessions.count),
+            "remaining_active": .from(result.remainingActive),
+            "active_session_count": .from(result.activeCount),
         ])
     }
 
@@ -1669,32 +1650,19 @@ extension AgentBrokerService {
         ])
     }
 
-    func resolveSessionManifest(
-        explicitSessionID: UUID?,
-        agentID: String?,
-        runID: String?
-    ) throws -> BrokerSessionManifest {
-        try virtualSessions.resolveManifest(
-            explicitSessionID: explicitSessionID,
-            agentID: agentID,
-            runID: runID
-        )
-    }
-
     private func renderSessionLifecycleResult(
-        state: SessionState,
-        resumed: Bool,
-        recoveredLease: Bool
+        _ result: VirtualSessionStore.LifecycleResult
     ) -> AgentBrokerValue {
-        .object([
+        let state = result.state
+        return .object([
             "status": .string("ok"),
             "session_id": .string(state.id.uuidString),
             "agent_id": .string(state.manifest.agentID),
             "run_id": .string(state.manifest.runID),
             "project": .from(state.manifest.project),
             "repo": .from(state.manifest.repo),
-            "resumed": .bool(resumed),
-            "recovered_lease": .bool(recoveredLease),
+            "resumed": .bool(result.resumed),
+            "recovered_lease": .bool(result.recoveredLease),
             "store_path": .string(state.storeURL.path),
             "event_log_path": .string(state.eventLogURL.path),
         ])
@@ -1740,32 +1708,31 @@ extension AgentBrokerService {
     }
 
     func recordHandoff(sessionID: UUID, content: String) async throws {
-        var state = try virtualSessions.requireLive(sessionID)
-        let nowMs = Self.nowMs()
-        state.manifest.lastHandoffAtMs = nowMs
-        state.manifest.latestHandoff = MemorySemantics.summarizeCandidate(content, maxLength: 220)
-        state.manifest.updatedAtMs = nowMs
+        let summary = MemorySemantics.summarizeCandidate(content, maxLength: 220)
         try await appendSessionEvent(
             sessionID: sessionID,
             kind: .handoff,
             payload: [
-                "summary": state.manifest.latestHandoff ?? "",
+                "summary": summary,
             ]
         )
-        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        try virtualSessions.replaceLive(state)
+        try virtualSessions.updateLive(sessionID) { state in
+            let nowMs = Self.nowMs()
+            state.manifest.lastHandoffAtMs = nowMs
+            state.manifest.latestHandoff = summary
+            state.manifest.updatedAtMs = nowMs
+        }
     }
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
-        var state = try virtualSessions.requireLive(sessionID)
-        let nowMs = Self.nowMs()
-        state.manifest.lastCheckpointAtMs = nowMs
-        state.manifest.lastCompactionAtMs = nowMs
-        state.manifest.checkpointCount += 1
-        state.manifest.latestSummary = summary
-        state.manifest.updatedAtMs = nowMs
-        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        try virtualSessions.replaceLive(state)
+        try virtualSessions.updateLive(sessionID) { state in
+            let nowMs = Self.nowMs()
+            state.manifest.lastCheckpointAtMs = nowMs
+            state.manifest.lastCompactionAtMs = nowMs
+            state.manifest.checkpointCount += 1
+            state.manifest.latestSummary = summary
+            state.manifest.updatedAtMs = nowMs
+        }
         try await appendSessionEvent(
             sessionID: sessionID,
             kind: .checkpoint,
@@ -2405,7 +2372,7 @@ extension AgentBrokerService {
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
-        try await virtualSessions.openSessionMemory(at: url)
+        try await virtualSessions.openExistingSessionMemory(at: url)
     }
 
     func openAdhocMemory<T: Sendable>(
@@ -3174,7 +3141,7 @@ extension AgentBrokerService {
         }
     }
 
-    package static func nowMs() -> Int64 {
+    static func nowMs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1000)
     }
 

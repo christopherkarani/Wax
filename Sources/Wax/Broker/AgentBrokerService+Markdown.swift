@@ -556,7 +556,9 @@ extension AgentBrokerService {
                 sessionMemory = active.memory
                 shouldClose = false
             } else {
-                sessionMemory = try await openSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
+                sessionMemory = try await virtualSessions.openExistingSessionMemory(
+                    at: URL(fileURLWithPath: manifest.storePath)
+                )
                 shouldClose = true
             }
 

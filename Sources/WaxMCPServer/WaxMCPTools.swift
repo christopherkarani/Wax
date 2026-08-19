@@ -386,8 +386,6 @@ extension WaxMCPTools {
                 return try await compatRecall(params.arguments, memory: memory)
             case "search":
                 return try await compatSearch(params.arguments, memory: memory)
-            case "session_synthesize":
-                return try await compatSessionSynthesize(params.arguments, memory: memory)
             case "memory_promote":
                 return try await compatMemoryPromote(params.arguments, memory: memory)
             case "promote":
@@ -1085,10 +1083,6 @@ private extension WaxMCPTools {
                 "sessionFrameCount": .int(0),
             ],
         ])
-    }
-
-    static func compatSessionSynthesize(_ arguments: [String: Value]?, memory _: MemoryOrchestrator) async throws -> CallTool.Result {
-        throw ToolValidationError.invalid("session_id is required when no active session is available")
     }
 
     static func compatMemoryPromote(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
