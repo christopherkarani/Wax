@@ -93,6 +93,9 @@ enum StoreSession {
                 options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
             )
         } catch {
+            if EmbeddingReadinessBinding.isTypedOpenFailure(error) {
+                throw error
+            }
             throw CLIError(error.localizedDescription)
         }
 
@@ -107,6 +110,9 @@ enum StoreSession {
             )
         } catch {
             if requireVector {
+                if EmbeddingReadinessBinding.isTypedOpenFailure(error) {
+                    throw error
+                }
                 throw CLIError("Vector search required but \(error.localizedDescription)")
             }
             throw error
