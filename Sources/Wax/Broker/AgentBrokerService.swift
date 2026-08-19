@@ -80,6 +80,9 @@ package actor AgentBrokerService {
                     options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
                 )
             } catch {
+                if EmbeddingReadinessBinding.isTypedOpenFailure(error) {
+                    throw error
+                }
                 throw BrokerStartupError(error.localizedDescription)
             }
         }
@@ -101,6 +104,9 @@ package actor AgentBrokerService {
             )
         } catch {
             if requireVector {
+                if EmbeddingReadinessBinding.isTypedOpenFailure(error) {
+                    throw error
+                }
                 throw BrokerStartupError("Vector search required but the embedding provider is unavailable.")
             }
             throw error
