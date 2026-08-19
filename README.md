@@ -14,7 +14,7 @@
 <div style="height: 16px;"></div>
 
 <p align="center">
-  <strong>Local-first shared memory for every agent on your machine.</strong><br/>
+  <strong>Single File Memory layer memory for every agent that runs on Apple Silicon </strong><br/>
   One <code>.wax</code> file. Foundation Models, Claude, Cursor, Codex, Hermes — same store.<br/>
   Sync with iCloud, or AirDrop the file.
 </p>
