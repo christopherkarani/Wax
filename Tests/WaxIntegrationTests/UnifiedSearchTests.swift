@@ -1230,3 +1230,206 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await wax.close()
     }
 }
+
+/// Identifier-like queries (caps + hyphens) must rank the frame that contains the
+/// exact token first in text and hybrid. FTS `unicode61` splits hyphens, so similar
+/// “stress canary” prose can otherwise win BM25. Vector-only is intentionally
+/// unchecked: embeddings do not preserve unique hyphenated identifiers.
+@Test func hyphenatedIdentifierQueryRanksExactTokenFrameFirstInTextAndHybrid() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let token = "WAXSTRESS-DURABLE-CANARY-ALPHA-8821"
+        let exactBody = "Durable canary frame records unique token \(token) for retrieval."
+        let neighborBody =
+            "Grok Wax MCP stress canary 20260819 notes a durable canary alpha stress test without the unique hyphenated identifier."
+
+        let neighborID = try await wax.put(
+            Data(neighborBody.utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "decision",
+                "wax.durability": "durable",
+                "wax.repo": "Wax",
+                "wax.project": "Wax",
+            ]))
+        )
+        try await text.index(frameId: neighborID, text: neighborBody)
+
+        let exactID = try await wax.put(
+            Data(exactBody.utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "note",
+                "wax.durability": "durable",
+                "wax.repo": "other-repo",
+                "wax.project": "other-project",
+            ]))
+        )
+        try await text.index(frameId: exactID, text: exactBody)
+        try await text.commit()
+
+        let textResponse = try await wax.search(
+            SearchRequest(
+                query: token,
+                mode: .textOnly,
+                topK: 5,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            )
+        )
+        #expect(textResponse.results.first?.frameId == exactID)
+
+        let hybridResponse = try await wax.search(
+            SearchRequest(
+                query: token,
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.5),
+                topK: 5,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: DeterministicVectorResultsEngine(
+                    dimensions: 4,
+                    results: [(frameId: neighborID, score: 0.99)]
+                ),
+                structuredEngine: nil
+            )
+        )
+        #expect(hybridResponse.results.first?.frameId == exactID)
+
+        try await wax.close()
+    }
+}
+
+/// Fused hybrid ranking can bury an exclusive-text identifier under several
+/// same-repo vector neighbors. The exact-token pass must run on an overfetched
+/// window, not only the published topK cut.
+@Test func hyphenatedIdentifierQueryBeatsMultipleSameRepoHybridNeighbors() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+        let token = "WAXSTRESS-DURABLE-CANARY-ALPHA-8821"
+        let neighborMeta = FrameMetaSubset(metadata: Metadata([
+            "wax.memory_type": "decision",
+            "wax.durability": "durable",
+            "wax.repo": "Wax",
+            "wax.project": "Wax",
+        ]))
+
+        var neighborIDs: [UInt64] = []
+        neighborIDs.reserveCapacity(6)
+        for index in 0..<6 {
+            let body =
+                "Grok Wax MCP stress canary neighbor \(index) records durable canary alpha stress notes without the unique hyphenated identifier."
+            let neighborID = try await wax.put(Data(body.utf8), options: neighborMeta)
+            try await text.index(frameId: neighborID, text: body)
+            neighborIDs.append(neighborID)
+        }
+
+        let exactBody = "Durable canary frame records unique token \(token) for retrieval."
+        let exactID = try await wax.put(
+            Data(exactBody.utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "note",
+                "wax.durability": "durable",
+                "wax.repo": "other-repo",
+                "wax.project": "other-project",
+            ]))
+        )
+        try await text.index(frameId: exactID, text: exactBody)
+        try await text.commit()
+
+        let vectorHits = neighborIDs.enumerated().map { index, frameId in
+            (frameId: frameId, score: Float(0.99) - Float(index) * 0.01)
+        }
+
+        let hybridResponse = try await wax.search(
+            SearchRequest(
+                query: token,
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .hybrid(alpha: 0.5),
+                topK: 5,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: DeterministicVectorResultsEngine(
+                    dimensions: 4,
+                    results: vectorHits
+                ),
+                structuredEngine: nil
+            )
+        )
+        #expect(hybridResponse.results.count <= 5)
+        #expect(hybridResponse.results.first?.frameId == exactID)
+
+        try await wax.close()
+    }
+}
+
+/// vectorOnly must not overfetch or exact-match-rerank an identifier query.
+/// A buried exact-token frame past the published topK cut stays unpublished.
+@Test func vectorOnlyIdentifierQueryDoesNotPromoteExactFramePastPublishedTopK() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let token = "WAXSTRESS-DURABLE-CANARY-ALPHA-8821"
+        let neighborMeta = FrameMetaSubset(metadata: Metadata([
+            "wax.memory_type": "decision",
+            "wax.durability": "durable",
+            "wax.repo": "Wax",
+            "wax.project": "Wax",
+        ]))
+
+        var neighborIDs: [UInt64] = []
+        neighborIDs.reserveCapacity(6)
+        for index in 0..<6 {
+            let body =
+                "Grok Wax MCP stress canary neighbor \(index) records durable canary alpha stress notes without the unique hyphenated identifier."
+            let neighborID = try await wax.put(Data(body.utf8), options: neighborMeta)
+            neighborIDs.append(neighborID)
+        }
+
+        let exactBody = "Durable canary frame records unique token \(token) for retrieval."
+        let exactID = try await wax.put(
+            Data(exactBody.utf8),
+            options: FrameMetaSubset(metadata: Metadata([
+                "wax.memory_type": "note",
+                "wax.durability": "durable",
+                "wax.repo": "other-repo",
+                "wax.project": "other-project",
+            ]))
+        )
+
+        var vectorHits = neighborIDs.enumerated().map { index, frameId in
+            (frameId: frameId, score: Float(0.99) - Float(index) * 0.01)
+        }
+        vectorHits.append((frameId: exactID, score: 0.01))
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: token,
+                embedding: [1.0, 0.0, 0.0, 0.0],
+                vectorEnginePreference: .cpuOnly,
+                mode: .vectorOnly,
+                topK: 5,
+                scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
+            ),
+            engineOverrides: UnifiedSearchEngineOverrides(
+                textEngine: nil,
+                vectorEngine: DeterministicVectorResultsEngine(
+                    dimensions: 4,
+                    results: vectorHits
+                ),
+                structuredEngine: nil
+            )
+        )
+
+        #expect(response.results.count <= 5)
+        #expect(response.results.first?.frameId != exactID)
+        #expect(!response.results.contains { $0.frameId == exactID })
+        #expect(response.results.map(\.frameId) == Array(neighborIDs.prefix(5)))
+
+        try await wax.close()
+    }
+}

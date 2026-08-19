@@ -4,6 +4,7 @@ import Testing
 #if MCPServer
 @testable import wax_mcp
 @testable import Wax
+@testable import WaxCore
 
 private func withIsolatedBroker<T>(
     _ body: (AgentBrokerService, URL) async throws -> T
@@ -120,6 +121,118 @@ func sessionStartReusesActiveSessionForSameAgentAndRun() async throws {
         let secondPayload = try requireObject(second.payload)
         #expect(try requireString(secondPayload, "session_id") == firstID)
         #expect(secondPayload["resumed"]?.boolValue == true)
+    }
+}
+
+private func waxFileSize(at path: String) throws -> UInt64 {
+    let attrs = try FileManager.default.attributesOfItem(atPath: path)
+    let size = try #require(attrs[.size] as? NSNumber)
+    return size.uint64Value
+}
+
+/// Header region + footer + empty TOC. Not a 16 MiB cap.
+private let sessionWalLayoutSlack: UInt64 =
+    Constants.headerRegionSize + Constants.footerSize + 32 * 1024
+
+private func expectSessionStoreNearSessionWal(_ size: UInt64) {
+    let wal = Constants.sessionWalSize
+    #expect(size >= wal)
+    #expect(size <= wal + sessionWalLayoutSlack)
+}
+
+@Test
+func sessionStartCreatesSessionStoreWithSmallWal() async throws {
+    try await withIsolatedBroker { service, sessionRoot in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("wal-agent"),
+                "run_id": .string("wal-run"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let payload = try requireObject(started.payload)
+        let storePath = try requireString(payload, "store_path")
+        expectSessionStoreNearSessionWal(try waxFileSize(at: storePath))
+
+        let reused = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("wal-agent"),
+                "run_id": .string("wal-run"),
+            ]
+        ))
+        #expect(reused.ok == true)
+        let reusedPayload = try requireObject(reused.payload)
+        let startedID = try requireString(payload, "session_id")
+        #expect(try requireString(reusedPayload, "session_id") == startedID)
+        #expect(reusedPayload["resumed"]?.boolValue == true)
+        #expect(try requireString(reusedPayload, "store_path") == storePath)
+
+        let waxFiles = try FileManager.default.contentsOfDirectory(atPath: sessionRoot.path)
+            .filter { $0.hasSuffix(".wax") }
+        #expect(waxFiles.count == 1)
+        expectSessionStoreNearSessionWal(try waxFileSize(at: storePath))
+
+        let stats = await service.handle(.init(command: "stats"))
+        #expect(stats.ok == true)
+        let longTermPath = try requireString(try requireObject(stats.payload), "storePath")
+        let longTermSize = try waxFileSize(at: longTermPath)
+        #expect(longTermSize > Constants.sessionWalSize)
+        #expect(longTermSize >= Constants.defaultWalSize)
+    }
+}
+
+@Test
+func sessionEndIdleReportsConsistentKeys() async throws {
+    try await withIsolatedBroker { service, _ in
+        let ended = await service.handle(.init(command: "session_end"))
+        #expect(ended.ok == true, "idle session_end failed: \(ended.error ?? "nil")")
+        let payload = try requireObject(ended.payload)
+        #expect(payload["status"]?.stringValue == "ok")
+        #expect(payload["session_id"] == .null)
+        #expect(payload["ended"]?.boolValue == false)
+        #expect(payload["active"]?.boolValue == false)
+        #expect(payload["remaining_active"]?.boolValue == false)
+        #expect(payload["active_session_count"]?.intValue == 0)
+    }
+}
+
+@Test
+func sessionEndMarksThatSessionInactiveWhenSiblingRemains() async throws {
+    try await withIsolatedBroker { service, _ in
+        let first = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("end-agent-a"),
+                "run_id": .string("end-run-a"),
+            ]
+        ))
+        #expect(first.ok == true)
+        let firstID = try requireString(try requireObject(first.payload), "session_id")
+
+        let second = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("end-agent-b"),
+                "run_id": .string("end-run-b"),
+            ]
+        ))
+        #expect(second.ok == true)
+        let secondID = try requireString(try requireObject(second.payload), "session_id")
+        #expect(firstID != secondID)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(firstID)]
+        ))
+        #expect(ended.ok == true, "session_end failed: \(ended.error ?? "nil")")
+        let payload = try requireObject(ended.payload)
+        #expect(try requireString(payload, "session_id") == firstID)
+        #expect(payload["ended"]?.boolValue == true)
+        #expect(payload["active"]?.boolValue == false)
+        #expect(payload["remaining_active"]?.boolValue == true)
+        #expect(payload["active_session_count"]?.intValue == 1)
     }
 }
 

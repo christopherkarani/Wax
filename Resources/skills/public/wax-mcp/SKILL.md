@@ -31,6 +31,7 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 3. **End**
    - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
    - Call `session_end` (pass `session_id` when multiple sessions may be active).
+   - `session_end` `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
 
 ## Read Path
 

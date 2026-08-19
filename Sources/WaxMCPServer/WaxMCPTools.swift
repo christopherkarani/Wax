@@ -1502,10 +1502,14 @@ private extension WaxMCPTools {
         let args = CompatArguments(arguments)
         let sessionID = try compatParseSessionID(args)
         let result = try await sessionRegistry.end(sessionID: sessionID)
+        let remainingCount = await sessionRegistry.activeSessionIDs().count
         return jsonResult([
             "status": .string("ok"),
             "session_id": result.0.map { .string($0.uuidString) } ?? .null,
-            "active": .bool(result.1),
+            "ended": .bool(result.0 != nil),
+            "active": .bool(false),
+            "remaining_active": .bool(remainingCount > 0),
+            "active_session_count": .int(remainingCount),
         ])
     }
 

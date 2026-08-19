@@ -85,6 +85,7 @@ private extension VectorHealthCommand {
 
     func checkPrimaryStore() async throws -> PrimaryStoreCheck {
         let url = try StoreSession.resolveURL(store.storePath)
+        try failFastIfStoreHeld(at: url)
         return try await StoreSession.withOpen(
             at: url,
             noEmbedder: store.noEmbedder,
@@ -143,6 +144,14 @@ private extension VectorHealthCommand {
                 expectedDocMatched: expectedDocMatched,
                 topPreview: topPreview,
                 topSources: topSources
+            )
+        }
+    }
+
+    func failFastIfStoreHeld(at url: URL) throws {
+        guard try StoreLockProbe.tryExclusiveAccess(at: url) else {
+            throw CLIError(
+                "another process holds an exclusive lock on this store; if a broker is attached, use waxmcp stats / attach instead of waiting"
             )
         }
     }
