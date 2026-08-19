@@ -2,14 +2,7 @@ import Foundation
 import WaxCore
 
 package actor AgentBrokerService {
-    struct SessionState: Sendable {
-        let id: UUID
-        var manifest: BrokerSessionManifest
-        let manifestURL: URL
-        let eventLogURL: URL
-        let storeURL: URL
-        let memory: MemoryOrchestrator
-    }
+    typealias SessionState = VirtualSessionStore.SessionState
 
     struct PendingRememberWrite: Sendable {
         let sessionID: UUID?
@@ -31,8 +24,11 @@ package actor AgentBrokerService {
     let readiness: EmbeddingReadiness
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
-    var activeSessions: [UUID: SessionState] = [:]
+    let virtualSessions: VirtualSessionStore
     var pendingRememberWrites: [PendingRememberWrite] = []
+    var activeSessions: [UUID: SessionState] {
+        virtualSessions.live
+    }
 
     package init(
         storePath: String,
@@ -89,6 +85,29 @@ package actor AgentBrokerService {
         self.embeddingRequest = request
         self.readiness = readiness
         self.factoryOverride = factoryOverride
+        let capturedAccessStats = enableAccessStatsScoring
+        let capturedScope = scopeContext
+        let capturedRequest = request
+        let capturedReadiness = readiness
+        let capturedFactory = factoryOverride
+        self.virtualSessions = VirtualSessionStore(
+            sessionRootURL: sessionRootURL,
+            brokerInstanceID: brokerInstanceID,
+            openExisting: { url in
+                var sessionConfig = OrchestratorConfig.default
+                sessionConfig.enableStructuredMemory = false
+                sessionConfig.enableAccessStatsScoring = capturedAccessStats
+                sessionConfig.defaultScopeContext = capturedScope
+                return try await EmbeddingReadinessBinding.openOrchestrator(
+                    at: url,
+                    config: sessionConfig,
+                    request: capturedRequest,
+                    waxOptions: CommandLineEmbedderFactory.waxOptions(),
+                    readiness: capturedReadiness,
+                    factoryOverride: capturedFactory
+                )
+            }
+        )
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
@@ -120,11 +139,7 @@ package actor AgentBrokerService {
         } catch {
             pendingError = error
         }
-        for session in activeSessions.values {
-            try? await session.memory.flush()
-            try? await session.memory.close()
-        }
-        activeSessions.removeAll()
+        await virtualSessions.closeAll()
         try await longTermMemory.flush()
         try await longTermMemory.close()
         if let pendingError {
@@ -258,7 +273,7 @@ extension AgentBrokerService {
     static let maxGraphIdentifierBytes = 256
     static let maxGraphKindBytes = 64
     static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
-    static let defaultSessionLeaseSeconds = 300
+    package static let defaultSessionLeaseSeconds = 300
     static let maxCompactContextTokenBudget = 32_000
 
     enum MemoryHorizon: String {
@@ -1114,80 +1129,21 @@ extension AgentBrokerService {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
         } ?? scopeContext
 
-        if explicitSessionID == nil, let requestedAgentID, let requestedRunID,
-           let existing = try findActiveSession(agentID: requestedAgentID, runID: requestedRunID) {
-            return try await sessionResume(arguments: [
-                "session_id": .string(existing.sessionID.uuidString),
-            ])
-        }
-
-        let sessionID = explicitSessionID ?? UUID()
-        if let active = activeSessions[sessionID] {
-            return renderSessionLifecycleResult(state: active, resumed: true, recoveredLease: false)
-        }
-
-        let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
-        if FileManager.default.fileExists(atPath: manifestURL.path) {
-            throw BrokerValidationError.invalid("session_id already exists; use session_resume to reopen it")
-        }
-
-        let sessionURL = sessionRootURL.appendingPathComponent("\(sessionID.uuidString).wax")
-        let eventLogURL = BrokerSessionPersistence.eventLogURL(rootURL: sessionRootURL, sessionID: sessionID)
-        let memory = try await openSessionMemory(at: sessionURL)
-
-        let nowMs = Self.nowMs()
-        let agentID = requestedAgentID ?? inferredScope.repoName ?? "wax-agent"
-        let runID = requestedRunID ?? UUID().uuidString
-        let manifest = BrokerSessionManifest(
-            sessionID: sessionID,
-            agentID: agentID,
-            runID: runID,
-            project: inferredScope.projectName,
-            repo: inferredScope.repoName,
-            storePath: sessionURL.path,
-            eventLogPath: eventLogURL.path,
-            status: .active,
-            brokerLeaseOwnerID: brokerInstanceID,
-            leaseExpiresAtMs: nowMs + Int64(Self.defaultSessionLeaseSeconds * 1000),
-            createdAtMs: nowMs,
-            updatedAtMs: nowMs
+        let result = try await virtualSessions.start(
+            explicitSessionID: explicitSessionID,
+            agentID: requestedAgentID,
+            runID: requestedRunID,
+            inferredScope: inferredScope
         )
-        try BrokerSessionPersistence.appendEvent(
-            BrokerSessionEvent(
-                sessionID: sessionID,
-                agentID: agentID,
-                runID: runID,
-                timestampMs: nowMs,
-                kind: .started,
-                payload: [
-                    "project": manifest.project ?? "",
-                    "repo": manifest.repo ?? "",
-                ]
-            ),
-            to: eventLogURL
+        return renderSessionLifecycleResult(
+            state: result.state,
+            resumed: result.resumed,
+            recoveredLease: result.recoveredLease
         )
-        try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
-        let state = SessionState(
-            id: sessionID,
-            manifest: manifest,
-            manifestURL: manifestURL,
-            eventLogURL: eventLogURL,
-            storeURL: sessionURL,
-            memory: memory
-        )
-        activeSessions[sessionID] = state
-        return renderSessionLifecycleResult(state: state, resumed: false, recoveredLease: false)
     }
 
     func findActiveSession(agentID: String, runID: String) throws -> BrokerSessionManifest? {
-        if let live = activeSessions.values.first(where: {
-            $0.manifest.agentID == agentID && $0.manifest.runID == runID
-        }) {
-            return live.manifest
-        }
-        return try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL).first { manifest in
-            manifest.status == .active && manifest.agentID == agentID && manifest.runID == runID
-        }
+        try virtualSessions.findActive(agentID: agentID, runID: runID)
     }
 
     func sessionResume(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -1195,96 +1151,33 @@ extension AgentBrokerService {
         let explicitSessionID = try parseOptionalSessionID(args)
         let requestedAgentID = try args.optionalString("agent_id")
         let requestedRunID = try args.optionalString("run_id")
-
-        let manifest = try resolveSessionManifest(
+        let result = try await virtualSessions.resume(
             explicitSessionID: explicitSessionID,
             agentID: requestedAgentID,
             runID: requestedRunID
         )
-        guard manifest.status == .active else {
-            throw BrokerValidationError.invalid("session_id has already been ended and cannot be resumed")
-        }
-
-        if let existing = activeSessions[manifest.sessionID] {
-            return renderSessionLifecycleResult(state: existing, resumed: true, recoveredLease: false)
-        }
-
-        let nowMs = Self.nowMs()
-        let recoveredLease = manifest.brokerLeaseOwnerID != nil && manifest.brokerLeaseOwnerID != brokerInstanceID
-        let memory = try await openSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
-        var refreshed = manifest
-        refreshed.brokerLeaseOwnerID = brokerInstanceID
-        refreshed.leaseExpiresAtMs = nowMs + Int64(Self.defaultSessionLeaseSeconds * 1000)
-        refreshed.updatedAtMs = nowMs
-
-        let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: manifest.sessionID)
-        let eventLogURL = URL(fileURLWithPath: refreshed.eventLogPath)
-        try BrokerSessionPersistence.appendEvent(
-            BrokerSessionEvent(
-                sessionID: refreshed.sessionID,
-                agentID: refreshed.agentID,
-                runID: refreshed.runID,
-                timestampMs: nowMs,
-                kind: .resumed,
-                payload: [
-                    "recovered_lease": recoveredLease ? "true" : "false",
-                ]
-            ),
-            to: eventLogURL
+        return renderSessionLifecycleResult(
+            state: result.state,
+            resumed: result.resumed,
+            recoveredLease: result.recoveredLease
         )
-        try BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)
-        let state = SessionState(
-            id: refreshed.sessionID,
-            manifest: refreshed,
-            manifestURL: manifestURL,
-            eventLogURL: eventLogURL,
-            storeURL: URL(fileURLWithPath: refreshed.storePath),
-            memory: memory
-        )
-        activeSessions[refreshed.sessionID] = state
-        return renderSessionLifecycleResult(state: state, resumed: true, recoveredLease: recoveredLease)
     }
 
     func sessionEnd(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
-        let target: UUID
-        switch (sessionID, activeSessions.count) {
-        case let (.some(explicit), _):
-            guard activeSessions[explicit] != nil else {
-                throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
+        if let sessionID {
+            guard virtualSessions.live[sessionID] != nil else {
+                throw BrokerValidationError.invalid(
+                    "session_id is not active in this broker process; call session_start again"
+                )
             }
-            target = explicit
-        case (.none, 1):
-            target = activeSessions.keys.first!
-        case (.none, 0):
-            return sessionEndPayload(sessionID: nil, ended: false)
-        default:
-            throw BrokerValidationError.invalid("session_id is required when more than one session is active")
+            try await settlePendingRememberWrites(sessionID: sessionID)
+        } else if virtualSessions.live.count == 1, let only = virtualSessions.live.keys.first {
+            try await settlePendingRememberWrites(sessionID: only)
         }
-        if let state = activeSessions[target] {
-            try await settlePendingRememberWrites(sessionID: target)
-            var manifest = state.manifest
-            manifest.status = .ended
-            manifest.updatedAtMs = Self.nowMs()
-            manifest.brokerLeaseOwnerID = nil
-            manifest.leaseExpiresAtMs = nil
-            try BrokerSessionPersistence.saveManifest(manifest, to: state.manifestURL)
-            try BrokerSessionPersistence.appendEvent(
-                BrokerSessionEvent(
-                    sessionID: state.id,
-                    agentID: manifest.agentID,
-                    runID: manifest.runID,
-                    timestampMs: manifest.updatedAtMs,
-                    kind: .ended
-                ),
-                to: state.eventLogURL
-            )
-            try await state.memory.flush()
-            try await state.memory.close()
-            activeSessions.removeValue(forKey: target)
-        }
-        return sessionEndPayload(sessionID: target, ended: true)
+        let result = try await virtualSessions.end(sessionID: sessionID)
+        return sessionEndPayload(sessionID: result.sessionID, ended: result.ended)
     }
 
     private func sessionEndPayload(sessionID: UUID?, ended: Bool) -> AgentBrokerValue {
@@ -1781,21 +1674,11 @@ extension AgentBrokerService {
         agentID: String?,
         runID: String?
     ) throws -> BrokerSessionManifest {
-        if let explicitSessionID {
-            return try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: explicitSessionID)
-        }
-
-        let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-        let filtered = manifests.filter { manifest in
-            guard manifest.status == .active else { return false }
-            if let agentID, manifest.agentID != agentID { return false }
-            if let runID, manifest.runID != runID { return false }
-            return true
-        }
-        guard let match = filtered.first else {
-            throw BrokerValidationError.invalid("No resumable session manifest matched the requested selectors")
-        }
-        return match
+        try virtualSessions.resolveManifest(
+            explicitSessionID: explicitSessionID,
+            agentID: agentID,
+            runID: runID
+        )
     }
 
     private func renderSessionLifecycleResult(
@@ -1818,14 +1701,7 @@ extension AgentBrokerService {
     }
 
     func refreshSessionManifest(_ sessionID: UUID) async throws {
-        guard var state = activeSessions[sessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
-        state.manifest.updatedAtMs = Self.nowMs()
-        state.manifest.brokerLeaseOwnerID = brokerInstanceID
-        state.manifest.leaseExpiresAtMs = state.manifest.updatedAtMs + Int64(Self.defaultSessionLeaseSeconds * 1000)
-        try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        activeSessions[sessionID] = state
+        try virtualSessions.refreshManifest(sessionID)
     }
 
     func appendSessionEvent(
@@ -1833,20 +1709,7 @@ extension AgentBrokerService {
         kind: BrokerSessionEvent.Kind,
         payload: [String: String] = [:]
     ) async throws {
-        guard let state = activeSessions[sessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
-        try BrokerSessionPersistence.appendEvent(
-            BrokerSessionEvent(
-                sessionID: sessionID,
-                agentID: state.manifest.agentID,
-                runID: state.manifest.runID,
-                timestampMs: Self.nowMs(),
-                kind: kind,
-                payload: payload
-            ),
-            to: state.eventLogURL
-        )
+        try virtualSessions.appendEvent(sessionID: sessionID, kind: kind, payload: payload)
     }
 
     func recordRetrievalHits(
@@ -1877,9 +1740,7 @@ extension AgentBrokerService {
     }
 
     func recordHandoff(sessionID: UUID, content: String) async throws {
-        guard var state = activeSessions[sessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
+        var state = try virtualSessions.requireLive(sessionID)
         let nowMs = Self.nowMs()
         state.manifest.lastHandoffAtMs = nowMs
         state.manifest.latestHandoff = MemorySemantics.summarizeCandidate(content, maxLength: 220)
@@ -1892,13 +1753,11 @@ extension AgentBrokerService {
             ]
         )
         try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        activeSessions[sessionID] = state
+        try virtualSessions.replaceLive(state)
     }
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
-        guard var state = activeSessions[sessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
+        var state = try virtualSessions.requireLive(sessionID)
         let nowMs = Self.nowMs()
         state.manifest.lastCheckpointAtMs = nowMs
         state.manifest.lastCompactionAtMs = nowMs
@@ -1906,7 +1765,7 @@ extension AgentBrokerService {
         state.manifest.latestSummary = summary
         state.manifest.updatedAtMs = nowMs
         try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-        activeSessions[sessionID] = state
+        try virtualSessions.replaceLive(state)
         try await appendSessionEvent(
             sessionID: sessionID,
             kind: .checkpoint,
@@ -2533,44 +2392,20 @@ extension AgentBrokerService {
 
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
-        guard let sessionID else {
+        switch try virtualSessions.lookup(sessionID) {
+        case .none:
             return longTermMemory
+        case .live(let memory):
+            return memory
         }
-        guard let session = activeSessions[sessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
-        return session.memory
     }
 
     func validateActiveSession(_ sessionID: UUID?) throws {
-        guard let sessionID else { return }
-        guard activeSessions[sessionID] != nil else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
-        }
+        try virtualSessions.validateActive(sessionID)
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = false
-        config.enableAccessStatsScoring = enableAccessStatsScoring
-        config.defaultScopeContext = scopeContext
-        let waxOptions = CommandLineEmbedderFactory.waxOptions()
-        if !FileManager.default.fileExists(atPath: url.path) {
-            let created = try await Wax.create(
-                at: url,
-                walSize: Constants.sessionWalSize,
-                options: waxOptions
-            )
-            try await created.close()
-        }
-        return try await EmbeddingReadinessBinding.openOrchestrator(
-            at: url,
-            config: config,
-            request: embeddingRequest,
-            waxOptions: waxOptions,
-            readiness: readiness,
-            factoryOverride: factoryOverride
-        )
+        try await virtualSessions.openSessionMemory(at: url)
     }
 
     func openAdhocMemory<T: Sendable>(
@@ -3339,7 +3174,7 @@ extension AgentBrokerService {
         }
     }
 
-    static func nowMs() -> Int64 {
+    package static func nowMs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1000)
     }
 

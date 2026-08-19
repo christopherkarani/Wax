@@ -330,94 +330,8 @@ private enum ToolValidationError: LocalizedError {
     }
 }
 
-// Compatibility path for the existing direct-memory unit tests. Production MCP calls go
-// through the broker-backed overload above; this shim keeps the current test suite usable
-// while the tests are migrated to broker semantics.
-private actor CompatSessionRegistryPool {
-    private var registries: [ObjectIdentifier: CompatSessionRegistry] = [:]
-
-    func registry(for memory: MemoryOrchestrator) -> CompatSessionRegistry {
-        let key = ObjectIdentifier(memory)
-        if let existing = registries[key] {
-            return existing
-        }
-        let created = CompatSessionRegistry()
-        registries[key] = created
-        return created
-    }
-}
-
-private actor CompatSessionRegistry {
-    private struct CompatRecallTracker: Sendable {
-        var recallCount: Int = 0
-        var queryHashes: Set<String> = []
-        var lastRetrievedAtMs: Int64?
-        var scoreTotal: Float = 0
-    }
-
-    private var activeSessions: Set<UUID> = []
-    private var recallTrackers: [UUID: [UInt64: CompatRecallTracker]] = [:]
-
-    func start() -> UUID {
-        let sessionID = UUID()
-        activeSessions.insert(sessionID)
-        return sessionID
-    }
-
-    func end(sessionID: UUID?) throws -> (UUID?, Bool) {
-        if let sessionID {
-            guard activeSessions.remove(sessionID) != nil else {
-                throw ToolValidationError.invalid("session_id is not active in this server process; call wax_session_start again")
-            }
-            recallTrackers.removeValue(forKey: sessionID)
-            return (sessionID, !activeSessions.isEmpty)
-        }
-
-        switch activeSessions.count {
-        case 0:
-            return (nil, false)
-        case 1:
-            return (activeSessions.removeFirst(), false)
-        default:
-            throw ToolValidationError.invalid("session_id is required when more than one MCP session is active")
-        }
-    }
-
-    func isActive(_ sessionID: UUID) -> Bool {
-        activeSessions.contains(sessionID)
-    }
-
-    func activeSessionIDs() -> [UUID] {
-        Array(activeSessions)
-    }
-
-    func recordRetrievalHit(sessionID: UUID, frameID: UInt64, query: String, score: Float) {
-        var sessionTrackers = recallTrackers[sessionID, default: [:]]
-        var tracker = sessionTrackers[frameID, default: CompatRecallTracker()]
-        tracker.recallCount += 1
-        tracker.queryHashes.insert(WaxMCPTools.stableHash(query.lowercased()))
-        tracker.lastRetrievedAtMs = max(tracker.lastRetrievedAtMs ?? 0, WaxMCPTools.nowMs())
-        tracker.scoreTotal += score
-        sessionTrackers[frameID] = tracker
-        recallTrackers[sessionID] = sessionTrackers
-    }
-
-    func recallSignals(for sessionID: UUID) -> [UInt64: BrokerSessionRecallSignals] {
-        let sessionTrackers = recallTrackers[sessionID, default: [:]]
-        return sessionTrackers.reduce(into: [:]) { partial, entry in
-            let tracker = entry.value
-            partial[entry.key] = BrokerSessionRecallSignals(
-                recallCount: tracker.recallCount,
-                uniqueQueryCount: tracker.queryHashes.count,
-                lastRetrievedAtMs: tracker.lastRetrievedAtMs,
-                averageScore: tracker.recallCount > 0 ? (tracker.scoreTotal / Float(tracker.recallCount)) : 0
-            )
-        }
-    }
-}
-
-private let compatSessionRegistries = CompatSessionRegistryPool()
-
+// Direct-memory helper for argument-shape and structured-memory unit tests.
+// Session lifecycle and session_id routing belong to AgentBrokerService.handle.
 extension WaxMCPTools {
     static func handleCall(
         params: CallTool.Parameters,
@@ -426,7 +340,6 @@ extension WaxMCPTools {
         noEmbedder: Bool = false,
         embedderChoice: String = "minilm"
     ) async -> CallTool.Result {
-        let sessionRegistry = await compatSessionRegistries.registry(for: memory)
         do {
             if let migration = migratedName(for: params.name) {
                 return errorResult(
@@ -439,24 +352,46 @@ extension WaxMCPTools {
             try validateArgumentSurface(name: normalizedName, arguments: params.arguments)
 
             switch normalizedName {
+            case "session_start", "session_resume", "session_end", "session_synthesize":
+                return errorResult(
+                    message: "session lifecycle requires the broker",
+                    code: "invalid_arguments"
+                )
+            default:
+                break
+            }
+            if let sessionValue = params.arguments?["session_id"] {
+                guard case .string(let raw) = sessionValue, UUID(uuidString: raw) != nil else {
+                    return errorResult(
+                        message: "session_id must be a valid UUID",
+                        code: "invalid_arguments"
+                    )
+                }
+                return errorResult(
+                    message: "session_id requires the broker",
+                    code: "invalid_arguments"
+                )
+            }
+
+            switch normalizedName {
             case "memory_append":
-                return try await compatRemember(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatRemember(params.arguments, memory: memory)
             case "memory_search":
-                return try await compatMemorySearch(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatMemorySearch(params.arguments, memory: memory)
             case "memory_get":
-                return try await compatMemoryGet(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatMemoryGet(params.arguments, memory: memory)
             case "remember":
-                return try await compatRemember(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatRemember(params.arguments, memory: memory)
             case "recall":
-                return try await compatRecall(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatRecall(params.arguments, memory: memory)
             case "search":
-                return try await compatSearch(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatSearch(params.arguments, memory: memory)
             case "session_synthesize":
-                return try await compatSessionSynthesize(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatSessionSynthesize(params.arguments, memory: memory)
             case "memory_promote":
-                return try await compatMemoryPromote(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatMemoryPromote(params.arguments, memory: memory)
             case "promote":
-                return try await compatPromote(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatPromote(params.arguments, memory: memory)
             case "memory_health":
                 return try await compatMemoryHealth(memory)
             case "knowledge_capture":
@@ -466,23 +401,17 @@ extension WaxMCPTools {
             case "flush":
                 return try await compatFlush(memory)
             case "stats":
-                return try await compatStats(memory, sessionRegistry: sessionRegistry)
-            case "session_start":
-                return await compatSessionStart(sessionRegistry)
-            case "session_resume":
-                return try await compatSessionResume(params.arguments, sessionRegistry: sessionRegistry)
-            case "session_end":
-                return try await compatSessionEnd(params.arguments, sessionRegistry: sessionRegistry)
+                return try await compatStats(memory)
             case "handoff":
-                return try await compatHandoff(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatHandoff(params.arguments, memory: memory)
             case "handoff_latest":
                 return try await compatHandoffLatest(params.arguments, memory: memory)
             case "compact_context":
-                return try await compatCompactContext(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatCompactContext(params.arguments, memory: memory)
             case "markdown_export":
-                return try await compatMarkdownExport(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatMarkdownExport(params.arguments, memory: memory)
             case "markdown_sync":
-                return try await compatMarkdownSync(params.arguments, memory: memory, sessionRegistry: sessionRegistry)
+                return try await compatMarkdownSync(params.arguments, memory: memory)
             case "entity_upsert" where structuredMemoryEnabled:
                 return try await compatEntityUpsert(params.arguments, memory: memory)
             case "fact_assert" where structuredMemoryEnabled:
@@ -640,13 +569,6 @@ private extension WaxMCPTools {
         return sessionID
     }
 
-    static func compatValidateActiveSession(_ sessionID: UUID?, in registry: CompatSessionRegistry) async throws {
-        guard let sessionID else { return }
-        guard await registry.isActive(sessionID) else {
-            throw ToolValidationError.invalid("session_id is not active in this server process; call wax_session_start again")
-        }
-    }
-
     static func compatCoerceMetadata(_ object: [String: Value]?) throws -> [String: String] {
         guard let object else { return [:] }
         return try object.reduce(into: [String: String]()) { partial, entry in
@@ -713,30 +635,6 @@ private extension WaxMCPTools {
         }
         let canonicalFrameID = try await memory.canonicalDocumentFrameID(for: frameID)
         return documentByFrameID[canonicalFrameID]
-    }
-
-    static func compatResolveSessionID(_ explicit: UUID?, sessionRegistry: CompatSessionRegistry) async throws -> UUID? {
-        if let explicit { return explicit }
-        let active = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
-        return active.count == 1 ? active.first : nil
-    }
-
-    static func compatResolveSessionID(
-        _ explicit: UUID?,
-        requiringUnambiguousWorkingMemory includeWorking: Bool,
-        sessionRegistry: CompatSessionRegistry
-    ) async throws -> UUID? {
-        if let explicit { return explicit }
-        guard includeWorking else { return nil }
-        let active = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
-        switch active.count {
-        case 0:
-            return nil
-        case 1:
-            return active.first
-        default:
-            throw ToolValidationError.invalid("session_id is required when more than one session is active")
-        }
     }
 
     static func compatPromotionProposalValue(_ proposal: BrokerPromotionProposal) -> Value {
@@ -861,9 +759,6 @@ private extension WaxMCPTools {
                 timeBeforeMs = Int64(value)
             }
         }
-        if let sessionID {
-            metadataEntries["session_id"] = sessionID.uuidString
-        }
         let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
             ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
             : nil
@@ -899,17 +794,15 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compatRemember(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatRemember(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let content = try args.requiredString("content")
-        let sessionID = try compatParseSessionID(args)
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let rawMetadata = try compatCoerceMetadata(try args.optionalObject("metadata"))
         var metadata = rawMetadata
         if metadata["session_id"] != nil {
             throw ToolValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
         }
-        metadata = try compatNormalizedMetadata(args: args, metadata: metadata, sessionID: sessionID)
+        metadata = try compatNormalizedMetadata(args: args, metadata: metadata, sessionID: nil)
         try compatValidateDurableWrite(content: content, metadata: metadata)
         let before = await memory.runtimeStats()
         try await memory.remember(content, metadata: metadata)
@@ -926,7 +819,7 @@ private extension WaxMCPTools {
         ])
     }
 
-    static func compatRecall(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatRecall(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let query = try args.requiredString("query")
         let limit = try args.optionalInt("limit") ?? 5
@@ -934,7 +827,6 @@ private extension WaxMCPTools {
             throw ToolValidationError.invalid("limit must be between 1 and 100")
         }
         let filters = try compatParseSearchFilters(args)
-        try await compatValidateActiveSession(filters.sessionID, in: sessionRegistry)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
         let effectiveTopK = requestedTopK ?? limit
         guard (1...200).contains(effectiveTopK) else {
@@ -944,34 +836,14 @@ private extension WaxMCPTools {
             modeRaw: try args.optionalString("mode") ?? "hybrid",
             alpha: try args.optionalDouble("alpha")
         )
-        let sessionExecution = try await memory.recallExecution(
+        let execution = try await memory.recallExecution(
             query: query,
             mode: mode,
             frameFilter: filters.frameFilter,
             timeRange: filters.timeRange,
             topK: effectiveTopK
         )
-        let durableExecution: MemoryOrchestrator.RecallExecution
-        if filters.sessionID != nil {
-            durableExecution = try await memory.recallExecution(
-                query: query,
-                mode: mode,
-                frameFilter: nil,
-                timeRange: filters.timeRange,
-                topK: effectiveTopK
-            )
-        } else {
-            durableExecution = sessionExecution
-        }
-        let durableItems = filters.sessionID == nil
-            ? durableExecution.context.items
-            : durableExecution.context.items.filter { $0.metadata["session_id"] == nil }
-        let selected = AgentBrokerService.mergeRecallItems(
-            sessionItems: filters.sessionID == nil ? [] : sessionExecution.context.items,
-            durableItems: durableItems,
-            limit: limit
-        )
-        let execution = sessionExecution
+        let selected = Array(execution.context.items.prefix(limit))
         let context = RAGContext(
             query: query,
             items: selected,
@@ -1000,16 +872,6 @@ private extension WaxMCPTools {
                 "explanations": .array(item.explanations.map(Value.string)),
             ]
         }
-        if let sessionID = filters.sessionID {
-            for item in selected {
-                await sessionRegistry.recordRetrievalHit(
-                    sessionID: sessionID,
-                    frameID: item.frameId,
-                    query: query,
-                    score: item.score
-                )
-            }
-        }
         return textWithJSONResourceResult(
             text: lines.joined(separator: "\n"),
             payload: [
@@ -1028,7 +890,7 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compatSearch(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatSearch(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let query = try args.requiredString("query")
         let topK = try args.optionalInt("topK") ?? 10
@@ -1036,7 +898,6 @@ private extension WaxMCPTools {
             throw ToolValidationError.invalid("topK must be between 1 and 200")
         }
         let filters = try compatParseSearchFilters(args)
-        try await compatValidateActiveSession(filters.sessionID, in: sessionRegistry)
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "text",
             alpha: try args.optionalDouble("alpha")
@@ -1059,16 +920,6 @@ private extension WaxMCPTools {
                 "explanations": .array(hit.explanations.map(Value.string)),
             ]
         }
-        if let sessionID = filters.sessionID {
-            for hit in execution.hits {
-                await sessionRegistry.recordRetrievalHit(
-                    sessionID: sessionID,
-                    frameID: hit.frameId,
-                    query: query,
-                    score: hit.score
-                )
-            }
-        }
         let displayText = rows.isEmpty ? "No results." : rows.compactMap(encodeJSON).joined(separator: "\n")
         return textWithJSONResourceResult(
             text: displayText,
@@ -1085,7 +936,7 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compatMemorySearch(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatMemorySearch(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let query = try args.requiredString("query")
         let topK = try args.optionalInt("topK") ?? 10
@@ -1095,12 +946,6 @@ private extension WaxMCPTools {
         let includeWorking = try args.optionalBool("include_working") ?? true
         let includeEpisodic = try args.optionalBool("include_episodic") ?? true
         let includeDurable = try args.optionalBool("include_durable") ?? true
-        let sessionID = try await compatResolveSessionID(
-            try compatParseSessionID(args),
-            requiringUnambiguousWorkingMemory: includeWorking,
-            sessionRegistry: sessionRegistry
-        )
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "text",
             alpha: try args.optionalDouble("alpha")
@@ -1116,45 +961,18 @@ private extension WaxMCPTools {
         )
         let documents = try await memory.corpusSourceDocuments()
         let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
-        let activeSessionIDs = Set(await sessionRegistry.activeSessionIDs().map(\.uuidString))
 
         var results: [Value] = []
-        var workingHitsToRecord: [(frameID: UInt64, score: Float)] = []
         for hit in execution.hits {
+            guard includeDurable else { continue }
             guard let document = try await compatDocument(
                 for: hit.frameId,
                 in: documentByFrameID,
                 memory: memory
             ) else { continue }
-            let documentSessionID = document.metadata["session_id"]
-            let horizon: String
-            let memoryID: String
-
-            if let documentSessionID {
-                if activeSessionIDs.contains(documentSessionID) {
-                    guard includeWorking else { continue }
-                    horizon = "working"
-                } else {
-                    guard includeEpisodic else { continue }
-                    horizon = "episodic"
-                }
-                memoryID = "\(horizon):\(documentSessionID):\(document.frameId)"
-            } else {
-                guard includeDurable else { continue }
-                horizon = "durable"
-                memoryID = "durable:\(document.frameId)"
-            }
-
-            if let sessionID, horizon == "working", documentSessionID != sessionID.uuidString {
-                continue
-            }
-            if let sessionID, horizon == "working", documentSessionID == sessionID.uuidString {
-                workingHitsToRecord.append((frameID: document.frameId, score: hit.score))
-            }
-
             results.append([
-                "memory_id": .string(memoryID),
-                "horizon": .string(horizon),
+                "memory_id": .string("durable:\(document.frameId)"),
+                "horizon": .string("durable"),
                 "frame_id": .int(Int(document.frameId)),
                 "score": .double(Double(hit.score)),
                 "preview": .string(hit.previewText ?? document.text),
@@ -1167,23 +985,13 @@ private extension WaxMCPTools {
                 break
             }
         }
-        if let sessionID {
-            for hit in workingHitsToRecord {
-                await sessionRegistry.recordRetrievalHit(
-                    sessionID: sessionID,
-                    frameID: hit.frameID,
-                    query: query,
-                    score: hit.score
-                )
-            }
-        }
 
         let displayText = results.isEmpty ? "No results." : results.compactMap(encodeJSON).joined(separator: "\n")
         return textWithJSONResourceResult(
             text: displayText,
             payload: [
                 "query": .string(query),
-                "session_id": sessionID.map { .string($0.uuidString) } ?? .null,
+                "session_id": .null,
                 "topK": .int(topK),
                 "requested_mode": .string(execution.requestedModeSummary),
                 "effective_mode": .string(execution.effectiveModeSummary),
@@ -1201,7 +1009,7 @@ private extension WaxMCPTools {
         min(1_000, max(topK * 5, topK + 200))
     }
 
-    static func compatMemoryGet(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatMemoryGet(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let memoryID = try args.requiredString("memory_id")
         let parts = memoryID.split(separator: ":").map(String.init)
@@ -1219,20 +1027,7 @@ private extension WaxMCPTools {
             }
             document = match
         case "working", "episodic":
-            guard parts.count == 3,
-                  let sessionID = UUID(uuidString: parts[1]),
-                  let frameID = UInt64(parts[2]) else {
-                throw ToolValidationError.invalid("Unknown session memory_id")
-            }
-            if horizon == "working" {
-                try await compatValidateActiveSession(sessionID, in: sessionRegistry)
-            }
-            guard let match = documents.first(where: {
-                $0.frameId == frameID && $0.metadata["session_id"] == sessionID.uuidString
-            }) else {
-                throw ToolValidationError.invalid("Unknown session memory_id")
-            }
-            document = match
+            throw ToolValidationError.invalid("session memory_id requires the broker")
         default:
             throw ToolValidationError.invalid("memory_id horizon must be one of: working, episodic, durable")
         }
@@ -1262,18 +1057,16 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compatPromote(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatPromote(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         var normalized = arguments ?? [:]
         if normalized["approve"] == nil {
             normalized["approve"] = .bool(true)
         }
-        return try await compatMemoryPromote(normalized, memory: memory, sessionRegistry: sessionRegistry)
+        return try await compatMemoryPromote(normalized, memory: memory)
     }
 
-    static func compatStats(_ memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatStats(_ memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let stats = await memory.runtimeStats()
-        let activeSessions = await sessionRegistry.activeSessionIDs().sorted { $0.uuidString < $1.uuidString }
-        let primarySessionID = activeSessions.count == 1 ? activeSessions.first : nil
         return jsonResult([
             "frameCount": .int(Int(stats.frameCount)),
             "pendingFrames": .int(Int(stats.pendingFrames)),
@@ -1285,99 +1078,44 @@ private extension WaxMCPTools {
             ),
             "queryEmbeddingCircuitOpen": .bool(stats.queryEmbeddingCircuitOpen),
             "session": [
-                "active": .bool(!activeSessions.isEmpty),
-                "session_id": primarySessionID.map { .string($0.uuidString) } ?? .null,
-                "activeSessionCount": .int(activeSessions.count),
-                "activeSessionIds": .array(activeSessions.map { .string($0.uuidString) }),
-                "sessionFrameCount": .int(primarySessionID == nil ? 0 : Int(stats.frameCount)),
+                "active": .bool(false),
+                "session_id": .null,
+                "activeSessionCount": .int(0),
+                "activeSessionIds": .array([]),
+                "sessionFrameCount": .int(0),
             ],
         ])
     }
 
-    static func compatSessionSynthesize(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
-        let args = CompatArguments(arguments)
-        let sessionID = try await compatResolveSessionID(try compatParseSessionID(args), sessionRegistry: sessionRegistry)
-        guard let sessionID else {
-            throw ToolValidationError.invalid("session_id is required when no active session is available")
-        }
-        let documents = try await memory.corpusSourceDocuments().filter { $0.metadata["session_id"] == sessionID.uuidString }
-        let longTermDocuments = try await memory.corpusSourceDocuments().filter { $0.metadata["session_id"] == nil }
-        let recallSignals = await sessionRegistry.recallSignals(for: sessionID)
-        let synthesis = BrokerMemoryInsights.synthesizeSession(
-            documents: documents,
-            scope: MemorySemantics.inferScopeContext(),
-            longTermDocuments: longTermDocuments,
-            recallSignalsByFrameID: recallSignals
-        )
-        return textWithJSONResourceResult(
-            text: synthesis.summary,
-            payload: [
-                "session_id": .string(sessionID.uuidString),
-                "summary": .string(synthesis.summary),
-                "handoff": .string(synthesis.handoff),
-                "lessons": .array(synthesis.lessons.map(Value.string)),
-                "decisions": .array(synthesis.decisions.map(Value.string)),
-                "preferences": .array(synthesis.preferences.map(Value.string)),
-                "constraints": .array(synthesis.constraints.map(Value.string)),
-                "durable_candidates": .array(synthesis.durableCandidates.map(compatPromotionProposalValue)),
-            ],
-            uri: "wax://tool/session-synthesize-summary"
-        )
+    static func compatSessionSynthesize(_ arguments: [String: Value]?, memory _: MemoryOrchestrator) async throws -> CallTool.Result {
+        throw ToolValidationError.invalid("session_id is required when no active session is available")
     }
 
-    static func compatMemoryPromote(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatMemoryPromote(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
-        let sessionID = try await compatResolveSessionID(try compatParseSessionID(args), sessionRegistry: sessionRegistry)
         let explicitContent = try args.optionalString("content")
         let frameID = try args.optionalInt("frame_id").map(UInt64.init)
         let approve = try args.optionalBool("approve") ?? false
 
-        var sourceMetadata: [String: String] = [:]
-        let content: String
-        if let explicitContent, !explicitContent.isEmpty {
-            content = explicitContent
-        } else {
-            guard let sessionID else {
-                throw ToolValidationError.invalid("Provide content or an active session_id for promotion")
-            }
-            let documents = try await memory.corpusSourceDocuments()
-                .filter { $0.metadata["session_id"] == sessionID.uuidString }
-            let document = if let frameID {
-                documents.first { $0.frameId == frameID }
-            } else {
-                documents.sorted { $0.timestampMs > $1.timestampMs }.first
-            }
-            guard let document else {
-                throw ToolValidationError.invalid("No promotable session memory was found")
-            }
-            content = document.text
-            sourceMetadata = document.metadata
+        guard let content = explicitContent, !content.isEmpty else {
+            throw ToolValidationError.invalid("Provide content or an active session_id for promotion")
         }
 
-        var metadata = try compatCoerceMetadata(try args.optionalObject("metadata")).merging(sourceMetadata) { current, _ in current }
+        var metadata = try compatCoerceMetadata(try args.optionalObject("metadata"))
         metadata = try compatNormalizedMetadata(args: args, metadata: metadata, sessionID: nil)
-        if let sessionID {
-            metadata[MemoryMetadataKeys.promotedFromSession] = sessionID.uuidString
-            metadata.removeValue(forKey: "session_id")
-        }
         if let frameID {
             metadata[MemoryMetadataKeys.promotedFromFrame] = String(frameID)
         }
 
-        let longTermDocuments = try await memory.corpusSourceDocuments().filter { $0.metadata["session_id"] == nil }
-        let recallSignalsByFrameID: [UInt64: BrokerSessionRecallSignals] = if let sessionID {
-            await sessionRegistry.recallSignals(for: sessionID)
-        } else {
-            [:]
-        }
+        let longTermDocuments = try await memory.corpusSourceDocuments()
         let proposal = BrokerMemoryInsights.proposePromotion(
             content: content,
             metadata: metadata,
-            sessionID: sessionID,
+            sessionID: nil,
             sourceFrameID: frameID,
             scope: MemorySemantics.inferScopeContext(),
             longTermDocuments: longTermDocuments,
-            recallSignals: frameID.flatMap { recallSignalsByFrameID[$0] }
+            recallSignals: nil
         )
         if approve, proposal.shouldWrite {
             let writeSemantics = MemoryWriteSemantics(
@@ -1477,69 +1215,23 @@ private extension WaxMCPTools {
         ])
     }
 
-    static func compatSessionStart(_ sessionRegistry: CompatSessionRegistry) async -> CallTool.Result {
-        let value = await sessionRegistry.start()
-        return jsonResult([
-            "status": .string("ok"),
-            "session_id": .string(value.uuidString),
-        ])
-    }
-
-    static func compatSessionResume(_ arguments: [String: Value]?, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatCompactContext(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
-        guard let sessionID = try compatParseSessionID(args) else {
-            throw ToolValidationError.invalid("session_id is required in compatibility mode")
-        }
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
-        return jsonResult([
-            "status": .string("ok"),
-            "session_id": .string(sessionID.uuidString),
-            "resumed": .bool(true),
-        ])
-    }
-
-    static func compatSessionEnd(_ arguments: [String: Value]?, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
-        let args = CompatArguments(arguments)
-        let sessionID = try compatParseSessionID(args)
-        let result = try await sessionRegistry.end(sessionID: sessionID)
-        let remainingCount = await sessionRegistry.activeSessionIDs().count
-        return jsonResult([
-            "status": .string("ok"),
-            "session_id": result.0.map { .string($0.uuidString) } ?? .null,
-            "ended": .bool(result.0 != nil),
-            "active": .bool(false),
-            "remaining_active": .bool(remainingCount > 0),
-            "active_session_count": .int(remainingCount),
-        ])
-    }
-
-    static func compatCompactContext(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
-        let args = CompatArguments(arguments)
-        let sessionID = try await compatResolveSessionID(
-            try compatParseSessionID(args),
-            requiringUnambiguousWorkingMemory: true,
-            sessionRegistry: sessionRegistry
-        )
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let query = try args.requiredString("query")
         let limit = min(try args.optionalInt("max_items") ?? 6, 12)
         let mode = try compatSearchMode(
             modeRaw: try args.optionalString("mode") ?? "hybrid",
             alpha: try args.optionalDouble("alpha")
         )
-        let frameFilter = sessionID.map {
-            FrameFilter(metadataFilter: MetadataFilter(requiredEntries: ["session_id": $0.uuidString]))
-        }
         let execution = try await memory.recallExecution(
             query: query,
             mode: mode,
-            frameFilter: frameFilter,
+            frameFilter: nil,
             timeRange: nil,
             topK: limit
         )
         let documents = try await memory.corpusSourceDocuments()
         let documentByFrameID = Dictionary(uniqueKeysWithValues: documents.map { ($0.frameId, $0) })
-        let activeSessionIDs = Set(await sessionRegistry.activeSessionIDs().map(\.uuidString))
         var encodedItems: [Value] = []
         var itemTexts: [String] = []
         for item in execution.context.items.prefix(limit) {
@@ -1548,21 +1240,10 @@ private extension WaxMCPTools {
                 in: documentByFrameID,
                 memory: memory
             ) else { continue }
-            let documentSessionID = document.metadata["session_id"]
-            let horizon: String
-            let memoryID: String
-            if let documentSessionID {
-                let isWorking = activeSessionIDs.contains(documentSessionID)
-                horizon = isWorking ? "working" : "episodic"
-                memoryID = "\(horizon):\(documentSessionID):\(document.frameId)"
-            } else {
-                horizon = "durable"
-                memoryID = "durable:\(document.frameId)"
-            }
             itemTexts.append(item.text)
             encodedItems.append([
-                "memory_id": .string(memoryID),
-                "horizon": .string(horizon),
+                "memory_id": .string("durable:\(document.frameId)"),
+                "horizon": .string("durable"),
                 "frame_id": .int(Int(document.frameId)),
                 "preview": .string(item.text),
             ])
@@ -1574,7 +1255,7 @@ private extension WaxMCPTools {
             text: compactedText,
             payload: [
                 "query": .string(query),
-                "session_id": sessionID.map { .string($0.uuidString) } ?? .null,
+                "session_id": .null,
                 "used_tokens": .int(execution.context.totalTokens),
                 "summary": .string(itemTexts.first ?? "No compacted context available."),
                 "short_context": .array(encodedItems),
@@ -1586,7 +1267,7 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compatMarkdownExport(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry _: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatMarkdownExport(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let outputDir = try args.requiredString("output_dir")
         let outputURL = URL(fileURLWithPath: outputDir, isDirectory: true).standardizedFileURL
@@ -1616,7 +1297,7 @@ private extension WaxMCPTools {
         ])
     }
 
-    static func compatMarkdownSync(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry _: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatMarkdownSync(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let rootDir = try args.requiredString("root_dir")
         let dryRun = try args.optionalBool("dry_run") ?? false
@@ -1683,11 +1364,9 @@ private extension WaxMCPTools {
         ])
     }
 
-    static func compatHandoff(_ arguments: [String: Value]?, memory: MemoryOrchestrator, sessionRegistry: CompatSessionRegistry) async throws -> CallTool.Result {
+    static func compatHandoff(_ arguments: [String: Value]?, memory: MemoryOrchestrator) async throws -> CallTool.Result {
         let args = CompatArguments(arguments)
         let content = try args.requiredString("content")
-        let sessionID = try compatParseSessionID(args)
-        try await compatValidateActiveSession(sessionID, in: sessionRegistry)
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
         let commit = try args.optionalBool("commit") ?? true
@@ -1695,7 +1374,7 @@ private extension WaxMCPTools {
             content: content,
             project: project,
             pendingTasks: pendingTasks,
-            sessionId: sessionID,
+            sessionId: nil,
             commit: commit
         )
         return jsonResult([
