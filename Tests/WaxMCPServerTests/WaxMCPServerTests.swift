@@ -3387,7 +3387,9 @@ func sessionEndReportsRemainingActiveSessions() async throws {
         #expect(end.isError != true)
         let ended = try parseJSONText(in: end)
         #expect((ended["session_id"] as? String) == sessionA)
-        #expect((ended["active"] as? Bool) == true)
+        #expect((ended["ended"] as? Bool) == true)
+        #expect((ended["active"] as? Bool) == false)
+        #expect((ended["remaining_active"] as? Bool) == true)
 
         let stats = await WaxMCPTools.handleCall(
             params: .init(name: "stats", arguments: [:]),

@@ -1291,7 +1291,10 @@ extension AgentBrokerService {
         return .object([
             "status": .string("ok"),
             "session_id": .string(target.uuidString),
-            "active": .from(!activeSessions.isEmpty),
+            "ended": .bool(true),
+            "active": .bool(false),
+            "remaining_active": .from(!activeSessions.isEmpty),
+            "active_session_count": .from(activeSessions.count),
         ])
     }
 
@@ -2557,7 +2560,8 @@ extension AgentBrokerService {
             request: embeddingRequest,
             waxOptions: CommandLineEmbedderFactory.waxOptions(),
             readiness: readiness,
-            factoryOverride: factoryOverride
+            factoryOverride: factoryOverride,
+            createWalSize: Constants.sessionWalSize
         )
     }
 

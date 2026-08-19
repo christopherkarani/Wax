@@ -237,9 +237,16 @@ package actor MemoryOrchestrator {
     package init(
         at url: URL,
         config: OrchestratorConfig = .default,
-        waxOptions: WaxOptions = .init()
+        waxOptions: WaxOptions = .init(),
+        createWalSize: UInt64? = nil
     ) async throws {
-        try await self.init(at: url, config: config, embedder: nil, waxOptions: waxOptions)
+        try await self.init(
+            at: url,
+            config: config,
+            embedder: nil,
+            waxOptions: waxOptions,
+            createWalSize: createWalSize
+        )
     }
 
     package init(
@@ -247,7 +254,8 @@ package actor MemoryOrchestrator {
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
-        initialEmbeddingStatus: EmbeddingStatus? = nil
+        initialEmbeddingStatus: EmbeddingStatus? = nil,
+        createWalSize: UInt64? = nil
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
@@ -274,7 +282,11 @@ package actor MemoryOrchestrator {
         if FileManager.default.fileExists(atPath: url.path) {
             self.wax = try await Wax.open(at: url, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: url, options: waxOptions)
+            self.wax = try await Wax.create(
+                at: url,
+                walSize: createWalSize ?? Constants.defaultWalSize,
+                options: waxOptions
+            )
         }
 
         // Auto-disable vector search when no embedder is provided and no pre-existing

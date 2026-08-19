@@ -123,6 +123,103 @@ func sessionStartReusesActiveSessionForSameAgentAndRun() async throws {
     }
 }
 
+private let maxSessionWalBytes: UInt64 = 16 * 1024 * 1024
+
+private func waxFileSize(at path: String) throws -> UInt64 {
+    let attrs = try FileManager.default.attributesOfItem(atPath: path)
+    let size = try #require(attrs[.size] as? NSNumber)
+    return size.uint64Value
+}
+
+private func sessionWaxPaths(in sessionRoot: URL) throws -> [String] {
+    try FileManager.default.contentsOfDirectory(atPath: sessionRoot.path)
+        .filter { $0.hasSuffix(".wax") }
+        .map { sessionRoot.appendingPathComponent($0).path }
+}
+
+@Test
+func sessionStartCreatesSessionStoreWithSmallWal() async throws {
+    try await withIsolatedBroker { service, sessionRoot in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("wal-agent"),
+                "run_id": .string("wal-run"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let payload = try requireObject(started.payload)
+        let storePath = try requireString(payload, "store_path")
+        let size = try waxFileSize(at: storePath)
+        #expect(size <= maxSessionWalBytes)
+        #expect(size != FrameStore.defaultWalSize)
+
+        let reused = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("wal-agent"),
+                "run_id": .string("wal-run"),
+            ]
+        ))
+        #expect(reused.ok == true)
+        let reusedPayload = try requireObject(reused.payload)
+        let startedID = try requireString(payload, "session_id")
+        #expect(try requireString(reusedPayload, "session_id") == startedID)
+        #expect(reusedPayload["resumed"]?.boolValue == true)
+        #expect(try requireString(reusedPayload, "store_path") == storePath)
+
+        let waxFiles = try sessionWaxPaths(in: sessionRoot)
+        #expect(waxFiles.count == 1)
+        #expect(try waxFileSize(at: storePath) <= maxSessionWalBytes)
+        for path in waxFiles {
+            #expect(try waxFileSize(at: path) <= maxSessionWalBytes)
+        }
+
+        let stats = await service.handle(.init(command: "stats"))
+        #expect(stats.ok == true)
+        let longTermPath = try requireString(try requireObject(stats.payload), "storePath")
+        #expect(try waxFileSize(at: longTermPath) > maxSessionWalBytes)
+    }
+}
+
+@Test
+func sessionEndMarksThatSessionInactiveWhenSiblingRemains() async throws {
+    try await withIsolatedBroker { service, _ in
+        let first = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("end-agent-a"),
+                "run_id": .string("end-run-a"),
+            ]
+        ))
+        #expect(first.ok == true)
+        let firstID = try requireString(try requireObject(first.payload), "session_id")
+
+        let second = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("end-agent-b"),
+                "run_id": .string("end-run-b"),
+            ]
+        ))
+        #expect(second.ok == true)
+        let secondID = try requireString(try requireObject(second.payload), "session_id")
+        #expect(firstID != secondID)
+
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(firstID)]
+        ))
+        #expect(ended.ok == true, "session_end failed: \(ended.error ?? "nil")")
+        let payload = try requireObject(ended.payload)
+        #expect(try requireString(payload, "session_id") == firstID)
+        #expect(payload["ended"]?.boolValue == true)
+        #expect(payload["active"]?.boolValue == false)
+        #expect(payload["remaining_active"]?.boolValue == true)
+        #expect(payload["active_session_count"]?.intValue == 1)
+    }
+}
+
 @Test
 func sessionStartInfersProjectFromClientCwdNotBrokerBinary() async throws {
     try await withIsolatedBroker { service, _ in

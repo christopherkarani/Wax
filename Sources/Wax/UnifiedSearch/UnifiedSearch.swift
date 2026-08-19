@@ -27,6 +27,7 @@ extension Wax {
 
         let trimmedQuery = request.query?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let identifierQuery = trimmedQuery.map(RuleBasedQueryClassifier.isLexicalIdentifierQuery) ?? false
         let queryType: QueryType
         if let trimmedQuery, !trimmedQuery.isEmpty {
             queryType = RuleBasedQueryClassifier.classify(trimmedQuery)
@@ -461,7 +462,10 @@ extension Wax {
         }
 
         var pendingResults: [PendingResult] = []
-        pendingResults.reserveCapacity(min(requestedTopK, baseResults.count))
+        let pendingLimit = identifierQuery
+            ? min(max(requestedTopK * 3, 12), 48)
+            : requestedTopK
+        pendingResults.reserveCapacity(min(pendingLimit, baseResults.count))
 
         if !baseResults.isEmpty {
             // Optimization: Use lazy metadata loading for small result sets
@@ -494,7 +498,7 @@ extension Wax {
                         )
                     )
 
-                    if pendingResults.count >= requestedTopK {
+                    if pendingResults.count >= pendingLimit {
                         break
                     }
                 }
@@ -531,7 +535,7 @@ extension Wax {
                         )
                     )
 
-                    if pendingResults.count >= requestedTopK {
+                    if pendingResults.count >= pendingLimit {
                         break
                     }
                 }
@@ -588,6 +592,16 @@ extension Wax {
             scopeContext: request.scopeContext,
             maxWindow: min(max(request.topK * 3, 12), 48)
         )
+        if let trimmedQuery, !trimmedQuery.isEmpty {
+            filtered = Self.identifierExactMatchRerank(
+                results: filtered,
+                query: trimmedQuery,
+                maxWindow: min(max(request.topK * 3, 12), 48)
+            )
+        }
+        if filtered.count > requestedTopK {
+            filtered = Array(filtered.prefix(requestedTopK))
+        }
 
         if filtered.isEmpty, request.allowTimelineFallback {
             filtered = await timelineFallbackResults(request: request, filter: filter)
@@ -719,6 +733,60 @@ extension Wax {
         combined.append(contentsOf: results.dropFirst(cappedWindow).filter {
             !MemorySemantics.parse(metadata: $0.metadata, nowMs: nowMs).isExpired
         })
+        return combined
+    }
+
+    /// Query-side exact-substring boost for identifier-like queries (caps, hyphens, few tokens).
+    /// FTS `unicode61` splits hyphens, so similar prose can beat the unique token on BM25;
+    /// same-repo/project semantic rerank can then lift a neighbor. This pass runs after
+    /// semantic rerank so an exact phrase hit stays rank 1. Vector-only ranking is unchanged.
+    private static func identifierExactMatchRerank(
+        results: [SearchResponse.Result],
+        query: String,
+        maxWindow: Int
+    ) -> [SearchResponse.Result] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard RuleBasedQueryClassifier.isLexicalIdentifierQuery(needle) else { return results }
+        let cappedWindow = min(max(0, maxWindow), results.count)
+        guard cappedWindow > 1 else { return results }
+
+        let lowerNeedle = needle.lowercased()
+        // Larger than same-repo (0.9) + same-project (0.7) + decision (0.45) + durable (0.25).
+        let exactMatchBonus: Float = 5.0
+
+        let scoredHead = results.prefix(cappedWindow).enumerated().map { index, result -> (index: Int, composite: Float, matched: Bool, result: SearchResponse.Result) in
+            let haystack = dehighlightedPreviewText(result.previewText ?? "").lowercased()
+            let matched = !haystack.isEmpty && haystack.contains(lowerNeedle)
+            var updated = result
+            if matched {
+                updated.explanations = dedupedExplanations(result.explanations + ["exact identifier match"])
+            }
+            return (
+                index: index,
+                composite: result.score + (matched ? exactMatchBonus : 0),
+                matched: matched,
+                result: updated
+            )
+        }
+
+        guard scoredHead.contains(where: \.matched) else { return results }
+
+        let rankedHead = scoredHead.sorted { lhs, rhs in
+            if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
+            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+            return lhs.index < rhs.index
+        }.map { item -> SearchResponse.Result in
+            var result = item.result
+            result.score = item.composite
+            return result
+        }
+
+        if cappedWindow == results.count {
+            return rankedHead
+        }
+        var combined = rankedHead
+        combined.reserveCapacity(results.count)
+        combined.append(contentsOf: results.dropFirst(cappedWindow))
         return combined
     }
 
