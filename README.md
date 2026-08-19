@@ -15,8 +15,8 @@
 
 <p align="center">
   <strong>Local-first shared memory for every agent on your machine.</strong><br/>
-  One <code>.wax</code> file. Claude, Cursor, Codex, Hermes — same store.<br/>
-  Sync machines with iCloud, or AirDrop the file.
+  One <code>.wax</code> file. Foundation Models, Claude, Cursor, Codex, Hermes — same store.<br/>
+  Sync with iCloud, or AirDrop the file.
 </p>
 
 <p align="center">
@@ -35,13 +35,13 @@
 
 ## What is Wax?
 
-Wax is a **local-first shared memory layer**. Every coding agent on this machine — Claude Code, Cursor, Codex, Hermes, whatever speaks MCP — reads and writes the same store.
+Wax is a **local-first shared memory layer**. It allows any AI to have a single file memory engine with access to vector search, photo and video rag, optimized for Apple Silicon
 
-That store is one file: `~/.wax/memory.wax`. No account. No hosted vector DB. Decisions, handoffs, and project facts survive the chat, the app, and the reboot.
+That store is one file: `~/.wax/memory.wax`. No hosted vector DB. Memory, Decisions, facts survive the chat, the app, and the reboot.
 
-**Same Mac, many agents.** Point each host at the file (or at one local HTTP server). They share memory instead of each keeping a private brain.
+**Same Mac, many agents.** For those using multiple different agents, Wax points each host at the file (or at one local HTTP server). They share memory instead of each keeping a private brain.
 
-**Another Mac.** Put the file in iCloud Drive and both machines see the same store, or AirDrop `memory.wax` like any other document.
+**Another Mac Or iPhone Device** Put the file in iCloud Drive and both machines see the same store, or AirDrop `memory.wax` like any other document.
 
 ```text
 ~/Library/Mobile Documents/com~apple~CloudDocs/Wax/memory.wax   # iCloud
@@ -57,7 +57,7 @@ Agent setup: [Agent Quick Start](#agent-quick-start) · host snippets: [wax-mcp-
 
 ### Also a Swift engine
 
-The same file is a Swift package. Embed it in an iOS or macOS app when you want on-device RAG without standing up a server.
+The Engine is Swift Native. Embed it in an iOS or macOS app when you want on-device RAG without standing up a server.
 
 ```swift
 import Wax
@@ -99,14 +99,11 @@ let results = try await memory.search("What editor does the user like?")
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.8")
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.22")
 ]
 ```
 
 Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
-
-> [!NOTE]
-> **Requirements:** Wax builds for iOS 17/macOS 14 and later. Built-in semantic embeddings (MiniLM) auto-configure on iOS 18/macOS 15+ when the default `MiniLMEmbeddings` package trait is enabled; on older OS versions, `Memory` runs text-only unless you pass a custom `EmbeddingProvider`. Foundation Models tools require iOS 26/macOS 26.
 
 ### 2. Copy-paste this into your app
 
