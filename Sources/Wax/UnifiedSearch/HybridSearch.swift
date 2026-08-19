@@ -1,47 +1,5 @@
-/// Hybrid search fusion algorithms.
+/// Hybrid search fusion helpers used by UnifiedSearch ranking.
 package enum HybridSearch {
-    /// Reciprocal Rank Fusion (RRF) to combine ranked lists.
-    ///
-    /// Notes (v1):
-    /// - RRF is rank-based (it ignores the raw score scales from BM25 vs vector distance).
-    /// - Two-list `rrfFusion` then maps those ranks onto `0...1` without changing order.
-    /// - Exclusive-text floor is off unless the caller passes `applyFloor: true` (factual path).
-    /// - OR-fallback-only text rank-1 is never floored, even on the factual path.
-    /// - Provide deterministic tie-break rules so outputs are stable.
-    package static func rrfFusion(
-        textResults: [(UInt64, Float)],
-        vectorResults: [(UInt64, Float)],
-        k: Int = 60,
-        alpha: Float = 0.5,
-        applyFloor: Bool = false,
-        textRank1IsORFallbackOnly: Bool = false
-    ) -> [(UInt64, Float)] {
-        let clampedAlpha = min(1, max(0, alpha))
-        let textWeight = textResults.isEmpty ? 0 : clampedAlpha
-        let vectorWeight = vectorResults.isEmpty ? 0 : (1 - clampedAlpha)
-        var merged = rrfFusion(
-            lists: [
-                (weight: textWeight, frameIds: textResults.map(\.0)),
-                (weight: vectorWeight, frameIds: vectorResults.map(\.0)),
-            ],
-            k: k
-        )
-        applyExclusiveTextRank1Floor(
-            merged: &merged,
-            textFrameIds: textResults.map(\.0),
-            vectorFrameIds: vectorResults.map(\.0),
-            applyFloor: applyFloor,
-            textRank1IsORFallbackOnly: textRank1IsORFallbackOnly
-        )
-        // Publish 0–1 scores that preserve RRF (+ floor) order so callers can threshold.
-        publishNormalizedRRFScores(
-            &merged,
-            k: k,
-            totalWeight: textWeight + vectorWeight
-        )
-        return merged
-    }
-
     /// Maps raw RRF (`weight / (k + rank)`) onto `0...1` without changing order.
     /// `totalWeight` is the sum of lane weights that contributed to fusion.
     package static func publishNormalizedRRFScores(
@@ -98,34 +56,6 @@ package enum HybridSearch {
               textIndex > vectorIndex
         else { return nil }
         return (textIndex, vectorIndex)
-    }
-
-    /// Multi-list weighted RRF (e.g., text + vector + timeline).
-    package static func rrfFusion(
-        lists: [(weight: Float, frameIds: [UInt64])],
-        k: Int = 60
-    ) -> [(UInt64, Float)] {
-        let kConstant = max(0, k)
-        var scores: [UInt64: Float] = [:]
-        var bestRank: [UInt64: Int] = [:]
-
-        for list in lists {
-            guard list.weight > 0 else { continue }
-            for (rank, frameId) in list.frameIds.enumerated() {
-                let rrfScore = list.weight / Float(kConstant + rank + 1)
-                scores[frameId, default: 0] += rrfScore
-                bestRank[frameId] = min(bestRank[frameId] ?? Int.max, rank + 1)
-            }
-        }
-
-        return scores.map { (frameId: $0.key, score: $0.value) }
-            .sorted { a, b in
-                if a.score != b.score { return a.score > b.score }
-                let ra = bestRank[a.frameId] ?? Int.max
-                let rb = bestRank[b.frameId] ?? Int.max
-                if ra != rb { return ra < rb }
-                return a.frameId < b.frameId
-            }
     }
 }
 

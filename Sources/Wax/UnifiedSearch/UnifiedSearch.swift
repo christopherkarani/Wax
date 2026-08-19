@@ -105,7 +105,11 @@ extension Wax {
             guard includeText, let textEngine, let trimmedQuery, !trimmedQuery.isEmpty else {
                 return ([], false)
             }
-            let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) ?? trimmedQuery
+            // Empty MATCH plans (stopwords / operators only) must not fall back to
+            // the raw user string — FTS5 would interpret AND/OR/NOT/NEAR as syntax.
+            guard let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) else {
+                return ([], false)
+            }
             let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
             let queryTokenCount = Self.normalizedFTSTokens(from: trimmedQuery, maxTokens: 16).count
 
@@ -137,11 +141,7 @@ extension Wax {
             }
 
             do {
-                let base = if primaryQuery == trimmedQuery {
-                    try await textEngine.search(query: primaryQuery, topK: candidateLimit)
-                } else {
-                    try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
-                }
+                let base = try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
                 guard let fallbackQuery, fallbackQuery != primaryQuery else {
                     return (Array(base.prefix(candidateLimit)), false)
                 }
@@ -871,9 +871,24 @@ extension Wax {
         return results.map { scoredAsORFallbackOnly($0, tokenCount: tokenCount) }
     }
 
-    private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
-        let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
-        let quotedTokens = tokens.map { token -> String in
+    private enum FTSMatchJoin {
+        case andLike
+        case or
+
+        var separator: String {
+            switch self {
+            case .andLike: " "
+            case .or: " OR "
+            }
+        }
+    }
+
+    private static func plannedFTSQuery(
+        from query: String,
+        join: FTSMatchJoin,
+        maxTokens: Int = 16
+    ) -> String? {
+        let quotedTokens = normalizedFTSTokens(from: query, maxTokens: maxTokens).map { token -> String in
             let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
             return "\"\(escaped)\""
         }
@@ -883,24 +898,15 @@ extension Wax {
         }
         let clauses = quotedPhrases + quotedTokens
         guard !clauses.isEmpty else { return nil }
-        return clauses.joined(separator: " OR ")
+        return clauses.joined(separator: join.separator)
+    }
+
+    private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
+        plannedFTSQuery(from: query, join: .or, maxTokens: maxTokens)
     }
 
     private static func primaryFTSQuery(from query: String, maxTokens: Int = 16) -> String? {
-        guard requiresSafeFTSNormalization(query) else { return query }
-        let tokens = normalizedFTSTokens(from: query, maxTokens: maxTokens)
-        let quotedTokens = tokens.map { token -> String in
-            let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
-        let quotedPhrases = normalizedQuotedPhrases(from: query).map { phrase -> String in
-            let escaped = phrase.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
-        let clauses = quotedPhrases + quotedTokens
-        guard !clauses.isEmpty else { return nil }
-        // Use AND-like semantics for the first pass; fallback can broaden with OR.
-        return clauses.joined(separator: " ")
+        plannedFTSQuery(from: query, join: .andLike, maxTokens: maxTokens)
     }
 
     private struct RRFFusedCandidate {
@@ -1313,16 +1319,12 @@ extension Wax {
         text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
     }
 
-    private static func requiresSafeFTSNormalization(_ query: String) -> Bool {
-        query.unicodeScalars.contains { scalar in
-            scalar.isASCII && asciiPunctuationScalars.contains(scalar)
-        }
-    }
-
     private static let ftsStopWords: Set<String> = [
         "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
         "on", "or", "the", "to", "what", "when", "where", "which", "who", "with",
         "date",
+        // Bare FTS5 operators must not become MATCH terms (or leftover syntax).
+        "not", "near",
     ]
 
     private static func normalizedFTSTokens(from query: String, maxTokens: Int) -> [String] {

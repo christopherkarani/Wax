@@ -2,118 +2,6 @@ import Foundation
 import Testing
 import Wax
 
-@Test func rrfWithDisjointResults() {
-    let textResults: [(UInt64, Float)] = [(0, 0.9), (1, 0.8), (2, 0.7)]
-    let vectorResults: [(UInt64, Float)] = [(3, 0.95), (4, 0.85), (5, 0.75)]
-
-    let merged = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 0.5
-    )
-
-    #expect(merged.count == 6)
-    let frameIds = Set(merged.map { $0.0 })
-    #expect(frameIds == Set([0, 1, 2, 3, 4, 5]))
-}
-
-@Test func rrfWithOverlappingResults() {
-    let textResults: [(UInt64, Float)] = [(0, 0.9), (1, 0.8)]
-    let vectorResults: [(UInt64, Float)] = [(1, 0.95), (2, 0.85)]
-
-    let merged = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 0.5
-    )
-
-    #expect(merged.count == 3)
-    #expect(merged[0].0 == 1)
-}
-
-@Test func rrfAlphaWeighting() {
-    let textResults: [(UInt64, Float)] = [(0, 0.9)]
-    let vectorResults: [(UInt64, Float)] = [(1, 0.95)]
-
-    let textOnly = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 1.0
-    )
-    #expect(textOnly[0].0 == 0)
-
-    let vectorOnly = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 0.0
-    )
-    #expect(vectorOnly[0].0 == 1)
-}
-
-@Test func rrfWithEmptyTextResults() {
-    let textResults: [(UInt64, Float)] = []
-    let vectorResults: [(UInt64, Float)] = [(0, 0.9), (1, 0.8)]
-
-    let merged = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 0.5
-    )
-
-    #expect(merged.count == 2)
-}
-
-@Test func rrfWithEmptyVectorResults() {
-    let textResults: [(UInt64, Float)] = [(0, 0.9), (1, 0.8)]
-    let vectorResults: [(UInt64, Float)] = []
-
-    let merged = HybridSearch.rrfFusion(
-        textResults: textResults,
-        vectorResults: vectorResults,
-        k: 60,
-        alpha: 0.5
-    )
-
-    #expect(merged.count == 2)
-}
-
-@Test func rrfExclusiveTextRank1BeatsExclusiveVectorNeighborAtDefaultAlpha() {
-    // Vector neighbor gets a lower frame id so the old frame-id tie-break would
-    // bury the exclusive lexical canary when RRF scores are equal or vector-leaning.
-    let textCanary: UInt64 = 1706
-    let vectorNeighbor: UInt64 = 1
-    let merged = HybridSearch.rrfFusion(
-        textResults: [(textCanary, 0.9)],
-        vectorResults: [(vectorNeighbor, 0.95)],
-        k: 60,
-        alpha: 0.5,
-        applyFloor: true
-    )
-
-    #expect(merged.first?.0 == textCanary)
-}
-
-@Test func rrfSemanticExclusiveVectorRank1StaysAheadOfExclusiveTextAtDefaultAlpha() {
-    // Semantic path must not run the exclusive-text floor. Equal-weight RRF at
-    // alpha 0.5 then keeps the lower-id exclusive vector neighbor ahead.
-    let textCanary: UInt64 = 1706
-    let vectorNeighbor: UInt64 = 1
-    let merged = HybridSearch.rrfFusion(
-        textResults: [(textCanary, 0.9)],
-        vectorResults: [(vectorNeighbor, 0.95)],
-        k: 60,
-        alpha: 0.5,
-        applyFloor: false
-    )
-
-    #expect(merged.first?.0 == vectorNeighbor)
-}
-
 @Test func rrfFactualExclusiveListsPromoteTextRank1() {
     // Exclusive lists: text top absent from vector, vector top absent from text.
     var merged: [(UInt64, Float)] = [(1, 0.02), (1706, 0.019), (2, 0.01)]
@@ -149,27 +37,17 @@ import Wax
     #expect(merged.map(\.0) == [1, 1706])
 }
 
-@Test func rrfPublishedScoresDescendAndAreThresholdable() {
-    let textCanary: UInt64 = 1706
-    let vectorNeighbor: UInt64 = 1
-    let merged = HybridSearch.rrfFusion(
-        textResults: [(textCanary, 0.9), (2, 0.4)],
-        vectorResults: [(vectorNeighbor, 0.95), (3, 0.8)],
-        k: 60,
-        alpha: 0.5,
-        applyFloor: true
-    )
-
-    #expect(merged.first?.0 == textCanary)
-    #expect(merged.count == 4)
-    for (previous, next) in zip(merged, merged.dropFirst()) {
-        #expect(previous.1 >= next.1)
-    }
-    // Independent of raw RRF (≈ weight/(k+1) ≈ 0.008): rank-1 must be
-    // usable as a 0–1 threshold the way text scores already are.
-    #expect(merged[0].1 >= 0.5)
-    #expect(merged[0].1 <= 1.0)
-    #expect(merged.allSatisfy { (0...1).contains($0.1) })
+@Test func publishedRRFScoresStayInUnitIntervalAndKeepOrder() {
+    var ranked: [(UInt64, Float)] = [
+        (1706, 1.0 / 61.0),
+        (1, 0.5 / 61.0),
+        (2, 0.25 / 61.0),
+    ]
+    HybridSearch.publishNormalizedRRFScores(&ranked, k: 60, totalWeight: 1)
+    #expect(ranked.map(\.0) == [1706, 1, 2])
+    #expect(ranked[0].1 == 1.0)
+    #expect(abs(ranked[1].1 - 0.5) < 1e-6)
+    #expect(abs(ranked[2].1 - 0.25) < 1e-6)
 }
 
 @Test func hybridSearchRanksUniqueLexicalCanaryAboveVectorNeighbors() async throws {
@@ -195,6 +73,10 @@ import Wax
             top.previewText?.contains("7f3a91") == true,
             "hybrid rank-1 was \(top.previewText ?? "<nil>")"
         )
+        #expect(top.sources.contains(.text))
+        for (previous, next) in zip(hits, hits.dropFirst()) {
+            #expect(previous.score >= next.score)
+        }
 
         try await orchestrator.close()
     }
@@ -218,4 +100,3 @@ private struct CanaryConfusionEmbedder: EmbeddingProvider {
         return VectorMath.normalizeL2([1, 0])
     }
 }
-
