@@ -883,6 +883,288 @@ func requireVectorOpenPreservesLockUnavailableError() async throws {
     }
 }
 
+@Test
+func handleRejectsInvalidSessionIDUUID() async throws {
+    try await withIsolatedBroker { service, _ in
+        let rejected = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("x"),
+                "mode": .string("text"),
+                "session_id": .string("not-a-uuid"),
+            ]
+        ))
+        #expect(rejected.ok == false)
+        #expect((rejected.error ?? "").contains("session_id must be a valid UUID"))
+    }
+}
+
+@Test
+func sessionStartDoesNotImplicitlyScopeUnscopedWrites() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("scope-agent"),
+                "run_id": .string("scope-run"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("GLOBAL_IMPLICIT_SCOPE_GUARD")]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("SESSION_EXPLICIT_SCOPE_GUARD"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+
+        let scoped = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("GLOBAL_IMPLICIT_SCOPE_GUARD"),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(scoped.ok == true)
+        let scopedTexts = resultTexts(try requireObject(scoped.payload))
+        #expect(scopedTexts.contains { $0.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") } == false)
+
+        let unscoped = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("GLOBAL_IMPLICIT_SCOPE_GUARD"),
+                "mode": .string("text"),
+                "topK": .int(10),
+            ]
+        ))
+        #expect(unscoped.ok == true)
+        let unscopedTexts = resultTexts(try requireObject(unscoped.payload))
+        #expect(unscopedTexts.contains { $0.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") })
+    }
+}
+
+@Test
+func endedSessionIDIsRejectedOnLaterScopedBrokerCalls() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("ended-agent"),
+                "run_id": .string("ended-run"),
+            ]
+        ))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        #expect((await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))).ok == true)
+
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("should fail after end"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(remember.ok == false)
+        #expect((remember.error ?? "").contains("session_id is not active"))
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("should fail after end"),
+                "mode": .string("text"),
+                "topK": .int(5),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(search.ok == false)
+        #expect((search.error ?? "").contains("session_id is not active"))
+    }
+}
+
+@Test
+func sessionEndRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
+    try await withIsolatedBroker { service, _ in
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("multi-end-a"),
+                "run_id": .string("run-a"),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("multi-end-b"),
+                "run_id": .string("run-b"),
+            ]
+        ))).ok == true)
+
+        let ended = await service.handle(.init(command: "session_end"))
+        #expect(ended.ok == false)
+        #expect((ended.error ?? "").contains("session_id is required"))
+    }
+}
+
+@Test
+func memorySearchWorkingOnlyExcludesDurableHits() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("filter-agent"),
+                "run_id": .string("filter-run"),
+            ]
+        ))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let query = "F033_POST_FILTER_ANCHOR"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(query) \(query) \(query) durable result should be filtered out"),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(query) working result should survive filtering"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(query),
+                "mode": .string("text"),
+                "topK": .int(1),
+                "session_id": .string(sessionID),
+                "include_working": .bool(true),
+                "include_episodic": .bool(false),
+                "include_durable": .bool(false),
+            ]
+        ))
+        #expect(search.ok == true, "memory_search failed: \(search.error ?? "nil")")
+        let texts = resultTexts(try requireObject(search.payload))
+        #expect(texts.count == 1)
+        #expect(texts.contains { $0.contains("working result should survive filtering") })
+        #expect(texts.contains { $0.contains("durable result should be filtered out") } == false)
+    }
+}
+
+@Test
+func sessionSynthesizeAndPromoteFlowWorksOnBroker() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("synth-agent"),
+                "run_id": .string("synth-run"),
+            ]
+        ))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("Decision: Wax should default repo-scoped recall before global recall."),
+            ]
+        ))).ok == true)
+
+        let synthesize = await service.handle(.init(
+            command: "session_synthesize",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(synthesize.ok == true, "session_synthesize failed: \(synthesize.error ?? "nil")")
+        let candidates = try requireObject(synthesize.payload)["durable_candidates"]?.arrayValue ?? []
+        #expect(!candidates.isEmpty)
+
+        let promote = await service.handle(.init(
+            command: "memory_promote",
+            arguments: [
+                "session_id": .string(sessionID),
+                "approve": .bool(true),
+            ]
+        ))
+        #expect(promote.ok == true, "memory_promote failed: \(promote.error ?? "nil")")
+    }
+}
+
+@Test
+func memoryPromotePreservesLockedOverrideOnBroker() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("lock-agent"),
+                "run_id": .string("lock-run"),
+            ]
+        ))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("Decision: keep broker-backed promotion overrides intact."),
+            ]
+        ))).ok == true)
+
+        let promote = await service.handle(.init(
+            command: "memory_promote",
+            arguments: [
+                "session_id": .string(sessionID),
+                "approve": .bool(true),
+                "locked": .bool(true),
+            ]
+        ))
+        #expect(promote.ok == true, "memory_promote failed: \(promote.error ?? "nil")")
+        let metadata = try requireObject(try requireObject(promote.payload)["metadata"] ?? .null)
+        #expect(metadata["wax.durability"]?.stringValue == "locked")
+    }
+}
+
+@Test
+func handoffRoundTripWorksOnBroker() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("handoff-agent"),
+                "run_id": .string("handoff-run"),
+            ]
+        ))
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("Carry over refactor checkpoints"),
+                "session_id": .string(sessionID),
+                "project": .string("wax"),
+                "pending_tasks": .array([.string("add graph tests"), .string("measure ranking drift")]),
+            ]
+        ))).ok == true)
+
+        let latest = await service.handle(.init(
+            command: "handoff_latest",
+            arguments: ["project": .string("wax")]
+        ))
+        #expect(latest.ok == true)
+        #expect(try requireObject(latest.payload)["content"]?.stringValue?.contains("Carry over refactor checkpoints") == true)
+    }
+}
+
 private func recallItem(frameId: UInt64, score: Float, text: String) -> RAGContext.Item {
     RAGContext.Item(
         kind: .snippet,
