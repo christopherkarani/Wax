@@ -276,6 +276,30 @@ package enum AgentBrokerPathing {
         return "wax-cli"
     }
 
+    package static func resolveSessionRootPath(
+        storePath: String,
+        sessionRootPath: String = defaultSessionRootPath,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        if sessionRootPath != defaultSessionRootPath {
+            return expandPath(sessionRootPath)
+        }
+        if let raw = environment["WAX_SESSION_ROOT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            return expandPath(raw)
+        }
+        if let raw = environment["WAX_SESSION_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            return expandPath(raw)
+        }
+        let expandedStore = expandPath(storePath)
+        if expandedStore != expandPath(defaultStorePath) {
+            let parent = URL(fileURLWithPath: expandedStore).deletingLastPathComponent()
+            return parent.appendingPathComponent("sessions-\(stableHexHash(expandedStore))", isDirectory: true).path
+        }
+        return expandPath(defaultSessionRootPath)
+    }
+
     package static func configuration(
         brokerExecutablePath: String,
         storePath: String,
@@ -287,9 +311,10 @@ package enum AgentBrokerPathing {
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) throws -> AgentBrokerConfiguration {
         let expandedStore = expandPath(storePath)
-        let expandedSessionRoot = sessionRootPath == defaultSessionRootPath
-            ? defaultSessionRoot()
-            : expandPath(sessionRootPath)
+        let expandedSessionRoot = resolveSessionRootPath(
+            storePath: expandedStore,
+            sessionRootPath: sessionRootPath
+        )
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"
         let socketName = "\(stableHexHash(key)).sock"

@@ -177,7 +177,7 @@ package actor AgentBrokerService {
                 payload = try await knowledgeCapture(arguments: request.arguments)
                 shouldExit = false
             case "stats":
-                payload = try await stats()
+                payload = try await stats(arguments: request.arguments)
                 shouldExit = false
             case "flush":
                 payload = try await flush()
@@ -251,7 +251,7 @@ package actor AgentBrokerService {
 }
 
 extension AgentBrokerService {
-    static let maxContentBytes = 128 * 1024
+    package static let maxContentBytes = 128 * 1024
     static let maxTopK = 200
     static let maxRecallLimit = 100
     static let maxGraphLimit = 500
@@ -313,11 +313,12 @@ extension AgentBrokerService {
             throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
         }
         let writeSemantics = try parseWriteSemantics(args)
+        let clientCWD = try args.optionalString("cwd")
         let metadata = MemorySemantics.normalizeWriteMetadata(
             metadata: rawMetadata,
             semantics: writeSemantics,
             sessionID: sessionID,
-            inferredScope: writeScope(for: sessionID)
+            inferredScope: writeScope(for: sessionID, clientCWD: clientCWD)
         )
         try validateDurableWriteContent(content: content, metadata: metadata)
         let memory = try await memory(for: sessionID)
@@ -615,7 +616,7 @@ extension AgentBrokerService {
                 "frameId": .from(hit.frameId),
                 "score": .double(Double(hit.score)),
                 "sources": .array(hit.sources.map { .string($0.rawValue) }),
-                "preview": .string(hit.previewText ?? ""),
+                "preview": .string(agentFacingPreview(hit.previewText)),
                 "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
                 "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
             ])
@@ -818,7 +819,7 @@ extension AgentBrokerService {
             metadata: baseMetadata,
             semantics: writeSemantics,
             sessionID: nil,
-            inferredScope: writeScope(for: resolvedPromotionSessionID)
+            inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: try args.optionalString("cwd"))
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
@@ -922,11 +923,12 @@ extension AgentBrokerService {
         if !writeSemantics.lock, writeSemantics.durability == nil {
             writeSemantics.durability = .durable
         }
+        let clientCWD = try args.optionalString("cwd")
         let metadata = MemorySemantics.normalizeWriteMetadata(
             metadata: try coerceMetadata(try args.optionalObject("metadata")),
             semantics: writeSemantics,
             sessionID: nil,
-            inferredScope: scopeContext
+            inferredScope: writeScope(for: nil, clientCWD: clientCWD)
         )
         try validateDurableWriteContent(content: content, metadata: metadata)
 
@@ -940,10 +942,12 @@ extension AgentBrokerService {
         try await longTermMemory.remember(content, metadata: metadata)
 
         var entityID: Int64?
-        if let subject, let kind {
+        let entitySkippedReason: String? = nil
+        if let subject {
+            let resolvedKind = kind ?? "concept"
             entityID = try await longTermMemory.upsertEntity(
                 key: EntityKey(subject),
-                kind: kind,
+                kind: resolvedKind,
                 aliases: aliases,
                 commit: false
             ).rawValue
@@ -963,17 +967,27 @@ extension AgentBrokerService {
 
         try await longTermMemory.flush()
 
-        return .object([
+        var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "entity_id": .from(entityID),
             "fact_id": .from(factID),
             "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "display_text": .string(MemorySemantics.summarizeCandidate(content)),
-        ])
+        ]
+        if let entitySkippedReason {
+            payload["entity_skipped_reason"] = .string(entitySkippedReason)
+        }
+        return .object(payload)
     }
 
     func stats() async throws -> AgentBrokerValue {
+        try await stats(arguments: [:])
+    }
+
+    func stats(arguments: [String: AgentBrokerValue] = [:]) async throws -> AgentBrokerValue {
+        let args = BrokerArguments(arguments)
+        let requestedSessionID = try parseOptionalSessionID(args)
         let stats = await longTermMemory.runtimeStats()
         let activeSessionIDs = activeSessions.keys.sorted { $0.uuidString < $1.uuidString }
         let diskBytes: UInt64 = {
@@ -982,18 +996,22 @@ extension AgentBrokerService {
             else { return 0 }
             return size.uint64Value
         }()
-        let sessionStats: MemoryOrchestrator.SessionRuntimeStats = if activeSessionIDs.count == 1,
-            let session = activeSessionIDs.first {
-            try await activeSessions[session]?.memory.sessionRuntimeStats(sessionId: session) ?? .init(
-                active: false,
-                sessionId: nil,
-                sessionFrameCount: 0,
-                sessionTokenEstimate: 0,
-                pendingFramesStoreWide: 0,
-                countsIncludePending: false
-            )
+        let sessionStats: MemoryOrchestrator.SessionRuntimeStats
+        if let requestedSessionID {
+            if let session = activeSessions[requestedSessionID] {
+                sessionStats = try await session.memory.sessionRuntimeStats(sessionId: requestedSessionID)
+            } else {
+                sessionStats = .init(
+                    active: false,
+                    sessionId: requestedSessionID,
+                    sessionFrameCount: 0,
+                    sessionTokenEstimate: 0,
+                    pendingFramesStoreWide: stats.pendingFrames,
+                    countsIncludePending: false
+                )
+            }
         } else {
-            .init(
+            sessionStats = .init(
                 active: !activeSessionIDs.isEmpty,
                 sessionId: nil,
                 sessionFrameCount: 0,
@@ -1021,6 +1039,7 @@ extension AgentBrokerService {
             "storePath": .string(stats.storeURL.path),
             "vectorSearchEnabled": .from(stats.vectorSearchEnabled),
             "embeddingStatus": .string(stats.embeddingStatus.wireName),
+            "embeddingStatusReason": .from(stats.embeddingStatus.wireReason),
             "queryEmbeddingAvailable": .from(
                 stats.vectorSearchEnabled && stats.queryEmbedderReady && !stats.queryEmbeddingCircuitOpen
             ),
@@ -1372,9 +1391,26 @@ extension AgentBrokerService {
         let args = BrokerArguments(arguments)
         let outputDir = try args.requiredString("output_dir", maxBytes: 4096)
         let sessionID = try parseOptionalSessionID(args)
+        let allProjects = try args.optionalBool("all_projects") ?? false
+        let explicitProject = try args.optionalString("project")
+        let clientCWD = try args.optionalString("cwd")
         try validateMarkdownExportSession(sessionID)
         let exportURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(outputDir), isDirectory: true).standardizedFileURL
-        let report = try await exportMarkdownProjection(outputURL: exportURL, sessionID: sessionID)
+        let inferredProject: String?
+        if allProjects {
+            inferredProject = nil
+        } else if let explicitProject {
+            inferredProject = explicitProject
+        } else if let sessionID, let session = activeSessions[sessionID] {
+            inferredProject = session.manifest.project
+        } else {
+            inferredProject = writeScope(for: nil, clientCWD: clientCWD).projectName
+        }
+        let report = try await exportMarkdownProjection(
+            outputURL: exportURL,
+            sessionID: sessionID,
+            project: inferredProject
+        )
         return .object([
             "status": .string("ok"),
             "output_dir": .string(exportURL.path),
@@ -1597,7 +1633,7 @@ extension AgentBrokerService {
         // broker process are still part of "broker-managed session history" and must be
         // searchable via the live MemoryOrchestrator already open for each session.
         let corpusHits: [BrokerCorpusMergeHit] = execution.hits.map { hit in
-            let preview = hit.previewText ?? ""
+            let preview = agentFacingPreview(hit.previewText)
             let sourcePath = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath] ?? ""
             return BrokerCorpusMergeHit(
                 frameId: hit.frameId,
@@ -1625,7 +1661,7 @@ extension AgentBrokerService {
             timeRange: nil
         )
         let longTermHits: [BrokerCorpusMergeHit] = longTermExecution.hits.map { hit in
-            let preview = hit.previewText ?? ""
+            let preview = agentFacingPreview(hit.previewText)
             let storePath = longTermStoreURL.path
             var metadata = hit.metadata
             metadata[BrokerCorpusMetadataKeys.origin] = "long_term"
@@ -1658,7 +1694,7 @@ extension AgentBrokerService {
                 timeRange: nil
             )
             let group: [BrokerCorpusMergeHit] = sessionExecution.hits.map { hit in
-                let preview = hit.previewText ?? ""
+                let preview = agentFacingPreview(hit.previewText)
                 let storePath = state.storeURL.path
                 let metadata = BrokerCorpusHitMerge.annotateActiveSessionMetadata(
                     base: hit.metadata,
@@ -1917,8 +1953,8 @@ extension AgentBrokerService {
                     runID: state.manifest.runID,
                     frameID: canonicalFrameID,
                     score: hit.score + 0.25,
-                    text: hit.previewText ?? "",
-                    preview: hit.previewText ?? "",
+                    text: agentFacingPreview(hit.previewText),
+                    preview: agentFacingPreview(hit.previewText),
                     metadata: hit.metadata,
                     explanations: ["current session"] + hit.explanations,
                     timestampMs: state.manifest.updatedAtMs
@@ -1946,8 +1982,8 @@ extension AgentBrokerService {
                     runID: nil,
                     frameID: canonicalFrameID,
                     score: hit.score + 0.10,
-                    text: hit.previewText ?? "",
-                    preview: hit.previewText ?? "",
+                    text: agentFacingPreview(hit.previewText),
+                    preview: agentFacingPreview(hit.previewText),
                     metadata: hit.metadata,
                     explanations: ["durable memory"] + hit.explanations,
                     timestampMs: hit.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0
@@ -2010,8 +2046,8 @@ extension AgentBrokerService {
                         runID: manifest.runID,
                         frameID: canonicalFrameID,
                         score: hit.score + recencyBoost,
-                        text: hit.previewText ?? "",
-                        preview: hit.previewText ?? "",
+                        text: agentFacingPreview(hit.previewText),
+                        preview: agentFacingPreview(hit.previewText),
                         metadata: hit.metadata,
                         explanations: explanations,
                         timestampMs: manifest.updatedAtMs
@@ -2303,16 +2339,29 @@ extension AgentBrokerService {
         return deduped
     }
 
-    func exportMarkdownProjection(outputURL: URL, sessionID: UUID?) async throws -> MarkdownProjectionReport {
+    func exportMarkdownProjection(
+        outputURL: URL,
+        sessionID: UUID?,
+        project: String? = nil
+    ) async throws -> MarkdownProjectionReport {
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
         let memoryDir = outputURL.appendingPathComponent("memory", isDirectory: true)
         try FileManager.default.createDirectory(at: memoryDir, withIntermediateDirectories: true)
         try await longTermMemory.flush()
 
-        let durableDocuments = try await longTermMemory.corpusSourceDocuments().sorted { lhs, rhs in
-            if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-            return lhs.frameId > rhs.frameId
-        }
+        let durableDocuments = try await longTermMemory.corpusSourceDocuments()
+            .filter { document in
+                guard let project else { return true }
+                let documentProject = document.metadata[MemoryMetadataKeys.project]
+                if let documentProject, !documentProject.isEmpty, documentProject != project {
+                    return false
+                }
+                return true
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
+                return lhs.frameId > rhs.frameId
+            }
         let memoryMarkdown = renderMemoryMarkdown(documents: durableDocuments)
         let memoryMarkdownURL = outputURL.appendingPathComponent("MEMORY.md")
         try memoryMarkdown.write(to: memoryMarkdownURL, atomically: true, encoding: .utf8)
@@ -2554,16 +2603,23 @@ extension AgentBrokerService {
         return value
     }
 
-    func writeScope(for sessionID: UUID?) -> MemoryScopeContext {
-        guard let sessionID, let session = activeSessions[sessionID] else {
-            return scopeContext
+    func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
+        if let sessionID, let session = activeSessions[sessionID] {
+            return MemoryScopeContext(
+                cwdPath: clientCWD ?? scopeContext.cwdPath,
+                repoRootPath: scopeContext.repoRootPath,
+                repoName: session.manifest.repo ?? scopeContext.repoName,
+                projectName: session.manifest.project ?? scopeContext.projectName
+            )
         }
-        return MemoryScopeContext(
-            cwdPath: scopeContext.cwdPath,
-            repoRootPath: scopeContext.repoRootPath,
-            repoName: session.manifest.repo ?? scopeContext.repoName,
-            projectName: session.manifest.project ?? scopeContext.projectName
-        )
+        if let clientCWD {
+            return MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
+        }
+        return scopeContext
+    }
+
+    func agentFacingPreview(_ text: String?) -> String {
+        Wax.dehighlightedPreviewText(text ?? "")
     }
 
     func resolveSessionID(_ explicit: UUID?) throws -> UUID? {
