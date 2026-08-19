@@ -1,9 +1,6 @@
 <!-- HEADER:START -->
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/banner-dark.svg">
-    <img src="../docs/assets/banner-light.svg" width="800" alt="Wax Banner">
-  </picture>
+  <img src="../docs/assets/wax-banner.png" width="800" alt="Wax — local-first shared memory for AI agents">
 </div>
 
 <div style="height: 16px;"></div>
