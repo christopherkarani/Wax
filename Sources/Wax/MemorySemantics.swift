@@ -137,8 +137,14 @@ package enum SecretHeuristics {
 }
 
 package enum MemorySemantics {
-    package static func inferScopeContext(currentDirectoryPath: String = FileManager.default.currentDirectoryPath) -> MemoryScopeContext {
-        guard let startPath = resolvedAbsoluteDirectoryPath(currentDirectoryPath) else {
+    package static func inferScopeContext(
+        currentDirectoryPath: String = FileManager.default.currentDirectoryPath,
+        processDirectoryPath: String = FileManager.default.currentDirectoryPath
+    ) -> MemoryScopeContext {
+        guard let startPath = resolvedAbsoluteDirectoryPath(
+            currentDirectoryPath,
+            processDirectoryPath: processDirectoryPath
+        ) else {
             let trimmed = currentDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
             return MemoryScopeContext(cwdPath: trimmed.isEmpty ? nil : trimmed)
         }
@@ -435,7 +441,7 @@ package enum MemorySemantics {
     private static func gitRepositoryRoot(startingAt path: String) -> String? {
         var current = path
         let fileManager = FileManager.default
-        while true {
+        for _ in 0..<256 {
             let gitPath = current == "/" ? "/.git" : "\(current)/.git"
             if fileManager.fileExists(atPath: gitPath) {
                 return current
@@ -445,19 +451,25 @@ package enum MemorySemantics {
             }
             current = parent
         }
+        return nil
     }
 
-    private static func resolvedAbsoluteDirectoryPath(_ path: String) -> String? {
+    private static func resolvedAbsoluteDirectoryPath(
+        _ path: String,
+        processDirectoryPath: String
+    ) -> String? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return nil
+        }
         if trimmed.hasPrefix("/") {
             return normalizeAbsolutePath(trimmed)
         }
-        let cwd = FileManager.default.currentDirectoryPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cwd = processDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard cwd.hasPrefix("/") else {
             return nil
         }
-        if trimmed.isEmpty || trimmed == "." || trimmed == "./" {
+        if trimmed == "." || trimmed == "./" {
             return normalizeAbsolutePath(cwd)
         }
         return normalizeAbsolutePath(cwd + "/" + trimmed)

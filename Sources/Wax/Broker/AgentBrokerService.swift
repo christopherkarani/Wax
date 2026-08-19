@@ -942,9 +942,17 @@ extension AgentBrokerService {
         try await longTermMemory.remember(content, metadata: metadata)
 
         var entityID: Int64?
-        let entitySkippedReason: String? = nil
         if let subject {
-            let resolvedKind = kind ?? "concept"
+            let requestedKind = kind?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedKind: String
+            if let requestedKind, !requestedKind.isEmpty {
+                resolvedKind = requestedKind
+            } else if let existing = try await longTermMemory.entity(forKey: EntityKey(subject)),
+                      !existing.kind.isEmpty {
+                resolvedKind = existing.kind
+            } else {
+                resolvedKind = "concept"
+            }
             entityID = try await longTermMemory.upsertEntity(
                 key: EntityKey(subject),
                 kind: resolvedKind,
@@ -967,18 +975,14 @@ extension AgentBrokerService {
 
         try await longTermMemory.flush()
 
-        var payload: [String: AgentBrokerValue] = [
+        return .object([
             "status": .string("ok"),
             "entity_id": .from(entityID),
             "fact_id": .from(factID),
             "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "display_text": .string(MemorySemantics.summarizeCandidate(content)),
-        ]
-        if let entitySkippedReason {
-            payload["entity_skipped_reason"] = .string(entitySkippedReason)
-        }
-        return .object(payload)
+        ])
     }
 
     func stats() async throws -> AgentBrokerValue {
@@ -2351,12 +2355,7 @@ extension AgentBrokerService {
 
         let durableDocuments = try await longTermMemory.corpusSourceDocuments()
             .filter { document in
-                guard let project else { return true }
-                let documentProject = document.metadata[MemoryMetadataKeys.project]
-                if let documentProject, !documentProject.isEmpty, documentProject != project {
-                    return false
-                }
-                return true
+                matchesExportProject(document.metadata[MemoryMetadataKeys.project], project: project)
             }
             .sorted { lhs, rhs in
                 if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
@@ -2370,6 +2369,7 @@ extension AgentBrokerService {
         var handoffLines: [String] = []
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
             .filter { sessionID == nil || $0.sessionID == sessionID }
+            .filter { matchesExportProject($0.project, project: project) }
         for manifest in manifests {
             let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
             for event in events {
@@ -2442,7 +2442,7 @@ extension AgentBrokerService {
             dailyNotePaths.append(noteURL.path)
         }
 
-        let dreamsLines = try await dreamProjectionLines(sessionID: sessionID)
+        let dreamsLines = try await dreamProjectionLines(sessionID: sessionID, project: project)
         let dreamsURL = memoryDir.appendingPathComponent("DREAMS.md")
         var dreamsPath: String?
         if !dreamsLines.isEmpty {
@@ -2620,6 +2620,14 @@ extension AgentBrokerService {
 
     func agentFacingPreview(_ text: String?) -> String {
         Wax.dehighlightedPreviewText(text ?? "")
+    }
+
+    func matchesExportProject(_ value: String?, project: String?) -> Bool {
+        guard let project else { return true }
+        if let value, !value.isEmpty, value != project {
+            return false
+        }
+        return true
     }
 
     func resolveSessionID(_ explicit: UUID?) throws -> UUID? {
