@@ -1528,26 +1528,29 @@ func openClawPackageDeclaresSDKPeerDependency() throws {
     #expect(devDependencies["openclaw"] as? String == ">=2026.3.24-beta.2")
 }
 
-@Test
-func sessionEndRequiresSessionIDWhenMultipleSessionsActive() async throws {
-    try await withMemory { memory in
-        let first = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let second = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(first.isError != true)
-        #expect(second.isError != true)
 
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: [:]),
+@Test
+func directMemoryHelperRejectsSessionLifecycle() async throws {
+    try await withMemory { memory in
+        let start = await WaxMCPTools.handleCall(
+            params: .init(name: "session_start", arguments: [:]),
             memory: memory
         )
-        #expect(end.isError == true)
-        #expect(firstText(in: end).contains("session_id is required"))
+        #expect(start.isError == true)
+        #expect(firstText(in: start).contains("session lifecycle requires the broker"))
+
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": "session_id is not a metadata tag on this helper",
+                    "session_id": .string(UUID().uuidString),
+                ]
+            ),
+            memory: memory
+        )
+        #expect(remember.isError == true)
+        #expect(firstText(in: remember).contains("session_id requires the broker"))
     }
 }
 
@@ -1592,126 +1595,6 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
     }
 }
 
-@Test
-func memorySearchOverfetchesBeforeHorizonFiltering() async throws {
-    try await withMemory { memory in
-        let started = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(started.isError != true)
-        let startedPayload = try parseJSONText(in: started)
-        let sessionID = try #require(startedPayload["session_id"] as? String)
-        let query = "F033_POST_FILTER_ANCHOR"
-
-        let durable = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("\(query) \(query) \(query) durable result should be filtered out"),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(durable.isError != true)
-
-        let working = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "memory_append",
-                arguments: [
-                    "content": .string("\(query) working result should survive filtering"),
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(working.isError != true)
-
-        let search = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "memory_search",
-                arguments: [
-                    "query": .string(query),
-                    "mode": .string("text"),
-                    "topK": .int(1),
-                    "session_id": .string(sessionID),
-                    "include_working": .bool(true),
-                    "include_episodic": .bool(false),
-                    "include_durable": .bool(false),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(search.isError != true)
-        let payload = try parseJSONResource(in: search, uriSuffix: "memory-search-summary")
-        let results = try #require(payload["results"] as? [[String: Any]])
-        #expect(results.count == 1)
-        #expect(results.first?["horizon"] as? String == "working")
-        #expect((results.first?["preview"] as? String)?.contains("working result should survive filtering") == true)
-    }
-}
-
-@Test
-func memorySearchOverfetchesAcrossManyFilteredHits() async throws {
-    try await withMemory { memory in
-        let started = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(started.isError != true)
-        let startedPayload = try parseJSONText(in: started)
-        let sessionID = try #require(startedPayload["session_id"] as? String)
-        let query = "F033_MANY_FILTERED_ANCHOR"
-
-        for index in 0..<40 {
-            let durable = await WaxMCPTools.handleCall(
-                params: .init(
-                    name: "remember",
-                    arguments: [
-                        "content": .string("\(query) \(query) \(query) \(query) durable filtered result \(index)"),
-                    ]
-                ),
-                memory: memory
-            )
-            #expect(durable.isError != true)
-        }
-
-        for index in 0..<2 {
-            let working = await WaxMCPTools.handleCall(
-                params: .init(
-                    name: "memory_append",
-                    arguments: [
-                        "content": .string("\(query) working survivor \(index)"),
-                        "session_id": .string(sessionID),
-                    ]
-                ),
-                memory: memory
-            )
-            #expect(working.isError != true)
-        }
-
-        let search = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "memory_search",
-                arguments: [
-                    "query": .string(query),
-                    "mode": .string("text"),
-                    "topK": .int(2),
-                    "session_id": .string(sessionID),
-                    "include_working": .bool(true),
-                    "include_episodic": .bool(false),
-                    "include_durable": .bool(false),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(search.isError != true)
-        let payload = try parseJSONResource(in: search, uriSuffix: "memory-search-summary")
-        let results = try #require(payload["results"] as? [[String: Any]])
-        #expect(results.count == 2)
-        #expect(results.allSatisfy { ($0["horizon"] as? String) == "working" })
-    }
-}
 
 @Test
 func corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance() async throws {
@@ -2763,188 +2646,6 @@ func markdownExportSanitizesDailySourceDateFilenames() async throws {
     }
 }
 
-@Test
-func sessionStartEndAndScopedRecallSearchWork() async throws {
-    try await withMemory { memory in
-        let start = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(start.isError != true)
-        let startJSON = try parseJSONText(in: start)
-        let sessionID = try requireString(startJSON, key: "session_id")
-
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: ["content": "GLOBAL_ONLY_ABC anchor for unscoped search"]
-            ),
-            memory: memory
-        )
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": "SESSION_ONLY_XYZ anchor for scoped search",
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        let scopedRecall = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "recall",
-                arguments: ["query": "SESSION_ONLY_XYZ", "session_id": .string(sessionID), "limit": 10]
-            ),
-            memory: memory
-        )
-        #expect(scopedRecall.isError != true)
-        let scopedRecallText = firstText(in: scopedRecall)
-        #expect(scopedRecallText.contains("SESSION_ONLY_XYZ"))
-        #expect(scopedRecallText.contains("GLOBAL_") && scopedRecallText.contains("ABC"))
-
-        let unscopedSearch = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "search",
-                arguments: ["query": "GLOBAL_ONLY_ABC", "mode": "text", "topK": 10]
-            ),
-            memory: memory
-        )
-        #expect(unscopedSearch.isError != true)
-        let unscopedSearchPayload = try parseJSONResource(in: unscopedSearch, uriSuffix: "/search-summary")
-        let unscopedResults = try requireArray(unscopedSearchPayload, key: "results")
-        #expect(unscopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL") == true })
-
-        let scopedSearch = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "search",
-                arguments: [
-                    "query": "GLOBAL_ONLY_ABC",
-                    "mode": "text",
-                    "topK": .int(10),
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(scopedSearch.isError != true)
-        let scopedSearchPayload = try parseJSONResource(in: scopedSearch, uriSuffix: "/search-summary")
-        let scopedResults = try requireArray(scopedSearchPayload, key: "results")
-        #expect(!scopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL_ONLY_ABC") == true })
-
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: [:]),
-            memory: memory
-        )
-        #expect(end.isError != true)
-    }
-}
-
-@Test
-func compatMemorySearchRequiresSessionIDWhenMultipleActiveSessionsIncludeWorking() async throws {
-    try await withMemory { memory in
-        let first = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let firstID = try requireString(try parseJSONText(in: first), key: "session_id")
-
-        let second = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let secondID = try requireString(try parseJSONText(in: second), key: "session_id")
-        let marker = "F034_COMPAT_WORKING_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("\(marker) first session working memory"),
-                    "session_id": .string(firstID),
-                ]
-            ),
-            memory: memory
-        )
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("\(marker) second session working memory"),
-                    "session_id": .string(secondID),
-                ]
-            ),
-            memory: memory
-        )
-
-        let ambiguous = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "memory_search",
-                arguments: [
-                    "query": .string(marker),
-                    "mode": .string("text"),
-                    "include_working": .bool(true),
-                    "include_episodic": .bool(false),
-                    "include_durable": .bool(false),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(ambiguous.isError == true)
-        #expect(firstText(in: ambiguous).contains("session_id is required when more than one"))
-
-        let explicit = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "memory_search",
-                arguments: [
-                    "query": .string(marker),
-                    "session_id": .string(firstID),
-                    "mode": .string("text"),
-                    "include_working": .bool(true),
-                    "include_episodic": .bool(false),
-                    "include_durable": .bool(false),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(explicit.isError != true)
-        let explicitPayload = try parseJSONResource(in: explicit, uriSuffix: "memory-search-summary")
-        let results = try #require(explicitPayload["results"] as? [[String: Any]])
-        #expect(results.contains { ($0["text"] as? String)?.contains("first session working memory") == true })
-        #expect(results.allSatisfy { ($0["memory_id"] as? String)?.contains(firstID) == true })
-        #expect(!firstText(in: explicit).contains("second session working memory"))
-    }
-}
-
-@Test
-func compatCompactContextRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
-    try await withMemory { memory in
-        let first = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        _ = try requireString(try parseJSONText(in: first), key: "session_id")
-
-        let second = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        _ = try requireString(try parseJSONText(in: second), key: "session_id")
-
-        let compact = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "compact_context",
-                arguments: [
-                    "query": .string("F034_COMPAT_COMPACT"),
-                    "mode": .string("text"),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(compact.isError == true)
-        #expect(firstText(in: compact).contains("session_id is required when more than one"))
-    }
-}
 
 @Test
 func brokerMemorySearchRequiresSessionIDWhenMultipleActiveSessionsIncludeWorking() async throws {
@@ -3102,68 +2803,6 @@ func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
     #expect(resolved == cliPath.path)
 }
 
-@Test
-func sessionStartDoesNotImplicitlyScopeWrites() async throws {
-    try await withMemory { memory in
-        let start = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(start.isError != true)
-        let started = try parseJSONText(in: start)
-        let sessionID = try requireString(started, key: "session_id")
-
-        let globalWrite = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: ["content": "GLOBAL_IMPLICIT_SCOPE_GUARD"]
-            ),
-            memory: memory
-        )
-        #expect(globalWrite.isError != true)
-
-        let scopedWrite = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": "SESSION_EXPLICIT_SCOPE_GUARD",
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(scopedWrite.isError != true)
-
-        let scopedSearch = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "search",
-                arguments: [
-                    "query": "GLOBAL_IMPLICIT_SCOPE_GUARD",
-                    "mode": "text",
-                    "topK": 10,
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(scopedSearch.isError != true)
-        let scopedPayload = try parseJSONResource(in: scopedSearch, uriSuffix: "/search-summary")
-        let scopedResults = try requireArray(scopedPayload, key: "results")
-        #expect(!scopedResults.contains { (($0 as? [String: Any])?["preview"] as? String)?.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") == true })
-
-        let unscopedSearch = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "search",
-                arguments: ["query": "GLOBAL_IMPLICIT_SCOPE_GUARD", "mode": "text", "topK": 10]
-            ),
-            memory: memory
-        )
-        #expect(unscopedSearch.isError != true)
-        let unscopedPayload = try parseJSONResource(in: unscopedSearch, uriSuffix: "/search-summary")
-        let unscopedResults = try requireArray(unscopedPayload, key: "results")
-        #expect(!unscopedResults.isEmpty)
-    }
-}
 
 @Test
 func rememberRejectsMetadataSessionID() async throws {
@@ -3183,246 +2822,6 @@ func rememberRejectsMetadataSessionID() async throws {
     }
 }
 
-@Test
-func endedSessionIDIsRejectedOnLaterScopedCalls() async throws {
-    try await withMemory { memory in
-        let start = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(start.isError != true)
-        let started = try parseJSONText(in: start)
-        let sessionID = try requireString(started, key: "session_id")
-
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: ["session_id": .string(sessionID)]),
-            memory: memory
-        )
-        #expect(end.isError != true)
-
-        let remember = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": "should fail after end",
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(remember.isError == true)
-        #expect(firstText(in: remember).contains("session_id is not active"))
-
-        let search = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "search",
-                arguments: [
-                    "query": "should fail after end",
-                    "mode": "text",
-                    "topK": 5,
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(search.isError == true)
-        #expect(firstText(in: search).contains("session_id is not active"))
-    }
-}
-
-@Test
-func compatMemoryGetReadsEpisodicIDsReturnedByMemorySearch() async throws {
-    try await withMemory { memory in
-        let start = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(start.isError != true)
-        let sessionID = try requireString(try parseJSONText(in: start), key: "session_id")
-
-        let remember = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("EPISODIC_MEMORY_GET_ROUNDTRIP compatibility memory should remain readable after the session ends."),
-                    "session_id": .string(sessionID),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(remember.isError != true)
-
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: ["session_id": .string(sessionID)]),
-            memory: memory
-        )
-        #expect(end.isError != true)
-
-        let document = try #require(try await memory.corpusSourceDocuments().first(where: {
-            $0.metadata["session_id"] == sessionID &&
-            $0.text.contains("EPISODIC_MEMORY_GET_ROUNDTRIP")
-        }))
-        let memoryID = "episodic:\(sessionID):\(document.frameId)"
-
-        let get = await WaxMCPTools.handleCall(
-            params: .init(name: "memory_get", arguments: ["memory_id": .string(memoryID)]),
-            memory: memory
-        )
-        #expect(get.isError != true)
-        #expect(firstText(in: get).contains("EPISODIC_MEMORY_GET_ROUNDTRIP"))
-    }
-}
-
-@Test
-func compatCompactContextScopesToRequestedSession() async throws {
-    try await withMemory { memory in
-        let startA = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(startA.isError != true)
-        let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
-
-        let startB = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(startB.isError != true)
-        let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
-
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER durable memory must stay out of session A checkpoints."),
-                ]
-            ),
-            memory: memory
-        )
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER session A memory must remain in session A checkpoints."),
-                    "session_id": .string(sessionA),
-                ]
-            ),
-            memory: memory
-        )
-        _ = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "remember",
-                arguments: [
-                    "content": .string("COMPACT_CONTEXT_SCOPE_MARKER session B memory must not leak into session A checkpoints."),
-                    "session_id": .string(sessionB),
-                ]
-            ),
-            memory: memory
-        )
-
-        let compact = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "compact_context",
-                arguments: [
-                    "query": .string("COMPACT_CONTEXT_SCOPE_MARKER"),
-                    "session_id": .string(sessionA),
-                    "mode": .string("text"),
-                    "max_items": .int(6),
-                ]
-            ),
-            memory: memory
-        )
-        #expect(compact.isError != true)
-        let payload = try parseJSONResource(in: compact, uriSuffix: "/compact-context-summary")
-        let shortContext = try requireArray(payload, key: "short_context")
-        #expect(!shortContext.isEmpty)
-        #expect(shortContext.contains { entry in
-            guard let object = try? requireObject(entry) else { return false }
-            return (object["preview"] as? String)?.contains("session A memory must remain") == true
-        })
-        #expect(!shortContext.contains { entry in
-            guard let object = try? requireObject(entry) else { return false }
-            return (object["preview"] as? String)?.contains("durable memory must stay out") == true
-        })
-        #expect(!shortContext.contains { entry in
-            guard let object = try? requireObject(entry) else { return false }
-            return (object["preview"] as? String)?.contains("session B memory must not leak") == true
-        })
-        #expect(shortContext.allSatisfy { entry in
-            guard let object = try? requireObject(entry),
-                  let memoryID = object["memory_id"] as? String else { return false }
-            return memoryID.hasPrefix("working:\(sessionA):")
-        })
-
-        let firstItem = try #require(shortContext.compactMap { try? requireObject($0) }.first)
-        let memoryID = try requireString(firstItem, key: "memory_id")
-        let get = await WaxMCPTools.handleCall(
-            params: .init(name: "memory_get", arguments: ["memory_id": .string(memoryID)]),
-            memory: memory
-        )
-        #expect(get.isError != true)
-        #expect(firstText(in: get).contains("session A memory must remain"))
-    }
-}
-
-@Test
-func sessionEndReportsRemainingActiveSessions() async throws {
-    try await withMemory { memory in
-        let startA = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(startA.isError != true)
-        let sessionA = try requireString(try parseJSONText(in: startA), key: "session_id")
-
-        let startB = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(startB.isError != true)
-        let sessionB = try requireString(try parseJSONText(in: startB), key: "session_id")
-
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: ["session_id": .string(sessionA)]),
-            memory: memory
-        )
-        #expect(end.isError != true)
-        let ended = try parseJSONText(in: end)
-        #expect((ended["session_id"] as? String) == sessionA)
-        #expect((ended["ended"] as? Bool) == true)
-        #expect((ended["active"] as? Bool) == false)
-        #expect((ended["remaining_active"] as? Bool) == true)
-        #expect((ended["active_session_count"] as? Int) == 1)
-
-        let stats = await WaxMCPTools.handleCall(
-            params: .init(name: "stats", arguments: [:]),
-            memory: memory
-        )
-        #expect(stats.isError != true)
-        let statsJSON = try parseJSONText(in: stats)
-        let session = statsJSON["session"] as? [String: Any]
-        #expect((session?["activeSessionCount"] as? Int) == 1)
-        #expect((session?["activeSessionIds"] as? [String]) == [sessionB])
-    }
-}
-
-@Test
-func sessionEndIdleMCPReportsConsistentKeys() async throws {
-    try await withMemory { memory in
-        let end = await WaxMCPTools.handleCall(
-            params: .init(name: "session_end", arguments: [:]),
-            memory: memory
-        )
-        #expect(end.isError != true)
-        let ended = try parseJSONText(in: end)
-        #expect((ended["status"] as? String) == "ok")
-        #expect(ended["session_id"] is NSNull)
-        #expect((ended["ended"] as? Bool) == false)
-        #expect((ended["active"] as? Bool) == false)
-        #expect((ended["remaining_active"] as? Bool) == false)
-        #expect((ended["active_session_count"] as? Int) == 0)
-    }
-}
 
 @Test
 func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
@@ -3553,57 +2952,6 @@ func recallJSONResourceIncludesStructuredResults() async throws {
     }
 }
 
-@Test
-func handoffRoundTripAndStatsSessionBlockWork() async throws {
-    try await withMemory { memory in
-        let start = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        #expect(start.isError != true)
-        let started = try parseJSONText(in: start)
-        let sessionID = try requireString(started, key: "session_id")
-
-        let handoff = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "handoff",
-                arguments: [
-                    "content": "Carry over refactor checkpoints",
-                    "session_id": .string(sessionID),
-                    "project": "wax",
-                    "pending_tasks": ["add graph tests", "measure ranking drift"],
-                ]
-            ),
-            memory: memory
-        )
-        #expect(handoff.isError != true)
-
-        let latest = await WaxMCPTools.handleCall(
-            params: .init(
-                name: "handoff_latest",
-                arguments: ["project": "wax"]
-            ),
-            memory: memory
-        )
-        #expect(latest.isError != true)
-        let latestJSON = try parseJSONText(in: latest)
-        #expect((latestJSON["content"] as? String)?.contains("Carry over refactor checkpoints") == true)
-
-        let stats = await WaxMCPTools.handleCall(
-            params: .init(name: "stats", arguments: [:]),
-            memory: memory
-        )
-        #expect(stats.isError != true)
-        let statsJSON = try parseJSONText(in: stats)
-        guard let session = statsJSON["session"] as? [String: Any] else {
-            Issue.record("Expected session block in wax_stats response")
-            return
-        }
-        #expect((session["active"] as? Bool) == true)
-        #expect((session["session_id"] as? String) == sessionID)
-        #expect((session["sessionFrameCount"] as? Int ?? 0) >= 1)
-    }
-}
 
 @Test
 func graphToolsRoundTripWorks() async throws {
@@ -4039,67 +3387,6 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
     }
 }
 
-@Test
-func sessionSynthesizeAndPromoteFlowWorks() async throws {
-    try await withMemory { memory in
-        let started = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let startedJSON = try parseJSONText(in: started)
-        let sessionID = try #require(startedJSON["session_id"] as? String)
-
-        let remember = await WaxMCPTools.handleCall(
-            params: .init(name: "remember", arguments: [
-                "session_id": .string(sessionID),
-                "content": .string("Decision: Wax should default repo-scoped recall before global recall."),
-            ]),
-            memory: memory
-        )
-        #expect(remember.isError != true)
-
-        let synthesize = await WaxMCPTools.handleCall(
-            params: .init(name: "session_synthesize", arguments: [
-                "session_id": .string(sessionID),
-            ]),
-            memory: memory
-        )
-        #expect(synthesize.isError != true)
-        let synthesizeJSON = try parseJSONResource(in: synthesize, uriSuffix: "session-synthesize-summary")
-        let candidates = synthesizeJSON["durable_candidates"] as? [[String: Any]] ?? []
-        #expect(!candidates.isEmpty)
-        #expect(candidates.contains { ($0["suggested_type"] as? String) == "decision" })
-
-        let promote = await WaxMCPTools.handleCall(
-            params: .init(name: "memory_promote", arguments: [
-                "session_id": .string(sessionID),
-                "approve": .bool(true),
-            ]),
-            memory: memory
-        )
-        #expect(promote.isError != true)
-        let promoteJSON = try parseJSONText(in: promote)
-        #expect((promoteJSON["written"] as? Bool) == true)
-        let promoteMetadata = try #require(promoteJSON["metadata"] as? [String: Any])
-        #expect(promoteMetadata["wax.promoted_from_session"] as? String == sessionID)
-        #expect(promoteMetadata["session_id"] == nil)
-
-        let search = await WaxMCPTools.handleCall(
-            params: .init(name: "search", arguments: [
-                "query": .string("repo-scoped recall"),
-                "mode": .string("text"),
-            ]),
-            memory: memory
-        )
-        let searchJSON = try parseJSONResource(in: search, uriSuffix: "search-summary")
-        let results = searchJSON["results"] as? [[String: Any]] ?? []
-        let durableHit = results.first {
-            (($0["metadata"] as? [String: Any])?["wax.memory_type"] as? String == "decision")
-                && (($0["metadata"] as? [String: Any])?["wax.reviewed"] as? String == "true")
-        }
-        #expect(durableHit != nil)
-    }
-}
 
 @Test
 func brokerMarkdownSyncRejectsSecretLikeDurableMemoryImports() async throws {
@@ -4870,11 +4157,11 @@ func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/VirtualSessionStore.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func sessionStart(arguments: [String: AgentBrokerValue])"))
-    let resume = try #require(source[start.upperBound...].range(of: "func sessionResume(arguments: [String: AgentBrokerValue])"))
+    let start = try #require(source.range(of: "package func start("))
+    let resume = try #require(source[start.upperBound...].range(of: "package func resume("))
     let body = source[start.lowerBound..<resume.lowerBound]
 
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
@@ -4890,11 +4177,11 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/VirtualSessionStore.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func sessionResume(arguments: [String: AgentBrokerValue])"))
-    let end = try #require(source[start.upperBound...].range(of: "func sessionEnd(arguments: [String: AgentBrokerValue])"))
+    let start = try #require(source.range(of: "package func resume("))
+    let end = try #require(source[start.upperBound...].range(of: "package func end("))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
@@ -4910,18 +4197,18 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/VirtualSessionStore.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func sessionEnd(arguments: [String: AgentBrokerValue])"))
-    let end = try #require(source[start.upperBound...].range(of: "func handoff(arguments: [String: AgentBrokerValue])"))
+    let start = try #require(source.range(of: "package func end("))
+    let end = try #require(source[start.upperBound...].range(of: "package func lookup("))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: state.manifestURL)"))
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
     let flush = try #require(body.range(of: "try await state.memory.flush()"))
     let close = try #require(body.range(of: "try await state.memory.close()"))
-    let remove = try #require(body.range(of: "activeSessions.removeValue(forKey: target)"))
+    let remove = try #require(body.range(of: "live.removeValue(forKey: target)"))
 
     #expect(saveManifest.lowerBound < remove.lowerBound)
     #expect(appendEvent.lowerBound < remove.lowerBound)
@@ -5712,94 +4999,6 @@ func brokerMemoryPromoteRejectsStaleSessionBeforeDurableWrite() async throws {
     }
 }
 
-@Test
-func memorySearchSignalsInfluenceCompatSessionSynthesis() async throws {
-    try await withMemory { memory in
-        let started = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let startedJSON = try parseJSONText(in: started)
-        let sessionID = try #require(startedJSON["session_id"] as? String)
-
-        let remember = await WaxMCPTools.handleCall(
-            params: .init(name: "remember", arguments: [
-                "session_id": .string(sessionID),
-                "content": .string("Decision: memory_search retrieval signals should influence synthesis and promotion."),
-            ]),
-            memory: memory
-        )
-        #expect(remember.isError != true)
-
-        for query in ["retrieval signals", "synthesis promotion"] {
-            let search = await WaxMCPTools.handleCall(
-                params: .init(name: "memory_search", arguments: [
-                    "query": .string(query),
-                    "session_id": .string(sessionID),
-                    "mode": .string("text"),
-                    "topK": .int(5),
-                    "include_working": .bool(true),
-                    "include_episodic": .bool(false),
-                    "include_durable": .bool(false),
-                ]),
-                memory: memory
-            )
-            #expect(search.isError != true)
-        }
-
-        let synthesize = await WaxMCPTools.handleCall(
-            params: .init(name: "session_synthesize", arguments: [
-                "session_id": .string(sessionID),
-            ]),
-            memory: memory
-        )
-        #expect(synthesize.isError != true)
-        let synthesizeJSON = try parseJSONResource(in: synthesize, uriSuffix: "session-synthesize-summary")
-        let candidates = synthesizeJSON["durable_candidates"] as? [[String: Any]] ?? []
-        let matchingCandidate = candidates.first {
-            (($0["summary"] as? String) ?? "").contains("memory_search retrieval signals")
-        }
-        let matching = try #require(matchingCandidate)
-        #expect((matching["recall_count"] as? Int ?? 0) >= 2)
-        #expect((matching["unique_query_count"] as? Int ?? 0) >= 2)
-        #expect((matching["average_relevance_score"] as? Double ?? 0) > 0)
-    }
-}
-
-@Test
-func memoryPromotePreservesLockedOverride() async throws {
-    try await withMemory { memory in
-        let started = await WaxMCPTools.handleCall(
-            params: .init(name: "session_start", arguments: [:]),
-            memory: memory
-        )
-        let startedJSON = try parseJSONText(in: started)
-        let sessionID = try #require(startedJSON["session_id"] as? String)
-
-        let remember = await WaxMCPTools.handleCall(
-            params: .init(name: "remember", arguments: [
-                "session_id": .string(sessionID),
-                "content": .string("Decision: keep broker-backed promotion overrides intact."),
-            ]),
-            memory: memory
-        )
-        #expect(remember.isError != true)
-
-        let promote = await WaxMCPTools.handleCall(
-            params: .init(name: "memory_promote", arguments: [
-                "session_id": .string(sessionID),
-                "approve": .bool(true),
-                "locked": .bool(true),
-            ]),
-            memory: memory
-        )
-        #expect(promote.isError != true)
-        let promoteJSON = try parseJSONText(in: promote)
-        let metadata = try #require(promoteJSON["metadata"] as? [String: Any])
-        #expect(metadata["wax.durability"] as? String == "locked")
-        #expect(metadata["wax.reviewed"] as? String == "true")
-    }
-}
 
 @Test
 func knowledgeCaptureAndMemoryHealthWork() async throws {
