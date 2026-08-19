@@ -291,7 +291,8 @@ struct WaxCLIMemoryTests {
             let elapsed = start.duration(to: clock.now)
             #expect(elapsed < .seconds(1))
             let message = error.localizedDescription.lowercased()
-            #expect(message.contains("broker holds this store"))
+            #expect(message.contains("exclusive lock"))
+            #expect(message.contains("another process"))
             #expect(message.contains("waxmcp stats") || message.contains("attach"))
             #expect(message.contains("timed out waiting for exclusive lock") == false)
         }

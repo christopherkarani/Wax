@@ -13,7 +13,7 @@ enum MCPAgentInstructions {
         2) Call session_start once and keep the returned session_id for the session. The same agent_id+run_id resumes the active session.
         3) Before answering from memory, call recall (default) or search (raw ranked hits). recall with session_id merges that session with durable long-term memory.
         4) When you learn durable facts, call remember with concise factual content. Pass session_id as a top-level argument for session-scoped writes — never put session_id inside metadata.
-        5) Near session end, call handoff (content, optional project/pending_tasks/session_id), then session_end.
+        5) Near session end, call handoff (content, optional project/pending_tasks/session_id), then session_end. session_end `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
 
         Tool selection:
         - recall: assembled RAG context (preferred read path)

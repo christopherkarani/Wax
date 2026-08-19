@@ -370,6 +370,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("session_start"))
     #expect(text.contains("session_end"))
     #expect(text.contains("session_id"))
+    #expect(text.contains("remaining_active"))
+    #expect(text.contains("active_session_count"))
     #expect(text.contains("Do not manage SESSION_STORE"))
 }
 
@@ -3390,6 +3392,7 @@ func sessionEndReportsRemainingActiveSessions() async throws {
         #expect((ended["ended"] as? Bool) == true)
         #expect((ended["active"] as? Bool) == false)
         #expect((ended["remaining_active"] as? Bool) == true)
+        #expect((ended["active_session_count"] as? Int) == 1)
 
         let stats = await WaxMCPTools.handleCall(
             params: .init(name: "stats", arguments: [:]),
@@ -3400,6 +3403,24 @@ func sessionEndReportsRemainingActiveSessions() async throws {
         let session = statsJSON["session"] as? [String: Any]
         #expect((session?["activeSessionCount"] as? Int) == 1)
         #expect((session?["activeSessionIds"] as? [String]) == [sessionB])
+    }
+}
+
+@Test
+func sessionEndIdleMCPReportsConsistentKeys() async throws {
+    try await withMemory { memory in
+        let end = await WaxMCPTools.handleCall(
+            params: .init(name: "session_end", arguments: [:]),
+            memory: memory
+        )
+        #expect(end.isError != true)
+        let ended = try parseJSONText(in: end)
+        #expect((ended["status"] as? String) == "ok")
+        #expect(ended["session_id"] is NSNull)
+        #expect((ended["ended"] as? Bool) == false)
+        #expect((ended["active"] as? Bool) == false)
+        #expect((ended["remaining_active"] as? Bool) == false)
+        #expect((ended["active_session_count"] as? Int) == 0)
     }
 }
 

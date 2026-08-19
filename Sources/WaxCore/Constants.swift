@@ -43,7 +43,7 @@ package enum Constants {
     /// Default WAL size used by tests/examples (256 MiB).
     package static let defaultWalSize: UInt64 = 256 * 1024 * 1024
 
-    /// WAL size for broker virtual session stores. Long-term stores keep `defaultWalSize`.
+    /// WAL size for new broker virtual session stores only; open keeps existing WAL. Long-term stores keep `defaultWalSize`.
     package static let sessionWalSize: UInt64 = 4 * 1024 * 1024
 
     // MARK: - Decoder Limits (recommended defaults)

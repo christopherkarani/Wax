@@ -27,7 +27,6 @@ extension Wax {
 
         let trimmedQuery = request.query?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let identifierQuery = trimmedQuery.map(RuleBasedQueryClassifier.isLexicalIdentifierQuery) ?? false
         let queryType: QueryType
         if let trimmedQuery, !trimmedQuery.isEmpty {
             queryType = RuleBasedQueryClassifier.classify(trimmedQuery)
@@ -55,6 +54,12 @@ extension Wax {
             includeText = true
             includeVector = true
         }
+
+        // Identifier overfetch + exact-match rerank are text-lane only.
+        // vectorOnly must not widen the pending window or promote a buried exact frame.
+        let identifierWindow: Int? = (
+            includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isLexicalIdentifierQuery) ?? false)
+        ) ? min(max(requestedTopK * 3, 12), 48) : nil
 
         let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
         let cache = UnifiedSearchEngineCache.shared
@@ -462,9 +467,7 @@ extension Wax {
         }
 
         var pendingResults: [PendingResult] = []
-        let pendingLimit = identifierQuery
-            ? min(max(requestedTopK * 3, 12), 48)
-            : requestedTopK
+        let pendingLimit = identifierWindow ?? requestedTopK
         pendingResults.reserveCapacity(min(pendingLimit, baseResults.count))
 
         if !baseResults.isEmpty {
@@ -592,11 +595,11 @@ extension Wax {
             scopeContext: request.scopeContext,
             maxWindow: min(max(request.topK * 3, 12), 48)
         )
-        if let trimmedQuery, !trimmedQuery.isEmpty {
+        if let identifierWindow, let trimmedQuery {
             filtered = Self.identifierExactMatchRerank(
                 results: filtered,
                 query: trimmedQuery,
-                maxWindow: min(max(request.topK * 3, 12), 48)
+                maxWindow: identifierWindow
             )
         }
         if filtered.count > requestedTopK {
@@ -746,7 +749,7 @@ extension Wax {
         maxWindow: Int
     ) -> [SearchResponse.Result] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard RuleBasedQueryClassifier.isLexicalIdentifierQuery(needle) else { return results }
+        guard !needle.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
         guard cappedWindow > 1 else { return results }
 

@@ -1,7 +1,6 @@
 import ArgumentParser
 import Foundation
 import Wax
-import WaxCore
 
 struct VectorHealthCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -86,7 +85,7 @@ private extension VectorHealthCommand {
 
     func checkPrimaryStore() async throws -> PrimaryStoreCheck {
         let url = try StoreSession.resolveURL(store.storePath)
-        try failFastIfStoreHeldByBroker(at: url)
+        try failFastIfStoreHeld(at: url)
         return try await StoreSession.withOpen(
             at: url,
             noEmbedder: store.noEmbedder,
@@ -149,14 +148,11 @@ private extension VectorHealthCommand {
         }
     }
 
-    func failFastIfStoreHeldByBroker(at url: URL) throws {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        if let lock = try FileLock.tryAcquire(at: url, mode: .exclusive) {
-            try lock.release()
-            return
+    func failFastIfStoreHeld(at url: URL) throws {
+        guard try StoreLockProbe.tryExclusiveAccess(at: url) else {
+            throw CLIError(
+                "another process holds an exclusive lock on this store; if a broker is attached, use waxmcp stats / attach instead of waiting"
+            )
         }
-        throw CLIError(
-            "broker holds this store; use waxmcp stats / attach instead of waiting for an exclusive lock"
-        )
     }
 }

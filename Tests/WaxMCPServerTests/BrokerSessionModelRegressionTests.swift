@@ -4,6 +4,7 @@ import Testing
 #if MCPServer
 @testable import wax_mcp
 @testable import Wax
+@testable import WaxCore
 
 private func withIsolatedBroker<T>(
     _ body: (AgentBrokerService, URL) async throws -> T
@@ -123,18 +124,20 @@ func sessionStartReusesActiveSessionForSameAgentAndRun() async throws {
     }
 }
 
-private let maxSessionWalBytes: UInt64 = 16 * 1024 * 1024
-
 private func waxFileSize(at path: String) throws -> UInt64 {
     let attrs = try FileManager.default.attributesOfItem(atPath: path)
     let size = try #require(attrs[.size] as? NSNumber)
     return size.uint64Value
 }
 
-private func sessionWaxPaths(in sessionRoot: URL) throws -> [String] {
-    try FileManager.default.contentsOfDirectory(atPath: sessionRoot.path)
-        .filter { $0.hasSuffix(".wax") }
-        .map { sessionRoot.appendingPathComponent($0).path }
+/// Header region + footer + empty TOC. Not a 16 MiB cap.
+private let sessionWalLayoutSlack: UInt64 =
+    Constants.headerRegionSize + Constants.footerSize + 32 * 1024
+
+private func expectSessionStoreNearSessionWal(_ size: UInt64) {
+    let wal = Constants.sessionWalSize
+    #expect(size >= wal)
+    #expect(size <= wal + sessionWalLayoutSlack)
 }
 
 @Test
@@ -150,9 +153,7 @@ func sessionStartCreatesSessionStoreWithSmallWal() async throws {
         #expect(started.ok == true)
         let payload = try requireObject(started.payload)
         let storePath = try requireString(payload, "store_path")
-        let size = try waxFileSize(at: storePath)
-        #expect(size <= maxSessionWalBytes)
-        #expect(size != FrameStore.defaultWalSize)
+        expectSessionStoreNearSessionWal(try waxFileSize(at: storePath))
 
         let reused = await service.handle(.init(
             command: "session_start",
@@ -168,17 +169,32 @@ func sessionStartCreatesSessionStoreWithSmallWal() async throws {
         #expect(reusedPayload["resumed"]?.boolValue == true)
         #expect(try requireString(reusedPayload, "store_path") == storePath)
 
-        let waxFiles = try sessionWaxPaths(in: sessionRoot)
+        let waxFiles = try FileManager.default.contentsOfDirectory(atPath: sessionRoot.path)
+            .filter { $0.hasSuffix(".wax") }
         #expect(waxFiles.count == 1)
-        #expect(try waxFileSize(at: storePath) <= maxSessionWalBytes)
-        for path in waxFiles {
-            #expect(try waxFileSize(at: path) <= maxSessionWalBytes)
-        }
+        expectSessionStoreNearSessionWal(try waxFileSize(at: storePath))
 
         let stats = await service.handle(.init(command: "stats"))
         #expect(stats.ok == true)
         let longTermPath = try requireString(try requireObject(stats.payload), "storePath")
-        #expect(try waxFileSize(at: longTermPath) > maxSessionWalBytes)
+        let longTermSize = try waxFileSize(at: longTermPath)
+        #expect(longTermSize > Constants.sessionWalSize)
+        #expect(longTermSize >= Constants.defaultWalSize)
+    }
+}
+
+@Test
+func sessionEndIdleReportsConsistentKeys() async throws {
+    try await withIsolatedBroker { service, _ in
+        let ended = await service.handle(.init(command: "session_end"))
+        #expect(ended.ok == true, "idle session_end failed: \(ended.error ?? "nil")")
+        let payload = try requireObject(ended.payload)
+        #expect(payload["status"]?.stringValue == "ok")
+        #expect(payload["session_id"] == .null)
+        #expect(payload["ended"]?.boolValue == false)
+        #expect(payload["active"]?.boolValue == false)
+        #expect(payload["remaining_active"]?.boolValue == false)
+        #expect(payload["active_session_count"]?.intValue == 0)
     }
 }
 

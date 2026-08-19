@@ -245,8 +245,7 @@ package enum EmbeddingReadinessBinding {
         request: EmbeddingOpenRequest,
         waxOptions: WaxOptions = .init(),
         readiness: EmbeddingReadiness = .shared,
-        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
-        createWalSize: UInt64? = nil
+        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil
     ) async throws -> MemoryOrchestrator {
         switch request {
         case .disabled:
@@ -257,8 +256,7 @@ package enum EmbeddingReadinessBinding {
                 config: disabled,
                 embedder: nil,
                 waxOptions: waxOptions,
-                initialEmbeddingStatus: .disabled,
-                createWalSize: createWalSize
+                initialEmbeddingStatus: .disabled
             )
         case .custom(let provider):
             return try await MemoryOrchestrator(
@@ -266,8 +264,7 @@ package enum EmbeddingReadinessBinding {
                 config: config,
                 embedder: provider,
                 waxOptions: waxOptions,
-                initialEmbeddingStatus: .active(provider.identity),
-                createWalSize: createWalSize
+                initialEmbeddingStatus: .active(provider.identity)
             )
         case .automatic(let provider, let options):
             let factory = factoryOverride ?? {
@@ -284,8 +281,7 @@ package enum EmbeddingReadinessBinding {
                 at: url,
                 config: config,
                 session: session,
-                waxOptions: waxOptions,
-                createWalSize: createWalSize
+                waxOptions: waxOptions
             )
         case .builtIn(let provider, let options):
             let factory = factoryOverride ?? {
@@ -303,8 +299,7 @@ package enum EmbeddingReadinessBinding {
                     at: url,
                     config: config,
                     session: session,
-                    waxOptions: waxOptions,
-                    createWalSize: createWalSize
+                    waxOptions: waxOptions
                 )
             } catch is EmbeddingReadiness.WaitError {
                 throw BuiltInEmbeddingProviderError.timedOut(provider)
@@ -316,8 +311,7 @@ package enum EmbeddingReadinessBinding {
         at url: URL,
         config: OrchestratorConfig,
         session: EmbeddingReadinessSession,
-        waxOptions: WaxOptions,
-        createWalSize: UInt64? = nil
+        waxOptions: WaxOptions
     ) async throws -> MemoryOrchestrator {
         let snapshot = await session.snapshot()
         let orchestrator = try await MemoryOrchestrator(
@@ -325,8 +319,7 @@ package enum EmbeddingReadinessBinding {
             config: config,
             embedder: snapshot.provider,
             waxOptions: waxOptions,
-            initialEmbeddingStatus: snapshot.status,
-            createWalSize: createWalSize
+            initialEmbeddingStatus: snapshot.status
         )
         let latest = await session.snapshot()
         switch latest.status {

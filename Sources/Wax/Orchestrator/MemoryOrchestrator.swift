@@ -237,15 +237,13 @@ package actor MemoryOrchestrator {
     package init(
         at url: URL,
         config: OrchestratorConfig = .default,
-        waxOptions: WaxOptions = .init(),
-        createWalSize: UInt64? = nil
+        waxOptions: WaxOptions = .init()
     ) async throws {
         try await self.init(
             at: url,
             config: config,
             embedder: nil,
-            waxOptions: waxOptions,
-            createWalSize: createWalSize
+            waxOptions: waxOptions
         )
     }
 
@@ -254,8 +252,7 @@ package actor MemoryOrchestrator {
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
-        initialEmbeddingStatus: EmbeddingStatus? = nil,
-        createWalSize: UInt64? = nil
+        initialEmbeddingStatus: EmbeddingStatus? = nil
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
@@ -284,7 +281,7 @@ package actor MemoryOrchestrator {
         } else {
             self.wax = try await Wax.create(
                 at: url,
-                walSize: createWalSize ?? Constants.defaultWalSize,
+                walSize: Constants.defaultWalSize,
                 options: waxOptions
             )
         }
