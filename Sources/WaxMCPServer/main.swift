@@ -30,11 +30,15 @@ enum WaxMCPServerMetadata {
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-mcp",
-        abstract: "MCP server exposing Wax memory tools over stdio or HTTP."
+        abstract: "MCP server exposing Wax memory tools over stdio or HTTP.",
+        version: WaxMCPServerMetadata.version
     )
 
     @Option(name: .customLong("store-path"), help: "Path to the Wax memory store (.wax)")
     var storePath = "~/.wax/memory.wax"
+
+    @Option(name: .customLong("session-root"), help: "Directory for broker-managed virtual session stores. Custom --store-path values isolate a private session root unless this flag or WAX_SESSION_ROOT / WAX_SESSION_ROOT_DIR is set.")
+    var sessionRoot = AgentBrokerPathing.defaultSessionRootPath
 
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
@@ -64,6 +68,7 @@ struct WaxMCPServerCommand: ParsableCommand {
     var httpAuthToken: String?
 
     mutating func run() throws {
+        signal(SIGPIPE, SIG_IGN)
         let command = self
         Task(priority: .userInitiated) {
             do {
@@ -108,6 +113,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         let brokerConfiguration = try AgentBrokerPathing.configuration(
             brokerExecutablePath: AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: currentExecutablePath),
             storePath: storePath,
+            sessionRootPath: sessionRoot,
             embedderChoice: embedderChoice,
             noEmbedder: noEmbedder,
             requireVector: false,

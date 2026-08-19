@@ -46,9 +46,11 @@ enum WaxMCPTools {
             try validateArgumentSurface(name: params.name, arguments: params.arguments)
 
             var forwarded = params.arguments ?? [:]
-            if params.name == "session_start", forwarded["cwd"] == nil {
-                forwarded["cwd"] = .string(FileManager.default.currentDirectoryPath)
+            if let oversize = contentLimitError(name: params.name, arguments: forwarded) {
+                return oversize
             }
+            injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
+            injectClientSessionIfNeeded(name: params.name, arguments: &forwarded)
 
             let response = try await AgentBrokerClient.perform(
                 request: AgentBrokerRequest(
@@ -66,6 +68,7 @@ enum WaxMCPTools {
             guard let payload = response.payload else {
                 return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
             }
+            rememberClientSession(name: params.name, payload: payload)
             return renderResult(name: params.name, payload: payload)
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
@@ -78,6 +81,57 @@ enum WaxMCPTools {
 private extension WaxMCPTools {
     static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
     static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
+    static let clientCWDCommands: Set<String> = [
+        "session_start", "remember", "memory_append", "knowledge_capture", "markdown_export",
+    ]
+    static let sessionLock = NSLock()
+    nonisolated(unsafe) static var lastClientSessionID: String?
+
+    static func contentLimitError(name: String, arguments: [String: Value]) -> CallTool.Result? {
+        guard case .string(let content)? = arguments["content"] else { return nil }
+        let maxBytes = AgentBrokerService.maxContentBytes
+        guard content.utf8.count > maxBytes else { return nil }
+        return errorResult(
+            message: "content exceeds \(maxBytes) bytes",
+            code: "invalid_arguments"
+        )
+    }
+
+    static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {
+        guard clientCWDCommands.contains(name), arguments["cwd"] == nil else { return }
+        arguments["cwd"] = .string(FileManager.default.currentDirectoryPath)
+    }
+
+    static func injectClientSessionIfNeeded(name: String, arguments: inout [String: Value]) {
+        guard name == "stats", arguments["session_id"] == nil else { return }
+        sessionLock.lock()
+        let sessionID = lastClientSessionID
+        sessionLock.unlock()
+        if let sessionID {
+            arguments["session_id"] = .string(sessionID)
+        }
+    }
+
+    static func rememberClientSession(name: String, payload: AgentBrokerValue) {
+        switch name {
+        case "session_start", "session_resume":
+            if let sessionID = payload.objectValue?["session_id"]?.stringValue {
+                sessionLock.lock()
+                lastClientSessionID = sessionID
+                sessionLock.unlock()
+            }
+        case "session_end":
+            if let ended = payload.objectValue?["session_id"]?.stringValue {
+                sessionLock.lock()
+                if lastClientSessionID == ended {
+                    lastClientSessionID = nil
+                }
+                sessionLock.unlock()
+            }
+        default:
+            break
+        }
+    }
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
         if structuredCommands.contains(name), !structuredMemoryEnabled {

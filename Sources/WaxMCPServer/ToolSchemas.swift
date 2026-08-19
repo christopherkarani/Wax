@@ -154,6 +154,7 @@ enum ToolSchemas {
             "content": [
                 "type": "string",
                 "description": "Text content to store in memory.",
+                "maxLength": .int(maxContentBytes),
             ],
             "session_id": [
                 "type": "string",
@@ -491,6 +492,7 @@ enum ToolSchemas {
             "content": [
                 "type": "string",
                 "description": "Natural-language durable knowledge to store.",
+                "maxLength": .int(maxContentBytes),
             ],
             "metadata": [
                 "type": "object",
@@ -605,6 +607,14 @@ enum ToolSchemas {
         properties: [
             "output_dir": ["type": "string", "description": "Directory where Markdown projections should be written."],
             "session_id": ["type": "string", "description": "Optional session UUID to constrain daily-note export scope."],
+            "project": [
+                "type": "string",
+                "description": "Optional project filter. Defaults to the inferred client or session project when present.",
+            ],
+            "all_projects": [
+                "type": "boolean",
+                "description": "When true, export every project. Required for an unfiltered dump when a project can be inferred.",
+            ],
         ],
         required: ["output_dir"]
     )
@@ -817,6 +827,9 @@ enum ToolSchemas {
         ],
         required: ["alias"]
     )
+
+    /// Matches AgentBrokerService.maxContentBytes (128 KiB).
+    private static let maxContentBytes = 131_072
 
     private static func objectSchema(properties: [String: Value], required: [String]) -> Value {
         [

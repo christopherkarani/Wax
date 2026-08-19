@@ -1346,7 +1346,7 @@ extension Wax {
             .joined(separator: " ")
     }
 
-    private static func dehighlightedPreviewText(_ text: String) -> String {
+    package static func dehighlightedPreviewText(_ text: String) -> String {
         text
             .replacingOccurrences(of: "[", with: "")
             .replacingOccurrences(of: "]", with: "")
