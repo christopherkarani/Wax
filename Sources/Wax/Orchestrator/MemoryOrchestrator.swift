@@ -1651,6 +1651,11 @@ package actor MemoryOrchestrator {
         return try await session.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
+    package func entity(forKey key: EntityKey) async throws -> StructuredEntityMatch? {
+        try ensureStructuredMemoryEnabled()
+        return try await session.entity(forKey: key)
+    }
+
     // MARK: - Delete
 
     /// Soft-deletes a frame and removes it from text/vector indexes when those features are enabled.

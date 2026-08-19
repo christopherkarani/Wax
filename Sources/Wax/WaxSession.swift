@@ -235,6 +235,13 @@ package actor WaxSession {
         return try await textEngine.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
+    package func entity(forKey key: EntityKey) async throws -> StructuredEntityMatch? {
+        guard config.enableStructuredMemory, let textEngine else {
+            throw WaxError.featureDisabled(feature: "structured memory")
+        }
+        return try await textEngine.entity(forKey: key)
+    }
+
     package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,

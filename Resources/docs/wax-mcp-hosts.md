@@ -34,6 +34,8 @@ If you already staged a runtime, this is equivalent:
 #   --store-path "$HOME/.wax/memory.wax" \
 #   --embedder minilm --transport http \
 #   --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp
+# Custom --store-path isolates session files next to the store unless
+# --session-root or WAX_SESSION_ROOT / WAX_SESSION_ROOT_DIR is set.
 ```
 
 Stage the skill from the npm package or a checkout:

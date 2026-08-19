@@ -229,6 +229,24 @@ package actor FTS5SearchEngine {
         }
     }
 
+    package func entity(forKey key: EntityKey) async throws -> StructuredEntityMatch? {
+        try await flushPendingOpsIfNeeded()
+        try await flushPendingStructuredOpsIfNeeded()
+        let dbQueue = self.dbQueue
+        return try await io.run {
+            try dbQueue.read { db in
+                let sql = "SELECT entity_id, key, kind FROM sm_entity WHERE key = ?"
+                guard let row = try Row.fetchOne(db, sql: sql, arguments: [key.rawValue]) else {
+                    return nil
+                }
+                guard let id: Int64 = row["entity_id"] else { return nil }
+                let storedKey: String = row["key"] ?? key.rawValue
+                let kind: String = row["kind"] ?? ""
+                return StructuredEntityMatch(id: id, key: EntityKey(storedKey), kind: kind)
+            }
+        }
+    }
+
     package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         try await flushPendingOpsIfNeeded()
         let normalized = StructuredMemoryCanonicalizer.normalizedAlias(alias)

@@ -47,4 +47,17 @@ public enum EmbeddingStatus: Sendable, Equatable {
             "unavailable"
         }
     }
+
+    package var wireReason: String? {
+        switch self {
+        case .degraded(_, let reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "unspecified" : trimmed
+        case .unavailable(let reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "unspecified" : trimmed
+        case .disabled, .loading, .active:
+            return nil
+        }
+    }
 }
