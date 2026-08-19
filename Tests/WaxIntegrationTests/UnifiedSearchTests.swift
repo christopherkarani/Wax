@@ -1459,8 +1459,29 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
     }
 }
 
-/// Temporal hybrid ranking publishes fused hits from text, vector, timeline,
-/// and structured lanes on the live `wax.search` path.
+@Test func textOnlySearchSkipsMatchWhenPlanIsEmpty() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.enableTextSearch()
+
+        let indexed = try await wax.put(Data("the and or not near filler".utf8))
+        try await text.index(frameId: indexed, text: "the and or not near filler")
+        try await text.commit()
+
+        let stopwordOnly = try await wax.search(
+            SearchRequest(query: "the and or", mode: .textOnly, topK: 10)
+        )
+        #expect(stopwordOnly.results.isEmpty)
+
+        let operatorOnly = try await wax.search(
+            SearchRequest(query: "NOT NEAR", mode: .textOnly, topK: 10)
+        )
+        #expect(operatorOnly.results.isEmpty)
+
+        try await wax.close()
+    }
+}
+
 @Test func hybridSearchFusesTextVectorTimelineAndStructuredLanes() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
