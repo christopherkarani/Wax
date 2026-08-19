@@ -266,6 +266,39 @@ struct WaxCLIMemoryTests {
         try await holder.close()
     }
 
+    @Test func vectorHealthFailsFastWhenStoreIsHeld() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-vector-health-lock-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableStructuredMemory = true
+        config.rag.searchMode = .textOnly
+
+        let holder = try await MemoryOrchestrator(at: url, config: config)
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let command = try VectorHealthCommand.parse([
+                "--store-path", url.path,
+                "--format", "json",
+            ])
+            try await command.runAsync()
+            Issue.record("expected vector-health to fail while the store is held")
+        } catch {
+            let elapsed = start.duration(to: clock.now)
+            #expect(elapsed < .seconds(1))
+            let message = error.localizedDescription.lowercased()
+            #expect(message.contains("exclusive lock"))
+            #expect(message.contains("another process"))
+            #expect(message.contains("waxmcp stats") || message.contains("attach"))
+            #expect(message.contains("timed out waiting for exclusive lock") == false)
+        }
+        try await holder.close()
+    }
+
     @Test func vectorRequiredOpenRejectsNoEmbedderFlag() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-require-vector-\(UUID().uuidString)")

@@ -1258,11 +1258,7 @@ extension AgentBrokerService {
         case (.none, 1):
             target = activeSessions.keys.first!
         case (.none, 0):
-            return .object([
-                "status": .string("ok"),
-                "session_id": .null,
-                "active": .bool(false),
-            ])
+            return sessionEndPayload(sessionID: nil, ended: false)
         default:
             throw BrokerValidationError.invalid("session_id is required when more than one session is active")
         }
@@ -1288,10 +1284,17 @@ extension AgentBrokerService {
             try await state.memory.close()
             activeSessions.removeValue(forKey: target)
         }
-        return .object([
+        return sessionEndPayload(sessionID: target, ended: true)
+    }
+
+    private func sessionEndPayload(sessionID: UUID?, ended: Bool) -> AgentBrokerValue {
+        .object([
             "status": .string("ok"),
-            "session_id": .string(target.uuidString),
-            "active": .from(!activeSessions.isEmpty),
+            "session_id": sessionID.map { .string($0.uuidString) } ?? .null,
+            "ended": .bool(ended),
+            "active": .bool(false),
+            "remaining_active": .from(!activeSessions.isEmpty),
+            "active_session_count": .from(activeSessions.count),
         ])
     }
 
@@ -2551,11 +2554,20 @@ extension AgentBrokerService {
         config.enableStructuredMemory = false
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
+        let waxOptions = CommandLineEmbedderFactory.waxOptions()
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let created = try await Wax.create(
+                at: url,
+                walSize: Constants.sessionWalSize,
+                options: waxOptions
+            )
+            try await created.close()
+        }
         return try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
             request: embeddingRequest,
-            waxOptions: CommandLineEmbedderFactory.waxOptions(),
+            waxOptions: waxOptions,
             readiness: readiness,
             factoryOverride: factoryOverride
         )

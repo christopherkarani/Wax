@@ -25,6 +25,8 @@ import Wax
 @Test func singleTokenIdentifierQueryClassifiesAsFactual() {
     #expect(RuleBasedQueryClassifier.classify("canary-token") == .factual)
     #expect(RuleBasedQueryClassifier.classify("user_id") == .factual)
+    #expect(RuleBasedQueryClassifier.classify("WAXSTRESS-DURABLE-CANARY-ALPHA-8821") == .factual)
+    #expect(RuleBasedQueryClassifier.isLexicalIdentifierQuery("WAXSTRESS-DURABLE-CANARY-ALPHA-8821"))
 }
 
 @Test func ordinarySingleWordStaysExploratory() {

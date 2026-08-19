@@ -239,7 +239,12 @@ package actor MemoryOrchestrator {
         config: OrchestratorConfig = .default,
         waxOptions: WaxOptions = .init()
     ) async throws {
-        try await self.init(at: url, config: config, embedder: nil, waxOptions: waxOptions)
+        try await self.init(
+            at: url,
+            config: config,
+            embedder: nil,
+            waxOptions: waxOptions
+        )
     }
 
     package init(
@@ -274,7 +279,11 @@ package actor MemoryOrchestrator {
         if FileManager.default.fileExists(atPath: url.path) {
             self.wax = try await Wax.open(at: url, options: waxOptions)
         } else {
-            self.wax = try await Wax.create(at: url, options: waxOptions)
+            self.wax = try await Wax.create(
+                at: url,
+                walSize: Constants.defaultWalSize,
+                options: waxOptions
+            )
         }
 
         // Auto-disable vector search when no embedder is provided and no pre-existing

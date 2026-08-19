@@ -8,6 +8,17 @@ package enum StoreLockProbe {
         try lock.release()
     }
 
+    /// Non-blocking exclusive probe. Missing stores are treated as free.
+    /// Returns `true` when exclusive access can be taken immediately.
+    package static func tryExclusiveAccess(at url: URL) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        guard let lock = try FileLock.tryAcquire(at: url, mode: .exclusive) else {
+            return false
+        }
+        try lock.release()
+        return true
+    }
+
     package static func decorateLockError(
         _ error: Error,
         at url: URL,

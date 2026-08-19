@@ -52,7 +52,7 @@ package enum RuleBasedQueryClassifier {
     private static let hexScalars = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
 
     /// Single-token hex / identifier canaries (not ordinary English words).
-    private static func isLexicalIdentifierQuery(_ query: String) -> Bool {
+    package static func isLexicalIdentifierQuery(_ query: String) -> Bool {
         let tokens = query.split { $0.isWhitespace || $0.isNewline }
         guard tokens.count == 1 else { return false }
         let token = tokens[0]
