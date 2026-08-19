@@ -7,7 +7,7 @@
 
 
 <div align="center">
-  <a href="https://trendshift.io/repositories/21759?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21759" target="_blank" rel="noopener noreferrer"><img src="https://wsrv.nl/?url=https%3A%2F%2Ftrendshift.io%2Fapi%2Fbadge%2Ftrendshift%2Frepositories%2F21759%2Fdaily%3Flanguage%3DSwift&amp;filt=greyscale&amp;output=png&amp;maxage=1d" alt="christopherkarani%2FWax | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/21759?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21759" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/21759/daily?language=Swift" alt="christopherkarani%2FWax | Trendshift" width="250" height="55"/></a>
   <img src="Resources/docs/assets/wax-banner.png" width="800" alt="Wax — local-first shared memory for AI agents">
 </div>
 
