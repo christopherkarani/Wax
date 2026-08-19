@@ -539,10 +539,11 @@ extension AgentBrokerService {
         try await memory.wax.delete(frameId: frameID)
     }
 
-    func dreamProjectionLines(sessionID filterSessionID: UUID?) async throws -> [String] {
+    func dreamProjectionLines(sessionID filterSessionID: UUID?, project: String? = nil) async throws -> [String] {
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
             .filter { $0.status == .active || $0.status == .ended }
             .filter { filterSessionID == nil || $0.sessionID == filterSessionID }
+            .filter { matchesExportProject($0.project, project: project) }
             .filter { $0.status == .ended || activeSessions[$0.sessionID] != nil }
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         var rendered: [(score: Float, line: String)] = []

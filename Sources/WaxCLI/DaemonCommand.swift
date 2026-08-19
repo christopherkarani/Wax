@@ -33,7 +33,10 @@ struct DaemonCommand: AsyncParsableCommand {
     func runAsync() async throws {
         let service = try await AgentBrokerService(
             storePath: store.storePath,
-            sessionRootPath: sessionRoot,
+            sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(
+                storePath: store.storePath,
+                sessionRootPath: sessionRoot
+            ),
             noEmbedder: store.noEmbedder,
             embedderChoice: store.embedder.rawValue,
             requireVector: store.requireVector,

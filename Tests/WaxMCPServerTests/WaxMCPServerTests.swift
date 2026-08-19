@@ -5006,7 +5006,7 @@ func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?) async throws -> [String]"))
+    let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?, project: String? = nil) async throws -> [String]"))
     let end = try #require(source[start.upperBound...].range(of: "private func merge("))
     let body = source[start.lowerBound..<end.lowerBound]
 
@@ -6267,7 +6267,16 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     }
     var brokerSocketPath: String { brokerConfiguration.socketPath }
 
-    init(useRealEmbedder: Bool = false, storeURL: URL? = nil) throws {
+    var isRunning: Bool { process.isRunning }
+    var processIdentifier: Int32 { process.processIdentifier }
+
+    init(
+        useRealEmbedder: Bool = false,
+        storeURL: URL? = nil,
+        extraArguments: [String] = [],
+        isolateSessionRootEnv: Bool = true,
+        currentDirectory: URL? = nil
+    ) throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -6282,7 +6291,11 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         if !useRealEmbedder {
             args.append("--no-embedder")
         }
+        args.append(contentsOf: extraArguments)
         process.arguments = args
+        if let currentDirectory {
+            process.currentDirectoryURL = currentDirectory
+        }
         let envRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wmh-\(Self.stableTestHash(self.storeURL.path))", isDirectory: true)
         harnessRootURL = envRoot
@@ -6294,7 +6307,12 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = harnessHomeURL.path
         environment["WAX_BROKER_DIR"] = harnessBrokerRootURL.path
-        environment["WAX_SESSION_ROOT_DIR"] = sessionRootPath
+        if isolateSessionRootEnv {
+            environment["WAX_SESSION_ROOT_DIR"] = sessionRootPath
+        } else {
+            environment.removeValue(forKey: "WAX_SESSION_ROOT_DIR")
+            environment.removeValue(forKey: "WAX_SESSION_ROOT")
+        }
         environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
         process.environment = environment
         process.standardInput = stdinPipe
@@ -6549,6 +6567,10 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             return responseID == String(id)
         }
         return false
+    }
+
+    static func waxMCPBinaryURLForTests(packageRoot: URL) throws -> URL {
+        try waxMCPBinaryURL(packageRoot: packageRoot)
     }
 
     private static func waxMCPBinaryURL(packageRoot: URL) throws -> URL {
@@ -8023,6 +8045,154 @@ struct WaxMCPProcessTests {
             return preview.contains("UNLOCKED") && preview.contains("MATCH")
         })
     }
+
+    @Test(.timeLimit(.minutes(2)))
+    func stdioRememberOversizeKeepsProcessAlive() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-oversize-remember", includeToolsList: true)
+        let pid = harness.processIdentifier
+        #expect(harness.isRunning)
+
+        for (id, count) in [(10, 131_073), (11, 1_048_576), (12, 1_100_000)] {
+            let response = try await harness.callTool(
+                id: id,
+                name: "remember",
+                arguments: ["content": String(repeating: "a", count: count)],
+                timeout: 30
+            )
+            #expect(harness.isRunning, "wax-mcp died after remember \(count) bytes; pid=\(pid)")
+            #expect(response.contains("131072") || response.localizedCaseInsensitiveContains("maxContent"))
+            #expect(response.contains("isError") || response.contains("error") || response.contains("content exceeds"))
+        }
+
+        #expect(harness.isRunning)
+        #expect(harness.processIdentifier == pid)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func customStorePathDoesNotWriteProductSessionRoot() async throws {
+        let productSessions = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/waxmcp/sessions", isDirectory: true)
+        let before = Set(
+            (try? FileManager.default.contentsOfDirectory(atPath: productSessions.path)) ?? []
+        )
+
+        let sessionRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-sess-explicit-\(UUID().uuidString)", isDirectory: true)
+        let harness = try MCPServerProcessHarness(
+            extraArguments: ["--session-root", sessionRoot.path],
+            isolateSessionRootEnv: false
+        )
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-session-root-flag", includeToolsList: true)
+        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        #expect(started.contains("store_path"))
+        #expect(started.contains(sessionRoot.path))
+
+        let after = Set(
+            (try? FileManager.default.contentsOfDirectory(atPath: productSessions.path)) ?? []
+        )
+        #expect(after.subtracting(before).isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func isolatedCustomStoreDoesNotCreateProductSessionFiles() async throws {
+        let productSessions = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/waxmcp/sessions", isDirectory: true)
+        let before = Set(
+            (try? FileManager.default.contentsOfDirectory(atPath: productSessions.path)) ?? []
+        )
+
+        let harness = try MCPServerProcessHarness(isolateSessionRootEnv: false)
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-isolated-store-no-product-sessions")
+        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        #expect(started.contains("store_path"))
+        #expect(started.contains("/.local/share/waxmcp/sessions") == false)
+
+        let after = Set(
+            (try? FileManager.default.contentsOfDirectory(atPath: productSessions.path)) ?? []
+        )
+        #expect(after.subtracting(before).isEmpty)
+        #expect(harness.storeURL.path.contains(".local/share/waxmcp/sessions") == false)
+
+        let storeParent = harness.storeURL.deletingLastPathComponent()
+        let siblingSessions = (try? FileManager.default.contentsOfDirectory(at: storeParent, includingPropertiesForKeys: nil)) ?? []
+        #expect(siblingSessions.contains { $0.lastPathComponent.hasPrefix("sessions-") })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func twoClientsStatsDoNotImpersonateEachOther() async throws {
+        let sharedStoreURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-mcp-stats-impersonation-\(UUID().uuidString)")
+            .appendingPathExtension("wax")
+        let first = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
+        try first.start()
+        try second.start()
+        defer {
+            first.terminateIfNeeded()
+            second.terminateIfNeeded()
+        }
+
+        _ = try await first.bootstrap(clientName: "wax-mcp-stats-client-a")
+        _ = try await second.bootstrap(clientName: "wax-mcp-stats-client-b")
+
+        let startA = try await first.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let startB = try await second.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let sessionA = try requireString(try parseToolTextJSON(fromResponseLine: startA), key: "session_id")
+        let sessionB = try requireString(try parseToolTextJSON(fromResponseLine: startB), key: "session_id")
+        #expect(sessionA != sessionB)
+
+        let statsA = try await first.callTool(id: 4, name: "stats", arguments: [:], timeout: 20)
+        let statsB = try await second.callTool(id: 4, name: "stats", arguments: [:], timeout: 20)
+        let sessionObjectA = try requireObject(try parseToolTextJSON(fromResponseLine: statsA), key: "session")
+        let sessionObjectB = try requireObject(try parseToolTextJSON(fromResponseLine: statsB), key: "session")
+        #expect(sessionObjectA["session_id"] as? String == sessionA)
+        #expect(sessionObjectB["session_id"] as? String == sessionB)
+        #expect(sessionA != sessionB)
+    }
+
+    @Test
+    func waxMCPAndCLIVersionFlagsExitZero() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let mcp = try MCPServerProcessHarness.waxMCPBinaryURLForTests(packageRoot: packageRoot)
+        try expectVersion(executable: mcp, expectedSubstring: "0.1.28")
+
+        let cliCandidates = [
+            mcp.deletingLastPathComponent().appendingPathComponent("wax-cli"),
+            packageRoot.appendingPathComponent(".build/debug/wax-cli"),
+            packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
+        ]
+        let cli = try #require(cliCandidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
+        try expectVersion(executable: cli, expectedSubstring: "0.1.")
+    }
+}
+
+private func expectVersion(executable: URL, expectedSubstring: String) throws {
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = ["--version"]
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    process.waitUntilExit()
+    let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    #expect(process.terminationStatus == 0)
+    #expect((output + err).contains(expectedSubstring))
 }
 
 #else

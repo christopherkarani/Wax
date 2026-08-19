@@ -137,15 +137,24 @@ package enum SecretHeuristics {
 }
 
 package enum MemorySemantics {
-    package static func inferScopeContext(currentDirectoryPath: String = FileManager.default.currentDirectoryPath) -> MemoryScopeContext {
-        let cwdURL = URL(fileURLWithPath: currentDirectoryPath, isDirectory: true).standardizedFileURL
-        guard let repoRoot = gitRepositoryRoot(startingAt: cwdURL) else {
-            return MemoryScopeContext(cwdPath: cwdURL.path)
+    package static func inferScopeContext(
+        currentDirectoryPath: String = FileManager.default.currentDirectoryPath,
+        processDirectoryPath: String = FileManager.default.currentDirectoryPath
+    ) -> MemoryScopeContext {
+        guard let startPath = resolvedAbsoluteDirectoryPath(
+            currentDirectoryPath,
+            processDirectoryPath: processDirectoryPath
+        ) else {
+            let trimmed = currentDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            return MemoryScopeContext(cwdPath: trimmed.isEmpty ? nil : trimmed)
         }
-        let repoName = repoRoot.lastPathComponent
+        guard let repoRoot = gitRepositoryRoot(startingAt: startPath) else {
+            return MemoryScopeContext(cwdPath: startPath)
+        }
+        let repoName = lastPathComponent(repoRoot)
         return MemoryScopeContext(
-            cwdPath: cwdURL.path,
-            repoRootPath: repoRoot.path,
+            cwdPath: startPath,
+            repoRootPath: repoRoot,
             repoName: repoName,
             projectName: repoName
         )
@@ -427,19 +436,88 @@ package enum MemorySemantics {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func gitRepositoryRoot(startingAt url: URL) -> URL? {
-        var current = url
+    /// Walks `path` by dropping string components. Never uses `URL.deletingLastPathComponent`,
+    /// which turns empty/`.`/`./` into `../` forever when cwd is missing.
+    private static func gitRepositoryRoot(startingAt path: String) -> String? {
+        var current = path
         let fileManager = FileManager.default
-        while true {
-            let gitPath = current.appendingPathComponent(".git").path
+        for _ in 0..<256 {
+            let gitPath = current == "/" ? "/.git" : "\(current)/.git"
             if fileManager.fileExists(atPath: gitPath) {
                 return current
             }
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path {
+            guard let parent = parentDirectoryPath(current) else {
                 return nil
             }
             current = parent
         }
+        return nil
+    }
+
+    private static func resolvedAbsoluteDirectoryPath(
+        _ path: String,
+        processDirectoryPath: String
+    ) -> String? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return nil
+        }
+        if trimmed.hasPrefix("/") {
+            return normalizeAbsolutePath(trimmed)
+        }
+        let cwd = processDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cwd.hasPrefix("/") else {
+            return nil
+        }
+        if trimmed == "." || trimmed == "./" {
+            return normalizeAbsolutePath(cwd)
+        }
+        return normalizeAbsolutePath(cwd + "/" + trimmed)
+    }
+
+    private static func normalizeAbsolutePath(_ path: String) -> String {
+        var parts: [String] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            if part == "." { continue }
+            if part == ".." {
+                if !parts.isEmpty { parts.removeLast() }
+                continue
+            }
+            parts.append(String(part))
+        }
+        if parts.isEmpty { return "/" }
+        return "/" + parts.joined(separator: "/")
+    }
+
+    private static func parentDirectoryPath(_ path: String) -> String? {
+        if path.isEmpty || path == "." || path == "./" {
+            return nil
+        }
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        if trimmed == "/" {
+            return nil
+        }
+        guard let slash = trimmed.lastIndex(of: "/") else {
+            return nil
+        }
+        if slash == trimmed.startIndex {
+            return "/"
+        }
+        return String(trimmed[..<slash])
+    }
+
+    private static func lastPathComponent(_ path: String) -> String {
+        if path == "/" { return "/" }
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        guard let slash = trimmed.lastIndex(of: "/") else {
+            return trimmed
+        }
+        return String(trimmed[trimmed.index(after: slash)...])
     }
 }

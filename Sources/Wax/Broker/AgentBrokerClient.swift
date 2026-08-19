@@ -331,10 +331,9 @@ package enum AgentBrokerClient {
             throw BrokerClientError("Unable to connect to broker socket at \(socketPath)")
         }
 
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         let payload = try JSONEncoder().encode(request)
-        handle.write(payload)
-        handle.write(Data([0x0A]))
+        try writeAll(fd, payload)
+        try writeAll(fd, Data([0x0A]))
         shutdown(fd, socketShutdownWrite)
 
         guard let line = try readSocketResponseLine(
@@ -345,6 +344,28 @@ package enum AgentBrokerClient {
             return nil
         }
         return try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(line.utf8))
+    }
+
+    private static func writeAll(_ fd: Int32, _ data: Data) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            var sent = 0
+            let total = rawBuffer.count
+            while sent < total {
+                let count = write(fd, base + sent, total - sent)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EPIPE {
+                        throw BrokerClientError("Broker closed the connection while sending request")
+                    }
+                    throw BrokerClientError("Broker request write failed: \(String(cString: strerror(errno)))")
+                }
+                if count == 0 {
+                    throw BrokerClientError("Broker closed the connection while sending request")
+                }
+                sent += count
+            }
+        }
     }
 
     private static func readSocketResponseLine(
