@@ -11,6 +11,7 @@ enum WaxMCPTools {
         structuredMemoryEnabled: Bool,
         noEmbedder: Bool
     ) async {
+        let sessionHint = MCPClientSessionHint()
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(
                 tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
@@ -23,7 +24,8 @@ enum WaxMCPTools {
                 params: params,
                 brokerConfiguration: brokerConfiguration,
                 structuredMemoryEnabled: structuredMemoryEnabled,
-                noEmbedder: noEmbedder
+                noEmbedder: noEmbedder,
+                sessionHint: sessionHint
             )
         }
     }
@@ -32,7 +34,8 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool = true,
-        noEmbedder _: Bool = false
+        noEmbedder _: Bool = false,
+        sessionHint: MCPClientSessionHint? = nil
     ) async -> CallTool.Result {
         do {
             if let migration = migratedName(for: params.name) {
@@ -50,7 +53,7 @@ enum WaxMCPTools {
                 return oversize
             }
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
-            injectClientSessionIfNeeded(name: params.name, arguments: &forwarded)
+            injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
 
             let response = try await AgentBrokerClient.perform(
                 request: AgentBrokerRequest(
@@ -68,12 +71,45 @@ enum WaxMCPTools {
             guard let payload = response.payload else {
                 return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
             }
-            rememberClientSession(name: params.name, payload: payload)
+            sessionHint?.remember(name: params.name, payload: payload)
             return renderResult(name: params.name, payload: payload)
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
         } catch {
             return errorResult(message: error.localizedDescription, code: "execution_failed")
+        }
+    }
+}
+
+/// Per MCP `Server` session id. HTTP creates one Server per client session; stdio has one Server.
+final class MCPClientSessionHint: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sessionID: String?
+
+    func current() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessionID
+    }
+
+    func remember(name: String, payload: AgentBrokerValue) {
+        switch name {
+        case "session_start", "session_resume":
+            if let sessionID = payload.objectValue?["session_id"]?.stringValue {
+                lock.lock()
+                self.sessionID = sessionID
+                lock.unlock()
+            }
+        case "session_end":
+            if let ended = payload.objectValue?["session_id"]?.stringValue {
+                lock.lock()
+                if sessionID == ended {
+                    sessionID = nil
+                }
+                lock.unlock()
+            }
+        default:
+            break
         }
     }
 }
@@ -84,8 +120,6 @@ private extension WaxMCPTools {
     static let clientCWDCommands: Set<String> = [
         "session_start", "remember", "memory_append", "knowledge_capture", "markdown_export",
     ]
-    static let sessionLock = NSLock()
-    nonisolated(unsafe) static var lastClientSessionID: String?
 
     static func contentLimitError(name: String, arguments: [String: Value]) -> CallTool.Result? {
         guard case .string(let content)? = arguments["content"] else { return nil }
@@ -102,34 +136,14 @@ private extension WaxMCPTools {
         arguments["cwd"] = .string(FileManager.default.currentDirectoryPath)
     }
 
-    static func injectClientSessionIfNeeded(name: String, arguments: inout [String: Value]) {
+    static func injectClientSessionIfNeeded(
+        name: String,
+        arguments: inout [String: Value],
+        sessionHint: MCPClientSessionHint?
+    ) {
         guard name == "stats", arguments["session_id"] == nil else { return }
-        sessionLock.lock()
-        let sessionID = lastClientSessionID
-        sessionLock.unlock()
-        if let sessionID {
+        if let sessionID = sessionHint?.current() {
             arguments["session_id"] = .string(sessionID)
-        }
-    }
-
-    static func rememberClientSession(name: String, payload: AgentBrokerValue) {
-        switch name {
-        case "session_start", "session_resume":
-            if let sessionID = payload.objectValue?["session_id"]?.stringValue {
-                sessionLock.lock()
-                lastClientSessionID = sessionID
-                sessionLock.unlock()
-            }
-        case "session_end":
-            if let ended = payload.objectValue?["session_id"]?.stringValue {
-                sessionLock.lock()
-                if lastClientSessionID == ended {
-                    lastClientSessionID = nil
-                }
-                sessionLock.unlock()
-            }
-        default:
-            break
         }
     }
 

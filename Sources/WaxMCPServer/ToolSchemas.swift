@@ -307,7 +307,15 @@ enum ToolSchemas {
     )
 
     static let waxFlush: Value = emptyObjectSchema()
-    static let waxStats: Value = emptyObjectSchema()
+    static let waxStats: Value = objectSchema(
+        properties: [
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID. When omitted, stdio/HTTP inject the calling client session if this connection started one.",
+            ],
+        ],
+        required: []
+    )
     static let waxSessionSynthesize: Value = objectSchema(
         properties: [
             "session_id": [
@@ -828,8 +836,7 @@ enum ToolSchemas {
         required: ["alias"]
     )
 
-    /// Matches AgentBrokerService.maxContentBytes (128 KiB).
-    private static let maxContentBytes = 131_072
+    private static let maxContentBytes = AgentBrokerService.maxContentBytes
 
     private static func objectSchema(properties: [String: Value], required: [String]) -> Value {
         [

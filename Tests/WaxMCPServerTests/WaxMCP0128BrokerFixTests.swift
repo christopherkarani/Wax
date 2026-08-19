@@ -123,21 +123,21 @@ func envSessionRootStillOverridesCustomStore() throws {
 }
 
 @Test
-func unscopedRememberUsesClientCwdNotDaemonScope() async throws {
-    let repoA = try makeGitRepo(named: "RepoA")
-    let repoB = try makeGitRepo(named: "RepoB")
-    defer {
-        try? FileManager.default.removeItem(at: repoA)
-        try? FileManager.default.removeItem(at: repoB)
-    }
+func mcpClientSessionHintIsIsolatedPerInstance() {
+    let first = MCPClientSessionHint()
+    let second = MCPClientSessionHint()
+    first.remember(
+        name: "session_start",
+        payload: .object(["session_id": .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")])
+    )
+    #expect(first.current() == "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    #expect(second.current() == nil)
+}
 
-    let fileManager = FileManager.default
-    let original = fileManager.currentDirectoryPath
-    guard fileManager.changeCurrentDirectoryPath(repoA.path) else {
-        Issue.record("failed to chdir into RepoA")
-        return
-    }
-    defer { _ = fileManager.changeCurrentDirectoryPath(original) }
+@Test
+func unscopedRememberUsesClientCwdNotDaemonScope() async throws {
+    let repoB = try makeGitRepo(named: "RepoB")
+    defer { try? FileManager.default.removeItem(at: repoB) }
 
     try await withIsolatedBroker { service, _ in
         let write = await service.handle(.init(
@@ -162,7 +162,34 @@ func unscopedRememberUsesClientCwdNotDaemonScope() async throws {
         let metadata = try #require(hit["metadata"]?.objectValue)
         #expect(metadata["wax.repo"]?.stringValue == repoB.lastPathComponent)
         #expect(metadata["wax.project"]?.stringValue == repoB.lastPathComponent)
-        #expect(metadata["wax.repo"]?.stringValue != repoA.lastPathComponent)
+    }
+}
+
+@Test
+func emptyClientCwdDoesNotStampDaemonRepoOnUnscopedRemember() async throws {
+    try await withIsolatedBroker { service, _ in
+        let write = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Empty client cwd must not inherit daemon repo"),
+                "cwd": .string(""),
+            ]
+        ))
+        #expect(write.ok == true)
+
+        let search = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string("Empty client cwd must not inherit daemon repo"),
+                "mode": .string("text"),
+                "topK": .int(5),
+            ]
+        ))
+        #expect(search.ok == true)
+        let hit = try #require(try requireObject(search.payload)["results"]?.arrayValue?.first?.objectValue)
+        let metadata = try #require(hit["metadata"]?.objectValue)
+        #expect(metadata["wax.repo"] == nil || metadata["wax.repo"] == .null)
+        #expect(metadata["wax.project"] == nil || metadata["wax.project"] == .null)
     }
 }
 
@@ -387,13 +414,14 @@ func textSearchPreviewIsDehighlightedForHyphenatedToken() async throws {
 }
 
 @Test
-func knowledgeCaptureReturnsEntityIdOrSkipReasonWhenKindMissing() async throws {
+func knowledgeCaptureReturnsEntityIdWhenKindMissing() async throws {
     try await withIsolatedBroker { service, _ in
         let upsert = await service.handle(.init(
             command: "entity_upsert",
             arguments: [
                 "key": .string("subject:existing"),
-                "kind": .string("concept"),
+                "kind": .string("person"),
+                "aliases": .array([.string("existing-person")]),
             ]
         ))
         #expect(upsert.ok == true)
@@ -410,19 +438,26 @@ func knowledgeCaptureReturnsEntityIdOrSkipReasonWhenKindMissing() async throws {
         let existingPayload = try requireObject(captureExisting.payload)
         #expect(existingPayload["entity_id"]?.intValue == existingID)
 
+        let resolved = await service.handle(.init(
+            command: "entity_resolve",
+            arguments: ["alias": .string("existing-person")]
+        ))
+        #expect(resolved.ok == true)
+        let entities = try #require(try requireObject(resolved.payload)["entities"]?.arrayValue)
+        let kind = try #require(entities.first?.objectValue?["kind"]?.stringValue)
+        #expect(kind == "person")
+
         let captureMissing = await service.handle(.init(
             command: "knowledge_capture",
             arguments: [
-                "content": .string("Missing subject should explain why entity was skipped."),
+                "content": .string("Missing subject should upsert with default kind concept."),
                 "subject": .string("subject:missing"),
             ]
         ))
         #expect(captureMissing.ok == true)
         let missingPayload = try requireObject(captureMissing.payload)
-        if missingPayload["entity_id"] == nil || missingPayload["entity_id"] == .null {
-            let reason = try requireString(missingPayload, "entity_skipped_reason")
-            #expect(reason.isEmpty == false)
-        }
+        #expect(missingPayload["entity_id"]?.intValue != nil)
+        #expect(missingPayload["entity_skipped_reason"] == nil || missingPayload["entity_skipped_reason"] == .null)
     }
 }
 
@@ -460,10 +495,60 @@ func markdownExportWithProjectOmitsOtherProjectsNotes() async throws {
             ]
         ))
         #expect(export.ok == true)
+        let keepRepo = try makeGitRepo(named: "KeepProj")
+        let dropRepo = try makeGitRepo(named: "DropProj")
+        defer {
+            try? FileManager.default.removeItem(at: keepRepo)
+            try? FileManager.default.removeItem(at: dropRepo)
+        }
+
+        let startKeep = await service.handle(.init(
+            command: "session_start",
+            arguments: ["cwd": .string(keepRepo.path), "agent_id": .string("keep-agent"), "run_id": .string("keep-run")]
+        ))
+        let startDrop = await service.handle(.init(
+            command: "session_start",
+            arguments: ["cwd": .string(dropRepo.path), "agent_id": .string("drop-agent"), "run_id": .string("drop-run")]
+        ))
+        #expect(startKeep.ok == true)
+        #expect(startDrop.ok == true)
+        let keepSession = try requireString(try requireObject(startKeep.payload), "session_id")
+        let dropSession = try requireString(try requireObject(startDrop.payload), "session_id")
+
+        let keepHandoff = await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("KEEP-SESSION-HANDOFF for markdown export"),
+                "session_id": .string(keepSession),
+            ]
+        ))
+        let dropHandoff = await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("DROP-SESSION-HANDOFF for markdown export"),
+                "session_id": .string(dropSession),
+            ]
+        ))
+        #expect(keepHandoff.ok == true)
+        #expect(dropHandoff.ok == true)
+
         let memoryPath = try requireString(try requireObject(export.payload), "memory_md_path")
         let text = try String(contentsOfFile: memoryPath, encoding: .utf8)
         #expect(text.contains("KEEP-PROJECT"))
         #expect(text.contains("DROP-PROJECT") == false)
+
+        let exportKeepSessions = await service.handle(.init(
+            command: "markdown_export",
+            arguments: [
+                "output_dir": .string(outputURL.path),
+                "project": .string(keepRepo.lastPathComponent),
+            ]
+        ))
+        #expect(exportKeepSessions.ok == true)
+        let handoffPath = try #require(try requireObject(exportKeepSessions.payload)["handoff_summary_path"]?.stringValue)
+        let handoffText = try String(contentsOfFile: handoffPath, encoding: .utf8)
+        #expect(handoffText.contains("KEEP-SESSION-HANDOFF"))
+        #expect(handoffText.contains("DROP-SESSION-HANDOFF") == false)
     }
 }
 

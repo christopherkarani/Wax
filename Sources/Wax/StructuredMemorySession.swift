@@ -24,6 +24,10 @@ package actor WaxStructuredMemorySession {
         try await engine.resolveEntities(matchingAlias: alias, limit: limit)
     }
 
+    package func entity(forKey key: EntityKey) async throws -> StructuredEntityMatch? {
+        try await engine.entity(forKey: key)
+    }
+
     package func assertFact(
         subject: EntityKey,
         predicate: PredicateKey,

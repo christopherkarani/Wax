@@ -360,6 +360,9 @@ package enum AgentBrokerClient {
                     }
                     throw BrokerClientError("Broker request write failed: \(String(cString: strerror(errno)))")
                 }
+                if count == 0 {
+                    throw BrokerClientError("Broker closed the connection while sending request")
+                }
                 sent += count
             }
         }

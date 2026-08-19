@@ -5006,7 +5006,7 @@ func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?) async throws -> [String]"))
+    let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?, project: String? = nil) async throws -> [String]"))
     let end = try #require(source[start.upperBound...].range(of: "private func merge("))
     let body = source[start.lowerBound..<end.lowerBound]
 

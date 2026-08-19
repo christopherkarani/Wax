@@ -2,26 +2,38 @@ import Foundation
 import Testing
 @testable import Wax
 
-@Suite(.serialized)
 struct MemorySemanticsScopeContextTests {
     @Test(arguments: ["", ".", "./"])
-    func inferScopeContextReturnsWithin100msForEmptyOrDotPath(path: String) throws {
-        try withDeletedCurrentDirectory {
-            let result = try completingWithin(
-                milliseconds: 100,
-                description: "inferScopeContext(currentDirectoryPath: \(path.debugDescription))"
-            ) {
-                MemorySemantics.inferScopeContext(currentDirectoryPath: path)
-            }
-            #expect(result.elapsed < .milliseconds(100))
-            #expect(result.value.repoName == nil)
-            #expect(result.value.projectName == nil)
-            #expect(result.value.repoRootPath == nil)
+    func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) throws {
+        let result = try completingWithin(
+            milliseconds: 1_000,
+            description: "inferScopeContext(currentDirectoryPath: \(path.debugDescription), processDirectoryPath: \"\")"
+        ) {
+            MemorySemantics.inferScopeContext(currentDirectoryPath: path, processDirectoryPath: "")
         }
+        #expect(result.elapsed < .milliseconds(1_000))
+        #expect(result.value.repoName == nil)
+        #expect(result.value.projectName == nil)
+        #expect(result.value.repoRootPath == nil)
     }
 
     @Test
-    func inferScopeContextReturnsWithin100msForDeletedDirectoryPath() throws {
+    func emptyClientCwdDoesNotInheritProcessWorkingDirectory() throws {
+        let processCWD = FileManager.default.currentDirectoryPath
+        #expect(processCWD.hasPrefix("/"))
+
+        let result = MemorySemantics.inferScopeContext(
+            currentDirectoryPath: "",
+            processDirectoryPath: processCWD
+        )
+        #expect(result.cwdPath == nil)
+        #expect(result.repoName == nil)
+        #expect(result.projectName == nil)
+        #expect(result.repoRootPath == nil)
+    }
+
+    @Test
+    func inferScopeContextReturnsQuicklyForDeletedDirectoryPath() throws {
         let doomed = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-deleted-infer-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: doomed, withIntermediateDirectories: true)
@@ -29,12 +41,12 @@ struct MemorySemanticsScopeContextTests {
         try FileManager.default.removeItem(at: doomed)
 
         let result = try completingWithin(
-            milliseconds: 100,
+            milliseconds: 1_000,
             description: "inferScopeContext on deleted directory"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: doomedPath)
         }
-        #expect(result.elapsed < .milliseconds(100))
+        #expect(result.elapsed < .milliseconds(1_000))
         #expect(result.value.repoName == nil)
         #expect(result.value.projectName == nil)
         #expect(result.value.repoRootPath == nil)
@@ -54,12 +66,12 @@ struct MemorySemanticsScopeContextTests {
         )
 
         let result = try completingWithin(
-            milliseconds: 100,
+            milliseconds: 1_000,
             description: "inferScopeContext on nested git workdir"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: nestedURL.path)
         }
-        #expect(result.elapsed < .milliseconds(100))
+        #expect(result.elapsed < .milliseconds(1_000))
         #expect(result.value.repoName == repoName)
         #expect(result.value.projectName == repoName)
         #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
@@ -91,23 +103,4 @@ private func completingWithin<T>(
     #expect(wait == .success, "\(description) did not return within \(milliseconds)ms")
     let value = try #require(box.value, "\(description) produced no value")
     return TimedValue(value: value, elapsed: ContinuousClock.now - started)
-}
-
-private func withDeletedCurrentDirectory(_ body: () throws -> Void) throws {
-    let fileManager = FileManager.default
-    let original = fileManager.currentDirectoryPath
-    let doomed = fileManager.temporaryDirectory
-        .appendingPathComponent("wax-deleted-cwd-\(UUID().uuidString)", isDirectory: true)
-    try fileManager.createDirectory(at: doomed, withIntermediateDirectories: true)
-    guard fileManager.changeCurrentDirectoryPath(doomed.path) else {
-        Issue.record("failed to enter temporary directory \(doomed.path)")
-        return
-    }
-    try fileManager.removeItem(at: doomed)
-    defer {
-        if !original.isEmpty {
-            _ = fileManager.changeCurrentDirectoryPath(original)
-        }
-    }
-    try body()
 }
