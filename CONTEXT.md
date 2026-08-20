@@ -22,7 +22,11 @@ _Avoid_: query planning in the text engine; calling this RetrievalMode; FTS5Sear
 
 **Recall assembly**:
 Builds RAGContext from already-ranked hits (token budget, expansion, surrogates). May reorder for an answer budget. Does not rewrite Ranking's published score.
-_Avoid_: treating Memory.search as Ranking’s test surface
+_Avoid_: treating Memory.search as Ranking’s test surface; broker multi-horizon merge (that is Layered recall)
+
+**Layered recall**:
+Broker read path that owns scope/identity resolution, fetches from the virtual session store and/or long-term Memory, merges hits, and applies project/repo filters. Horizon flags (working / episodic / durable) are how it interprets a resolved scope—not a second policy language. Callers pass a structured request after coercing tool args; Layered recall owns what those fields mean. Feeds tools such as recall and layered search. Does not own Ranking's published score, Recall assembly's token packing, MCP payloads, or session rebind/hit recording.
+_Avoid_: Broker recall; Horizon recall; treating MCP tool names as the module name; splitting recall scope enums from layered horizon flags; putting AgentBrokerValue parsing inside Layered recall
 
 **Long-term Memory**:
 The store the broker keeps across virtual sessions. Distinct from a virtual session store.

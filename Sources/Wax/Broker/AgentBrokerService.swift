@@ -290,32 +290,9 @@ extension AgentBrokerService {
     static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
     static let maxCompactContextTokenBudget = 32_000
 
-    enum MemoryHorizon: String {
-        case working
-        case episodic
-        case durable
-    }
-
-    struct LayeredMemoryHit {
-        var reference: String
-        var horizon: MemoryHorizon
-        var sessionID: UUID?
-        var agentID: String?
-        var runID: String?
-        var frameID: UInt64
-        var score: Float
-        var text: String
-        var preview: String
-        var metadata: [String: String]
-        var explanations: [String]
-        var timestampMs: Int64
-    }
-
-    struct MemoryReference {
-        var horizon: MemoryHorizon
-        var sessionID: UUID?
-        var frameID: UInt64
-    }
+    typealias MemoryHorizon = LayeredRecall.Horizon
+    typealias LayeredMemoryHit = LayeredRecall.Hit
+    typealias MemoryReference = LayeredRecall.MemoryReference
 
     struct CompactContextAssembly {
         var short: [LayeredMemoryHit]
@@ -493,201 +470,71 @@ extension AgentBrokerService {
             _ = try await memory(for: sessionID)
         }
 
-        let resolvedIdentity = resolveRecallIdentity(
-            explicitProject: explicitProject,
-            explicitRepo: explicitRepo,
-            sessionID: parsedFilters.sessionId,
-            clientCWD: clientCWD
-        )
-
-        var mode = try parseRecallMode(args)
-        let durableStats = await longTermMemory.runtimeStats()
-        if mode == nil, case .degraded = durableStats.embeddingStatus {
-            mode = .textOnly
-        }
-
+        let mode = try parseRecallMode(args)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
         if let requestedTopK, !(1...Self.maxTopK).contains(requestedTopK) {
             throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
         }
         let effectiveTopK = requestedTopK ?? limit
 
-        // scope=project hard-filters during retrieval (C1/C7). Filtering only after
-        // merge/limit lets foreign top-K starve same-project frames out of the lane.
-        let projectHardFilterActive = recallScope == .project
-        if projectHardFilterActive,
-           resolvedIdentity.project == nil,
-           resolvedIdentity.repo == nil {
-            return projectScopeMissPayload(
-                query: query,
-                limit: limit,
-                searchTopK: effectiveTopK,
-                recallScope: recallScope,
-                resolvedIdentity: resolvedIdentity,
-                parsedFilters: parsedFilters,
-                scopeMissMessage: "no frames for project (unresolved); pass project/repo or scope=global"
-            )
-        }
+        let request = LayeredRecall.RecallRequest(
+            query: query,
+            scope: recallScope,
+            limit: limit,
+            searchTopK: effectiveTopK,
+            mode: mode,
+            sessionID: parsedFilters.sessionId,
+            explicitProject: explicitProject,
+            explicitRepo: explicitRepo,
+            clientCWD: clientCWD,
+            frameFilter: parsedFilters.frameFilter,
+            timeRange: parsedFilters.timeRange
+        )
+        let result = try await LayeredRecall.recall(request: request, stores: layeredRecallStores())
 
-        let scopedFrameFilter = projectHardFilterActive
-            ? Self.frameFilterByAddingProjectScope(
-                parsedFilters.frameFilter,
-                project: resolvedIdentity.project,
-                repo: resolvedIdentity.repo
-            )
-            : parsedFilters.frameFilter
-
-        let sessionMemory: MemoryOrchestrator?
-        let sessionExecution: MemoryOrchestrator.RecallExecution?
-        var sessionItems: [RAGContext.Item] = []
-        if let sessionID = parsedFilters.sessionId {
-            let memory = try await memory(for: sessionID)
-            sessionMemory = memory
-            let execution = try await memory.recallExecution(
-                query: query,
-                mode: mode,
-                frameFilter: scopedFrameFilter,
-                timeRange: parsedFilters.timeRange,
-                topK: effectiveTopK
-            )
-            sessionExecution = execution
-            sessionItems = execution.context.items
-            if sessionItems.isEmpty {
-                let documents = try await memory.corpusSourceDocuments()
-                    .sorted { lhs, rhs in
-                        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                        return lhs.frameId > rhs.frameId
-                    }
-                sessionItems = documents.prefix(effectiveTopK).map { document in
-                    RAGContext.Item(
-                        kind: .snippet,
-                        frameId: document.frameId,
-                        score: 0.2,
-                        sources: [.text],
-                        text: document.text,
-                        metadata: document.metadata,
-                        explanations: ["current session", "recent session note"]
-                    )
-                }
-            }
-        } else {
-            sessionMemory = nil
-            sessionExecution = nil
-        }
-
-        let durableExecution: MemoryOrchestrator.RecallExecution?
-        let durableItems: [RAGContext.Item]
-        if recallScope == .session {
-            durableExecution = nil
-            durableItems = []
-        } else {
-            let execution = try await longTermMemory.recallExecution(
-                query: query,
-                mode: mode,
-                frameFilter: scopedFrameFilter,
-                timeRange: parsedFilters.timeRange,
-                topK: effectiveTopK
-            )
-            durableExecution = execution
-            durableItems = execution.context.items
-        }
-
-        // Defense in depth: keep only in-scope items before merge/limit so foreign
-        // ranks cannot consume the result budget. scope=session skips project filter (C7).
-        let scopedSessionItems: [RAGContext.Item]
-        let scopedDurableItems: [RAGContext.Item]
-        if projectHardFilterActive {
-            scopedSessionItems = Self.recallItems(
-                sessionItems,
-                matchingProject: resolvedIdentity.project,
-                repo: resolvedIdentity.repo
-            )
-            scopedDurableItems = Self.recallItems(
-                durableItems,
-                matchingProject: resolvedIdentity.project,
-                repo: resolvedIdentity.repo
-            )
-        } else {
-            scopedSessionItems = sessionItems
-            scopedDurableItems = durableItems
-        }
-
-        let merged: [RAGContext.Item]
-        if recallScope == .session {
-            merged = Array(scopedSessionItems.prefix(limit))
-        } else {
-            merged = Self.mergeRecallItems(
-                sessionItems: scopedSessionItems,
-                durableItems: scopedDurableItems,
-                limit: limit
-            )
-        }
-
-        // scope global / session: no project hard-filter miss messaging (C7).
-        let selected: [RAGContext.Item]
-        let projectMiss: Bool
-        let scopeMissMessage: String?
-        if projectHardFilterActive {
-            if merged.isEmpty {
-                selected = []
-                projectMiss = true
-                let label = resolvedIdentity.project.map { "project \($0)" }
-                    ?? resolvedIdentity.repo.map { "repo \($0)" }
-                    ?? "project"
-                scopeMissMessage = "no frames for \(label)"
-            } else {
-                selected = merged
-                projectMiss = false
-                scopeMissMessage = nil
-            }
-        } else {
-            selected = merged
-            projectMiss = false
-            scopeMissMessage = nil
-        }
-
-        let primaryExecution = sessionExecution ?? durableExecution
         var lines: [String] = []
-        if let scopeMissMessage {
+        if let scopeMissMessage = result.scopeMissMessage {
             lines.append(scopeMissMessage)
         }
         lines.append(contentsOf: [
             "Query: \(query)",
-            "Total tokens: \(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
-            "Results: \(selected.count) of \(limit) requested (orchestrator returned \(selected.count))",
-            "Search controls: requested_mode=\(primaryExecution?.requestedMode.diagnosticsSummary ?? "n/a") effective_mode=\(primaryExecution?.effectiveMode.diagnosticsSummary ?? "n/a") query_embedding_state=\(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a") search_top_k=\(effectiveTopK) limit=\(limit) scope=\(recallScope.rawValue)",
+            "Total tokens: \(result.hits.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
+            "Results: \(result.hits.count) of \(limit) requested (orchestrator returned \(result.hits.count))",
+            "Search controls: requested_mode=\(result.requestedModeSummary) effective_mode=\(result.effectiveModeSummary) query_embedding_state=\(result.queryEmbeddingState) search_top_k=\(effectiveTopK) limit=\(limit) scope=\(result.scope.rawValue)",
         ])
-        if let project = resolvedIdentity.project {
+        if let project = result.identity.project {
             lines.append("Resolved project: \(project)")
         }
-        if let repo = resolvedIdentity.repo {
+        if let repo = result.identity.repo {
             lines.append("Resolved repo: \(repo)")
         }
         lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
-        for (index, item) in selected.enumerated() {
-            lines.append("\(index + 1). [\(item.kind)] frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) \(item.text)")
+        for (index, hit) in result.hits.enumerated() {
+            let kind = hit.kind ?? "snippet"
+            lines.append("\(index + 1). [\(kind)] frame=\(hit.frameID) score=\(String(format: "%.4f", hit.score)) \(hit.text)")
         }
 
-        let results: [AgentBrokerValue] = selected.enumerated().map { index, item in
+        let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
             .object([
                 "rank": .from(index + 1),
-                "kind": .string("\(item.kind)"),
-                "frameId": .from(item.frameId),
-                "score": .double(Double(item.score)),
-                "sources": .array(item.sources.map { .string($0.rawValue) }),
-                "text": .string(item.text),
-                "metadata": .object(item.metadata.mapValues(AgentBrokerValue.string)),
-                "explanations": .array(item.explanations.map(AgentBrokerValue.string)),
+                "kind": .string(hit.kind ?? "snippet"),
+                "frameId": .from(hit.frameID),
+                "score": .double(Double(hit.score)),
+                "sources": .array(hit.sources.map(AgentBrokerValue.string)),
+                "text": .string(hit.text),
+                "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
+                "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
             ])
         }
-        if let sessionID = parsedFilters.sessionId, let sessionMemory {
+        if let sessionID = parsedFilters.sessionId {
+            let sessionMemory = try await memory(for: sessionID)
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: query,
-                hits: selected.compactMap { item in
-                    guard item.explanations.contains("current session") else { return nil }
-                    return (item.frameId, item.score)
+                hits: result.hits.compactMap { hit in
+                    guard hit.explanations.contains("current session") else { return nil }
+                    return (hit.frameID, hit.score)
                 },
                 memory: sessionMemory
             )
@@ -695,75 +542,33 @@ extension AgentBrokerService {
 
         var payload: [String: AgentBrokerValue] = [
             "query": .string(query),
-            "total_tokens": .from(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }),
-            "result_count": .from(selected.count),
+            "total_tokens": .from(result.hits.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }),
+            "result_count": .from(result.hits.count),
             "limit": .from(limit),
             "search_top_k": .from(effectiveTopK),
-            "requested_mode": .string(primaryExecution?.requestedMode.diagnosticsSummary ?? "n/a"),
-            "effective_mode": .string(primaryExecution?.effectiveMode.diagnosticsSummary ?? "n/a"),
-            "query_embedding_state": .string(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a"),
-            "scope": .string(recallScope.rawValue),
-            "project": .from(resolvedIdentity.project),
-            "repo": .from(resolvedIdentity.repo),
-            "project_miss": .bool(projectMiss),
+            "requested_mode": .string(result.requestedModeSummary),
+            "effective_mode": .string(result.effectiveModeSummary),
+            "query_embedding_state": .string(result.queryEmbeddingState),
+            "scope": .string(result.scope.rawValue),
+            "project": .from(result.identity.project),
+            "repo": .from(result.identity.repo),
+            "project_miss": .bool(result.projectMiss),
             "applied_filters": parsedFilters.summary,
             "results": .array(results),
             "display_text": .string(lines.joined(separator: "\n")),
         ]
-        if let scopeMissMessage {
+        if let scopeMissMessage = result.scopeMissMessage {
             payload["scope_miss_message"] = .string(scopeMissMessage)
         }
         return .object(payload)
     }
 
-    private enum RecallScope: String {
-        case project
-        case session
-        case global
-    }
-
-    private func parseRecallScope(_ args: BrokerArguments) throws -> RecallScope {
-        let raw = try args.optionalString("scope")?.lowercased() ?? RecallScope.project.rawValue
-        guard let scope = RecallScope(rawValue: raw) else {
+    private func parseRecallScope(_ args: BrokerArguments) throws -> LayeredRecall.Scope {
+        let raw = try args.optionalString("scope")?.lowercased() ?? LayeredRecall.Scope.project.rawValue
+        guard let scope = LayeredRecall.Scope(rawValue: raw) else {
             throw BrokerValidationError.invalid("scope must be one of: project, session, global")
         }
         return scope
-    }
-
-    private struct RecallIdentity: Sendable {
-        var project: String?
-        var repo: String?
-    }
-
-    private func resolveRecallIdentity(
-        explicitProject: String?,
-        explicitRepo: String?,
-        sessionID: UUID?,
-        clientCWD: String?
-    ) -> RecallIdentity {
-        var project = normalizedOrNil(explicitProject)
-        var repo = normalizedOrNil(explicitRepo)
-
-        if project == nil || repo == nil, let sessionID, let session = activeSessions[sessionID] {
-            if project == nil {
-                project = normalizedOrNil(session.manifest.project)
-            }
-            if repo == nil {
-                repo = normalizedOrNil(session.manifest.repo)
-            }
-        }
-
-        if project == nil || repo == nil {
-            let inferred = writeScope(for: sessionID, clientCWD: clientCWD)
-            if project == nil {
-                project = normalizedOrNil(inferred.projectName)
-            }
-            if repo == nil {
-                repo = normalizedOrNil(inferred.repoName)
-            }
-        }
-
-        return RecallIdentity(project: project, repo: repo)
     }
 
     private func normalizedOrNil(_ value: String?) -> String? {
@@ -772,24 +577,21 @@ extension AgentBrokerService {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    package static func filterRecallItemsByProject(
+        _ items: [RAGContext.Item],
+        project: String?,
+        repo: String?
+    ) -> [RAGContext.Item] {
+        LayeredRecall.filterRecallItemsByProject(items, project: project, repo: repo)
+    }
+
     /// Returns items whose `wax.project` or `wax.repo` metadata matches the given identity.
-    ///
-    /// When `project` is non-`nil`, matching is by project only. Otherwise matching is by
-    /// `repo`. Items missing both keys are excluded. Pass `nil` for both to get an empty result.
     package static func recallItems(
         _ items: [RAGContext.Item],
         matchingProject project: String?,
         repo: String?
     ) -> [RAGContext.Item] {
-        items.filter { item in
-            if let project {
-                return item.metadata[MemoryMetadataKeys.project] == project
-            }
-            if let repo {
-                return item.metadata[MemoryMetadataKeys.repo] == repo
-            }
-            return false
-        }
+        filterRecallItemsByProject(items, project: project, repo: repo)
     }
 
     /// Merges project/repo hard-filter into an existing frame filter so unified search
@@ -799,71 +601,11 @@ extension AgentBrokerService {
         project: String?,
         repo: String?
     ) -> FrameFilter? {
-        var requiredEntries = base?.metadataFilter?.requiredEntries ?? [:]
-        if let project {
-            requiredEntries[MemoryMetadataKeys.project] = project
-        } else if let repo {
-            requiredEntries[MemoryMetadataKeys.repo] = repo
-        } else {
-            return base
-        }
-
-        let metadataFilter = MetadataFilter(
-            requiredEntries: requiredEntries,
-            requiredTags: base?.metadataFilter?.requiredTags ?? [],
-            requiredLabels: base?.metadataFilter?.requiredLabels ?? []
+        LayeredRecall.frameFilterForScopedRetrieval(
+            base: base,
+            scope: .project,
+            identity: LayeredRecall.Identity(project: project, repo: repo)
         )
-        return FrameFilter(
-            includeDeleted: base?.includeDeleted ?? false,
-            includeSuperseded: base?.includeSuperseded ?? false,
-            includeSurrogates: base?.includeSurrogates ?? false,
-            frameIds: base?.frameIds,
-            metadataFilter: metadataFilter
-        )
-    }
-
-    private func projectScopeMissPayload(
-        query: String,
-        limit: Int,
-        searchTopK: Int,
-        recallScope: RecallScope,
-        resolvedIdentity: RecallIdentity,
-        parsedFilters: ParsedSearchFilters,
-        scopeMissMessage: String
-    ) -> AgentBrokerValue {
-        var lines: [String] = [
-            scopeMissMessage,
-            "Query: \(query)",
-            "Total tokens: 0",
-            "Results: 0 of \(limit) requested (orchestrator returned 0)",
-            "Search controls: requested_mode=n/a effective_mode=n/a query_embedding_state=n/a search_top_k=\(searchTopK) limit=\(limit) scope=\(recallScope.rawValue)",
-        ]
-        if let project = resolvedIdentity.project {
-            lines.append("Resolved project: \(project)")
-        }
-        if let repo = resolvedIdentity.repo {
-            lines.append("Resolved repo: \(repo)")
-        }
-        lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
-
-        return .object([
-            "query": .string(query),
-            "total_tokens": .from(0),
-            "result_count": .from(0),
-            "limit": .from(limit),
-            "search_top_k": .from(searchTopK),
-            "requested_mode": .string("n/a"),
-            "effective_mode": .string("n/a"),
-            "query_embedding_state": .string("n/a"),
-            "scope": .string(recallScope.rawValue),
-            "project": .from(resolvedIdentity.project),
-            "repo": .from(resolvedIdentity.repo),
-            "project_miss": .bool(true),
-            "scope_miss_message": .string(scopeMissMessage),
-            "applied_filters": parsedFilters.summary,
-            "results": .array([]),
-            "display_text": .string(lines.joined(separator: "\n")),
-        ])
     }
 
     package static func mergeRecallItems(
@@ -871,72 +613,11 @@ extension AgentBrokerService {
         durableItems: [RAGContext.Item],
         limit: Int
     ) -> [RAGContext.Item] {
-        func identity(_ item: RAGContext.Item) -> String {
-            if let hash = item.metadata["wax.content.hash"] {
-                return hash
-            }
-            return item.text
-        }
-
-        let sessionTagged = sessionItems.map { item -> RAGContext.Item in
-            var copy = item
-            copy.score += 0.12
-            if !copy.explanations.contains("current session") {
-                copy.explanations = ["current session"] + copy.explanations
-            }
-            return copy
-        }
-        let durableTagged = durableItems.map { item -> RAGContext.Item in
-            var copy = item
-            if !copy.explanations.contains("durable memory") {
-                copy.explanations = ["durable memory"] + copy.explanations
-            }
-            return copy
-        }
-
-        var seen = Set<String>()
-        var merged: [RAGContext.Item] = []
-        let ranked = (sessionTagged + durableTagged).sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameId < rhs.frameId
-        }
-        for item in ranked {
-            guard seen.insert(identity(item)).inserted else { continue }
-            merged.append(item)
-            if merged.count >= limit { break }
-        }
-
-        func ensureHorizon(from items: [RAGContext.Item], marker: String) {
-            guard !items.isEmpty else { return }
-            guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
-            guard let extra = items
-                .filter({ !seen.contains(identity($0)) })
-                .max(by: { lhs, rhs in
-                    if lhs.score != rhs.score { return lhs.score < rhs.score }
-                    return lhs.frameId > rhs.frameId
-                })
-            else { return }
-
-            if merged.count >= limit {
-                guard let evictIndex = merged.lastIndex(where: { !$0.explanations.contains(marker) }) else {
-                    return
-                }
-                let evicted = merged.remove(at: evictIndex)
-                seen.remove(identity(evicted))
-            }
-            seen.insert(identity(extra))
-            merged.append(extra)
-        }
-        ensureHorizon(from: sessionTagged, marker: "current session")
-        ensureHorizon(from: durableTagged, marker: "durable memory")
-        if merged.count > limit {
-            merged = Array(merged.prefix(limit))
-        }
-        merged.sort { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameId < rhs.frameId
-        }
-        return merged
+        LayeredRecall.mergeRecallItems(
+            sessionItems: sessionItems,
+            durableItems: durableItems,
+            limit: limit
+        )
     }
 
     func search(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
@@ -2288,140 +1969,115 @@ extension AgentBrokerService {
         includeEpisodic: Bool,
         includeDurable: Bool
     ) async throws -> [LayeredMemoryHit] {
-        var hits: [LayeredMemoryHit] = []
-
-        if includeWorking, let sessionID, let state = activeSessions[sessionID] {
-            let execution = try await state.memory.searchExecution(
+        try await LayeredRecall.search(
+            request: LayeredRecall.SearchRequest(
                 query: query,
                 mode: mode,
-                topK: max(1, min(topK, 6)),
-                frameFilter: nil,
-                timeRange: nil
-            )
-            for hit in execution.hits {
-                guard let canonicalFrameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: state.memory) else {
-                    continue
-                }
-                hits.append(LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: canonicalFrameID),
-                    horizon: .working,
+                topK: topK,
+                sessionID: sessionID,
+                includeWorking: includeWorking,
+                includeEpisodic: includeEpisodic,
+                includeDurable: includeDurable
+            ),
+            stores: layeredRecallStores()
+        )
+    }
+
+    func layeredRecallStores() -> LayeredRecall.Stores {
+        let sessionsSnapshot = activeSessions
+        let defaultScope = scopeContext
+        let noEmbedderFlag = noEmbedder
+        let sessionRoot = sessionRootURL
+
+        return LayeredRecall.Stores(
+            longTermMemory: longTermMemory,
+            workingLane: { sessionID in
+                guard let state = sessionsSnapshot[sessionID] else { return nil }
+                return LayeredRecall.WorkingLane(
                     sessionID: sessionID,
                     agentID: state.manifest.agentID,
                     runID: state.manifest.runID,
-                    frameID: canonicalFrameID,
-                    score: hit.score + 0.25,
-                    text: agentFacingPreview(hit.previewText),
-                    preview: agentFacingPreview(hit.previewText),
-                    metadata: hit.metadata,
-                    explanations: ["current session"] + hit.explanations,
-                    timestampMs: state.manifest.updatedAtMs
-                ))
-            }
-        }
-
-        if includeDurable {
-            let execution = try await longTermMemory.searchExecution(
-                query: query,
-                mode: mode,
-                topK: max(1, min(topK, 8)),
-                frameFilter: nil,
-                timeRange: nil
-            )
-            for hit in execution.hits {
-                guard let canonicalFrameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: longTermMemory) else {
-                    continue
+                    updatedAtMs: state.manifest.updatedAtMs,
+                    project: state.manifest.project,
+                    repo: state.manifest.repo,
+                    memory: state.memory
+                )
+            },
+            inferWriteScope: { sessionID, clientCWD in
+                if let sessionID, let state = sessionsSnapshot[sessionID] {
+                    return LayeredRecall.Identity(
+                        project: state.manifest.project ?? defaultScope.projectName,
+                        repo: state.manifest.repo ?? defaultScope.repoName
+                    )
                 }
-                hits.append(LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: canonicalFrameID),
-                    horizon: .durable,
-                    sessionID: nil,
-                    agentID: nil,
-                    runID: nil,
-                    frameID: canonicalFrameID,
-                    score: hit.score + 0.10,
-                    text: agentFacingPreview(hit.previewText),
-                    preview: agentFacingPreview(hit.previewText),
-                    metadata: hit.metadata,
-                    explanations: ["durable memory"] + hit.explanations,
-                    timestampMs: hit.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0
-                ))
-            }
-        }
-
-        if includeEpisodic {
-            let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-            let scopedManifests = manifests
-                .filter { manifest in
-                    guard manifest.status == .ended else { return false }
-                    if let sessionID, manifest.sessionID == sessionID { return false }
-                    if let current = sessionID, let active = activeSessions[current]?.manifest {
-                        if manifest.agentID != active.agentID { return false }
-                    }
-                    return true
+                if let clientCWD {
+                    let inferred = MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
+                    return LayeredRecall.Identity(
+                        project: inferred.projectName,
+                        repo: inferred.repoName
+                    )
                 }
-                .prefix(6)
-
-            for manifest in scopedManifests {
+                return LayeredRecall.Identity(
+                    project: defaultScope.projectName,
+                    repo: defaultScope.repoName
+                )
+            },
+            preview: { text in
+                Wax.dehighlightedPreviewText(text ?? "")
+            },
+            canonicalFrameID: { frameID, memory in
+                await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
+            },
+            endedManifests: {
+                try BrokerSessionPersistence.listManifests(rootURL: sessionRoot)
+            },
+            searchEndedSession: { manifest, query, mode, topK in
                 let sessionURL = URL(fileURLWithPath: manifest.storePath)
                 let eventLogURL = URL(fileURLWithPath: manifest.eventLogPath)
-                let execution = try await openAdhocMemory(
+                let execution = try await self.openAdhocMemory(
                     at: sessionURL,
                     structuredMemoryEnabled: false,
-                    noEmbedder: noEmbedder
+                    noEmbedder: noEmbedderFlag
                 ) { memory in
                     try await memory.searchExecution(
                         query: query,
                         mode: mode,
-                        topK: max(1, min(3, topK)),
+                        topK: topK,
                         frameFilter: nil,
                         timeRange: nil
                     )
                 }
-                let ageMs: Int64 = max(0, Self.nowMs() - manifest.updatedAtMs)
-                let recencyBoost: Float = ageMs < Int64(7 * 24 * 60 * 60 * 1000) ? 0.15 : 0.05
-                let signals = BrokerSessionPersistence.recallSignals(from: try BrokerSessionPersistence.loadEvents(from: eventLogURL))
+                let signals = BrokerSessionPersistence.recallSignals(
+                    from: try BrokerSessionPersistence.loadEvents(from: eventLogURL)
+                )
+                var laneHits: [LayeredRecall.EpisodicLaneHit] = []
                 for hit in execution.hits {
-                    guard let canonicalFrameID = try await openAdhocMemory(
+                    let canonicalFrameID = try await self.openAdhocMemory(
                         at: sessionURL,
                         structuredMemoryEnabled: false,
-                        noEmbedder: noEmbedder,
+                        noEmbedder: noEmbedderFlag,
                         body: { memory in
-                            await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory)
+                            await self.bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory)
                         }
-                    ) else { continue }
-                    let signal = signals[canonicalFrameID] ?? signals[hit.frameId]
-                    var explanations = ["recent session episode", "agent \(manifest.agentID)"]
-                    if let signal {
-                        explanations.append("recalled \(signal.recallCount)x across \(signal.uniqueQueryCount) queries")
-                    }
-                    explanations.append(contentsOf: hit.explanations)
-                    hits.append(LayeredMemoryHit(
-                        reference: Self.makeMemoryReference(.episodic, sessionID: manifest.sessionID, frameID: canonicalFrameID),
-                        horizon: .episodic,
-                        sessionID: manifest.sessionID,
-                        agentID: manifest.agentID,
-                        runID: manifest.runID,
-                        frameID: canonicalFrameID,
-                        score: hit.score + recencyBoost,
-                        text: agentFacingPreview(hit.previewText),
-                        preview: agentFacingPreview(hit.previewText),
-                        metadata: hit.metadata,
-                        explanations: explanations,
-                        timestampMs: manifest.updatedAtMs
-                    ))
+                    )
+                    let signal = canonicalFrameID.flatMap { signals[$0] } ?? signals[hit.frameId]
+                    laneHits.append(
+                        LayeredRecall.EpisodicLaneHit(
+                            frameID: hit.frameId,
+                            score: hit.score,
+                            previewText: hit.previewText,
+                            metadata: hit.metadata,
+                            explanations: hit.explanations,
+                            canonicalFrameID: canonicalFrameID,
+                            recallCount: signal.map(\.recallCount),
+                            uniqueQueryCount: signal.map(\.uniqueQueryCount)
+                        )
+                    )
                 }
-            }
-        }
-
-        let deduped = Dictionary(hits.map { ($0.reference, $0) }, uniquingKeysWith: { current, candidate in
-            candidate.score > current.score ? candidate : current
-        }).values
-
-        return deduped.sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-            return lhs.reference < rhs.reference
-        }.prefix(topK).map { $0 }
+                return laneHits
+            },
+            nowMs: { Self.nowMs() }
+        )
     }
 
     func layeredMemoryGet(reference: MemoryReference) async throws -> LayeredMemoryHit {
@@ -2892,7 +2548,7 @@ extension AgentBrokerService {
     }
 
     func validateActiveSession(_ sessionID: UUID?) async throws {
-        _ = try await virtualSessions.ensureLive(sessionID)
+        try await virtualSessions.validateActiveOrRebind(sessionID)
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
@@ -3670,12 +3326,7 @@ extension AgentBrokerService {
     }
 
     static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID?, frameID: UInt64) -> String {
-        switch horizon {
-        case .durable:
-            return "durable:\(frameID)"
-        case .working, .episodic:
-            return "\(horizon.rawValue):\(sessionID?.uuidString ?? "unknown"):\(frameID)"
-        }
+        LayeredRecall.makeMemoryReference(horizon, sessionID: sessionID, frameID: frameID)
     }
 
     static func nowMs() -> Int64 {
