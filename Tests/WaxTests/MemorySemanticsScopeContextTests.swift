@@ -76,6 +76,36 @@ struct MemorySemanticsScopeContextTests {
         #expect(result.value.projectName == repoName)
         #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
     }
+
+    @Test
+    func inferScopeContextUsesMainRepoNameForLinkedWorktree() throws {
+        let repoName = "wax-main-repo-\(UUID().uuidString.prefix(8))"
+        let worktreeFolder = "worktree-rapid-river-\(UUID().uuidString.prefix(6))"
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-worktree-infer-\(UUID().uuidString)", isDirectory: true)
+        let repoURL = root.appendingPathComponent(repoName, isDirectory: true)
+        let worktreeURL = root.appendingPathComponent(worktreeFolder, isDirectory: true)
+        let worktreeGitDir = repoURL
+            .appendingPathComponent(".git/worktrees/\(worktreeFolder)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: worktreeGitDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: worktreeURL, withIntermediateDirectories: true)
+        let gitFile = worktreeURL.appendingPathComponent(".git")
+        try "gitdir: \(worktreeGitDir.path)\n".write(to: gitFile, atomically: true, encoding: .utf8)
+
+        let result = try completingWithin(
+            milliseconds: 1_000,
+            description: "inferScopeContext on linked worktree cwd"
+        ) {
+            MemorySemantics.inferScopeContext(currentDirectoryPath: worktreeURL.path)
+        }
+        #expect(result.elapsed < .milliseconds(1_000))
+        #expect(result.value.repoName == repoName)
+        #expect(result.value.projectName == repoName)
+        #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
+        #expect(result.value.repoName != worktreeFolder)
+    }
 }
 
 private struct TimedValue<T> {

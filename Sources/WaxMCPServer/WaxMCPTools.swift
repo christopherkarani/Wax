@@ -85,6 +85,7 @@ enum WaxMCPTools {
             }
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+            let verbosity = compactVerbosity(from: forwarded)
 
             let response = try await perform(
                 AgentBrokerRequest(
@@ -94,6 +95,17 @@ enum WaxMCPTools {
             )
 
             guard response.ok else {
+                if let payload = response.payload?.objectValue,
+                   let code = payload["code"]?.stringValue {
+                    let message = response.error
+                        ?? payload["reason"]?.stringValue
+                        ?? "Broker execution failed"
+                    return structuredErrorResult(
+                        message: message,
+                        code: code,
+                        fields: payload
+                    )
+                }
                 let message = response.error ?? "Broker execution failed"
                 return errorResult(message: message, code: errorCode(for: message))
             }
@@ -102,7 +114,7 @@ enum WaxMCPTools {
                 return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
             }
             sessionHint?.remember(name: params.name, payload: payload)
-            return renderResult(name: params.name, payload: payload)
+            return renderResult(name: params.name, payload: payload, verbosity: verbosity)
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
         } catch {
@@ -124,13 +136,13 @@ final class MCPClientSessionHint: @unchecked Sendable {
 
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
-        case "session_start", "session_resume":
+        case "session_start", "session_resume", "session_open":
             if let sessionID = payload.objectValue?["session_id"]?.stringValue {
                 lock.lock()
                 self.sessionID = sessionID
                 lock.unlock()
             }
-        case "session_end":
+        case "session_end", "session_close":
             if let ended = payload.objectValue?["session_id"]?.stringValue {
                 lock.lock()
                 if sessionID == ended {
@@ -148,7 +160,8 @@ private extension WaxMCPTools {
     static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
     static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
     static let clientCWDCommands: Set<String> = [
-        "session_start", "remember", "memory_append", "knowledge_capture", "markdown_export",
+        "session_start", "session_open", "remember", "memory_append", "knowledge_capture",
+        "markdown_export", "recall",
     ]
 
     static func contentLimitError(name: String, arguments: [String: Value]) -> CallTool.Result? {
@@ -159,6 +172,12 @@ private extension WaxMCPTools {
             message: "content exceeds \(maxBytes) bytes",
             code: "invalid_arguments"
         )
+    }
+
+    static func compactVerbosity(from arguments: [String: Value]) -> String? {
+        guard case .string(let raw)? = arguments["verbosity"] else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {
@@ -215,6 +234,8 @@ private extension WaxMCPTools {
         case "wax_session_start": return "session_start"
         case "wax_session_resume": return "session_resume"
         case "wax_session_end": return "session_end"
+        case "wax_session_close": return "session_close"
+        case "wax_session_open": return "session_open"
         case "wax_handoff": return "handoff"
         case "wax_handoff_latest": return "handoff_latest"
         case "wax_compact_context": return "compact_context"
@@ -236,8 +257,22 @@ private extension WaxMCPTools {
         return "execution_failed"
     }
 
-    static func renderResult(name: String, payload: AgentBrokerValue) -> CallTool.Result {
+    static func renderResult(
+        name: String,
+        payload: AgentBrokerValue,
+        verbosity: String? = nil
+    ) -> CallTool.Result {
         let mcpPayload = mcpValue(from: removingDisplayText(from: payload))
+        if verbosity == "compact" {
+            let json = encodeJSON(mcpPayload) ?? "{}"
+            return CallTool.Result(
+                content: [
+                    .text(text: json, annotations: nil, _meta: nil),
+                ],
+                isError: false
+            )
+        }
+
         let text = payload.objectValue?["display_text"]?.stringValue
 
         if readOnlyTextCommands.contains(name) {
@@ -287,6 +322,29 @@ private extension WaxMCPTools {
                 .resource(resource: .text(json, uri: "wax://tool/result", mimeType: "application/json")),
             ],
             isError: false
+        )
+    }
+
+    static func structuredErrorResult(
+        message: String,
+        code: String,
+        fields: [String: AgentBrokerValue]
+    ) -> CallTool.Result {
+        var payload: [String: Value] = [
+            "code": .string(code),
+            "message": .string(message),
+        ]
+        for (key, value) in fields {
+            if key == "code" || key == "message" { continue }
+            payload[key] = mcpValue(from: value)
+        }
+        let json = encodeJSON(.object(payload)) ?? "{}"
+        return CallTool.Result(
+            content: [
+                .text(text: message, annotations: nil, _meta: nil),
+                .resource(resource: .text(json, uri: "wax://errors/\(code)", mimeType: "application/json")),
+            ],
+            isError: true
         )
     }
 
