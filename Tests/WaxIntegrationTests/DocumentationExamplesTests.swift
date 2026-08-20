@@ -120,7 +120,12 @@ func documentationQuickStartSaveSearchRoundTrip() async throws {
         #expect(joined.localizedCaseInsensitiveContains("habit tracker"))
 
         if let diagnostics = results.diagnostics {
-            #expect(diagnostics.effectiveMode.contains("text") || diagnostics.effectiveMode.contains("hybrid"))
+            #expect({
+                switch diagnostics.effectiveMode {
+                case .textOnly, .hybrid: true
+                case .vectorOnly: false
+                }
+            }())
         }
 
         try await memory.close()

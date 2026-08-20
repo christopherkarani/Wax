@@ -30,7 +30,7 @@ for item in results.items {
 }
 
 if let diagnostics = results.diagnostics {
-    // "hybrid(alpha=…)" when both lanes ran, "text" when the vector lane was unavailable
+    // RetrievalMode prints as "hybrid(alpha=…)" or "text" when the vector lane was unavailable
     print(diagnostics.effectiveMode, diagnostics.queryEmbeddingState)
 }
 

@@ -162,8 +162,8 @@ public actor Memory {
         )
         var results = execution.context
         results.diagnostics = RAGContext.Diagnostics(
-            requestedMode: execution.requestedModeSummary,
-            effectiveMode: execution.effectiveModeSummary,
+            requestedMode: execution.requestedMode,
+            effectiveMode: execution.effectiveMode,
             queryEmbeddingState: RAGContext.QueryEmbeddingState(execution.queryEmbeddingState)
         )
         return results

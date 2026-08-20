@@ -142,7 +142,7 @@ func memoryUnavailableKeepsIndexAndThrowsVectorOnly() async throws {
         }
 
         let hybrid = try await memory.search("index remains", options: .init(mode: .hybrid()))
-        #expect(hybrid.diagnostics?.effectiveMode == "text")
+        #expect(hybrid.diagnostics?.effectiveMode == .textOnly)
         #expect(hybrid.diagnostics?.queryEmbeddingState == .noEmbedder)
 
         do {
@@ -341,7 +341,7 @@ func memorySearchKeepsLoadingSnapshotForTheWholeCall() async throws {
         async let search = memory.search("snapshot", options: .init(mode: .hybrid()))
         await gate.open()
         let results = try await search
-        #expect(results.diagnostics?.effectiveMode == "text")
+        #expect(results.diagnostics?.effectiveMode == .textOnly)
         #expect(results.diagnostics?.queryEmbeddingState == .noEmbedder)
 
         try await waitForEmbeddingReady(memory, allowDegraded: true)

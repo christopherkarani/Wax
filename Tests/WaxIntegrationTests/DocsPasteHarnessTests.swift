@@ -50,8 +50,8 @@ func docsPaste_waxPrintSearchDiagnostics(storeURL: URL) async throws -> (
     let stats = await memory.stats()
     try await memory.close()
     return (
-        diagnostics.requestedMode,
-        diagnostics.effectiveMode,
+        diagnostics.requestedMode.diagnosticsSummary,
+        diagnostics.effectiveMode.diagnosticsSummary,
         stats.vectorSearchEnabled
     )
 }
