@@ -25,7 +25,8 @@ package actor WaxTextSearchSession {
     }
 
     package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
-        try await engine.search(query: query, topK: topK)
+        guard let plan = MatchPlan.plan(query: query) else { return [] }
+        return try await engine.search(matchQuery: plan.primaryMatch, topK: topK)
     }
 
     package func stageForCommit(compact: Bool = false) async throws {

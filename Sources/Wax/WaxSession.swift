@@ -166,7 +166,8 @@ package actor WaxSession {
         guard config.enableTextSearch, let textEngine else {
             throw WaxError.featureDisabled(feature: "text search")
         }
-        return try await textEngine.search(query: query, topK: topK)
+        guard let plan = MatchPlan.plan(query: query) else { return [] }
+        return try await textEngine.search(matchQuery: plan.primaryMatch, topK: topK)
     }
 
     // MARK: - Text Search (write)

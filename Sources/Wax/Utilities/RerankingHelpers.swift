@@ -1,8 +1,7 @@
 import Foundation
 
-/// Shared text-matching helpers used by both `FastRAGContextBuilder.rerankCandidatesForAnswer`
-/// and `UnifiedSearch.intentAwareRerank`. Scoring weights are intentionally different between
-/// the two rerankers; only stateless text predicates belong here.
+/// Shared text-matching helpers used by Ranking (`UnifiedSearch.intentAwareRerank`)
+/// and Recall assembly (`FastRAGContextBuilder.orderCandidatesForAnswer`).
 enum RerankingHelpers {
 
     /// True when the text contains language indicating a tentative / unconfirmed launch date.

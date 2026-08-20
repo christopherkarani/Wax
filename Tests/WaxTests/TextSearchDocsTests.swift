@@ -20,6 +20,8 @@ func textSearchDocsDoNotAdvertisePackageOnlyFTS5EngineAsPublicAPI() throws {
 
         #expect(doc.contains("package-only"))
         #expect(doc.contains("not public API"))
+        #expect(doc.contains("search(matchQuery:"))
+        #expect(!doc.contains("search(query:"))
         #expect(!doc.contains("The primary entry point is the ``FTS5SearchEngine`` actor"))
         #expect(!doc.contains("There are three ways to create an engine"))
         #expect(!doc.contains("`FTS5SearchEngine` is an actor that"))

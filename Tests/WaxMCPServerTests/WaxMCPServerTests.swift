@@ -22,6 +22,7 @@ private func withAgentBrokerService<T>(
     let storeURL = rootURL.appendingPathComponent("memory.wax")
     let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
     let service = try await AgentBrokerService(
         storePath: storeURL.path,
@@ -541,7 +542,7 @@ func factAssertSchemaExposesEvidence() {
 
 @Test
 func toolsRejectUnknownTopLevelArguments() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
@@ -551,7 +552,7 @@ func toolsRejectUnknownTopLevelArguments() async throws {
                     "unexpected": .string("boom"),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("unsupported argument"))
@@ -580,13 +581,13 @@ func brokerRejectsUnknownTopLevelArguments() async throws {
 
 @Test
 func compatibilityPathRejectsRenamedToolAliases() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "wax_remember",
                 arguments: ["content": .string("legacy alias should not execute")]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(result.isError == true)
@@ -813,7 +814,7 @@ func promotionMaxCandidatesAreBounded() async throws {
 
 @Test
 func corpusSearchRejectsUnknownTopLevelArguments() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "corpus_search",
@@ -822,7 +823,7 @@ func corpusSearchRejectsUnknownTopLevelArguments() async throws {
                     "sessionsDir": .string("/tmp/typo"),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("unsupported argument"))
@@ -831,7 +832,7 @@ func corpusSearchRejectsUnknownTopLevelArguments() async throws {
 
 @Test
 func factAssertRejectsMixedTypedObjectKeys() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_assert",
@@ -844,7 +845,7 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("typed object"))
@@ -853,7 +854,7 @@ func factAssertRejectsMixedTypedObjectKeys() async throws {
 
 @Test
 func factAssertAcceptsPublishedGenericTypedObjects() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let encoded = Data("opaque bytes".utf8).base64EncodedString()
         let cases: [(predicate: String, object: Value, expected: String)] = [
             (
@@ -883,7 +884,7 @@ func factAssertAcceptsPublishedGenericTypedObjects() async throws {
                         "object": testCase.object,
                     ]
                 ),
-                memory: memory
+                broker: service
             )
             #expect(result.isError != true)
 
@@ -895,7 +896,7 @@ func factAssertAcceptsPublishedGenericTypedObjects() async throws {
                         "predicate": .string(testCase.predicate),
                     ]
                 ),
-                memory: memory
+                broker: service
             )
             #expect(query.isError != true)
             #expect(firstText(in: query).contains(testCase.expected))
@@ -905,7 +906,7 @@ func factAssertAcceptsPublishedGenericTypedObjects() async throws {
 
 @Test
 func factAssertAcceptsEvidence() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let asserted = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_assert",
@@ -927,7 +928,7 @@ func factAssertAcceptsEvidence() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(asserted.isError != true)
 
@@ -939,7 +940,7 @@ func factAssertAcceptsEvidence() async throws {
                     "predicate": .string("status"),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(queried.isError != true)
         let payload = try parseJSONText(in: queried)
@@ -954,7 +955,7 @@ func factAssertAcceptsEvidence() async throws {
 
 @Test
 func factAssertRejectsUnknownEvidenceFields() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let asserted = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_assert",
@@ -973,7 +974,7 @@ func factAssertRejectsUnknownEvidenceFields() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(asserted.isError == true)
     }
@@ -1160,7 +1161,7 @@ func brokerFactAssertRejectsUnknownEvidenceFields() async throws {
 
 @Test
 func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let asserted = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_assert",
@@ -1172,7 +1173,7 @@ func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
                     "valid_to": .int(200),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(asserted.isError != true)
 
@@ -1185,7 +1186,7 @@ func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
                     "as_of": .int(150),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(collapsed.isError != true)
         let collapsedJSON = try parseJSONText(in: collapsed)
@@ -1201,7 +1202,7 @@ func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
                     "system_as_of": .int(Int(Int64.max)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(dualAxis.isError != true)
         let dualAxisJSON = try parseJSONText(in: dualAxis)
@@ -1214,7 +1215,7 @@ func mcpFactsQuerySupportsSeparateSystemAndValidTime() async throws {
 
 @Test
 func mcpFactsQueryRejectsRoundedOutOfRangeTimestampDoubles() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "facts_query",
@@ -1223,7 +1224,7 @@ func mcpFactsQueryRejectsRoundedOutOfRangeTimestampDoubles() async throws {
                     "valid_as_of": .double(Double(Int64.max)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("valid_as_of is out of range"))
@@ -1232,7 +1233,7 @@ func mcpFactsQueryRejectsRoundedOutOfRangeTimestampDoubles() async throws {
 
 @Test
 func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let asserted = await WaxMCPTools.handleCall(
             params: .init(
@@ -1245,7 +1246,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "valid_to": .int(Int(nowMs + 100)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(asserted.isError != true)
 
@@ -1258,7 +1259,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "as_of": .int(Int(nowMs + 50)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(insideValidWindow.isError != true)
         #expect(firstText(in: insideValidWindow).contains("temporal"))
@@ -1272,7 +1273,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "as_of": .int(Int(nowMs + 150)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(outsideValidWindow.isError != true)
         #expect(!firstText(in: outsideValidWindow).contains("temporal"))
@@ -1287,7 +1288,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "system_as_of": .int(Int(Int64.max)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(historicalValidCurrentSystem.isError != true)
         #expect(firstText(in: historicalValidCurrentSystem).contains("temporal"))
@@ -1306,7 +1307,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "valid_from": .int(Int(retractableFromMs)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(retractable.isError != true)
         let retractableJSON = try parseJSONText(in: retractable)
@@ -1321,7 +1322,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "at_ms": .int(Int(retractAtMs)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(retract.isError != true)
 
@@ -1334,7 +1335,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "as_of": .int(Int(retractableFromMs + 1_000)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(beforeRetractionTime.isError != true)
         #expect(firstText(in: beforeRetractionTime).contains("temporal retraction"))
@@ -1348,7 +1349,7 @@ func temporalFactArgumentsAreHonoredByPublishedTools() async throws {
                     "as_of": .int(Int(retractAtMs + 1_000)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(afterRetractionTime.isError != true)
         #expect(!firstText(in: afterRetractionTime).contains("temporal retraction"))
@@ -1530,33 +1531,33 @@ func openClawPackageDeclaresSDKPeerDependency() throws {
 
 
 @Test
-func directMemoryHelperRejectsSessionLifecycle() async throws {
-    try await withMemory { memory in
+func handleCallRoutesSessionLifecycleThroughBroker() async throws {
+    try await withAgentBrokerService { service, _ in
         let start = await WaxMCPTools.handleCall(
             params: .init(name: "session_start", arguments: [:]),
-            memory: memory
+            broker: service
         )
-        #expect(start.isError == true)
-        #expect(firstText(in: start).contains("session lifecycle requires the broker"))
+        #expect(start.isError != true)
+        let startJSON = try parseJSONText(in: start)
+        let sessionID = try #require(startJSON["session_id"] as? String)
 
         let remember = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
                 arguments: [
-                    "content": "session_id is not a metadata tag on this helper",
-                    "session_id": .string(UUID().uuidString),
+                    "content": "session_id routes through handle",
+                    "session_id": .string(sessionID),
                 ]
             ),
-            memory: memory
+            broker: service
         )
-        #expect(remember.isError == true)
-        #expect(firstText(in: remember).contains("session_id requires the broker"))
+        #expect(remember.isError != true)
     }
 }
 
 @Test
 func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let rememberResult = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
@@ -1565,13 +1566,13 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
                     "metadata": ["source": "test-suite", "rank": 1],
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(rememberResult.isError != true)
 
         let recallResult = await WaxMCPTools.handleCall(
             params: .init(name: "recall", arguments: ["query": "actors", "limit": 3]),
-            memory: memory
+            broker: service
         )
         #expect(recallResult.isError != true)
         #expect(firstText(in: recallResult).contains("Query: actors"))
@@ -1581,14 +1582,14 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
                 name: "search",
                 arguments: ["query": "actors", "mode": "text", "topK": 5]
             ),
-            memory: memory
+            broker: service
         )
         #expect(searchResult.isError != true)
         #expect(!firstText(in: searchResult).isEmpty)
 
         let statsResult = await WaxMCPTools.handleCall(
             params: .init(name: "stats", arguments: [:]),
-            memory: memory
+            broker: service
         )
         #expect(statsResult.isError != true)
         #expect(firstText(in: statsResult).contains("\"frameCount\""))
@@ -1955,7 +1956,7 @@ func corpusSearchBuilderRebuildsWhenCorpusManifestIsCorrupt() async throws {
 
 @Test
 func corpusSearchRejectsInvalidTopK() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "corpus_search",
@@ -1964,8 +1965,7 @@ func corpusSearchRejectsInvalidTopK() async throws {
                     "topK": .int(0),
                 ]
             ),
-            memory: memory,
-            noEmbedder: true
+            broker: service
         )
 
         #expect(result.isError == true)
@@ -2055,7 +2055,7 @@ func corpusSearchDefaultRebuildIsFalse() async throws {
 
 @Test
 func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let queryToken = "rememberautoquery\(seed.prefix(8))"
         let marker = "rememberautomarker\(seed.suffix(8))"
@@ -2066,7 +2066,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
                 name: "remember",
                 arguments: ["content": .string("\(queryToken) \(marker)")]
             ),
-            memory: memory
+            broker: service
         )
         #expect(rememberResult.isError != true)
         let rememberJSON = try parseJSONText(in: rememberResult)
@@ -2074,7 +2074,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
 
         let statsResult = await WaxMCPTools.handleCall(
             params: .init(name: "stats", arguments: [:]),
-            memory: memory
+            broker: service
         )
         #expect(statsResult.isError != true)
         let statsJSON = try parseJSONText(in: statsResult)
@@ -2082,7 +2082,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
 
         let recallResult = await WaxMCPTools.handleCall(
             params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
-            memory: memory
+            broker: service
         )
         #expect(recallResult.isError != true)
         #expect(firstText(in: recallResult).contains(markerNeedle))
@@ -2091,7 +2091,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
 
 @Test
 func rememberRejectsLegacyCommitArgument() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let rememberResult = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
@@ -2100,7 +2100,7 @@ func rememberRejectsLegacyCommitArgument() async throws {
                     "commit": .bool(false),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(rememberResult.isError == true)
         #expect(firstText(in: rememberResult).contains("unsupported argument"))
@@ -2109,7 +2109,7 @@ func rememberRejectsLegacyCommitArgument() async throws {
 
 @Test
 func handoffRejectsLegacyCommitArgument() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let handoffResult = await WaxMCPTools.handleCall(
             params: .init(
                 name: "handoff",
@@ -2118,7 +2118,7 @@ func handoffRejectsLegacyCommitArgument() async throws {
                     "commit": false,
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(handoffResult.isError == true)
         #expect(firstText(in: handoffResult).contains("unsupported argument"))
@@ -2127,7 +2127,7 @@ func handoffRejectsLegacyCommitArgument() async throws {
 
 @Test
 func recallAndSearchSupportMetadataExactFilters() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let seed = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let queryToken = "metadatafilterquery\(seed.prefix(8))"
         let blockedMarker = "metadatablocked\(seed.suffix(8))"
@@ -2143,7 +2143,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                     "metadata": .object(["group": .string("blocked")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(blockedRemember.isError != true)
 
@@ -2155,7 +2155,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                     "metadata": .object(["group": .string("allowed")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(allowedRemember.isError != true)
 
@@ -2164,7 +2164,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                 name: "search",
                 arguments: ["query": .string(queryToken), "mode": .string("text"), "topK": .int(10)]
             ),
-            memory: memory
+            broker: service
         )
         #expect(baselineSearch.isError != true)
         #expect(firstText(in: baselineSearch).contains(blockedNeedle))
@@ -2183,7 +2183,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(filteredSearch.isError != true)
         #expect(firstText(in: filteredSearch).contains(allowedNeedle))
@@ -2191,7 +2191,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
         let baselineRecall = await WaxMCPTools.handleCall(
             params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(10)]),
-            memory: memory
+            broker: service
         )
         #expect(baselineRecall.isError != true)
         #expect(firstText(in: baselineRecall).contains(blockedNeedle))
@@ -2209,7 +2209,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(filteredRecall.isError != true)
         #expect(firstText(in: filteredRecall).contains(allowedNeedle))
@@ -2219,9 +2219,24 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
 
 @Test
 func searchAcceptsLifecycleAndFrameIDFilters() async throws {
-    try await withMemory { memory in
-        let fixture = try await seedLifecycleFilterFixture(memory: memory)
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-lifecycle-filters-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
+    let fixture = try await seedLifecycleFilterFixture(at: storeURL)
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    defer { Task { try? await service.close() } }
+
+    do {
         let baselineSearch = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
@@ -2231,7 +2246,7 @@ func searchAcceptsLifecycleAndFrameIDFilters() async throws {
                     "topK": .int(10),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(baselineSearch.isError != true)
         let baselineJSON = try parseJSONResource(in: baselineSearch, uriSuffix: "search-summary")
@@ -2256,7 +2271,7 @@ func searchAcceptsLifecycleAndFrameIDFilters() async throws {
                     ]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(filteredSearch.isError != true)
         let filteredJSON = try parseJSONResource(in: filteredSearch, uriSuffix: "search-summary")
@@ -2270,13 +2285,13 @@ func searchAcceptsLifecycleAndFrameIDFilters() async throws {
 
 @Test
 func recallValidatesModeAndSearchControls() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let invalidMode = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
                 arguments: ["query": "mode-validation", "mode": "invalid-mode"]
             ),
-            memory: memory
+            broker: service
         )
         #expect(invalidMode.isError == true)
         #expect(firstText(in: invalidMode).contains("mode"))
@@ -2286,7 +2301,7 @@ func recallValidatesModeAndSearchControls() async throws {
                 name: "recall",
                 arguments: ["query": "topk-validation", "search_top_k": 0]
             ),
-            memory: memory
+            broker: service
         )
         #expect(invalidTopK.isError == true)
         #expect(firstText(in: invalidTopK).contains("search_top_k"))
@@ -2295,7 +2310,7 @@ func recallValidatesModeAndSearchControls() async throws {
 
 @Test
 func searchRejectsUnknownFilterKeys() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
@@ -2304,7 +2319,7 @@ func searchRejectsUnknownFilterKeys() async throws {
                     "filters": .object(["unsupported": .bool(true)]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(result.isError == true)
@@ -2314,7 +2329,7 @@ func searchRejectsUnknownFilterKeys() async throws {
 
 @Test
 func searchRejectsNonArrayLabelsFilter() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
@@ -2323,7 +2338,7 @@ func searchRejectsNonArrayLabelsFilter() async throws {
                     "filters": .object(["labels": .string("not-an-array")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(result.isError == true)
@@ -2333,7 +2348,7 @@ func searchRejectsNonArrayLabelsFilter() async throws {
 
 @Test
 func searchRejectsNonIntegerTimeFilters() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
@@ -2342,7 +2357,7 @@ func searchRejectsNonIntegerTimeFilters() async throws {
                     "filters": .object(["time_after_ms": .string("not-an-int")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(result.isError == true)
@@ -2352,7 +2367,7 @@ func searchRejectsNonIntegerTimeFilters() async throws {
 
 @Test
 func searchRejectsInvalidLifecycleAndFrameIDFilters() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let invalidDeleted = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
@@ -2361,7 +2376,7 @@ func searchRejectsInvalidLifecycleAndFrameIDFilters() async throws {
                     "filters": .object(["include_deleted": .string("yes")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(invalidDeleted.isError == true)
         #expect(firstText(in: invalidDeleted).contains("filters.include_deleted must be a boolean"))
@@ -2374,7 +2389,7 @@ func searchRejectsInvalidLifecycleAndFrameIDFilters() async throws {
                     "filters": .object(["frame_ids": .array([.int(-1)])]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(invalidFrameIDs.isError == true)
         #expect(firstText(in: invalidFrameIDs).contains("filters.frame_ids must contain only non-negative integers"))
@@ -2383,10 +2398,10 @@ func searchRejectsInvalidLifecycleAndFrameIDFilters() async throws {
 
 @Test
 func toolsReturnValidationErrorForMissingArguments() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(name: "remember", arguments: [:]),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("Missing required argument"))
@@ -2395,13 +2410,13 @@ func toolsReturnValidationErrorForMissingArguments() async throws {
 
 @Test
 func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let fractional = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
                 arguments: ["query": "actors", "topK": 1.9]
             ),
-            memory: memory
+            broker: service
         )
         #expect(fractional.isError == true)
         #expect(firstText(in: fractional).contains("topK must be an integer"))
@@ -2411,7 +2426,7 @@ func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
                 name: "search",
                 arguments: ["query": "actors", "topK": 1e100]
             ),
-            memory: memory
+            broker: service
         )
         #expect(outOfRange.isError == true)
         #expect(firstText(in: outOfRange).contains("topK is out of range"))
@@ -2420,13 +2435,13 @@ func toolsRejectNonIntegralAndOutOfRangeNumericArguments() async throws {
 
 @Test
 func toolsRejectRecallLimitOutOfRange() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let zero = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
                 arguments: ["query": "actors", "limit": 0]
             ),
-            memory: memory,
+            broker: service,
             structuredMemoryEnabled: true
         )
         #expect(zero.isError == true)
@@ -2437,7 +2452,7 @@ func toolsRejectRecallLimitOutOfRange() async throws {
                 name: "recall",
                 arguments: ["query": "actors", "limit": 101]
             ),
-            memory: memory,
+            broker: service,
             structuredMemoryEnabled: true
         )
         #expect(tooHigh.isError == true)
@@ -2447,7 +2462,7 @@ func toolsRejectRecallLimitOutOfRange() async throws {
 
 @Test
 func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let first = await WaxMCPTools.handleCall(
             params: .init(
@@ -2460,7 +2475,7 @@ func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
                     "valid_from": .int(Int(nowMs)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(first.isError != true)
 
@@ -2475,7 +2490,7 @@ func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
                     "valid_from": .int(Int(nowMs)),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(second.isError != true)
 
@@ -2490,7 +2505,7 @@ func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
                     "limit": .int(10),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(queried.isError != true)
 
@@ -2513,13 +2528,13 @@ func factsQueryRendersSpanIdentityAndTemporalBounds() async throws {
 
 @Test
 func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "facts_query",
                 arguments: ["subject": "agent:codex", "limit": 10]
             ),
-            memory: memory,
+            broker: service,
             structuredMemoryEnabled: false
         )
         #expect(result.isError == true)
@@ -2536,7 +2551,7 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
                     "object": "focused regressions",
                 ]
             ),
-            memory: memory,
+            broker: service,
             structuredMemoryEnabled: false
         )
         #expect(knowledgeCapture.isError == true)
@@ -2546,10 +2561,10 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
 
 @Test
 func unknownToolReturnsErrorResult() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(name: "nope", arguments: [:]),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("Unknown tool"))
@@ -2558,11 +2573,11 @@ func unknownToolReturnsErrorResult() async throws {
 
 @Test
 func mcpRejectsBrokerControlCommands() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         for command in ["shutdown", "exit", "quit"] {
             let result = await WaxMCPTools.handleCall(
                 params: .init(name: command, arguments: [:]),
-                memory: memory
+                broker: service
             )
             #expect(result.isError == true)
             #expect(firstText(in: result).contains("Unknown tool"))
@@ -2572,11 +2587,11 @@ func mcpRejectsBrokerControlCommands() async throws {
 
 @Test
 func hiddenFlushToolIsRejectedConsistently() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         for command in ["flush", "wax_flush"] {
             let result = await WaxMCPTools.handleCall(
                 params: .init(name: command, arguments: [:]),
-                memory: memory
+                broker: service
             )
             #expect(result.isError == true)
             #expect(firstText(in: result).contains("Unknown tool"))
@@ -2806,7 +2821,7 @@ func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
 
 @Test
 func rememberRejectsMetadataSessionID() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
@@ -2815,7 +2830,7 @@ func rememberRejectsMetadataSessionID() async throws {
                     "metadata": .object(["session_id": .string("not-a-uuid")]),
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("metadata.session_id"))
@@ -2825,25 +2840,29 @@ func rememberRejectsMetadataSessionID() async throws {
 
 @Test
 func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-mcp-identityless-embedder-\(UUID().uuidString)")
-        .appendingPathExtension("wax")
-    defer { try? FileManager.default.removeItem(at: url) }
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-identityless-embedder-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
     var config = OrchestratorConfig.default
     config.enableVectorSearch = true
     config.queryEmbeddingTimeout = .seconds(1)
 
-    let memory = try await MemoryOrchestrator(
-        at: url,
-        config: config,
-        embedder: IdentitylessEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions").path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: IdentitylessEmbedder(),
+        orchestratorConfig: config
     )
-    defer { Task { try? await memory.close() } }
+    defer { Task { try? await service.close() } }
 
     let stats = await WaxMCPTools.handleCall(
         params: .init(name: "stats", arguments: [:]),
-        memory: memory
+        broker: service
     )
     #expect(stats.isError != true)
     let statsJSON = try parseJSONText(in: stats)
@@ -2852,18 +2871,34 @@ func statsReportQueryEmbeddingAvailableWithoutIdentityMetadata() async throws {
 
 @Test
 func vectorFallbackIsSurfacedInSearchAndStats() async throws {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-mcp-vector-fallback-\(UUID().uuidString)")
-        .appendingPathExtension("wax")
-    defer { try? FileManager.default.removeItem(at: url) }
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-vector-fallback-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
 
     do {
         var seedConfig = OrchestratorConfig.default
         seedConfig.enableVectorSearch = false
-        let seeded = try await MemoryOrchestrator(at: url, config: seedConfig)
-        try await seeded.remember("VECTOR_FALLBACK_SIGNAL Swift actors")
-        try await seeded.flush()
-        try await seeded.close()
+        seedConfig.enableStructuredMemory = true
+        let seeder = try await AgentBrokerService(
+            storePath: storeURL.path,
+            sessionRootPath: sessionRootURL.path,
+            noEmbedder: true,
+            embedderChoice: "auto",
+            requireVector: false,
+            orchestratorConfig: seedConfig
+        )
+        let remembered = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: ["content": "VECTOR_FALLBACK_SIGNAL Swift actors"]
+            ),
+            broker: seeder
+        )
+        #expect(remembered.isError != true)
+        try await seeder.close()
     }
 
     var config = OrchestratorConfig.default
@@ -2871,19 +2906,23 @@ func vectorFallbackIsSurfacedInSearchAndStats() async throws {
     config.queryEmbeddingTimeout = .milliseconds(25)
     config.rag.searchMode = .hybrid(alpha: 0.5)
 
-    let memory = try await MemoryOrchestrator(
-        at: url,
-        config: config,
-        embedder: HangingCountingEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: HangingCountingEmbedder(),
+        orchestratorConfig: config
     )
-    defer { Task { try? await memory.close() } }
+    defer { Task { try? await service.close() } }
 
     let search = await WaxMCPTools.handleCall(
         params: .init(
             name: "search",
             arguments: ["query": "VECTOR_FALLBACK_SIGNAL", "mode": "hybrid", "topK": 5]
         ),
-        memory: memory
+        broker: service
     )
     #expect(search.isError != true)
         let payload = try parseJSONResource(in: search, uriSuffix: "/search-summary")
@@ -2898,7 +2937,7 @@ func vectorFallbackIsSurfacedInSearchAndStats() async throws {
 
     let stats = await WaxMCPTools.handleCall(
         params: .init(name: "stats", arguments: [:]),
-        memory: memory
+        broker: service
     )
     #expect(stats.isError != true)
     let statsJSON = try parseJSONText(in: stats)
@@ -2907,13 +2946,13 @@ func vectorFallbackIsSurfacedInSearchAndStats() async throws {
 
 @Test
 func invalidSessionIDIsRejected() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "search",
                 arguments: ["query": "x", "mode": "text", "session_id": "not-a-uuid"]
             ),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("session_id must be a valid UUID"))
@@ -2922,7 +2961,7 @@ func invalidSessionIDIsRejected() async throws {
 
 @Test
 func recallJSONResourceIncludesStructuredResults() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         _ = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
@@ -2931,14 +2970,14 @@ func recallJSONResourceIncludesStructuredResults() async throws {
                     "metadata": ["source": "recall-json"],
                 ]
             ),
-            memory: memory
+            broker: service
         )
         let recall = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
                 arguments: ["query": "payload marker", "limit": 3]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(recall.isError != true)
@@ -2955,7 +2994,7 @@ func recallJSONResourceIncludesStructuredResults() async throws {
 
 @Test
 func graphToolsRoundTripWorks() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let upsert = await WaxMCPTools.handleCall(
             params: .init(
                 name: "entity_upsert",
@@ -2965,7 +3004,7 @@ func graphToolsRoundTripWorks() async throws {
                     "aliases": ["codex", "assistant"],
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(upsert.isError != true)
         let upsertJSON = try parseJSONText(in: upsert)
@@ -2980,7 +3019,7 @@ func graphToolsRoundTripWorks() async throws {
                     "object": "Prefer focused patches",
                 ]
             ),
-            memory: memory
+            broker: service
         )
         #expect(assert.isError != true)
         let asserted = try parseJSONText(in: assert)
@@ -2991,7 +3030,7 @@ func graphToolsRoundTripWorks() async throws {
                 name: "facts_query",
                 arguments: ["subject": "agent:codex", "predicate": "learned_behavior", "limit": 20]
             ),
-            memory: memory
+            broker: service
         )
         #expect(factsBeforeRetract.isError != true)
         #expect(firstText(in: factsBeforeRetract).contains("Prefer focused patches"))
@@ -3001,7 +3040,7 @@ func graphToolsRoundTripWorks() async throws {
                 name: "fact_retract",
                 arguments: ["fact_id": .int(factID)]
             ),
-            memory: memory
+            broker: service
         )
         #expect(retract.isError != true)
 
@@ -3010,7 +3049,7 @@ func graphToolsRoundTripWorks() async throws {
                 name: "facts_query",
                 arguments: ["subject": "agent:codex", "predicate": "learned_behavior", "limit": 20]
             ),
-            memory: memory
+            broker: service
         )
         #expect(factsAfterRetract.isError != true)
         #expect(!firstText(in: factsAfterRetract).contains("Prefer focused patches"))
@@ -3020,7 +3059,7 @@ func graphToolsRoundTripWorks() async throws {
                 name: "entity_resolve",
                 arguments: ["alias": "codex", "limit": 5]
             ),
-            memory: memory
+            broker: service
         )
         #expect(resolve.isError != true)
         #expect(firstText(in: resolve).contains("agent:codex"))
@@ -3073,49 +3112,6 @@ func licenseValidatorTrialPassAndExpiration() throws {
         #expect(Bool(false))
     } catch let error as LicenseValidator.ValidationError {
         #expect(error == .trialExpired)
-    }
-}
-
-private func withMemory(
-    _ body: @Sendable (MemoryOrchestrator) async throws -> Void
-) async throws {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-mcp-tests-\(UUID().uuidString)")
-        .appendingPathExtension("wax")
-    defer { try? FileManager.default.removeItem(at: url) }
-
-    var config = OrchestratorConfig.default
-    config.enableVectorSearch = false
-    config.enableStructuredMemory = true
-    config.chunking = .tokenCount(targetTokens: 16, overlapTokens: 2)
-    config.rag = FastRAGConfig(
-        maxContextTokens: 120,
-        expansionMaxTokens: 60,
-        snippetMaxTokens: 30,
-        maxSnippets: 8,
-        searchTopK: 20,
-        searchMode: .textOnly
-    )
-
-    let memory = try await MemoryOrchestrator(at: url, config: config)
-    var deferredError: Error?
-
-    do {
-        try await body(memory)
-    } catch {
-        deferredError = error
-    }
-
-    do {
-        try await memory.close()
-    } catch {
-        if deferredError == nil {
-            deferredError = error
-        }
-    }
-
-    if let deferredError {
-        throw deferredError
     }
 }
 
@@ -3189,18 +3185,17 @@ private func openTextOnlyMemory(
     return try await MemoryOrchestrator(at: url, config: config)
 }
 
-private func withVectorMemory(
-    _ body: @Sendable (MemoryOrchestrator) async throws -> Void
+private func withVectorBrokerService(
+    _ body: @Sendable (AgentBrokerService) async throws -> Void
 ) async throws {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-mcp-vector-tests-\(UUID().uuidString)")
-        .appendingPathExtension("wax")
-    defer { try? FileManager.default.removeItem(at: url) }
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-vector-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
     var config = OrchestratorConfig.default
     config.enableVectorSearch = true
     config.enableTextSearch = true
-    config.enableStructuredMemory = false
     config.ingestEmbeddingTimeout = .seconds(5)
     config.queryEmbeddingTimeout = .seconds(5)
     config.chunking = .tokenCount(targetTokens: 200, overlapTokens: 20)
@@ -3213,24 +3208,28 @@ private func withVectorMemory(
         searchMode: .hybrid(alpha: 0.5)
     )
 
-    let embedder = MCPTestDeterministicEmbedder()
-    let memory = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions").path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: MCPTestDeterministicEmbedder(),
+        orchestratorConfig: config
+    )
     var deferredError: Error?
-
     do {
-        try await body(memory)
+        try await body(service)
     } catch {
         deferredError = error
     }
-
     do {
-        try await memory.close()
+        try await service.close()
     } catch {
         if deferredError == nil {
             deferredError = error
         }
     }
-
     if let deferredError {
         throw deferredError
     }
@@ -3238,12 +3237,12 @@ private func withVectorMemory(
 
 @Test
 func vectorSearchRememberFlushRecallHappyPath() async throws {
-    try await withVectorMemory { memory in
+    try await withVectorBrokerService { service in
         let remember = await WaxMCPTools.handleCall(
             params: .init(name: "remember", arguments: [
                 "content": .string("Swift actors provide data isolation through actor-isolated state."),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(remember.isError != true)
         let rememberJSON = try parseJSONText(in: remember)
@@ -3255,7 +3254,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
             params: .init(name: "recall", arguments: [
                 "query": .string("actors"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(recall.isError != true)
         let recallText = firstText(in: recall)
@@ -3266,7 +3265,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
                 "query": .string("actors"),
                 "mode": .string("hybrid"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(search.isError != true)
     }
@@ -3274,9 +3273,15 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
 
 @Test
 func compatibilitySearchAcceptsVectorMode() async throws {
-    try await withVectorMemory { memory in
-        try await memory.remember("Vector mode compatibility anchor")
-        try await memory.flush()
+    try await withVectorBrokerService { service in
+        let remember = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: ["content": .string("Vector mode compatibility anchor")]
+            ),
+            broker: service
+        )
+        #expect(remember.isError != true)
 
         let search = await WaxMCPTools.handleCall(
             params: .init(
@@ -3287,7 +3292,7 @@ func compatibilitySearchAcceptsVectorMode() async throws {
                     "topK": .int(5),
                 ]
             ),
-            memory: memory
+            broker: service
         )
 
         #expect(search.isError != true)
@@ -3297,27 +3302,31 @@ func compatibilitySearchAcceptsVectorMode() async throws {
 
 @Test
 func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("wax-mcp-hang-remember-\(UUID().uuidString)")
-        .appendingPathExtension("wax")
-    defer { try? FileManager.default.removeItem(at: url) }
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-hang-remember-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
     var config = OrchestratorConfig.default
     config.enableVectorSearch = true
     config.ingestEmbeddingTimeout = .milliseconds(100)
 
-    let memory = try await MemoryOrchestrator(
-        at: url,
-        config: config,
-        embedder: HangingCountingEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions").path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: HangingCountingEmbedder(),
+        orchestratorConfig: config
     )
-    defer { Task { try? await memory.close() } }
+    defer { Task { try? await service.close() } }
 
     let result = await WaxMCPTools.handleCall(
         params: .init(name: "remember", arguments: [
             "content": .string("This should time out."),
         ]),
-        memory: memory
+        broker: service
     )
     #expect(result.isError == true)
     let text = firstText(in: result)
@@ -3326,14 +3335,14 @@ func vectorSearchRememberTimesOutWithHangingEmbedder() async throws {
 
 @Test
 func rememberRejectsSecretLikeDurableMemory() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
             params: .init(name: "remember", arguments: [
                 "content": .string("OPENAI_API_KEY=sk-1234567890abcdefghijklmnop"),
                 "memory_type": .string("decision"),
                 "durability": .string("durable"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(result.isError == true)
         #expect(firstText(in: result).contains("secret-like content"))
@@ -3342,7 +3351,7 @@ func rememberRejectsSecretLikeDurableMemory() async throws {
 
 @Test
 func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let remember = await WaxMCPTools.handleCall(
             params: .init(name: "remember", arguments: [
                 "content": .string("Chris prefers concise summaries for release notes."),
@@ -3352,7 +3361,7 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
                 "repo": .string("Wax"),
                 "reviewed": .bool(true),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(remember.isError != true)
 
@@ -3361,7 +3370,7 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
                 "query": .string("concise summaries"),
                 "mode": .string("text"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(search.isError != true)
         let searchJSON = try parseJSONResource(in: search, uriSuffix: "search-summary")
@@ -3377,7 +3386,7 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
                 "query": .string("release notes preference"),
                 "limit": .int(3),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(recall.isError != true)
         let recallJSON = try parseJSONResource(in: recall, uriSuffix: "recall-summary")
@@ -5002,7 +5011,7 @@ func brokerMemoryPromoteRejectsStaleSessionBeforeDurableWrite() async throws {
 
 @Test
 func knowledgeCaptureAndMemoryHealthWork() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let capture = await WaxMCPTools.handleCall(
             params: .init(name: "knowledge_capture", arguments: [
                 "content": .string("Wax uses a broker-owned long-term store."),
@@ -5011,7 +5020,7 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
                 "predicate": .string("architecture"),
                 "object": .string("broker-owned"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(capture.isError != true)
         let captureJSON = try parseJSONText(in: capture)
@@ -5022,7 +5031,7 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
                 "content": .string("Lesson: keep broker-owned long-term store access single-owner."),
                 "memory_type": .string("lesson"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(duplicateA.isError != true)
 
@@ -5031,7 +5040,7 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
                 "content": .string("Lesson: keep broker-owned long-term store access single owner."),
                 "memory_type": .string("lesson"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(duplicateB.isError != true)
 
@@ -5041,13 +5050,13 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
                 "predicate": .string("architecture"),
                 "object": .string("direct-store"),
             ]),
-            memory: memory
+            broker: service
         )
         #expect(conflictingFact.isError != true)
 
         let health = await WaxMCPTools.handleCall(
             params: .init(name: "memory_health", arguments: [:]),
-            memory: memory
+            broker: service
         )
         #expect(health.isError != true)
         let healthJSON = try parseJSONResource(in: health, uriSuffix: "memory-health-summary")
@@ -5060,13 +5069,13 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
 
 @Test
 func factRetractMissingIdDoesNotReportCommitted() async throws {
-    try await withMemory { memory in
+    try await withAgentBrokerService { service, _ in
         let retract = await WaxMCPTools.handleCall(
             params: .init(
                 name: "fact_retract",
                 arguments: ["fact_id": .int(999_999)]
             ),
-            memory: memory
+            broker: service
         )
         #expect(retract.isError == true)
         #expect(firstText(in: retract).contains("fact_id has no open spans"))

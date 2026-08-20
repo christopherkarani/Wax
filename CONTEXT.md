@@ -12,12 +12,16 @@ _Avoid_: EmbeddingPolicy, QueryEmbeddingPolicy, DirectSearchMode, SearchMode (as
 Plans the text-lane query (AND first, then OR fallback) and orders hits. Owns the published score.
 _Avoid_: treating the text engine as the planner; calling AND/OR planning retrieval
 
+**MatchPlan**:
+Ranking's text-lane interface: AND MATCH, optional OR MATCH, token count. Empty plan (stopwords only) is no text hits.
+_Avoid_: literalMatchQuery; passing the raw user string as MATCH
+
 **Match execute**:
 The text-lane execute: run a planned MATCH string and return BM25 hits. Does not re-plan AND/OR.
-_Avoid_: query planning in the text engine; calling this RetrievalMode
+_Avoid_: query planning in the text engine; calling this RetrievalMode; FTS5SearchEngine.search(query:)
 
 **Recall assembly**:
-Builds RAGContext from already-ranked hits (token budget, expansion, surrogates). May apply a later answer-focused rerank. Not Ranking.
+Builds RAGContext from already-ranked hits (token budget, expansion, surrogates). May reorder for an answer budget. Does not rewrite Ranking's published score.
 _Avoid_: treating Memory.search as Ranking’s test surface
 
 **Long-term Memory**:
