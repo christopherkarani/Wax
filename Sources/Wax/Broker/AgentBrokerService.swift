@@ -625,7 +625,7 @@ extension AgentBrokerService {
             "Query: \(query)",
             "Total tokens: \(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
             "Results: \(selected.count) of \(limit) requested (orchestrator returned \(selected.count))",
-            "Search controls: requested_mode=\(primaryExecution?.requestedModeSummary ?? "n/a") effective_mode=\(primaryExecution?.effectiveModeSummary ?? "n/a") query_embedding_state=\(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a") search_top_k=\(effectiveTopK) limit=\(limit) scope=\(recallScope.rawValue)",
+            "Search controls: requested_mode=\(primaryExecution?.requestedMode.diagnosticsSummary ?? "n/a") effective_mode=\(primaryExecution?.effectiveMode.diagnosticsSummary ?? "n/a") query_embedding_state=\(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a") search_top_k=\(effectiveTopK) limit=\(limit) scope=\(recallScope.rawValue)",
         ])
         if let project = resolvedIdentity.project {
             lines.append("Resolved project: \(project)")
@@ -669,8 +669,8 @@ extension AgentBrokerService {
             "result_count": .from(selected.count),
             "limit": .from(limit),
             "search_top_k": .from(effectiveTopK),
-            "requested_mode": .string(primaryExecution?.requestedModeSummary ?? "n/a"),
-            "effective_mode": .string(primaryExecution?.effectiveModeSummary ?? "n/a"),
+            "requested_mode": .string(primaryExecution?.requestedMode.diagnosticsSummary ?? "n/a"),
+            "effective_mode": .string(primaryExecution?.effectiveMode.diagnosticsSummary ?? "n/a"),
             "query_embedding_state": .string(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a"),
             "scope": .string(recallScope.rawValue),
             "project": .from(resolvedIdentity.project),
@@ -877,8 +877,8 @@ extension AgentBrokerService {
         return .object([
             "query": .string(query),
             "topK": .from(topK),
-            "requested_mode": .string(execution.requestedModeSummary),
-            "effective_mode": .string(execution.effectiveModeSummary),
+            "requested_mode": .string(execution.requestedMode.diagnosticsSummary),
+            "effective_mode": .string(execution.effectiveMode.diagnosticsSummary),
             "query_embedding_state": .string(execution.queryEmbeddingState.rawValue),
             "applied_filters": parsedFilters.summary,
             "time_range_requested": .from(parsedFilters.timeRange != nil),
@@ -2040,8 +2040,8 @@ extension AgentBrokerService {
         return .object([
             "query": .string(query),
             "topK": .from(topK),
-            "requested_mode": .string(execution.requestedModeSummary),
-            "effective_mode": .string(execution.effectiveModeSummary),
+            "requested_mode": .string(execution.requestedMode.diagnosticsSummary),
+            "effective_mode": .string(execution.effectiveMode.diagnosticsSummary),
             "query_embedding_state": .string(execution.queryEmbeddingState.rawValue),
             "recursive": .from(recursive),
             "rebuild_requested": .from(rebuild),

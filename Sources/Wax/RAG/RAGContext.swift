@@ -61,17 +61,20 @@ public struct RAGContext: Sendable, Equatable {
     /// Wax degrades to the text lane when the vector lane is unavailable. Compare
     /// ``requestedMode`` and ``effectiveMode`` (and check ``queryEmbeddingState``)
     /// to detect that degradation instead of assuming it from scores.
+    ///
+    /// For logs, MCP, or docs that need the historical string form (`"text"`,
+    /// `"vector"`, `"hybrid(alpha=0.500)"`), use ``RetrievalMode/diagnosticsSummary``.
     public struct Diagnostics: Sendable, Equatable {
-        /// The retrieval mode requested by the caller (e.g. `hybrid(alpha=0.500)`).
-        public var requestedMode: String
-        /// The retrieval mode actually executed (e.g. `text` when the vector lane was unavailable).
-        public var effectiveMode: String
+        /// The retrieval mode requested by the caller.
+        public var requestedMode: RetrievalMode
+        /// The retrieval mode actually executed (e.g. ``RetrievalMode/textOnly`` when the vector lane was unavailable).
+        public var effectiveMode: RetrievalMode
         /// What happened to the query embedding for this search.
         public var queryEmbeddingState: QueryEmbeddingState
 
         public init(
-            requestedMode: String,
-            effectiveMode: String,
+            requestedMode: RetrievalMode,
+            effectiveMode: RetrievalMode,
             queryEmbeddingState: QueryEmbeddingState
         ) {
             self.requestedMode = requestedMode
