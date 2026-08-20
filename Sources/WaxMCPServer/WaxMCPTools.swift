@@ -8,8 +8,7 @@ enum WaxMCPTools {
     static func register(
         on server: Server,
         brokerConfiguration: AgentBrokerConfiguration,
-        structuredMemoryEnabled: Bool,
-        noEmbedder: Bool
+        structuredMemoryEnabled: Bool
     ) async {
         let sessionHint = MCPClientSessionHint()
         _ = await server.withMethodHandler(ListTools.self) { _ in
@@ -24,7 +23,6 @@ enum WaxMCPTools {
                 params: params,
                 brokerConfiguration: brokerConfiguration,
                 structuredMemoryEnabled: structuredMemoryEnabled,
-                noEmbedder: noEmbedder,
                 sessionHint: sessionHint
             )
         }
@@ -34,7 +32,6 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool = true,
-        noEmbedder _: Bool = false,
         sessionHint: MCPClientSessionHint? = nil
     ) async -> CallTool.Result {
         await executeCall(

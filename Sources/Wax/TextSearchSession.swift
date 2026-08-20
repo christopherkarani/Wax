@@ -25,7 +25,7 @@ package actor WaxTextSearchSession {
     }
 
     package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
-        guard let plan = MatchPlan.plan(query: query, maxTokens: 64) else { return [] }
+        guard let plan = MatchPlan.plan(query: query) else { return [] }
         return try await engine.search(matchQuery: plan.primaryMatch, topK: topK)
     }
 
