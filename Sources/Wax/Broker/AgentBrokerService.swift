@@ -1493,8 +1493,9 @@ extension AgentBrokerService {
         let startPayload = try await sessionStart(arguments: startArgs)
         let sessionID = startPayload.objectValue?["session_id"]?.stringValue
 
-        // Explicit project must win over cwd inference so later project-scoped recall
-        // resolves the same identity session_open advertised.
+        // Explicit project must win over cwd inference for both project and repo.
+        // session_open has no separate repo arg; leaving a cwd-inferred repo would
+        // advertise a split identity and stamp foreign wax.repo on later remembers.
         if let project,
            let sessionID,
            let uuid = UUID(uuidString: sessionID)
@@ -1503,9 +1504,7 @@ extension AgentBrokerService {
             if !trimmed.isEmpty {
                 try virtualSessions.updateLive(uuid) { state in
                     state.manifest.project = trimmed
-                    if state.manifest.repo == nil || state.manifest.repo?.isEmpty == true {
-                        state.manifest.repo = trimmed
-                    }
+                    state.manifest.repo = trimmed
                 }
             }
         }

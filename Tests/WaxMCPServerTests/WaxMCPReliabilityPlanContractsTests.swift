@@ -575,6 +575,8 @@ func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
         #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
         let payload = try requireObject(opened.payload)
         #expect(payload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(payload["repo"]?.stringValue == "ExplicitOpenProject")
+        #expect(payload["repo"]?.stringValue != "ForeignOpenRepo")
         let sessionID = try requireString(payload, "session_id")
 
         let recall = await service.handle(.init(
@@ -587,7 +589,39 @@ func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
             ]
         ))
         #expect(recall.ok == true)
-        #expect(try requireObject(recall.payload)["project"]?.stringValue == "ExplicitOpenProject")
+        let recallPayload = try requireObject(recall.payload)
+        #expect(recallPayload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(recallPayload["repo"]?.stringValue == "ExplicitOpenProject")
+
+        let token = "OPEN-STAMP-\(UUID().uuidString.prefix(8))"
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) must not inherit ForeignOpenRepo."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("task_state"),
+                "durability": .string("working"),
+                "cwd": .string(repoURL.path),
+            ]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+
+        let stamped = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "scope": .string("session"),
+                "mode": .string("text"),
+                "limit": .int(8),
+            ]
+        ))
+        #expect(stamped.ok == true)
+        let stampedPayload = try requireObject(stamped.payload)
+        #expect(stampedPayload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(stampedPayload["repo"]?.stringValue == "ExplicitOpenProject")
+        #expect(resultTexts(stampedPayload).contains { $0.contains(token) })
+        #expect(stampedPayload["project_miss"]?.boolValue != true)
     }
 }
 #endif
