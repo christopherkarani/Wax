@@ -22,6 +22,7 @@ private func withAgentBrokerService<T>(
     let storeURL = rootURL.appendingPathComponent("memory.wax")
     let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
     let service = try await AgentBrokerService(
         storePath: storeURL.path,

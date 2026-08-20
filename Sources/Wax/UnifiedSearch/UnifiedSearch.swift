@@ -143,7 +143,7 @@ extension Wax {
 
             do {
                 let base = try await textEngine.search(matchQuery: primaryQuery, topK: candidateLimit)
-                guard let fallbackQuery, fallbackQuery != primaryQuery else {
+                guard let fallbackQuery else {
                     return (Array(base.prefix(candidateLimit)), false)
                 }
                 let fallback = try await textEngine.search(matchQuery: fallbackQuery, topK: candidateLimit)

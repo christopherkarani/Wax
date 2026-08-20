@@ -20,8 +20,8 @@ let engine = try await FTS5SearchEngine.inMemory()
 // Index content
 try await engine.index(frameId: 1, text: "Swift concurrency with actors")
 
-// Search
-let results = try await engine.search(query: "actors", topK: 10)
+// Search — execute a planned MATCH string (Ranking / MatchPlan owns planning)
+let results = try await engine.search(matchQuery: "\"actors\"", topK: 10)
 for hit in results {
     print("\(hit.frameId): \(hit.score) — \(hit.snippet ?? "")")
 }

@@ -10,15 +10,17 @@ package struct MatchPlan: Equatable, Sendable {
     package static func plan(query: String, maxTokens: Int = 16) -> MatchPlan? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard let primary = plannedQuery(from: trimmed, join: .andLike, maxTokens: maxTokens) else {
+
+        let tokenList = tokens(from: trimmed, maxTokens: maxTokens)
+        let phrases = normalizedQuotedPhrases(from: trimmed)
+        guard let primary = matchQuery(phrases: phrases, tokens: tokenList, join: .andLike) else {
             return nil
         }
-        let tokens = tokens(from: trimmed, maxTokens: maxTokens)
-        let fallback = plannedQuery(from: trimmed, join: .or, maxTokens: maxTokens)
+        let fallback = matchQuery(phrases: phrases, tokens: tokenList, join: .or)
         return MatchPlan(
             primaryMatch: primary,
             fallbackMatch: (fallback != nil && fallback != primary) ? fallback : nil,
-            tokenCount: tokens.count
+            tokenCount: tokenList.count
         )
     }
 
@@ -141,22 +143,21 @@ package struct MatchPlan: Equatable, Sendable {
         }
     }
 
-    private static func plannedQuery(
-        from query: String,
-        join: FTSMatchJoin,
-        maxTokens: Int
+    private static func matchQuery(
+        phrases: [String],
+        tokens: [String],
+        join: FTSMatchJoin
     ) -> String? {
-        let quotedTokens = tokens(from: query, maxTokens: maxTokens).map { token -> String in
-            let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
-        let quotedPhrases = normalizedQuotedPhrases(from: query).map { phrase -> String in
-            let escaped = phrase.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
+        let quotedPhrases = phrases.map(quotedFTSLiteral)
+        let quotedTokens = tokens.map(quotedFTSLiteral)
         let clauses = quotedPhrases + quotedTokens
         guard !clauses.isEmpty else { return nil }
         return clauses.joined(separator: join.separator)
+    }
+
+    private static func quotedFTSLiteral(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
+        return "\"\(escaped)\""
     }
 
     private static let ftsStopWords: Set<String> = [
