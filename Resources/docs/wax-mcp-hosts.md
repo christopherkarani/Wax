@@ -198,11 +198,11 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
 Same rules on every host (from the paste block):
 
-1. `handoff_latest` → `session_start` (keep `session_id`)
-2. Tactical writes: `remember` **with** `session_id` (`task_state` / `working`) when a plan locks, a path fails, or you are about to stop
-3. Strategic writes: `remember` **without** `session_id` (`durable` decision / lesson / constraint / preference / fact)
-4. `recall` without `session_id` for durable facts; with `session_id` for this task only; both → `compact_context`
-5. `handoff` then `session_end`
+1. Prefer `session_open` (`project`, stable `agent_id`/`run_id`, optional `recall_query`) — or `handoff_latest` → `session_start` (keep `session_id`)
+2. Tactical writes: `remember` **with** `session_id` or `scope: session` (`task_state` / `working`) when a plan locks, a path fails, or you are about to stop
+3. Strategic writes: `remember` with `scope: durable` (or without `session_id`) for decision / lesson / constraint / preference / fact
+4. `recall` defaults to `scope: project` (hard-filters; empty lane is an explicit miss). Pass `scope: global` only for cross-project reads. With `session_id`, recall merges that session with durable under project scope. Prefer `mode: "text"` for exact names.
+5. Close with `session_close` (or `handoff` then `session_end`). Do not end between turns of one host chat.
 
 ### Pitfalls that show up on a real store
 

@@ -438,13 +438,16 @@ package enum MemorySemantics {
 
     /// Walks `path` by dropping string components. Never uses `URL.deletingLastPathComponent`,
     /// which turns empty/`.`/`./` into `../` forever when cwd is missing.
-    private static func gitRepositoryRoot(startingAt path: String) -> String? {
+    ///
+    /// Linked worktrees (`.git` file with `gitdir: …/worktrees/<name>`) resolve to the
+    /// main repository directory name, not the worktree folder basename.
+    package static func gitRepositoryRoot(startingAt path: String) -> String? {
         var current = path
         let fileManager = FileManager.default
         for _ in 0..<256 {
             let gitPath = current == "/" ? "/.git" : "\(current)/.git"
             if fileManager.fileExists(atPath: gitPath) {
-                return current
+                return resolveRepositoryRoot(fromGitMarkerAt: gitPath)
             }
             guard let parent = parentDirectoryPath(current) else {
                 return nil
@@ -452,6 +455,53 @@ package enum MemorySemantics {
             current = parent
         }
         return nil
+    }
+
+    /// Resolves the main repository root from a `.git` directory or gitdir file.
+    package static func resolveRepositoryRoot(fromGitMarkerAt gitPath: String) -> String? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory) else {
+            return nil
+        }
+        if isDirectory.boolValue {
+            return parentDirectoryPath(gitPath)
+        }
+        guard let gitDir = parseGitdirPointer(at: gitPath) else {
+            return nil
+        }
+        let commonGitDir = stripWorktreesSuffix(fromGitDir: gitDir)
+        return parentDirectoryPath(commonGitDir)
+    }
+
+    /// Reads `gitdir: <path>` from a `.git` file (linked worktree). Relative paths
+    /// resolve against the directory containing the `.git` file.
+    package static func parseGitdirPointer(at gitFilePath: String) -> String? {
+        guard let raw = try? String(contentsOfFile: gitFilePath, encoding: .utf8) else {
+            return nil
+        }
+        for line in raw.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 7, trimmed.prefix(7).lowercased() == "gitdir:" else {
+                continue
+            }
+            let value = trimmed.dropFirst(7).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            if value.hasPrefix("/") {
+                return normalizeAbsolutePath(value)
+            }
+            guard let parent = parentDirectoryPath(gitFilePath) else { return nil }
+            return normalizeAbsolutePath(parent + "/" + value)
+        }
+        return nil
+    }
+
+    /// `/repo/.git/worktrees/<name>` → `/repo/.git`; otherwise returns `gitDir` unchanged.
+    package static func stripWorktreesSuffix(fromGitDir gitDir: String) -> String {
+        let marker = "/worktrees/"
+        guard let range = gitDir.range(of: marker) else {
+            return gitDir
+        }
+        return String(gitDir[..<range.lowerBound])
     }
 
     private static func resolvedAbsoluteDirectoryPath(
