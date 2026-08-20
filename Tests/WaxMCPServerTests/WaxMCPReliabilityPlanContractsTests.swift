@@ -169,6 +169,139 @@ func t01EmptyProjectLaneDoesNotAutoWidenToGlobal() async throws {
 }
 
 @Test
+func t01ProjectScopeSurvivesForeignTopKContamination() async throws {
+    try await withReliabilityBroker { service, _ in
+        let shared = "SHARED-QUERY-TOKEN-\(UUID().uuidString.prefix(8))"
+        for index in 1...10 {
+            #expect((await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("\(shared) FOREIGN-\(index) contamination filler for OtherLand."),
+                    "memory_type": .string("decision"),
+                    "durability": .string("durable"),
+                    "project": .string("OtherLand"),
+                ]
+            ))).ok == true)
+        }
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(shared) HOME-LANE-TOKEN unique decision for HomeLand."),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+                "project": .string("HomeLand"),
+            ]
+        ))).ok == true)
+
+        let recall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(shared),
+                "project": .string("HomeLand"),
+                "mode": .string("text"),
+                "limit": .int(3),
+            ]
+        ))
+        #expect(recall.ok == true, "recall failed: \(recall.error ?? "nil")")
+        let payload = try requireObject(recall.payload)
+        let texts = resultTexts(payload)
+        #expect(texts.contains { $0.contains("HOME-LANE-TOKEN") })
+        #expect(!texts.contains { $0.contains("FOREIGN-") })
+        #expect(payload["project_miss"]?.boolValue == false)
+    }
+}
+
+@Test
+func t01SessionScopeDoesNotProjectHardFilterUnlabeledSessionNotes() async throws {
+    try await withReliabilityBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("t01-session-scope"),
+                "run_id": .string("t01-session-scope"),
+                "cwd": .string("/tmp"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let token = "SESSION-ONLY-\(UUID().uuidString.prefix(8))"
+
+        // Bypass broker inference so the session note stays unlabeled.
+        let sessionMemory = try await service.memory(for: UUID(uuidString: sessionID))
+        try await sessionMemory.remember(
+            "\(token) unlabeled session working note",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+            ]
+        )
+        try await sessionMemory.flush()
+
+        let recall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "scope": .string("session"),
+                "project": .string("SomeProject"),
+                "mode": .string("text"),
+                "limit": .int(5),
+            ]
+        ))
+        #expect(recall.ok == true, "recall failed: \(recall.error ?? "nil")")
+        let texts = resultTexts(try requireObject(recall.payload))
+        #expect(texts.contains { $0.contains(token) })
+    }
+}
+
+@Test
+func t02SessionOpenStampsExplicitProjectOntoManifestAndRemember() async throws {
+    try await withReliabilityBroker { service, _ in
+        let opened = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string("Espresso"),
+                "repo": .string("Espresso"),
+                "agent_id": .string("t02-open-stamp"),
+                "run_id": .string("t02-open-stamp"),
+                "cwd": .string("/tmp"),
+            ]
+        ))
+        #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+        let openPayload = try requireObject(opened.payload)
+        #expect(openPayload["project"]?.stringValue == "Espresso")
+        #expect(openPayload["repo"]?.stringValue == "Espresso")
+        let sessionID = try requireString(openPayload, "session_id")
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Session-open stamped project must flow into remember metadata."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+
+        let recall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string("Session-open stamped project must flow"),
+                "session_id": .string(sessionID),
+                "mode": .string("text"),
+                "limit": .int(8),
+            ]
+        ))
+        #expect(recall.ok == true, "recall failed: \(recall.error ?? "nil")")
+        let recallPayload = try requireObject(recall.payload)
+        #expect(recallPayload["project"]?.stringValue == "Espresso")
+        #expect(recallPayload["project_miss"]?.boolValue == false)
+        #expect(resultTexts(recallPayload).contains { $0.contains("Session-open stamped project") })
+    }
+}
+
+@Test
 func t02HandoffLatestHitAppearsInDefaultProjectRecall() async throws {
     try await withReliabilityBroker { service, _ in
         let token = "HANDOFF-X-\(UUID().uuidString.prefix(8))"
