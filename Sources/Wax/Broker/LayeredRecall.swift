@@ -330,6 +330,46 @@ package enum LayeredRecall {
         }
     }
 
+    /// Inflates retrieval top-K when a post-rank project hard-filter may discard foreign hits.
+    package static func retrievalTopK(requested: Int, scope: Scope, maxTopK: Int = 200) -> Int {
+        let bounded = max(1, requested)
+        guard scope != .global else { return bounded }
+        return min(max(bounded * 3, bounded), maxTopK)
+    }
+
+    /// Merges resolved project/repo identity into the caller's frame filter for retrieval (C1/C3).
+    package static func frameFilterForScopedRetrieval(
+        base: FrameFilter?,
+        scope: Scope,
+        identity: Identity
+    ) -> FrameFilter? {
+        guard scope != .global else { return base }
+        let applyProjectFilter = scope == .project
+            || (scope == .session && (identity.project != nil || identity.repo != nil))
+        guard applyProjectFilter || scope == .project else { return base }
+        guard identity.project != nil || identity.repo != nil else { return base }
+
+        var entries = base?.metadataFilter?.requiredEntries ?? [:]
+        if let project = identity.project {
+            entries[MemoryMetadataKeys.project] = project
+        } else if let repo = identity.repo {
+            entries[MemoryMetadataKeys.repo] = repo
+        }
+
+        let metadataFilter = MetadataFilter(
+            requiredEntries: entries,
+            requiredTags: base?.metadataFilter?.requiredTags ?? [],
+            requiredLabels: base?.metadataFilter?.requiredLabels ?? []
+        )
+        return FrameFilter(
+            includeDeleted: base?.includeDeleted ?? false,
+            includeSuperseded: base?.includeSuperseded ?? false,
+            includeSurrogates: base?.includeSurrogates ?? false,
+            frameIds: base?.frameIds,
+            metadataFilter: metadataFilter
+        )
+    }
+
     package static func mergeHits(
         sessionHits: [Hit],
         durableHits: [Hit],
@@ -534,15 +574,22 @@ package enum LayeredRecall {
             mode = .textOnly
         }
 
+        let retrievalTopK = Self.retrievalTopK(requested: request.searchTopK, scope: request.scope)
+        let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
+            base: request.frameFilter,
+            scope: request.scope,
+            identity: identity
+        )
+
         var sessionHits: [Hit] = []
         var sessionExecution: MemoryOrchestrator.RecallExecution?
         if let working {
             let execution = try await working.memory.recallExecution(
                 query: request.query,
                 mode: mode,
-                frameFilter: request.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
-                topK: request.searchTopK
+                topK: retrievalTopK
             )
             sessionExecution = execution
             sessionHits = execution.context.items.map {
@@ -554,7 +601,7 @@ package enum LayeredRecall {
                         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                         return lhs.frameId > rhs.frameId
                     }
-                sessionHits = documents.prefix(request.searchTopK).map { document in
+                sessionHits = documents.prefix(retrievalTopK).map { document in
                     Hit(
                         reference: makeMemoryReference(
                             .working,
@@ -593,9 +640,9 @@ package enum LayeredRecall {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
                 mode: mode,
-                frameFilter: request.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
-                topK: request.searchTopK
+                topK: retrievalTopK
             )
             durableExecution = execution
             durableHits = execution.context.items.map {

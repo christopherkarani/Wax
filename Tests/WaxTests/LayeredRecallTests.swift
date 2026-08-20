@@ -88,6 +88,32 @@ func layeredRecallResolveIdentityPrefersExplicitThenSessionThenInferred() {
 }
 
 @Test
+func layeredRecallRetrievalTopKOverfetchesForProjectScope() {
+    #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .project) == 15)
+    #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .session) == 15)
+    #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .global) == 5)
+    #expect(LayeredRecall.retrievalTopK(requested: 100, scope: .project, maxTopK: 200) == 200)
+}
+
+@Test
+func layeredRecallFrameFilterInjectsProjectMetadataForScopedRetrieval() {
+    let identity = LayeredRecall.Identity(project: "Wax", repo: "Wax")
+    let filter = LayeredRecall.frameFilterForScopedRetrieval(
+        base: nil,
+        scope: .project,
+        identity: identity
+    )
+    #expect(filter?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "Wax")
+
+    let global = LayeredRecall.frameFilterForScopedRetrieval(
+        base: nil,
+        scope: .global,
+        identity: identity
+    )
+    #expect(global == nil)
+}
+
+@Test
 func layeredRecallMakeMemoryReferenceFormatsHorizons() {
     let sessionID = UUID()
     #expect(LayeredRecall.makeMemoryReference(.durable, sessionID: nil, frameID: 42) == "durable:42")
