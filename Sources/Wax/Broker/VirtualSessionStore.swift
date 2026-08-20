@@ -388,6 +388,11 @@ package final class VirtualSessionStore: @unchecked Sendable {
         _ = try lookup(sessionID)
     }
 
+    package func validateActiveOrRebind(_ sessionID: UUID?) async throws {
+        guard sessionID != nil else { return }
+        _ = try await ensureLive(sessionID)
+    }
+
     /// Returns the on-disk manifest status for `sessionID`, or `nil` if no manifest exists.
     package func persistedStatus(for sessionID: UUID) throws -> BrokerSessionManifest.Status? {
         do {

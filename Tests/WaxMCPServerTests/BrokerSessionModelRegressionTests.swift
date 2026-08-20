@@ -539,7 +539,7 @@ func mergeRecallItemsReservesMissingSessionHorizonWhenDurableFillsLimit() {
         recallItem(frameId: UInt64(index), score: 1.0 - Float(index) * 0.01, text: "durable hit \(index)")
     }
     let session = [recallItem(frameId: 99, score: 0.05, text: "session reserved note")]
-    let merged = AgentBrokerService.mergeRecallItems(
+    let merged = LayeredRecall.mergeRecallItems(
         sessionItems: session,
         durableItems: durable,
         limit: 5
@@ -556,7 +556,7 @@ func mergeRecallItemsReservesMissingDurableHorizonWhenSessionFillsLimit() {
         recallItem(frameId: UInt64(index), score: 1.0 - Float(index) * 0.01, text: "session hit \(index)")
     }
     let durable = [recallItem(frameId: 99, score: 0.05, text: "durable reserved note")]
-    let merged = AgentBrokerService.mergeRecallItems(
+    let merged = LayeredRecall.mergeRecallItems(
         sessionItems: session,
         durableItems: durable,
         limit: 5

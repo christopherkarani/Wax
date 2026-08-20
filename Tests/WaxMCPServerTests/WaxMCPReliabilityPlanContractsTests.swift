@@ -6,7 +6,8 @@ import Testing
 @testable import Wax
 @testable import WaxCore
 
-/// Reliability contracts for project-scoped recall, session rebind, and honest writes.
+/// Reliability contracts for project-scoped recall, session rebind, and honest writes
+/// (Phase 0 from Resources/docs/wax-mcp-reliability-plan.md, T0.1–T0.6+).
 private func withReliabilityBroker<T>(
     _ body: (AgentBrokerService, URL) async throws -> T
 ) async throws -> T {
