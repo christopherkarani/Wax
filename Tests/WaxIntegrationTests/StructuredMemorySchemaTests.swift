@@ -253,7 +253,7 @@ private enum SQLiteBlobInspector {
 @Test func migrationPreservesFTSSearchResults() async throws {
     let v1 = try SQLiteBlobInspector.makeV1FTS5Blob()
     let engine = try FTS5SearchEngine.deserialize(from: v1)
-    let results = try await engine.search(query: "hello", topK: 10)
+    let results = try await engine.search(matchQuery: "\"hello\"", topK: 10)
 
     #expect(results.count == 1)
     #expect(results[0].frameId == 0)

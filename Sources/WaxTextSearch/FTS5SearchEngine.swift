@@ -163,15 +163,6 @@ package actor FTS5SearchEngine {
         }
     }
 
-    package func search(query: String, topK: Int) async throws -> [TextSearchResult] {
-        try await flushPendingOpsIfNeeded()
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        let matchQuery = Self.literalMatchQuery(for: trimmed)
-        guard !matchQuery.isEmpty else { return [] }
-        return try await search(matchQuery: matchQuery, topK: topK)
-    }
-
     package func search(matchQuery: String, topK: Int) async throws -> [TextSearchResult] {
         try await flushPendingOpsIfNeeded()
         let trimmed = matchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1377,28 +1368,6 @@ package actor FTS5SearchEngine {
             throw WaxError.io("sqlite connection unavailable")
         }
         return connection
-    }
-
-    private static func literalMatchQuery(for query: String) -> String {
-        var tokens: [String] = []
-        var current = String()
-
-        for scalar in query.unicodeScalars {
-            if CharacterSet.alphanumerics.contains(scalar) {
-                current.unicodeScalars.append(scalar)
-            } else if !current.isEmpty {
-                tokens.append(current)
-                current.removeAll(keepingCapacity: true)
-            }
-        }
-
-        if !current.isEmpty {
-            tokens.append(current)
-        }
-
-        return tokens
-            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
-            .joined(separator: " ")
     }
 
     private static func scoreFromBM25Rank(_ rank: Double) -> Double {

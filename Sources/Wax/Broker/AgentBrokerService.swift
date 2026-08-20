@@ -40,7 +40,8 @@ package actor AgentBrokerService {
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         embedderOverride: (any EmbeddingProvider)? = nil,
         readiness: EmbeddingReadiness = .shared,
-        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil
+        factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
+        orchestratorConfig: OrchestratorConfig? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -108,7 +109,7 @@ package actor AgentBrokerService {
                 )
             }
         )
-        var config = OrchestratorConfig.default
+        var config = orchestratorConfig ?? .default
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
@@ -2592,8 +2593,11 @@ extension AgentBrokerService {
                     metadataEntries = try coerceMetadata(metadataObject)
                 }
             }
-            if let labelsRaw = filters["labels"]?.arrayValue {
-                labels = try labelsRaw.map { value in
+            if let labelsRaw = filters["labels"] {
+                guard let rawArray = labelsRaw.arrayValue else {
+                    throw BrokerValidationError.invalid("filters.labels must be an array of strings")
+                }
+                labels = try rawArray.map { value in
                     guard let raw = value.stringValue else {
                         throw BrokerValidationError.invalid("filters.labels must contain only strings")
                     }
@@ -2636,8 +2640,18 @@ extension AgentBrokerService {
                 }
                 frameIds = parsedFrameIds
             }
-            timeAfterMs = filters["time_after_ms"]?.intValue
-            timeBeforeMs = filters["time_before_ms"]?.intValue
+            if let timeAfterRaw = filters["time_after_ms"] {
+                guard let parsed = timeAfterRaw.intValue else {
+                    throw BrokerValidationError.invalid("filters.time_after_ms must be an integer")
+                }
+                timeAfterMs = parsed
+            }
+            if let timeBeforeRaw = filters["time_before_ms"] {
+                guard let parsed = timeBeforeRaw.intValue else {
+                    throw BrokerValidationError.invalid("filters.time_before_ms must be an integer")
+                }
+                timeBeforeMs = parsed
+            }
         }
         let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
             ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
@@ -3238,11 +3252,11 @@ struct BrokerArguments {
     }
 
     func optionalInt(_ key: String) throws -> Int? {
-        guard let value = values[key] else { return nil }
-        guard let intValue = value.intValue else {
-            throw BrokerValidationError.invalid("\(key) must be an integer")
+        guard let parsed = try optionalInt64(key) else { return nil }
+        guard let intValue = Int(exactly: parsed) else {
+            throw BrokerValidationError.invalid("\(key) is out of range")
         }
-        return Int(intValue)
+        return intValue
     }
 
     func optionalUInt64(_ key: String) throws -> UInt64? {
