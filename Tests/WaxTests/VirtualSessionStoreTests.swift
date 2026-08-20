@@ -95,7 +95,7 @@ struct VirtualSessionStoreTests {
                 _ = try store.lookup(unknown)
                 Issue.record("unknown session_id should fail closed")
             } catch {
-                #expect(error.localizedDescription.contains("session_id is not active"))
+                #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
             }
             let waxFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
                 .filter { $0.hasSuffix(".wax") }
@@ -160,7 +160,7 @@ struct VirtualSessionStoreTests {
                 _ = try store.lookup(first.state.id)
                 Issue.record("ended session_id should fail closed")
             } catch {
-                #expect(error.localizedDescription.contains("session_id is not active"))
+                #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
             }
 
             let second = try await startSession(store, agentID: "ended-agent", runID: "ended-run")
@@ -249,7 +249,7 @@ struct VirtualSessionStoreTests {
                     _ = try secondStore.lookup(sessionID)
                     Issue.record("not-live-here session_id should fail closed")
                 } catch {
-                    #expect(error.localizedDescription.contains("session_id is not active"))
+                    #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
                 }
                 #expect(secondStore.live.isEmpty)
             }
@@ -300,7 +300,7 @@ struct VirtualSessionStoreTests {
                 _ = try await store.end(sessionID: UUID())
                 Issue.record("unknown session_id should not end")
             } catch {
-                #expect(error.localizedDescription.contains("session_id is not active"))
+                #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
             }
         }
     }
@@ -343,14 +343,14 @@ struct VirtualSessionStoreTests {
                 try store.refreshManifest(sessionID)
                 Issue.record("refresh after end should fail closed")
             } catch {
-                #expect(error.localizedDescription.contains("session_id is not active"))
+                #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
             }
 
             do {
                 _ = try store.lookup(sessionID)
                 Issue.record("ended session_id should fail closed after evict")
             } catch {
-                #expect(error.localizedDescription.contains("session_id is not active"))
+                #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))
             }
 
             let second = try await startSession(store, agentID: "end-race-agent", runID: "end-race-run")

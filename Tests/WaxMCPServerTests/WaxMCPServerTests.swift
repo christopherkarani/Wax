@@ -349,6 +349,8 @@ func toolsListContainsExpectedTools() {
     #expect(names.contains("session_start"))
     #expect(names.contains("session_resume"))
     #expect(names.contains("session_end"))
+    #expect(names.contains("session_close"))
+    #expect(names.contains("session_open"))
     #expect(names.contains("handoff"))
     #expect(names.contains("handoff_latest"))
     #expect(names.contains("compact_context"))
@@ -440,6 +442,8 @@ func toolSchemaRegression() {
         ("session_start", ToolSchemas.waxSessionStart, false),
         ("session_resume", ToolSchemas.waxSessionResume, false),
         ("session_end", ToolSchemas.waxSessionEnd, false),
+        ("session_close", ToolSchemas.waxSessionClose, true),
+        ("session_open", ToolSchemas.waxSessionOpen, false),
         ("handoff", ToolSchemas.waxHandoff, true),
         ("handoff_latest", ToolSchemas.waxHandoffLatest, false),
         ("compact_context", ToolSchemas.waxCompactContext, true),
@@ -6150,7 +6154,7 @@ struct WaxMCPProcessTests {
             ],
             timeout: 20
         )
-        #expect(handoff.contains("session_id is not active"))
+        #expect(handoff.contains("not active") || handoff.contains("has ended") || handoff.contains("resumable=false"))
     }
 
     @Test(.timeLimit(.minutes(1)))

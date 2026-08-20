@@ -207,6 +207,12 @@ package actor AgentBrokerService {
             case "session_end":
                 payload = try await sessionEnd(arguments: request.arguments)
                 shouldExit = false
+            case "session_close":
+                payload = try await sessionClose(arguments: request.arguments)
+                shouldExit = false
+            case "session_open":
+                payload = try await sessionOpen(arguments: request.arguments)
+                shouldExit = false
             case "handoff":
                 payload = try await handoff(arguments: request.arguments)
                 shouldExit = false
@@ -253,6 +259,14 @@ package actor AgentBrokerService {
                 payload: payload,
                 error: nil,
                 shouldExit: shouldExit
+            )
+        } catch let error as BrokerSessionInactiveError {
+            return AgentBrokerResponse(
+                id: request.id,
+                ok: false,
+                payload: error.brokerPayload(),
+                error: error.localizedDescription,
+                shouldExit: false
             )
         } catch {
             return AgentBrokerResponse(
@@ -322,7 +336,20 @@ extension AgentBrokerService {
     func remember(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        let sessionID = try parseOptionalSessionID(args)
+        var sessionID = try parseOptionalSessionID(args)
+        if let rememberScope = try parseRememberWriteScope(args) {
+            switch rememberScope {
+            case .session:
+                guard sessionID != nil else {
+                    throw BrokerValidationError.invalid("scope session requires session_id")
+                }
+            case .durable:
+                if sessionID != nil {
+                    throw BrokerValidationError.invalid("scope durable forbids session_id")
+                }
+                sessionID = nil
+            }
+        }
         let rawMetadata = try coerceMetadata(try args.optionalObject("metadata"))
         if rawMetadata["session_id"] != nil {
             throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
@@ -343,27 +370,13 @@ extension AgentBrokerService {
 
         let before = await memory.runtimeStats()
         if !noEmbedder, before.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() {
-            let capturedSessionID = sessionID
-            let capturedContent = content
-            let capturedMetadata = metadata
-            let task = Task<Void, Error> {
-                try await memory.waitUntilReadyForRemember()
-                _ = try await self.completeRemember(
-                    memory: memory,
-                    content: capturedContent,
-                    metadata: capturedMetadata,
-                    sessionID: capturedSessionID
+            do {
+                try await Self.awaitRememberReady(memory: memory, timeoutSeconds: 30)
+            } catch {
+                throw BrokerValidationError.invalid(
+                    "Remember failed: embedding provider not ready (\(error.localizedDescription))"
                 )
             }
-            pendingRememberWrites.append(PendingRememberWrite(sessionID: sessionID, task: task))
-            return .object([
-                "status": .string("pending"),
-                "embedding_state": .string("loading"),
-                "framesAdded": .from(0),
-                "frameCount": .from(before.frameCount),
-                "pendingFrames": .from(before.pendingFrames),
-                "display_text": .string("Remember accepted. Embedding provider is still loading; the frame will land when ready."),
-            ])
         }
 
         return try await completeRemember(
@@ -373,6 +386,38 @@ extension AgentBrokerService {
             sessionID: sessionID,
             before: before
         )
+    }
+
+    private enum RememberWriteScope: String {
+        case session
+        case durable
+    }
+
+    private func parseRememberWriteScope(_ args: BrokerArguments) throws -> RememberWriteScope? {
+        guard let raw = try args.optionalString("scope")?.lowercased() else { return nil }
+        guard let scope = RememberWriteScope(rawValue: raw) else {
+            throw BrokerValidationError.invalid("scope must be one of: session, durable")
+        }
+        return scope
+    }
+
+    private static func awaitRememberReady(
+        memory: MemoryOrchestrator,
+        timeoutSeconds: Double
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await memory.waitUntilReadyForRemember()
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeoutSeconds))
+                throw BrokerValidationError.invalid(
+                    "embedding provider did not become ready within \(Int(timeoutSeconds))s"
+                )
+            }
+            try await group.next()!
+            group.cancelAll()
+        }
     }
 
     func completeRemember(
@@ -427,26 +472,47 @@ extension AgentBrokerService {
         guard (1...Self.maxRecallLimit).contains(limit) else {
             throw BrokerValidationError.invalid("limit must be between 1 and \(Self.maxRecallLimit)")
         }
+        let recallScope = try parseRecallScope(args)
+        let explicitProject = try args.optionalString("project")
+        let explicitRepo = try args.optionalString("repo")
+        let clientCWD = try args.optionalString("cwd")
         let parsedFilters = try parseSearchFilters(args)
-        let sessionMemory = parsedFilters.sessionId == nil ? nil : try await memory(for: parsedFilters.sessionId)
 
-        let mode = try parseRecallMode(args)
+        if recallScope == .session, parsedFilters.sessionId == nil {
+            throw BrokerValidationError.invalid("scope session requires session_id")
+        }
+
+        // Rebind session lane before resolving project from session manifest (C4).
+        if let sessionID = parsedFilters.sessionId {
+            _ = try await memory(for: sessionID)
+        }
+
+        let resolvedIdentity = resolveRecallIdentity(
+            explicitProject: explicitProject,
+            explicitRepo: explicitRepo,
+            sessionID: parsedFilters.sessionId,
+            clientCWD: clientCWD
+        )
+
+        var mode = try parseRecallMode(args)
+        let durableStats = await longTermMemory.runtimeStats()
+        if mode == nil, case .degraded = durableStats.embeddingStatus {
+            mode = .textOnly
+        }
+
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
         if let requestedTopK, !(1...Self.maxTopK).contains(requestedTopK) {
             throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
         }
         let effectiveTopK = requestedTopK ?? limit
-        let durableExecution = try await longTermMemory.recallExecution(
-            query: query,
-            mode: mode,
-            frameFilter: parsedFilters.frameFilter,
-            timeRange: parsedFilters.timeRange,
-            topK: effectiveTopK
-        )
+
+        let sessionMemory: MemoryOrchestrator?
         let sessionExecution: MemoryOrchestrator.RecallExecution?
         var sessionItems: [RAGContext.Item] = []
-        if let sessionMemory {
-            let execution = try await sessionMemory.recallExecution(
+        if let sessionID = parsedFilters.sessionId {
+            let memory = try await memory(for: sessionID)
+            sessionMemory = memory
+            let execution = try await memory.recallExecution(
                 query: query,
                 mode: mode,
                 frameFilter: parsedFilters.frameFilter,
@@ -456,7 +522,7 @@ extension AgentBrokerService {
             sessionExecution = execution
             sessionItems = execution.context.items
             if sessionItems.isEmpty {
-                let documents = try await sessionMemory.corpusSourceDocuments()
+                let documents = try await memory.corpusSourceDocuments()
                     .sorted { lhs, rhs in
                         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                         return lhs.frameId > rhs.frameId
@@ -474,21 +540,93 @@ extension AgentBrokerService {
                 }
             }
         } else {
+            sessionMemory = nil
             sessionExecution = nil
         }
 
-        let selected = Self.mergeRecallItems(
-            sessionItems: sessionItems,
-            durableItems: durableExecution.context.items,
-            limit: limit
-        )
+        let durableExecution: MemoryOrchestrator.RecallExecution?
+        let durableItems: [RAGContext.Item]
+        if recallScope == .session {
+            durableExecution = nil
+            durableItems = []
+        } else {
+            let execution = try await longTermMemory.recallExecution(
+                query: query,
+                mode: mode,
+                frameFilter: parsedFilters.frameFilter,
+                timeRange: parsedFilters.timeRange,
+                topK: effectiveTopK
+            )
+            durableExecution = execution
+            durableItems = execution.context.items
+        }
+
+        let merged: [RAGContext.Item]
+        if recallScope == .session {
+            merged = Array(sessionItems.prefix(limit))
+        } else {
+            merged = Self.mergeRecallItems(
+                sessionItems: sessionItems,
+                durableItems: durableItems,
+                limit: limit
+            )
+        }
+
+        let applyProjectFilter = recallScope == .project
+            || (recallScope == .session && (resolvedIdentity.project != nil || resolvedIdentity.repo != nil))
+        // scope global: no project hard-filter (C7).
+        let selected: [RAGContext.Item]
+        let projectMiss: Bool
+        let scopeMissMessage: String?
+        if recallScope == .global {
+            selected = merged
+            projectMiss = false
+            scopeMissMessage = nil
+        } else if applyProjectFilter || recallScope == .project {
+            let filtered = Self.filterRecallItemsByProject(
+                merged,
+                project: resolvedIdentity.project,
+                repo: resolvedIdentity.repo
+            )
+            if resolvedIdentity.project == nil && resolvedIdentity.repo == nil {
+                selected = []
+                projectMiss = true
+                scopeMissMessage = "no frames for project (unresolved); pass project/repo or scope=global"
+            } else if filtered.isEmpty {
+                selected = []
+                projectMiss = true
+                let label = resolvedIdentity.project.map { "project \($0)" }
+                    ?? resolvedIdentity.repo.map { "repo \($0)" }
+                    ?? "project"
+                scopeMissMessage = "no frames for \(label)"
+            } else {
+                selected = filtered
+                projectMiss = false
+                scopeMissMessage = nil
+            }
+        } else {
+            selected = merged
+            projectMiss = false
+            scopeMissMessage = nil
+        }
+
         let primaryExecution = sessionExecution ?? durableExecution
-        var lines: [String] = [
+        var lines: [String] = []
+        if let scopeMissMessage {
+            lines.append(scopeMissMessage)
+        }
+        lines.append(contentsOf: [
             "Query: \(query)",
             "Total tokens: \(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
             "Results: \(selected.count) of \(limit) requested (orchestrator returned \(selected.count))",
-            "Search controls: requested_mode=\(primaryExecution.requestedModeSummary) effective_mode=\(primaryExecution.effectiveModeSummary) query_embedding_state=\(primaryExecution.queryEmbeddingState.rawValue) search_top_k=\(effectiveTopK) limit=\(limit)",
-        ]
+            "Search controls: requested_mode=\(primaryExecution?.requestedModeSummary ?? "n/a") effective_mode=\(primaryExecution?.effectiveModeSummary ?? "n/a") query_embedding_state=\(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a") search_top_k=\(effectiveTopK) limit=\(limit) scope=\(recallScope.rawValue)",
+        ])
+        if let project = resolvedIdentity.project {
+            lines.append("Resolved project: \(project)")
+        }
+        if let repo = resolvedIdentity.repo {
+            lines.append("Resolved repo: \(repo)")
+        }
         lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
         for (index, item) in selected.enumerated() {
             lines.append("\(index + 1). [\(item.kind)] frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) \(item.text)")
@@ -519,19 +657,99 @@ extension AgentBrokerService {
             )
         }
 
-        return .object([
+        var payload: [String: AgentBrokerValue] = [
             "query": .string(query),
             "total_tokens": .from(selected.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }),
             "result_count": .from(selected.count),
             "limit": .from(limit),
             "search_top_k": .from(effectiveTopK),
-            "requested_mode": .string(primaryExecution.requestedModeSummary),
-            "effective_mode": .string(primaryExecution.effectiveModeSummary),
-            "query_embedding_state": .string(primaryExecution.queryEmbeddingState.rawValue),
+            "requested_mode": .string(primaryExecution?.requestedModeSummary ?? "n/a"),
+            "effective_mode": .string(primaryExecution?.effectiveModeSummary ?? "n/a"),
+            "query_embedding_state": .string(primaryExecution?.queryEmbeddingState.rawValue ?? "n/a"),
+            "scope": .string(recallScope.rawValue),
+            "project": .from(resolvedIdentity.project),
+            "repo": .from(resolvedIdentity.repo),
+            "project_miss": .bool(projectMiss),
             "applied_filters": parsedFilters.summary,
             "results": .array(results),
             "display_text": .string(lines.joined(separator: "\n")),
-        ])
+        ]
+        if let scopeMissMessage {
+            payload["scope_miss_message"] = .string(scopeMissMessage)
+        }
+        return .object(payload)
+    }
+
+    private enum RecallScope: String {
+        case project
+        case session
+        case global
+    }
+
+    private func parseRecallScope(_ args: BrokerArguments) throws -> RecallScope {
+        let raw = try args.optionalString("scope")?.lowercased() ?? RecallScope.project.rawValue
+        guard let scope = RecallScope(rawValue: raw) else {
+            throw BrokerValidationError.invalid("scope must be one of: project, session, global")
+        }
+        return scope
+    }
+
+    private struct RecallIdentity: Sendable {
+        var project: String?
+        var repo: String?
+    }
+
+    private func resolveRecallIdentity(
+        explicitProject: String?,
+        explicitRepo: String?,
+        sessionID: UUID?,
+        clientCWD: String?
+    ) -> RecallIdentity {
+        var project = normalizedOrNil(explicitProject)
+        var repo = normalizedOrNil(explicitRepo)
+
+        if project == nil || repo == nil, let sessionID, let session = activeSessions[sessionID] {
+            if project == nil {
+                project = normalizedOrNil(session.manifest.project)
+            }
+            if repo == nil {
+                repo = normalizedOrNil(session.manifest.repo)
+            }
+        }
+
+        if project == nil || repo == nil {
+            let inferred = writeScope(for: sessionID, clientCWD: clientCWD)
+            if project == nil {
+                project = normalizedOrNil(inferred.projectName)
+            }
+            if repo == nil {
+                repo = normalizedOrNil(inferred.repoName)
+            }
+        }
+
+        return RecallIdentity(project: project, repo: repo)
+    }
+
+    private func normalizedOrNil(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    package static func filterRecallItemsByProject(
+        _ items: [RAGContext.Item],
+        project: String?,
+        repo: String?
+    ) -> [RAGContext.Item] {
+        items.filter { item in
+            if let project {
+                return item.metadata[MemoryMetadataKeys.project] == project
+            }
+            if let repo {
+                return item.metadata[MemoryMetadataKeys.repo] == repo
+            }
+            return false
+        }
     }
 
     package static func mergeRecallItems(
@@ -763,8 +981,9 @@ extension AgentBrokerService {
             }
             throw BrokerValidationError.invalid("session_id is required when no active session is available")
         }
+        _ = try await memory(for: resolvedSessionID)
         guard let session = activeSessions[resolvedSessionID] else {
-            throw BrokerValidationError.invalid("session_id is not active in this broker process; call session_start again")
+            throw BrokerSessionInactiveError.unknown(sessionID: resolvedSessionID)
         }
         let sessionDocuments = try await session.memory.corpusSourceDocuments()
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
@@ -793,7 +1012,7 @@ extension AgentBrokerService {
     func memoryPromote(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let sessionID = try parseOptionalSessionID(args)
-        try validateActiveSession(sessionID)
+        try await validateActiveSession(sessionID)
         let approve = try args.optionalBool("approve") ?? false
         let requestedSourceFrameId = try args.optionalUInt64("frame_id")
         let explicitContent = try args.optionalStringPreservingWhitespace("content")
@@ -1162,14 +1381,157 @@ extension AgentBrokerService {
         return sessionEndPayload(result)
     }
 
+    /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
+    func sessionClose(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
+        let args = BrokerArguments(arguments)
+        guard let sessionID = try parseOptionalSessionID(args) else {
+            throw BrokerValidationError.invalid("session_id is required for session_close")
+        }
+        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
+        let project = try args.optionalString("project")
+        let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
+
+        if activeSessions[sessionID] == nil {
+            if let status = try virtualSessions.persistedStatus(for: sessionID) {
+                if status == .ended {
+                    return sessionClosePayload(
+                        sessionID: sessionID,
+                        ended: true,
+                        alreadyEnded: true,
+                        handoffFrameID: nil,
+                        remainingActive: activeSessions.count
+                    )
+                }
+            } else {
+                throw BrokerSessionInactiveError.unknown(sessionID: sessionID)
+            }
+            // Active on disk but not live — rebind then close.
+            _ = try await memory(for: sessionID)
+        }
+
+        try await validateActiveSession(sessionID)
+        let frameId = try await longTermMemory.rememberHandoff(
+            content: content,
+            project: project,
+            pendingTasks: pendingTasks,
+            sessionId: sessionID,
+            commit: false
+        )
+        try await recordHandoff(sessionID: sessionID, content: content)
+        try await longTermMemory.flush()
+        try await settlePendingRememberWrites(sessionID: sessionID)
+        let result = try await virtualSessions.end(sessionID: sessionID)
+        return sessionClosePayload(
+            sessionID: sessionID,
+            ended: result.ended,
+            alreadyEnded: false,
+            handoffFrameID: frameId,
+            remainingActive: result.activeCount
+        )
+    }
+
+    private func sessionClosePayload(
+        sessionID: UUID,
+        ended: Bool,
+        alreadyEnded: Bool,
+        handoffFrameID: UInt64?,
+        remainingActive: Int
+    ) -> AgentBrokerValue {
+        let display =
+            "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions remaining_active=\(remainingActive > 0) count=\(remainingActive)."
+        var payload: [String: AgentBrokerValue] = [
+            "status": .string("ok"),
+            "session_id": .string(sessionID.uuidString),
+            "ended": .bool(ended),
+            "active": .bool(false),
+            "already_ended": .bool(alreadyEnded),
+            "remaining_active": .from(remainingActive > 0),
+            "active_session_count": .from(remainingActive),
+            "display_text": .string(display),
+        ]
+        if let handoffFrameID {
+            payload["frame_id"] = .from(handoffFrameID)
+            payload["committed"] = .bool(true)
+        }
+        return .object(payload)
+    }
+
+    /// `handoff_latest` + `session_start` + optional `recall` in one round-trip (Phase 2).
+    func sessionOpen(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
+        let args = BrokerArguments(arguments)
+        let project = try args.optionalString("project")
+        let agentID = try args.optionalString("agent_id")
+        let runID = try args.optionalString("run_id")
+        let recallQuery = try args.optionalString("recall_query")
+        let cwd = try args.optionalString("cwd")
+
+        var handoffArgs: [String: AgentBrokerValue] = [:]
+        if let project {
+            handoffArgs["project"] = .string(project)
+        }
+        let handoffPayload = try await handoffLatest(arguments: handoffArgs)
+
+        var startArgs: [String: AgentBrokerValue] = [:]
+        if let agentID { startArgs["agent_id"] = .string(agentID) }
+        if let runID { startArgs["run_id"] = .string(runID) }
+        if let cwd { startArgs["cwd"] = .string(cwd) }
+        let startPayload = try await sessionStart(arguments: startArgs)
+        let sessionID = startPayload.objectValue?["session_id"]?.stringValue
+
+        var recallPayload: AgentBrokerValue?
+        if let recallQuery, !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var recallArgs: [String: AgentBrokerValue] = [
+                "query": .string(recallQuery),
+                "scope": .string("project"),
+            ]
+            if let project { recallArgs["project"] = .string(project) }
+            if let sessionID { recallArgs["session_id"] = .string(sessionID) }
+            if let cwd { recallArgs["cwd"] = .string(cwd) }
+            recallPayload = try await recall(arguments: recallArgs)
+        }
+
+        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
+        var payload: [String: AgentBrokerValue] = [
+            "status": .string("ok"),
+            "session_id": .from(sessionID),
+            "handoff": handoffPayload,
+            "project": .from(project ?? inferred.projectName),
+            "repo": .from(inferred.repoName),
+            "display_text": .string(
+                "Session open. session_id=\(sessionID ?? "nil") project=\(project ?? inferred.projectName ?? "nil")."
+            ),
+        ]
+        if let startObject = startPayload.objectValue {
+            if let resumed = startObject["resumed"] {
+                payload["resumed"] = resumed
+            }
+            if let recovered = startObject["recovered_lease"] {
+                payload["recovered_lease"] = recovered
+            }
+        }
+        if let recallPayload {
+            payload["recall"] = recallPayload
+        }
+        return .object(payload)
+    }
+
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {
-        .object([
+        let remaining = result.activeCount
+        let display: String
+        switch result {
+        case .idle:
+            display = "No live session to end. This session active=false. Other live sessions remaining_active=false count=0."
+        case .ended(let sessionID, _):
+            display = "Session \(sessionID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
+        }
+        return .object([
             "status": .string("ok"),
             "session_id": result.sessionID.map { .string($0.uuidString) } ?? .null,
             "ended": .bool(result.ended),
             "active": .bool(false),
             "remaining_active": .from(result.remainingActive),
             "active_session_count": .from(result.activeCount),
+            "display_text": .string(display),
         ])
     }
 
@@ -1179,7 +1541,7 @@ extension AgentBrokerService {
         let project = try args.optionalString("project")
         let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
         let sessionID = try parseOptionalSessionID(args)
-        try validateActiveSession(sessionID)
+        try await validateActiveSession(sessionID)
         let frameId = try await longTermMemory.rememberHandoff(
             content: content,
             project: project,
@@ -2360,7 +2722,7 @@ extension AgentBrokerService {
 
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
-        switch try virtualSessions.lookup(sessionID) {
+        switch try await virtualSessions.ensureLive(sessionID) {
         case .none:
             return longTermMemory
         case .live(let memory):
@@ -2368,8 +2730,8 @@ extension AgentBrokerService {
         }
     }
 
-    func validateActiveSession(_ sessionID: UUID?) throws {
-        try virtualSessions.validateActive(sessionID)
+    func validateActiveSession(_ sessionID: UUID?) async throws {
+        try await virtualSessions.validateActiveOrRebind(sessionID)
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
@@ -3334,6 +3696,49 @@ enum BrokerValidationError: LocalizedError {
         case .invalid(let message):
             return message
         }
+    }
+}
+
+/// Structured inactive-session error for broker hops (C4). Never resumable via agent+run steal.
+package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
+    package let code: String
+    package let resumable: Bool
+    package let reason: String
+
+    package var errorDescription: String? {
+        "\(reason) (code=\(code), resumable=\(resumable))"
+    }
+
+    package func brokerPayload() -> AgentBrokerValue {
+        .object([
+            "code": .string(code),
+            "resumable": .bool(resumable),
+            "reason": .string(reason),
+        ])
+    }
+
+    package static func ended(sessionID: UUID) -> BrokerSessionInactiveError {
+        BrokerSessionInactiveError(
+            code: "session_ended",
+            resumable: false,
+            reason: "session_id \(sessionID.uuidString) has ended and cannot be rebound; start a new session"
+        )
+    }
+
+    package static func unknown(sessionID: UUID) -> BrokerSessionInactiveError {
+        BrokerSessionInactiveError(
+            code: "session_unknown",
+            resumable: false,
+            reason: "session_id \(sessionID.uuidString) is unknown in this broker; call session_start"
+        )
+    }
+
+    package static func unreadable(sessionID: UUID, detail: String) -> BrokerSessionInactiveError {
+        BrokerSessionInactiveError(
+            code: "session_unreadable",
+            resumable: false,
+            reason: "session_id \(sessionID.uuidString) manifest unreadable: \(detail)"
+        )
     }
 }
 
