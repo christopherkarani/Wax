@@ -489,6 +489,9 @@ enum ToolSchemas {
             "session_id": ["type": "string", "description": "Optional explicit session UUID. If it already exists, use session_resume instead."],
             "agent_id": ["type": "string", "description": "Stable agent identifier for long-running runtimes. Combined with run_id, reuses the active session."],
             "run_id": ["type": "string", "description": "Stable run identifier for the current autonomous run. Combined with agent_id, reuses the active session."],
+            "project": ["type": "string", "description": "Optional project stamped onto the new session manifest (overrides cwd inference)."],
+            "repo": ["type": "string", "description": "Optional repo stamped onto the new session manifest (overrides cwd inference)."],
+            "cwd": ["type": "string", "description": "Optional client working directory used to infer project/repo when not explicit."],
         ],
         required: []
     )
@@ -537,7 +540,11 @@ enum ToolSchemas {
         properties: [
             "project": [
                 "type": "string",
-                "description": "Optional project for handoff_latest and default recall scope.",
+                "description": "Optional project for handoff_latest, session manifest stamp, and default recall scope.",
+            ],
+            "repo": [
+                "type": "string",
+                "description": "Optional repo stamped onto the new session manifest (overrides cwd inference).",
             ],
             "agent_id": [
                 "type": "string",
@@ -550,6 +557,10 @@ enum ToolSchemas {
             "recall_query": [
                 "type": "string",
                 "description": "Optional query to run project-scoped recall after session_start.",
+            ],
+            "cwd": [
+                "type": "string",
+                "description": "Optional client working directory used to infer project/repo when not explicit.",
             ],
         ],
         required: []

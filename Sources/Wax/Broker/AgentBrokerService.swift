@@ -396,10 +396,10 @@ extension AgentBrokerService {
                     "embedding provider did not become ready within \(timeout.components.seconds)s"
                 )
             }
+            defer { group.cancelAll() }
             guard try await group.next() != nil else {
-                throw BrokerValidationError.invalid("embedding readiness wait returned no result")
+                throw BrokerValidationError.invalid("embedding provider readiness wait produced no result")
             }
-            group.cancelAll()
         }
     }
 
@@ -571,6 +571,12 @@ extension AgentBrokerService {
         return scope
     }
 
+    private func normalizedOrNil(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     package static func filterRecallItemsByProject(
         _ items: [RAGContext.Item],
         project: String?,
@@ -586,6 +592,20 @@ extension AgentBrokerService {
         repo: String?
     ) -> [RAGContext.Item] {
         filterRecallItemsByProject(items, project: project, repo: repo)
+    }
+
+    /// Merges project/repo hard-filter into an existing frame filter so unified search
+    /// over-fetches and excludes foreign frames before top-K is finalized.
+    package static func frameFilterByAddingProjectScope(
+        _ base: FrameFilter?,
+        project: String?,
+        repo: String?
+    ) -> FrameFilter? {
+        LayeredRecall.frameFilterForScopedRetrieval(
+            base: base,
+            scope: .project,
+            identity: LayeredRecall.Identity(project: project, repo: repo)
+        )
     }
 
     package static func mergeRecallItems(
@@ -642,8 +662,8 @@ extension AgentBrokerService {
         return .object([
             "query": .string(query),
             "topK": .from(topK),
-            "requested_mode": .string(execution.requestedModeSummary),
-            "effective_mode": .string(execution.effectiveModeSummary),
+            "requested_mode": .string(execution.requestedMode.diagnosticsSummary),
+            "effective_mode": .string(execution.effectiveMode.diagnosticsSummary),
             "query_embedding_state": .string(execution.queryEmbeddingState.rawValue),
             "applied_filters": parsedFilters.summary,
             "time_range_requested": .from(parsedFilters.timeRange != nil),
@@ -1119,9 +1139,19 @@ extension AgentBrokerService {
         let requestedAgentID = try args.optionalString("agent_id")
         let requestedRunID = try args.optionalString("run_id")
         let requestedCWD = try args.optionalString("cwd")
-        let inferredScope = requestedCWD.map {
+        let explicitProject = normalizedOrNil(try args.optionalString("project"))
+        let explicitRepo = normalizedOrNil(try args.optionalString("repo"))
+        var inferredScope = requestedCWD.map {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
         } ?? scopeContext
+        if explicitProject != nil || explicitRepo != nil {
+            inferredScope = MemoryScopeContext(
+                cwdPath: inferredScope.cwdPath,
+                repoRootPath: inferredScope.repoRootPath,
+                repoName: explicitRepo ?? inferredScope.repoName,
+                projectName: explicitProject ?? inferredScope.projectName
+            )
+        }
 
         let result = try await virtualSessions.start(
             explicitSessionID: explicitSessionID,
@@ -1240,6 +1270,7 @@ extension AgentBrokerService {
     func sessionOpen(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let project = try args.optionalString("project")
+        let repo = try args.optionalString("repo")
         let agentID = try args.optionalString("agent_id")
         let runID = try args.optionalString("run_id")
         let recallQuery = try args.optionalString("recall_query")
@@ -1255,23 +1286,38 @@ extension AgentBrokerService {
         if let agentID { startArgs["agent_id"] = .string(agentID) }
         if let runID { startArgs["run_id"] = .string(runID) }
         if let cwd { startArgs["cwd"] = .string(cwd) }
+        if let project { startArgs["project"] = .string(project) }
+        if let repo { startArgs["repo"] = .string(repo) }
         let startPayload = try await sessionStart(arguments: startArgs)
-        let sessionID = startPayload.objectValue?["session_id"]?.stringValue
+        let startObject = startPayload.objectValue
+        let sessionID = startObject?["session_id"]?.stringValue
 
         // Explicit project must win over cwd inference for both project and repo.
-        // session_open has no separate repo arg; leaving a cwd-inferred repo would
-        // advertise a split identity and stamp foreign wax.repo on later remembers.
+        // Leaving a cwd-inferred repo would advertise a split identity and stamp
+        // foreign wax.repo on later remembers.
         if let project,
            let sessionID,
            let uuid = UUID(uuidString: sessionID)
         {
-            let trimmed = project.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
+            let trimmedProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmedProject.isEmpty {
                 try virtualSessions.updateLive(uuid) { state in
-                    state.manifest.project = trimmed
-                    state.manifest.repo = trimmed
+                    state.manifest.project = trimmedProject
+                    state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
                 }
             }
+        }
+
+        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
+        let resolvedProject: String?
+        let resolvedRepo: String?
+        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
+            resolvedProject = live.manifest.project ?? normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = live.manifest.repo ?? normalizedOrNil(repo) ?? inferred.repoName
+        } else {
+            resolvedProject = normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = normalizedOrNil(repo) ?? inferred.repoName
         }
 
         var recallPayload: AgentBrokerValue?
@@ -1280,20 +1326,13 @@ extension AgentBrokerService {
                 "query": .string(recallQuery),
                 "scope": .string("project"),
             ]
-            if let project { recallArgs["project"] = .string(project) }
+            if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
+            if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
             if let sessionID { recallArgs["session_id"] = .string(sessionID) }
             if let cwd { recallArgs["cwd"] = .string(cwd) }
             recallPayload = try await recall(arguments: recallArgs)
         }
 
-        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
-        let resolvedProject = project ?? inferred.projectName
-        let resolvedRepo: String?
-        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
-            resolvedRepo = live.manifest.repo ?? inferred.repoName
-        } else {
-            resolvedRepo = inferred.repoName
-        }
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .from(sessionID),
@@ -1304,7 +1343,7 @@ extension AgentBrokerService {
                 "Session open. session_id=\(sessionID ?? "nil") project=\(resolvedProject ?? "nil")."
             ),
         ]
-        if let startObject = startPayload.objectValue {
+        if let startObject {
             if let resumed = startObject["resumed"] {
                 payload["resumed"] = resumed
             }
@@ -1805,8 +1844,8 @@ extension AgentBrokerService {
         return .object([
             "query": .string(query),
             "topK": .from(topK),
-            "requested_mode": .string(execution.requestedModeSummary),
-            "effective_mode": .string(execution.effectiveModeSummary),
+            "requested_mode": .string(execution.requestedMode.diagnosticsSummary),
+            "effective_mode": .string(execution.effectiveMode.diagnosticsSummary),
             "query_embedding_state": .string(execution.queryEmbeddingState.rawValue),
             "recursive": .from(recursive),
             "rebuild_requested": .from(rebuild),

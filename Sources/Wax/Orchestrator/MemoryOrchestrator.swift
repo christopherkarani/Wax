@@ -49,38 +49,38 @@ package actor MemoryOrchestrator {
 
     package struct SearchExecution: Sendable, Equatable {
         package var hits: [MemorySearchHit]
-        package var requestedModeSummary: String
-        package var effectiveModeSummary: String
+        package var requestedMode: RetrievalMode
+        package var effectiveMode: RetrievalMode
         package var queryEmbeddingState: QueryEmbeddingState
 
         package init(
             hits: [MemorySearchHit],
-            requestedModeSummary: String,
-            effectiveModeSummary: String,
+            requestedMode: RetrievalMode,
+            effectiveMode: RetrievalMode,
             queryEmbeddingState: QueryEmbeddingState
         ) {
             self.hits = hits
-            self.requestedModeSummary = requestedModeSummary
-            self.effectiveModeSummary = effectiveModeSummary
+            self.requestedMode = requestedMode
+            self.effectiveMode = effectiveMode
             self.queryEmbeddingState = queryEmbeddingState
         }
     }
 
     package struct RecallExecution: Sendable, Equatable {
         package var context: RAGContext
-        package var requestedModeSummary: String
-        package var effectiveModeSummary: String
+        package var requestedMode: RetrievalMode
+        package var effectiveMode: RetrievalMode
         package var queryEmbeddingState: QueryEmbeddingState
 
         package init(
             context: RAGContext,
-            requestedModeSummary: String,
-            effectiveModeSummary: String,
+            requestedMode: RetrievalMode,
+            effectiveMode: RetrievalMode,
             queryEmbeddingState: QueryEmbeddingState
         ) {
             self.context = context
-            self.requestedModeSummary = requestedModeSummary
-            self.effectiveModeSummary = effectiveModeSummary
+            self.requestedMode = requestedMode
+            self.effectiveMode = effectiveMode
             self.queryEmbeddingState = queryEmbeddingState
         }
     }
@@ -1078,20 +1078,19 @@ package actor MemoryOrchestrator {
         timeRange: SearchTimeRange? = nil
     ) async throws -> SearchExecution {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestedModeSummary = Self.modeSummary(mode)
         guard !trimmed.isEmpty else {
             return SearchExecution(
                 hits: [],
-                requestedModeSummary: requestedModeSummary,
-                effectiveModeSummary: "text",
+                requestedMode: mode,
+                effectiveMode: .textOnly,
                 queryEmbeddingState: .notRequested
             )
         }
         guard topK > 0 else {
             return SearchExecution(
                 hits: [],
-                requestedModeSummary: requestedModeSummary,
-                effectiveModeSummary: "text",
+                requestedMode: mode,
+                effectiveMode: .textOnly,
                 queryEmbeddingState: .notRequested
             )
         }
@@ -1108,7 +1107,7 @@ package actor MemoryOrchestrator {
             embedder: snapshotEmbedder
         )
         let searchMode = try Self.resolveSearchMode(
-            requested: Self.searchMode(from: mode),
+            requested: mode.searchMode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
 
@@ -1145,8 +1144,8 @@ package actor MemoryOrchestrator {
         await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
         return SearchExecution(
             hits: hits,
-            requestedModeSummary: requestedModeSummary,
-            effectiveModeSummary: Self.modeSummary(searchMode),
+            requestedMode: mode,
+            effectiveMode: RetrievalMode(searchMode),
             queryEmbeddingState: queryEmbedding.state
         )
     }
@@ -1505,15 +1504,15 @@ package actor MemoryOrchestrator {
         requestedMode: RetrievalMode?
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
-        let requestedSearchMode = requestedMode.map(Self.searchMode(from:)) ?? recallConfig.searchMode
+        let requestedSearchMode = requestedMode?.searchMode ?? recallConfig.searchMode
+        let resolvedRequestedMode = requestedMode ?? RetrievalMode(requestedSearchMode)
         let embeddingPolicy = requestedMode.map(Self.queryEmbeddingPolicy(for:)) ?? .ifAvailable
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
-            let modeSummary = requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode)
             return RecallExecution(
                 context: RAGContext(query: query, items: [], totalTokens: 0),
-                requestedModeSummary: modeSummary,
-                effectiveModeSummary: modeSummary,
+                requestedMode: resolvedRequestedMode,
+                effectiveMode: resolvedRequestedMode,
                 queryEmbeddingState: .notRequested
             )
         }
@@ -1543,8 +1542,8 @@ package actor MemoryOrchestrator {
 
         return RecallExecution(
             context: context,
-            requestedModeSummary: requestedMode.map(Self.modeSummary) ?? Self.modeSummary(requestedSearchMode),
-            effectiveModeSummary: Self.modeSummary(effectiveSearchMode),
+            requestedMode: resolvedRequestedMode,
+            effectiveMode: RetrievalMode(effectiveSearchMode),
             queryEmbeddingState: queryEmbedding.state
         )
     }
@@ -1565,17 +1564,6 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private static func searchMode(from mode: RetrievalMode) -> SearchMode {
-        switch mode {
-        case .textOnly:
-            .textOnly
-        case .vectorOnly:
-            .vectorOnly
-        case .hybrid(let alpha):
-            .hybrid(alpha: clampHybridAlpha(alpha))
-        }
-    }
-
     private static func resolveSearchMode(requested: SearchMode, embeddingAvailable: Bool) throws -> SearchMode {
         switch requested {
         case .textOnly:
@@ -1587,29 +1575,7 @@ package actor MemoryOrchestrator {
         case .hybrid where !embeddingAvailable:
             .textOnly
         case .hybrid(let alpha):
-            .hybrid(alpha: clampHybridAlpha(alpha))
-        }
-    }
-
-    private static func modeSummary(_ mode: SearchMode) -> String {
-        switch mode {
-        case .textOnly:
-            return "text"
-        case .vectorOnly:
-            return "vector"
-        case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(alpha))))"
-        }
-    }
-
-    private static func modeSummary(_ mode: RetrievalMode) -> String {
-        switch mode {
-        case .textOnly:
-            return "text"
-        case .vectorOnly:
-            return "vector"
-        case .hybrid(let alpha):
-            return "hybrid(alpha=\(String(format: "%.3f", Double(clampHybridAlpha(alpha)))))"
+            .hybrid(alpha: RetrievalMode.clampHybridAlpha(alpha))
         }
     }
 
@@ -1845,12 +1811,6 @@ package actor MemoryOrchestrator {
     @inline(__always)
     private static func normalizedL2(_ vector: [Float]) -> [Float] {
         VectorMath.normalizeL2(vector)
-    }
-
-    @inline(__always)
-    private static func clampHybridAlpha(_ alpha: Float) -> Float {
-        guard alpha.isFinite else { return 0.5 }
-        return min(1, max(0, alpha))
     }
 
     private static func writeEmbeddings(_ embeddings: [[Float]], to url: URL) throws {
