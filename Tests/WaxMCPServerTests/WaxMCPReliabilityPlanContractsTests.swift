@@ -758,4 +758,30 @@ func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
         #expect(stampedPayload["project_miss"]?.boolValue != true)
     }
 }
+
+@Test
+func frameFilterByAddingProjectScopeInjectsWaxProject() {
+    let base = FrameFilter(
+        includeDeleted: true,
+        metadataFilter: MetadataFilter(requiredEntries: ["custom": "1"], requiredLabels: ["keep"])
+    )
+    let merged = AgentBrokerService.frameFilterByAddingProjectScope(
+        base,
+        project: "AlphaLand",
+        repo: "IgnoredWhenProjectSet"
+    )
+    #expect(merged?.includeDeleted == true)
+    #expect(merged?.metadataFilter?.requiredLabels == ["keep"])
+    #expect(merged?.metadataFilter?.requiredEntries["custom"] == "1")
+    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "AlphaLand")
+    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == nil)
+
+    let repoOnly = AgentBrokerService.frameFilterByAddingProjectScope(
+        nil,
+        project: nil,
+        repo: "RepoOnly"
+    )
+    #expect(repoOnly?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == "RepoOnly")
+    #expect(AgentBrokerService.frameFilterByAddingProjectScope(base, project: nil, repo: nil) == base)
+}
 #endif

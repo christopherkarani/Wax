@@ -4,11 +4,6 @@ import WaxCore
 package actor AgentBrokerService {
     typealias SessionState = VirtualSessionStore.SessionState
 
-    struct PendingRememberWrite: Sendable {
-        let sessionID: UUID?
-        let task: Task<Void, Error>
-    }
-
     let longTermMemory: MemoryOrchestrator
     let longTermStoreURL: URL
     let sessionRootURL: URL
@@ -25,7 +20,6 @@ package actor AgentBrokerService {
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
-    var pendingRememberWrites: [PendingRememberWrite] = []
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -134,18 +128,9 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
-        var pendingError: Error?
-        do {
-            try await settlePendingRememberWrites()
-        } catch {
-            pendingError = error
-        }
         await virtualSessions.closeAll()
         try await longTermMemory.flush()
         try await longTermMemory.close()
-        if let pendingError {
-            throw pendingError
-        }
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
@@ -1117,7 +1102,6 @@ extension AgentBrokerService {
     }
 
     func flush() async throws -> AgentBrokerValue {
-        try await settlePendingRememberWrites()
         try await longTermMemory.flush()
         for session in activeSessions.values {
             try await session.memory.flush()
@@ -1186,7 +1170,6 @@ extension AgentBrokerService {
         guard let target = try virtualSessions.peekEndTarget(sessionID: requested) else {
             return sessionEndPayload(.idle)
         }
-        try await settlePendingRememberWrites(sessionID: target)
         let result = try await virtualSessions.end(sessionID: target)
         return sessionEndPayload(result)
     }
@@ -1229,7 +1212,6 @@ extension AgentBrokerService {
         )
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
-        try await settlePendingRememberWrites(sessionID: sessionID)
         let result = try await virtualSessions.end(sessionID: sessionID)
         return sessionClosePayload(
             sessionID: sessionID,
@@ -2673,41 +2655,6 @@ extension AgentBrokerService {
             default:
                 return .durableOnly
             }
-        }
-    }
-
-    package func settlePendingRememberWrites(sessionID: UUID? = nil) async throws {
-        let selected: [PendingRememberWrite]
-        if let sessionID {
-            var remaining: [PendingRememberWrite] = []
-            remaining.reserveCapacity(pendingRememberWrites.count)
-            var matched: [PendingRememberWrite] = []
-            for write in pendingRememberWrites {
-                if write.sessionID == sessionID {
-                    matched.append(write)
-                } else {
-                    remaining.append(write)
-                }
-            }
-            pendingRememberWrites = remaining
-            selected = matched
-        } else {
-            selected = pendingRememberWrites
-            pendingRememberWrites.removeAll()
-        }
-
-        var firstError: Error?
-        for write in selected {
-            do {
-                try await write.task.value
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-        }
-        if let firstError {
-            throw firstError
         }
     }
 
