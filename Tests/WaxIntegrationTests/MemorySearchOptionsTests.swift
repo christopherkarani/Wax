@@ -126,8 +126,11 @@ func memorySearchReportsTextFallbackDiagnostics() async throws {
         let results = try await memory.search("diagnostics", options: .init(mode: .hybrid()))
 
         let diagnostics = try #require(results.diagnostics)
-        #expect(diagnostics.requestedMode.contains("hybrid"))
-        #expect(diagnostics.effectiveMode == "text")
+        #expect({
+            if case .hybrid = diagnostics.requestedMode { return true }
+            return false
+        }())
+        #expect(diagnostics.effectiveMode == .textOnly)
         #expect(diagnostics.queryEmbeddingState == .vectorDisabled)
 
         let stats = await memory.stats()
@@ -156,8 +159,8 @@ func memorySearchReportsVectorDiagnosticsWithEmbedder() async throws {
         let results = try await memory.search("vector diagnostics", options: .init(mode: .vectorOnly))
 
         let diagnostics = try #require(results.diagnostics)
-        #expect(diagnostics.requestedMode == "vector")
-        #expect(diagnostics.effectiveMode == "vector")
+        #expect(diagnostics.requestedMode == .vectorOnly)
+        #expect(diagnostics.effectiveMode == .vectorOnly)
         #expect(diagnostics.queryEmbeddingState == .available)
 
         let stats = await memory.stats()

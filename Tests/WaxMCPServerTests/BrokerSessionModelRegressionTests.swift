@@ -568,6 +568,60 @@ func mergeRecallItemsReservesMissingDurableHorizonWhenSessionFillsLimit() {
 }
 
 @Test
+func filterBeforeMergeKeepsProjectHitWhenForeignRanksFillLimit() {
+    let foreign = (1...8).map { index in
+        recallItem(
+            frameId: UInt64(index),
+            score: 0.99 - Float(index) * 0.01,
+            text: "FOREIGN-STARVE shared query token \(index)",
+            metadata: [MemoryMetadataKeys.project: "OtherLand"]
+        )
+    }
+    let home = recallItem(
+        frameId: 100,
+        score: 0.20,
+        text: "HOME-PROJECT-TOKEN shared query token decision",
+        metadata: [MemoryMetadataKeys.project: "HomeLand"]
+    )
+
+    // Wrong order (filter after merge/limit): home frame is starved out.
+    let starved = AgentBrokerService.recallItems(
+        AgentBrokerService.mergeRecallItems(sessionItems: [], durableItems: foreign + [home], limit: 3),
+        matchingProject: "HomeLand",
+        repo: nil
+    )
+    #expect(starved.isEmpty)
+
+    // Correct order (filter before merge/limit): home frame survives.
+    let filtered = AgentBrokerService.recallItems(
+        foreign + [home],
+        matchingProject: "HomeLand",
+        repo: nil
+    )
+    let kept = AgentBrokerService.mergeRecallItems(
+        sessionItems: [],
+        durableItems: filtered,
+        limit: 3
+    )
+    #expect(kept.contains { $0.text.contains("HOME-PROJECT-TOKEN") })
+    #expect(!kept.contains { $0.text.contains("FOREIGN-STARVE") })
+}
+
+@Test
+func frameFilterByAddingProjectScopeMergesMetadataEntries() {
+    let base = FrameFilter(
+        metadataFilter: MetadataFilter(requiredEntries: ["topic": "keep"])
+    )
+    let scoped = AgentBrokerService.frameFilterByAddingProjectScope(
+        base,
+        project: "HomeLand",
+        repo: nil
+    )
+    #expect(scoped?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "HomeLand")
+    #expect(scoped?.metadataFilter?.requiredEntries["topic"] == "keep")
+}
+
+@Test
 func recallAppliesFrameFilterToDurableHitsWhenSessionIDIsSet() async throws {
     try await withIsolatedBroker { service, _ in
         let started = await service.handle(.init(command: "session_start"))
@@ -1169,13 +1223,19 @@ func handoffRoundTripWorksOnBroker() async throws {
     }
 }
 
-private func recallItem(frameId: UInt64, score: Float, text: String) -> RAGContext.Item {
+private func recallItem(
+    frameId: UInt64,
+    score: Float,
+    text: String,
+    metadata: [String: String] = [:]
+) -> RAGContext.Item {
     RAGContext.Item(
         kind: .snippet,
         frameId: frameId,
         score: score,
         sources: [.text],
-        text: text
+        text: text,
+        metadata: metadata
     )
 }
 
