@@ -6,7 +6,8 @@ import Testing
 @testable import Wax
 @testable import WaxCore
 
-/// Phase 0 contracts from Resources/docs/wax-mcp-reliability-plan.md (T0.1–T0.6).
+/// Reliability contracts for project-scoped recall, session rebind, and honest writes
+/// (Phase 0 from Resources/docs/wax-mcp-reliability-plan.md, T0.1–T0.6+).
 private func withReliabilityBroker<T>(
     _ body: (AgentBrokerService, URL) async throws -> T
 ) async throws -> T {
@@ -420,6 +421,208 @@ func t06WorktreeCwdStampsMainRepoNameNotWorktreeFolder() async throws {
         #expect(payload["project"]?.stringValue == mainName)
         #expect(payload["repo"]?.stringValue == mainName)
         #expect(payload["project"]?.stringValue != worktreeFolder)
+    }
+}
+
+@Test
+func sessionEndRebindsActiveSessionUUIDAcrossBrokerHop() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-end-hop-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let first = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    let started = await first.handle(.init(
+        command: "session_start",
+        arguments: [
+            "agent_id": .string("end-hop-agent"),
+            "run_id": .string("end-hop-run"),
+        ]
+    ))
+    #expect(started.ok == true)
+    let sessionID = try requireString(try requireObject(started.payload), "session_id")
+    try await first.close()
+
+    let second = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    defer { Task { try? await second.close() } }
+
+    let ended = await second.handle(.init(
+        command: "session_end",
+        arguments: ["session_id": .string(sessionID)]
+    ))
+    #expect(ended.ok == true, "session_end after hop failed: \(ended.error ?? "nil")")
+    let payload = try requireObject(ended.payload)
+    #expect(payload["ended"]?.boolValue == true)
+    #expect(payload["active"]?.boolValue == false)
+    #expect(payload["session_id"]?.stringValue == sessionID)
+}
+
+@Test
+func rememberAfterHopStampsSessionManifestProjectNotForeignCwd() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-stamp-hop-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let projectRoot = rootURL.appendingPathComponent("AlphaStampRepo", isDirectory: true)
+    let foreignRoot = rootURL.appendingPathComponent("ForeignStampRepo", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: projectRoot.appendingPathComponent(".git", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: foreignRoot.appendingPathComponent(".git", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+
+    let first = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    let started = await first.handle(.init(
+        command: "session_start",
+        arguments: [
+            "agent_id": .string("stamp-hop-agent"),
+            "run_id": .string("stamp-hop-run"),
+            "cwd": .string(projectRoot.path),
+        ]
+    ))
+    #expect(started.ok == true)
+    let startPayload = try requireObject(started.payload)
+    let sessionID = try requireString(startPayload, "session_id")
+    #expect(startPayload["project"]?.stringValue == "AlphaStampRepo")
+    try await first.close()
+
+    let second = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    defer { Task { try? await second.close() } }
+
+    let token = "STAMP-HOP-\(UUID().uuidString.prefix(8))"
+    let remembered = await second.handle(.init(
+        command: "remember",
+        arguments: [
+            "content": .string("\(token) must keep AlphaStampRepo after hop."),
+            "session_id": .string(sessionID),
+            "memory_type": .string("task_state"),
+            "durability": .string("working"),
+            // Hostile cwd: without rebind-before-writeScope this would stamp ForeignStampRepo.
+            "cwd": .string(foreignRoot.path),
+        ]
+    ))
+    #expect(remembered.ok == true, "remember after hop failed: \(remembered.error ?? "nil")")
+
+    let recall = await second.handle(.init(
+        command: "recall",
+        arguments: [
+            "query": .string(token),
+            "session_id": .string(sessionID),
+            "scope": .string("session"),
+            "mode": .string("text"),
+            "limit": .int(8),
+        ]
+    ))
+    #expect(recall.ok == true, "recall failed: \(recall.error ?? "nil")")
+    let recallPayload = try requireObject(recall.payload)
+    #expect(recallPayload["project"]?.stringValue == "AlphaStampRepo")
+    #expect(resultTexts(recallPayload).contains { $0.contains(token) })
+    #expect(recallPayload["project_miss"]?.boolValue != true)
+}
+
+@Test
+func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
+    try await withReliabilityBroker { service, _ in
+        let foreign = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-open-foreign-\(UUID().uuidString)", isDirectory: true)
+        let repoURL = foreign.appendingPathComponent("ForeignOpenRepo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: repoURL.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: foreign) }
+
+        let opened = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string("ExplicitOpenProject"),
+                "agent_id": .string("open-stamp-agent"),
+                "run_id": .string("open-stamp-run"),
+                "cwd": .string(repoURL.path),
+            ]
+        ))
+        #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+        let payload = try requireObject(opened.payload)
+        #expect(payload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(payload["repo"]?.stringValue == "ExplicitOpenProject")
+        #expect(payload["repo"]?.stringValue != "ForeignOpenRepo")
+        let sessionID = try requireString(payload, "session_id")
+
+        let recall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string("noop"),
+                "session_id": .string(sessionID),
+                "mode": .string("text"),
+                "limit": .int(3),
+            ]
+        ))
+        #expect(recall.ok == true)
+        let recallPayload = try requireObject(recall.payload)
+        #expect(recallPayload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(recallPayload["repo"]?.stringValue == "ExplicitOpenProject")
+
+        let token = "OPEN-STAMP-\(UUID().uuidString.prefix(8))"
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(token) must not inherit ForeignOpenRepo."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("task_state"),
+                "durability": .string("working"),
+                "cwd": .string(repoURL.path),
+            ]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+
+        let stamped = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "session_id": .string(sessionID),
+                "scope": .string("session"),
+                "mode": .string("text"),
+                "limit": .int(8),
+            ]
+        ))
+        #expect(stamped.ok == true)
+        let stampedPayload = try requireObject(stamped.payload)
+        #expect(stampedPayload["project"]?.stringValue == "ExplicitOpenProject")
+        #expect(stampedPayload["repo"]?.stringValue == "ExplicitOpenProject")
+        #expect(resultTexts(stampedPayload).contains { $0.contains(token) })
+        #expect(stampedPayload["project_miss"]?.boolValue != true)
     }
 }
 #endif
