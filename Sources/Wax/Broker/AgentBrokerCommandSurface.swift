@@ -4,11 +4,11 @@ package enum AgentBrokerCommandSurface {
     package static let corpusSearchDefaultRebuild = false
 
     package static let publicCommandArguments: [String: Set<String>] = [
-        "memory_append": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "cwd"],
+        "memory_append": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "cwd", "scope", "verbosity"],
         "memory_search": ["query", "topK", "session_id", "mode", "alpha", "include_working", "include_episodic", "include_durable"],
         "memory_get": ["memory_id"],
-        "remember": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "cwd"],
-        "recall": ["query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters"],
+        "remember": ["content", "session_id", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "cwd", "scope", "verbosity"],
+        "recall": ["query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters", "project", "repo", "scope", "cwd", "verbosity"],
         "search": ["query", "mode", "topK", "session_id", "alpha", "filters"],
         "session_synthesize": ["session_id", "minimum_confidence", "minimum_recall_count", "max_candidates"],
         "memory_promote": ["session_id", "frame_id", "content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "expires_in_days", "reviewed", "locked", "approve", "minimum_confidence", "minimum_recall_count", "max_candidates"],
@@ -20,6 +20,8 @@ package enum AgentBrokerCommandSurface {
         "session_start": ["session_id", "agent_id", "run_id", "cwd"],
         "session_resume": ["session_id", "agent_id", "run_id"],
         "session_end": ["session_id"],
+        "session_close": ["session_id", "content", "project", "pending_tasks"],
+        "session_open": ["project", "agent_id", "run_id", "recall_query", "cwd"],
         "handoff": ["content", "session_id", "project", "pending_tasks"],
         "handoff_latest": ["project"],
         "compact_context": ["query", "session_id", "token_budget", "max_items", "mode", "alpha"],

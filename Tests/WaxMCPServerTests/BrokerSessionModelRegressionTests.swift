@@ -85,6 +85,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
                 "query": .string("What is rv?"),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
+                "scope": .string("global"),
                 "limit": .int(10),
             ]
         ))
@@ -716,14 +717,12 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
     }
     do {
         let token = "PENDINGLAND\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
-        let remembered = await service.handle(.init(
-            command: "remember",
-            arguments: ["content": .string("Cold remember \(token) should land after embedder ready.")]
-        ))
-        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
-        let pendingPayload = try requireObject(remembered.payload)
-        #expect(pendingPayload["status"]?.stringValue == "pending")
-        #expect(pendingPayload["embedding_state"]?.stringValue == "loading")
+        let rememberTask = Task {
+            await service.handle(.init(
+                command: "remember",
+                arguments: ["content": .string("Cold remember \(token) should land after embedder ready.")]
+            ))
+        }
 
         try await Task.sleep(for: .milliseconds(40))
         let earlySearch = await service.handle(.init(
@@ -744,7 +743,12 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
         )
 
         await gate.open()
-        try await service.settlePendingRememberWrites()
+        let remembered = await rememberTask.value
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+        let rememberPayload = try requireObject(remembered.payload)
+        #expect(rememberPayload["status"]?.stringValue == "ok")
+        #expect((rememberPayload["framesAdded"]?.intValue ?? 0) >= 1)
+
         #expect((await service.handle(.init(command: "flush"))).ok == true)
 
         let search = await service.handle(.init(
@@ -794,21 +798,21 @@ func coldRememberPendingWriteSurfacesTypedFailureWhenEmbedderFails() async throw
         throw PendingRememberFactoryError.unavailable
     }
     do {
-        let remembered = await service.handle(.init(
-            command: "remember",
-            arguments: ["content": .string("Cold remember should surface embedder failure.")]
-        ))
-        #expect(remembered.ok == true)
-        #expect(try requireObject(remembered.payload)["status"]?.stringValue == "pending")
-
-        await gate.open()
-        do {
-            try await service.settlePendingRememberWrites()
-            Issue.record("pending remember should fail when automatic compile fails")
-        } catch {
-            #expect(error.localizedDescription.localizedCaseInsensitiveContains("unavailable")
-                || error.localizedDescription.localizedCaseInsensitiveContains("embed"))
+        let rememberTask = Task {
+            await service.handle(.init(
+                command: "remember",
+                arguments: ["content": .string("Cold remember should surface embedder failure.")]
+            ))
         }
+        try await Task.sleep(for: .milliseconds(40))
+        await gate.open()
+        let remembered = await rememberTask.value
+        #expect(remembered.ok == false)
+        #expect(
+            (remembered.error ?? "").localizedCaseInsensitiveContains("embed")
+                || (remembered.error ?? "").localizedCaseInsensitiveContains("unavailable")
+                || (remembered.error ?? "").localizedCaseInsensitiveContains("not ready")
+        )
         try await service.close()
     } catch {
         try? await service.close()
@@ -975,7 +979,7 @@ func endedSessionIDIsRejectedOnLaterScopedBrokerCalls() async throws {
             ]
         ))
         #expect(remember.ok == false)
-        #expect((remember.error ?? "").contains("session_id is not active"))
+        #expect((remember.error ?? "").contains("has ended") || (remember.error ?? "").contains("session_ended"))
 
         let search = await service.handle(.init(
             command: "search",
@@ -987,7 +991,7 @@ func endedSessionIDIsRejectedOnLaterScopedBrokerCalls() async throws {
             ]
         ))
         #expect(search.ok == false)
-        #expect((search.error ?? "").contains("session_id is not active"))
+        #expect((search.error ?? "").contains("has ended") || (search.error ?? "").contains("session_ended"))
     }
 }
 

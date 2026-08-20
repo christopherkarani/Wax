@@ -85,6 +85,16 @@ enum ToolSchemas {
             inputSchema: waxSessionEnd
         ),
         Tool(
+            name: "session_close",
+            description: "Atomic handoff then session_end for one session_id. Idempotent if the session already ended.",
+            inputSchema: waxSessionClose
+        ),
+        Tool(
+            name: "session_open",
+            description: "Open a session in one call: handoff_latest + session_start + optional recall. Returns session_id, handoff, and optional recall.",
+            inputSchema: waxSessionOpen
+        ),
+        Tool(
             name: "handoff",
             description: "Store an end-of-session handoff note (content, optional project/pending_tasks/session_id) for the next session.",
             inputSchema: waxHandoff
@@ -160,6 +170,16 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional session UUID to scope this write explicitly. metadata.session_id is rejected.",
             ],
+            "scope": [
+                "type": "string",
+                "description": "Write horizon. session requires session_id; durable forbids session_id. Omit for legacy omit-session_id=durable behavior.",
+                "enum": ["session", "durable"],
+            ],
+            "verbosity": [
+                "type": "string",
+                "description": "Optional response verbosity. compact returns a single JSON text block.",
+                "enum": ["compact"],
+            ],
             "metadata": [
                 "type": "object",
                 "description": "Optional metadata map. Scalar values are coerced to strings.",
@@ -222,7 +242,20 @@ enum ToolSchemas {
             ],
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID. When set, recall merges that session with durable long-term memory.",
+                "description": "Optional session UUID. When set with default scope, recall merges that session with durable long-term memory.",
+            ],
+            "project": [
+                "type": "string",
+                "description": "Optional project hard-filter. Default scope=project keeps only frames with matching wax.project.",
+            ],
+            "repo": [
+                "type": "string",
+                "description": "Optional repo hard-filter used when project is unset. Filters wax.repo exactly.",
+            ],
+            "scope": [
+                "type": "string",
+                "description": "Recall scope. project (default) hard-filters to resolved project; session requires session_id and skips durable merge; global disables project filter.",
+                "enum": ["project", "session", "global"],
             ],
             "mode": [
                 "type": "string",
@@ -246,6 +279,11 @@ enum ToolSchemas {
                 "description": "Deprecated legacy alias for search_top_k.",
                 "minimum": 1,
                 "maximum": 200,
+            ],
+            "verbosity": [
+                "type": "string",
+                "description": "Optional response verbosity. compact returns a single JSON text block.",
+                "enum": ["compact"],
             ],
             "filters": searchFilters,
         ],
@@ -467,6 +505,51 @@ enum ToolSchemas {
             "session_id": [
                 "type": "string",
                 "description": "Optional session UUID to end explicitly. Required when more than one MCP session is active.",
+            ],
+        ],
+        required: []
+    )
+
+    static let waxSessionClose: Value = objectSchema(
+        properties: [
+            "session_id": [
+                "type": "string",
+                "description": "Session UUID to close (required).",
+            ],
+            "content": [
+                "type": "string",
+                "description": "Handoff text stored before ending the session.",
+            ],
+            "project": [
+                "type": "string",
+                "description": "Optional project scope for the handoff.",
+            ],
+            "pending_tasks": [
+                "type": "array",
+                "description": "Optional list of pending tasks.",
+                "items": ["type": "string"],
+            ],
+        ],
+        required: ["session_id", "content"]
+    )
+
+    static let waxSessionOpen: Value = objectSchema(
+        properties: [
+            "project": [
+                "type": "string",
+                "description": "Optional project for handoff_latest and default recall scope.",
+            ],
+            "agent_id": [
+                "type": "string",
+                "description": "Stable agent identifier. Combined with run_id, reuses the active session.",
+            ],
+            "run_id": [
+                "type": "string",
+                "description": "Stable run identifier for the current autonomous run.",
+            ],
+            "recall_query": [
+                "type": "string",
+                "description": "Optional query to run project-scoped recall after session_start.",
             ],
         ],
         required: []
