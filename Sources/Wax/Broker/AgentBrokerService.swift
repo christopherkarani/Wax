@@ -336,7 +336,7 @@ extension AgentBrokerService {
     func remember(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        var sessionID = try parseOptionalSessionID(args)
+        let sessionID = try parseOptionalSessionID(args)
         if let rememberScope = try parseRememberWriteScope(args) {
             switch rememberScope {
             case .session:
@@ -347,8 +347,11 @@ extension AgentBrokerService {
                 if sessionID != nil {
                     throw BrokerValidationError.invalid("scope durable forbids session_id")
                 }
-                sessionID = nil
             }
+        }
+        // Rebind before writeScope so session manifest project/repo stamp correctly after a broker hop.
+        if let sessionID {
+            _ = try await memory(for: sessionID)
         }
         let rawMetadata = try coerceMetadata(try args.optionalObject("metadata"))
         if rawMetadata["session_id"] != nil {
@@ -371,7 +374,7 @@ extension AgentBrokerService {
         let before = await memory.runtimeStats()
         if !noEmbedder, before.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() {
             do {
-                try await Self.awaitRememberReady(memory: memory, timeoutSeconds: 30)
+                try await Self.awaitRememberReady(memory: memory, timeout: .seconds(30))
             } catch {
                 throw BrokerValidationError.invalid(
                     "Remember failed: embedding provider not ready (\(error.localizedDescription))"
@@ -401,21 +404,24 @@ extension AgentBrokerService {
         return scope
     }
 
+    /// Suspends until `memory` can accept remember writes, or fails after `timeout`.
     private static func awaitRememberReady(
         memory: MemoryOrchestrator,
-        timeoutSeconds: Double
+        timeout: Duration
     ) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 try await memory.waitUntilReadyForRemember()
             }
             group.addTask {
-                try await Task.sleep(for: .seconds(timeoutSeconds))
+                try await Task.sleep(for: timeout)
                 throw BrokerValidationError.invalid(
-                    "embedding provider did not become ready within \(Int(timeoutSeconds))s"
+                    "embedding provider did not become ready within \(timeout.components.seconds)s"
                 )
             }
-            try await group.next()!
+            guard try await group.next() != nil else {
+                throw BrokerValidationError.invalid("embedding readiness wait returned no result")
+            }
             group.cancelAll()
         }
     }
@@ -583,9 +589,9 @@ extension AgentBrokerService {
             projectMiss = false
             scopeMissMessage = nil
         } else if applyProjectFilter || recallScope == .project {
-            let filtered = Self.filterRecallItemsByProject(
+            let filtered = Self.recallItems(
                 merged,
-                project: resolvedIdentity.project,
+                matchingProject: resolvedIdentity.project,
                 repo: resolvedIdentity.repo
             )
             if resolvedIdentity.project == nil && resolvedIdentity.repo == nil {
@@ -736,9 +742,13 @@ extension AgentBrokerService {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    package static func filterRecallItemsByProject(
+    /// Returns items whose `wax.project` or `wax.repo` metadata matches the given identity.
+    ///
+    /// When `project` is non-`nil`, matching is by project only. Otherwise matching is by
+    /// `repo`. Items missing both keys are excluded. Pass `nil` for both to get an empty result.
+    package static func recallItems(
         _ items: [RAGContext.Item],
-        project: String?,
+        matchingProject project: String?,
         repo: String?
     ) -> [RAGContext.Item] {
         items.filter { item in
@@ -1373,6 +1383,11 @@ extension AgentBrokerService {
     func sessionEnd(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let requested = try parseOptionalSessionID(args)
+        // Explicit session_id must rebind an active-on-disk manifest after a broker hop (C4),
+        // matching remember/recall/handoff/session_close. Omitted id stays live-map only.
+        if let requested {
+            _ = try await virtualSessions.ensureLive(requested)
+        }
         guard let target = try virtualSessions.peekEndTarget(sessionID: requested) else {
             return sessionEndPayload(.idle)
         }
@@ -1478,6 +1493,23 @@ extension AgentBrokerService {
         let startPayload = try await sessionStart(arguments: startArgs)
         let sessionID = startPayload.objectValue?["session_id"]?.stringValue
 
+        // Explicit project must win over cwd inference so later project-scoped recall
+        // resolves the same identity session_open advertised.
+        if let project,
+           let sessionID,
+           let uuid = UUID(uuidString: sessionID)
+        {
+            let trimmed = project.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                try virtualSessions.updateLive(uuid) { state in
+                    state.manifest.project = trimmed
+                    if state.manifest.repo == nil || state.manifest.repo?.isEmpty == true {
+                        state.manifest.repo = trimmed
+                    }
+                }
+            }
+        }
+
         var recallPayload: AgentBrokerValue?
         if let recallQuery, !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             var recallArgs: [String: AgentBrokerValue] = [
@@ -1491,14 +1523,21 @@ extension AgentBrokerService {
         }
 
         let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
+        let resolvedProject = project ?? inferred.projectName
+        let resolvedRepo: String?
+        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
+            resolvedRepo = live.manifest.repo ?? inferred.repoName
+        } else {
+            resolvedRepo = inferred.repoName
+        }
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .from(sessionID),
             "handoff": handoffPayload,
-            "project": .from(project ?? inferred.projectName),
-            "repo": .from(inferred.repoName),
+            "project": .from(resolvedProject),
+            "repo": .from(resolvedRepo),
             "display_text": .string(
-                "Session open. session_id=\(sessionID ?? "nil") project=\(project ?? inferred.projectName ?? "nil")."
+                "Session open. session_id=\(sessionID ?? "nil") project=\(resolvedProject ?? "nil")."
             ),
         ]
         if let startObject = startPayload.objectValue {
@@ -2731,7 +2770,7 @@ extension AgentBrokerService {
     }
 
     func validateActiveSession(_ sessionID: UUID?) async throws {
-        try await virtualSessions.validateActiveOrRebind(sessionID)
+        _ = try await virtualSessions.ensureLive(sessionID)
     }
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
@@ -3699,16 +3738,24 @@ enum BrokerValidationError: LocalizedError {
     }
 }
 
-/// Structured inactive-session error for broker hops (C4). Never resumable via agent+run steal.
+/// A structured inactive-session failure for broker hops.
+///
+/// Codes are stable wire values (`session_ended`, `session_unknown`, `session_unreadable`,
+/// `session_not_live`). Construct only via the typed factories — never invent a new code
+/// at a call site. UUID rebind never steals a different session via `agent_id`+`run_id`.
 package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
+    /// Stable machine-readable failure code for MCP/broker payloads.
     package let code: String
+    /// Whether the agent may recover by retrying the same `session_id` (always `false` today).
     package let resumable: Bool
+    /// Human-readable explanation suitable for tool error text.
     package let reason: String
 
     package var errorDescription: String? {
         "\(reason) (code=\(code), resumable=\(resumable))"
     }
 
+    /// Returns the structured broker/MCP error object for this failure.
     package func brokerPayload() -> AgentBrokerValue {
         .object([
             "code": .string(code),
@@ -3717,6 +3764,7 @@ package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
         ])
     }
 
+    /// Creates an error for a session whose manifest is already `.ended`.
     package static func ended(sessionID: UUID) -> BrokerSessionInactiveError {
         BrokerSessionInactiveError(
             code: "session_ended",
@@ -3725,6 +3773,7 @@ package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
         )
     }
 
+    /// Creates an error when no manifest exists for `sessionID`.
     package static func unknown(sessionID: UUID) -> BrokerSessionInactiveError {
         BrokerSessionInactiveError(
             code: "session_unknown",
@@ -3733,12 +3782,29 @@ package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
         )
     }
 
+    /// Creates an error when the session manifest cannot be read.
     package static func unreadable(sessionID: UUID, detail: String) -> BrokerSessionInactiveError {
         BrokerSessionInactiveError(
             code: "session_unreadable",
             resumable: false,
             reason: "session_id \(sessionID.uuidString) manifest unreadable: \(detail)"
         )
+    }
+
+    /// Creates an error when `sessionID` is absent from this process's live map and the
+    /// caller intentionally did not rebind (``VirtualSessionStore/lookup(_:)`` paths).
+    package static func notLive(sessionID: UUID) -> BrokerSessionInactiveError {
+        BrokerSessionInactiveError(
+            code: "session_not_live",
+            resumable: false,
+            reason: "session_id \(sessionID.uuidString) is not active in this broker process; call session_start or session_resume"
+        )
+    }
+
+    private init(code: String, resumable: Bool, reason: String) {
+        self.code = code
+        self.resumable = resumable
+        self.reason = reason
     }
 }
 

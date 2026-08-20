@@ -341,9 +341,14 @@ package final class VirtualSessionStore: @unchecked Sendable {
         return .live(state.memory)
     }
 
-    /// Like ``lookup``, but on `_live` miss rebinds **only** the supplied UUID when its
-    /// on-disk manifest is still `.active` (C4). Never attaches a different session via
-    /// agent_id+run_id.
+    /// Returns the live orchestrator for `sessionID`, rebinding from disk when needed.
+    ///
+    /// On a `_live` miss, rebinds **only** the supplied UUID when its on-disk manifest is
+    /// still `.active`. Never attaches a different session via `agent_id`+`run_id`.
+    ///
+    /// - Parameter sessionID: Session to resolve, or `nil` for no virtual session.
+    /// - Returns: `.none` when `sessionID` is omitted; otherwise `.live` for that UUID.
+    /// - Throws: ``BrokerSessionInactiveError`` when the UUID is unknown, ended, or unreadable.
     package func ensureLive(_ sessionID: UUID?) async throws -> Lookup {
         guard let sessionID else { return .none }
         if let state = locked({ _live[sessionID] }) {
@@ -377,17 +382,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
         return .live(result.state.memory)
     }
 
+    /// Verifies `sessionID` is already in this process's live map (no disk rebind).
     package func validateActive(_ sessionID: UUID?) throws {
         guard sessionID != nil else { return }
         _ = try lookup(sessionID)
     }
 
-    package func validateActiveOrRebind(_ sessionID: UUID?) async throws {
-        guard sessionID != nil else { return }
-        _ = try await ensureLive(sessionID)
-    }
-
-    /// Disk status for a session UUID without requiring `_live` membership.
+    /// Returns the on-disk manifest status for `sessionID`, or `nil` if no manifest exists.
     package func persistedStatus(for sessionID: UUID) throws -> BrokerSessionManifest.Status? {
         do {
             return try BrokerSessionPersistence.loadManifest(
@@ -687,11 +688,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
     /// Prefer ``ensureLive`` on write/recall paths so active manifests rebind (C4).
     /// This error is for `_live`-only checks that intentionally do not rebind.
     private static func notActiveError(for sessionID: UUID) -> BrokerSessionInactiveError {
-        BrokerSessionInactiveError(
-            code: "session_not_live",
-            resumable: false,
-            reason: "session_id \(sessionID.uuidString) is not active in this broker process; call session_start or session_resume"
-        )
+        .notLive(sessionID: sessionID)
     }
 
     private static var requireSessionIDError: BrokerValidationError {
