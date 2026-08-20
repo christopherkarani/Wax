@@ -4,11 +4,6 @@ import WaxCore
 package actor AgentBrokerService {
     typealias SessionState = VirtualSessionStore.SessionState
 
-    struct PendingRememberWrite: Sendable {
-        let sessionID: UUID?
-        let task: Task<Void, Error>
-    }
-
     let longTermMemory: MemoryOrchestrator
     let longTermStoreURL: URL
     let sessionRootURL: URL
@@ -25,7 +20,6 @@ package actor AgentBrokerService {
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
-    var pendingRememberWrites: [PendingRememberWrite] = []
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -134,18 +128,9 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
-        var pendingError: Error?
-        do {
-            try await settlePendingRememberWrites()
-        } catch {
-            pendingError = error
-        }
         await virtualSessions.closeAll()
         try await longTermMemory.flush()
         try await longTermMemory.close()
-        if let pendingError {
-            throw pendingError
-        }
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
@@ -512,6 +497,20 @@ extension AgentBrokerService {
         }
         let effectiveTopK = requestedTopK ?? limit
 
+        // Push project/repo into retrieval so foreign frames cannot starve top-K (post-filter remains a safety net).
+        let applyProjectFilter = recallScope == .project
+            || (recallScope == .session && (resolvedIdentity.project != nil || resolvedIdentity.repo != nil))
+        let retrievalFrameFilter: FrameFilter?
+        if recallScope == .global || !applyProjectFilter {
+            retrievalFrameFilter = parsedFilters.frameFilter
+        } else {
+            retrievalFrameFilter = Self.mergingProjectScope(
+                into: parsedFilters.frameFilter,
+                project: resolvedIdentity.project,
+                repo: resolvedIdentity.repo
+            )
+        }
+
         let sessionMemory: MemoryOrchestrator?
         let sessionExecution: MemoryOrchestrator.RecallExecution?
         var sessionItems: [RAGContext.Item] = []
@@ -521,7 +520,7 @@ extension AgentBrokerService {
             let execution = try await memory.recallExecution(
                 query: query,
                 mode: mode,
-                frameFilter: parsedFilters.frameFilter,
+                frameFilter: retrievalFrameFilter,
                 timeRange: parsedFilters.timeRange,
                 topK: effectiveTopK
             )
@@ -533,7 +532,19 @@ extension AgentBrokerService {
                         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                         return lhs.frameId > rhs.frameId
                     }
-                sessionItems = documents.prefix(effectiveTopK).map { document in
+                let scopedDocuments: [MemoryOrchestrator.CorpusSourceDocument]
+                if applyProjectFilter {
+                    scopedDocuments = documents.filter { document in
+                        Self.metadataMatchesProjectScope(
+                            document.metadata,
+                            project: resolvedIdentity.project,
+                            repo: resolvedIdentity.repo
+                        )
+                    }
+                } else {
+                    scopedDocuments = documents
+                }
+                sessionItems = scopedDocuments.prefix(effectiveTopK).map { document in
                     RAGContext.Item(
                         kind: .snippet,
                         frameId: document.frameId,
@@ -559,7 +570,7 @@ extension AgentBrokerService {
             let execution = try await longTermMemory.recallExecution(
                 query: query,
                 mode: mode,
-                frameFilter: parsedFilters.frameFilter,
+                frameFilter: retrievalFrameFilter,
                 timeRange: parsedFilters.timeRange,
                 topK: effectiveTopK
             )
@@ -578,8 +589,6 @@ extension AgentBrokerService {
             )
         }
 
-        let applyProjectFilter = recallScope == .project
-            || (recallScope == .session && (resolvedIdentity.project != nil || resolvedIdentity.repo != nil))
         // scope global: no project hard-filter (C7).
         let selected: [RAGContext.Item]
         let projectMiss: Bool
@@ -752,14 +761,60 @@ extension AgentBrokerService {
         repo: String?
     ) -> [RAGContext.Item] {
         items.filter { item in
-            if let project {
-                return item.metadata[MemoryMetadataKeys.project] == project
-            }
-            if let repo {
-                return item.metadata[MemoryMetadataKeys.repo] == repo
-            }
-            return false
+            metadataMatchesProjectScope(item.metadata, project: project, repo: repo)
         }
+    }
+
+    /// Same project/repo matching rules as ``recallItems`` for raw metadata maps.
+    package static func metadataMatchesProjectScope(
+        _ metadata: [String: String],
+        project: String?,
+        repo: String?
+    ) -> Bool {
+        if let project {
+            return metadata[MemoryMetadataKeys.project] == project
+        }
+        if let repo {
+            return metadata[MemoryMetadataKeys.repo] == repo
+        }
+        return false
+    }
+
+    /// Folds project/repo identity into a frame filter for retrieval-time hard scoping.
+    ///
+    /// Matches ``recallItems``: when `project` is set only `wax.project` is required; otherwise
+    /// `wax.repo`. Returns `base` unchanged when both are nil.
+    package static func mergingProjectScope(
+        into base: FrameFilter?,
+        project: String?,
+        repo: String?
+    ) -> FrameFilter? {
+        let scopeKey: String
+        let scopeValue: String
+        if let project {
+            scopeKey = MemoryMetadataKeys.project
+            scopeValue = project
+        } else if let repo {
+            scopeKey = MemoryMetadataKeys.repo
+            scopeValue = repo
+        } else {
+            return base
+        }
+
+        var requiredEntries = base?.metadataFilter?.requiredEntries ?? [:]
+        requiredEntries[scopeKey] = scopeValue
+        let metadataFilter = MetadataFilter(
+            requiredEntries: requiredEntries,
+            requiredTags: base?.metadataFilter?.requiredTags ?? [],
+            requiredLabels: base?.metadataFilter?.requiredLabels ?? []
+        )
+        return FrameFilter(
+            includeDeleted: base?.includeDeleted ?? false,
+            includeSuperseded: base?.includeSuperseded ?? false,
+            includeSurrogates: base?.includeSurrogates ?? false,
+            frameIds: base?.frameIds,
+            metadataFilter: metadataFilter
+        )
     }
 
     package static func mergeRecallItems(
@@ -1332,7 +1387,6 @@ extension AgentBrokerService {
     }
 
     func flush() async throws -> AgentBrokerValue {
-        try await settlePendingRememberWrites()
         try await longTermMemory.flush()
         for session in activeSessions.values {
             try await session.memory.flush()
@@ -1391,7 +1445,6 @@ extension AgentBrokerService {
         guard let target = try virtualSessions.peekEndTarget(sessionID: requested) else {
             return sessionEndPayload(.idle)
         }
-        try await settlePendingRememberWrites(sessionID: target)
         let result = try await virtualSessions.end(sessionID: target)
         return sessionEndPayload(result)
     }
@@ -1434,7 +1487,6 @@ extension AgentBrokerService {
         )
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
-        try await settlePendingRememberWrites(sessionID: sessionID)
         let result = try await virtualSessions.end(sessionID: sessionID)
         return sessionClosePayload(
             sessionID: sessionID,
@@ -2894,41 +2946,6 @@ extension AgentBrokerService {
             default:
                 return .durableOnly
             }
-        }
-    }
-
-    package func settlePendingRememberWrites(sessionID: UUID? = nil) async throws {
-        let selected: [PendingRememberWrite]
-        if let sessionID {
-            var remaining: [PendingRememberWrite] = []
-            remaining.reserveCapacity(pendingRememberWrites.count)
-            var matched: [PendingRememberWrite] = []
-            for write in pendingRememberWrites {
-                if write.sessionID == sessionID {
-                    matched.append(write)
-                } else {
-                    remaining.append(write)
-                }
-            }
-            pendingRememberWrites = remaining
-            selected = matched
-        } else {
-            selected = pendingRememberWrites
-            pendingRememberWrites.removeAll()
-        }
-
-        var firstError: Error?
-        for write in selected {
-            do {
-                try await write.task.value
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-        }
-        if let firstError {
-            throw firstError
         }
     }
 

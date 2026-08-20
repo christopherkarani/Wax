@@ -624,4 +624,80 @@ func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
         #expect(stampedPayload["project_miss"]?.boolValue != true)
     }
 }
+
+@Test
+func projectScopedRecallSurvivesContaminatedTopKViaRetrievalFilter() async throws {
+    try await withReliabilityBroker { service, _ in
+        let shared = "CONTAM-SHARED-\(UUID().uuidString.prefix(8))"
+        let targetHit = "\(shared) TARGET-HIT unique AlphaLand decision."
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(targetHit),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+                "project": .string("AlphaLand"),
+            ]
+        ))).ok == true)
+
+        // Flood the store with newer foreign hits that share the query token.
+        // Post-topK filtering alone would return project_miss; retrieval MetadataFilter must keep AlphaLand.
+        let limit = 3
+        for index in 0..<(limit * 6) {
+            #expect((await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("\(shared) foreign contamination frame \(index) BetaLand."),
+                    "memory_type": .string("decision"),
+                    "durability": .string("durable"),
+                    "project": .string("BetaLand"),
+                ]
+            ))).ok == true)
+        }
+
+        let recall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(shared),
+                "project": .string("AlphaLand"),
+                "mode": .string("text"),
+                "limit": .int(3),
+            ]
+        ))
+        #expect(recall.ok == true, "recall failed: \(recall.error ?? "nil")")
+        let payload = try requireObject(recall.payload)
+        #expect(payload["project_miss"]?.boolValue == false)
+        let texts = resultTexts(payload)
+        #expect(texts.contains { $0.contains("TARGET-HIT") })
+        #expect(!texts.contains { $0.contains("BetaLand") })
+        #expect(texts.count <= 3)
+    }
+}
+
+@Test
+func mergingProjectScopeInjectsWaxProjectIntoFrameFilter() {
+    let base = FrameFilter(
+        includeDeleted: true,
+        metadataFilter: MetadataFilter(requiredEntries: ["custom": "1"], requiredLabels: ["keep"])
+    )
+    let merged = AgentBrokerService.mergingProjectScope(
+        into: base,
+        project: "AlphaLand",
+        repo: "IgnoredWhenProjectSet"
+    )
+    #expect(merged?.includeDeleted == true)
+    #expect(merged?.metadataFilter?.requiredLabels == ["keep"])
+    #expect(merged?.metadataFilter?.requiredEntries["custom"] == "1")
+    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "AlphaLand")
+    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == nil)
+
+    let repoOnly = AgentBrokerService.mergingProjectScope(
+        into: nil,
+        project: nil,
+        repo: "RepoOnly"
+    )
+    #expect(repoOnly?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == "RepoOnly")
+    #expect(AgentBrokerService.mergingProjectScope(into: base, project: nil, repo: nil) == base)
+}
 #endif
