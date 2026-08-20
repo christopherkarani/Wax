@@ -419,10 +419,10 @@ extension AgentBrokerService {
                     "embedding provider did not become ready within \(timeout.components.seconds)s"
                 )
             }
+            defer { group.cancelAll() }
             guard try await group.next() != nil else {
-                throw BrokerValidationError.invalid("embedding readiness wait returned no result")
+                throw BrokerValidationError.invalid("embedding provider readiness wait produced no result")
             }
-            group.cancelAll()
         }
     }
 
@@ -512,6 +512,31 @@ extension AgentBrokerService {
         }
         let effectiveTopK = requestedTopK ?? limit
 
+        // scope=project hard-filters during retrieval (C1/C7). Filtering only after
+        // merge/limit lets foreign top-K starve same-project frames out of the lane.
+        let projectHardFilterActive = recallScope == .project
+        if projectHardFilterActive,
+           resolvedIdentity.project == nil,
+           resolvedIdentity.repo == nil {
+            return projectScopeMissPayload(
+                query: query,
+                limit: limit,
+                searchTopK: effectiveTopK,
+                recallScope: recallScope,
+                resolvedIdentity: resolvedIdentity,
+                parsedFilters: parsedFilters,
+                scopeMissMessage: "no frames for project (unresolved); pass project/repo or scope=global"
+            )
+        }
+
+        let scopedFrameFilter = projectHardFilterActive
+            ? Self.frameFilterByAddingProjectScope(
+                parsedFilters.frameFilter,
+                project: resolvedIdentity.project,
+                repo: resolvedIdentity.repo
+            )
+            : parsedFilters.frameFilter
+
         let sessionMemory: MemoryOrchestrator?
         let sessionExecution: MemoryOrchestrator.RecallExecution?
         var sessionItems: [RAGContext.Item] = []
@@ -521,7 +546,7 @@ extension AgentBrokerService {
             let execution = try await memory.recallExecution(
                 query: query,
                 mode: mode,
-                frameFilter: parsedFilters.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: parsedFilters.timeRange,
                 topK: effectiveTopK
             )
@@ -559,7 +584,7 @@ extension AgentBrokerService {
             let execution = try await longTermMemory.recallExecution(
                 query: query,
                 mode: mode,
-                frameFilter: parsedFilters.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: parsedFilters.timeRange,
                 topK: effectiveTopK
             )
@@ -567,38 +592,43 @@ extension AgentBrokerService {
             durableItems = execution.context.items
         }
 
+        // Defense in depth: keep only in-scope items before merge/limit so foreign
+        // ranks cannot consume the result budget. scope=session skips project filter (C7).
+        let scopedSessionItems: [RAGContext.Item]
+        let scopedDurableItems: [RAGContext.Item]
+        if projectHardFilterActive {
+            scopedSessionItems = Self.recallItems(
+                sessionItems,
+                matchingProject: resolvedIdentity.project,
+                repo: resolvedIdentity.repo
+            )
+            scopedDurableItems = Self.recallItems(
+                durableItems,
+                matchingProject: resolvedIdentity.project,
+                repo: resolvedIdentity.repo
+            )
+        } else {
+            scopedSessionItems = sessionItems
+            scopedDurableItems = durableItems
+        }
+
         let merged: [RAGContext.Item]
         if recallScope == .session {
-            merged = Array(sessionItems.prefix(limit))
+            merged = Array(scopedSessionItems.prefix(limit))
         } else {
             merged = Self.mergeRecallItems(
-                sessionItems: sessionItems,
-                durableItems: durableItems,
+                sessionItems: scopedSessionItems,
+                durableItems: scopedDurableItems,
                 limit: limit
             )
         }
 
-        let applyProjectFilter = recallScope == .project
-            || (recallScope == .session && (resolvedIdentity.project != nil || resolvedIdentity.repo != nil))
-        // scope global: no project hard-filter (C7).
+        // scope global / session: no project hard-filter miss messaging (C7).
         let selected: [RAGContext.Item]
         let projectMiss: Bool
         let scopeMissMessage: String?
-        if recallScope == .global {
-            selected = merged
-            projectMiss = false
-            scopeMissMessage = nil
-        } else if applyProjectFilter || recallScope == .project {
-            let filtered = Self.recallItems(
-                merged,
-                matchingProject: resolvedIdentity.project,
-                repo: resolvedIdentity.repo
-            )
-            if resolvedIdentity.project == nil && resolvedIdentity.repo == nil {
-                selected = []
-                projectMiss = true
-                scopeMissMessage = "no frames for project (unresolved); pass project/repo or scope=global"
-            } else if filtered.isEmpty {
+        if projectHardFilterActive {
+            if merged.isEmpty {
                 selected = []
                 projectMiss = true
                 let label = resolvedIdentity.project.map { "project \($0)" }
@@ -606,7 +636,7 @@ extension AgentBrokerService {
                     ?? "project"
                 scopeMissMessage = "no frames for \(label)"
             } else {
-                selected = filtered
+                selected = merged
                 projectMiss = false
                 scopeMissMessage = nil
             }
@@ -760,6 +790,80 @@ extension AgentBrokerService {
             }
             return false
         }
+    }
+
+    /// Merges project/repo hard-filter into an existing frame filter so unified search
+    /// over-fetches and excludes foreign frames before top-K is finalized.
+    package static func frameFilterByAddingProjectScope(
+        _ base: FrameFilter?,
+        project: String?,
+        repo: String?
+    ) -> FrameFilter? {
+        var requiredEntries = base?.metadataFilter?.requiredEntries ?? [:]
+        if let project {
+            requiredEntries[MemoryMetadataKeys.project] = project
+        } else if let repo {
+            requiredEntries[MemoryMetadataKeys.repo] = repo
+        } else {
+            return base
+        }
+
+        let metadataFilter = MetadataFilter(
+            requiredEntries: requiredEntries,
+            requiredTags: base?.metadataFilter?.requiredTags ?? [],
+            requiredLabels: base?.metadataFilter?.requiredLabels ?? []
+        )
+        return FrameFilter(
+            includeDeleted: base?.includeDeleted ?? false,
+            includeSuperseded: base?.includeSuperseded ?? false,
+            includeSurrogates: base?.includeSurrogates ?? false,
+            frameIds: base?.frameIds,
+            metadataFilter: metadataFilter
+        )
+    }
+
+    private func projectScopeMissPayload(
+        query: String,
+        limit: Int,
+        searchTopK: Int,
+        recallScope: RecallScope,
+        resolvedIdentity: RecallIdentity,
+        parsedFilters: ParsedSearchFilters,
+        scopeMissMessage: String
+    ) -> AgentBrokerValue {
+        var lines: [String] = [
+            scopeMissMessage,
+            "Query: \(query)",
+            "Total tokens: 0",
+            "Results: 0 of \(limit) requested (orchestrator returned 0)",
+            "Search controls: requested_mode=n/a effective_mode=n/a query_embedding_state=n/a search_top_k=\(searchTopK) limit=\(limit) scope=\(recallScope.rawValue)",
+        ]
+        if let project = resolvedIdentity.project {
+            lines.append("Resolved project: \(project)")
+        }
+        if let repo = resolvedIdentity.repo {
+            lines.append("Resolved repo: \(repo)")
+        }
+        lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
+
+        return .object([
+            "query": .string(query),
+            "total_tokens": .from(0),
+            "result_count": .from(0),
+            "limit": .from(limit),
+            "search_top_k": .from(searchTopK),
+            "requested_mode": .string("n/a"),
+            "effective_mode": .string("n/a"),
+            "query_embedding_state": .string("n/a"),
+            "scope": .string(recallScope.rawValue),
+            "project": .from(resolvedIdentity.project),
+            "repo": .from(resolvedIdentity.repo),
+            "project_miss": .bool(true),
+            "scope_miss_message": .string(scopeMissMessage),
+            "applied_filters": parsedFilters.summary,
+            "results": .array([]),
+            "display_text": .string(lines.joined(separator: "\n")),
+        ])
     }
 
     package static func mergeRecallItems(
@@ -1354,9 +1458,19 @@ extension AgentBrokerService {
         let requestedAgentID = try args.optionalString("agent_id")
         let requestedRunID = try args.optionalString("run_id")
         let requestedCWD = try args.optionalString("cwd")
-        let inferredScope = requestedCWD.map {
+        let explicitProject = normalizedOrNil(try args.optionalString("project"))
+        let explicitRepo = normalizedOrNil(try args.optionalString("repo"))
+        var inferredScope = requestedCWD.map {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
         } ?? scopeContext
+        if explicitProject != nil || explicitRepo != nil {
+            inferredScope = MemoryScopeContext(
+                cwdPath: inferredScope.cwdPath,
+                repoRootPath: inferredScope.repoRootPath,
+                repoName: explicitRepo ?? inferredScope.repoName,
+                projectName: explicitProject ?? inferredScope.projectName
+            )
+        }
 
         let result = try await virtualSessions.start(
             explicitSessionID: explicitSessionID,
@@ -1475,6 +1589,7 @@ extension AgentBrokerService {
     func sessionOpen(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
         let args = BrokerArguments(arguments)
         let project = try args.optionalString("project")
+        let repo = try args.optionalString("repo")
         let agentID = try args.optionalString("agent_id")
         let runID = try args.optionalString("run_id")
         let recallQuery = try args.optionalString("recall_query")
@@ -1490,23 +1605,38 @@ extension AgentBrokerService {
         if let agentID { startArgs["agent_id"] = .string(agentID) }
         if let runID { startArgs["run_id"] = .string(runID) }
         if let cwd { startArgs["cwd"] = .string(cwd) }
+        if let project { startArgs["project"] = .string(project) }
+        if let repo { startArgs["repo"] = .string(repo) }
         let startPayload = try await sessionStart(arguments: startArgs)
-        let sessionID = startPayload.objectValue?["session_id"]?.stringValue
+        let startObject = startPayload.objectValue
+        let sessionID = startObject?["session_id"]?.stringValue
 
         // Explicit project must win over cwd inference for both project and repo.
-        // session_open has no separate repo arg; leaving a cwd-inferred repo would
-        // advertise a split identity and stamp foreign wax.repo on later remembers.
+        // Leaving a cwd-inferred repo would advertise a split identity and stamp
+        // foreign wax.repo on later remembers.
         if let project,
            let sessionID,
            let uuid = UUID(uuidString: sessionID)
         {
-            let trimmed = project.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
+            let trimmedProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmedProject.isEmpty {
                 try virtualSessions.updateLive(uuid) { state in
-                    state.manifest.project = trimmed
-                    state.manifest.repo = trimmed
+                    state.manifest.project = trimmedProject
+                    state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
                 }
             }
+        }
+
+        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
+        let resolvedProject: String?
+        let resolvedRepo: String?
+        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
+            resolvedProject = live.manifest.project ?? normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = live.manifest.repo ?? normalizedOrNil(repo) ?? inferred.repoName
+        } else {
+            resolvedProject = normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = normalizedOrNil(repo) ?? inferred.repoName
         }
 
         var recallPayload: AgentBrokerValue?
@@ -1515,20 +1645,13 @@ extension AgentBrokerService {
                 "query": .string(recallQuery),
                 "scope": .string("project"),
             ]
-            if let project { recallArgs["project"] = .string(project) }
+            if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
+            if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
             if let sessionID { recallArgs["session_id"] = .string(sessionID) }
             if let cwd { recallArgs["cwd"] = .string(cwd) }
             recallPayload = try await recall(arguments: recallArgs)
         }
 
-        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
-        let resolvedProject = project ?? inferred.projectName
-        let resolvedRepo: String?
-        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
-            resolvedRepo = live.manifest.repo ?? inferred.repoName
-        } else {
-            resolvedRepo = inferred.repoName
-        }
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .from(sessionID),
@@ -1539,7 +1662,7 @@ extension AgentBrokerService {
                 "Session open. session_id=\(sessionID ?? "nil") project=\(resolvedProject ?? "nil")."
             ),
         ]
-        if let startObject = startPayload.objectValue {
+        if let startObject {
             if let resumed = startObject["resumed"] {
                 payload["resumed"] = resumed
             }
