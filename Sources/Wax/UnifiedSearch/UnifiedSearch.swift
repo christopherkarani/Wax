@@ -107,11 +107,12 @@ extension Wax {
             }
             // Empty MATCH plans (stopwords / operators only) must not fall back to
             // the raw user string — FTS5 would interpret AND/OR/NOT/NEAR as syntax.
-            guard let primaryQuery = Self.primaryFTSQuery(from: trimmedQuery) else {
+            guard let plan = MatchPlan.plan(query: trimmedQuery) else {
                 return ([], false)
             }
-            let fallbackQuery = Self.orExpandedQuery(from: trimmedQuery)
-            let queryTokenCount = Self.normalizedFTSTokens(from: trimmedQuery, maxTokens: 16).count
+            let primaryQuery = plan.primaryMatch
+            let fallbackQuery = plan.fallbackMatch
+            let queryTokenCount = plan.tokenCount
 
             func merged(
                 base: [TextSearchResult],
@@ -871,44 +872,6 @@ extension Wax {
         return results.map { scoredAsORFallbackOnly($0, tokenCount: tokenCount) }
     }
 
-    private enum FTSMatchJoin {
-        case andLike
-        case or
-
-        var separator: String {
-            switch self {
-            case .andLike: " "
-            case .or: " OR "
-            }
-        }
-    }
-
-    private static func plannedFTSQuery(
-        from query: String,
-        join: FTSMatchJoin,
-        maxTokens: Int = 16
-    ) -> String? {
-        let quotedTokens = normalizedFTSTokens(from: query, maxTokens: maxTokens).map { token -> String in
-            let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
-        let quotedPhrases = normalizedQuotedPhrases(from: query).map { phrase -> String in
-            let escaped = phrase.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(escaped)\""
-        }
-        let clauses = quotedPhrases + quotedTokens
-        guard !clauses.isEmpty else { return nil }
-        return clauses.joined(separator: join.separator)
-    }
-
-    private static func orExpandedQuery(from query: String, maxTokens: Int = 16) -> String? {
-        plannedFTSQuery(from: query, join: .or, maxTokens: maxTokens)
-    }
-
-    private static func primaryFTSQuery(from query: String, maxTokens: Int = 16) -> String? {
-        plannedFTSQuery(from: query, join: .andLike, maxTokens: maxTokens)
-    }
-
     private struct RRFFusedCandidate {
         let frameId: UInt64
         let score: Float
@@ -1042,9 +1005,9 @@ extension Wax {
         let queryEntities = analyzer.entityTerms(query: query)
         let queryYears = analyzer.yearTerms(in: query)
         let queryDateKeys = analyzer.normalizedDateKeys(in: query)
-        let rawPhrases = rawQuotedPhrases(from: query)
+        let rawPhrases = MatchPlan.rawQuotedPhrases(from: query)
         let lowerRawPhrases = rawPhrases.map { $0.lowercased() }
-        let normalizedPhrases = normalizedQuotedPhrases(from: query)
+        let normalizedPhrases = MatchPlan.normalizedQuotedPhrases(from: query)
         let queryNumericEntities = queryEntities.filter { termContainsDigits($0) }
         let queryAlphaEntities = queryEntities.filter { isLettersOnly($0) }
         let queryNumericTerms = queryTerms.filter { isDigitsOnly($0) }
@@ -1064,14 +1027,8 @@ extension Wax {
             return results
         }
 
-        // Scoring weights calibrated for search-result reranking (UnifiedSearch output).
-        // These intentionally differ from FastRAGContextBuilder.rerankCandidatesForAnswer:
-        //   - Lower recall/precision weights (0.55/0.25 vs 0.80/0.40) — search results
-        //     show previews where false positives are more visible to users.
-        //   - Separate numeric/alpha entity scoring with higher numeric weight (1.95) —
-        //     search queries often disambiguate via IDs like "person18" or "atlas10".
-        //   - Broader distractor detection (looksDistractorLike) — search results page
-        //     needs wider filtering since items aren't further filtered by a context builder.
+        // Ranking owns the published score. Recall assembly may reorder later
+        // but must not rewrite these values.
         func compositeScore(for result: SearchResponse.Result) -> Float {
             var total = result.score
             guard let preview = result.previewText, !preview.isEmpty else { return total }
@@ -1319,98 +1276,6 @@ extension Wax {
         text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
     }
 
-    private static let ftsStopWords: Set<String> = [
-        "a", "an", "and", "are", "at", "did", "do", "for", "from", "in", "is", "of",
-        "on", "or", "the", "to", "what", "when", "where", "which", "who", "with",
-        "date",
-        // Bare FTS5 operators must not become MATCH terms (or leftover syntax).
-        "not", "near",
-    ]
-
-    private static func normalizedFTSTokens(from query: String, maxTokens: Int) -> [String] {
-        let capped = max(0, maxTokens)
-        guard capped > 0 else { return [] }
-        var seen: Set<String> = []
-        var tokens: [String] = []
-        tokens.reserveCapacity(capped)
-
-        for token in structuredAliasTokens(from: query) {
-            let normalized = token.lowercased()
-            guard !normalized.isEmpty else { continue }
-            guard !ftsStopWords.contains(normalized) else { continue }
-            let hasLettersOrDigits = normalized.unicodeScalars.contains {
-                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
-            }
-            guard hasLettersOrDigits else { continue }
-            if seen.insert(normalized).inserted {
-                tokens.append(normalized)
-                if tokens.count >= capped { break }
-            }
-        }
-
-        return tokens
-    }
-
-    private static func rawQuotedPhrases(from query: String, maxPhrases: Int = 4) -> [String] {
-        let range = NSRange(location: 0, length: query.utf16.count)
-        var matches: [(location: Int, phrase: String)] = []
-
-        for regex in quotedPhraseRegexes {
-            for match in regex.matches(in: query, range: range) {
-                let capture = match.range(at: 1)
-                guard capture.location != NSNotFound,
-                      let swiftRange = Range(capture, in: query)
-                else {
-                    continue
-                }
-                let phrase = query[swiftRange].trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !phrase.isEmpty else { continue }
-                matches.append((location: capture.location, phrase: String(phrase)))
-            }
-        }
-
-        matches.sort { lhs, rhs in
-            if lhs.location != rhs.location { return lhs.location < rhs.location }
-            return lhs.phrase.count < rhs.phrase.count
-        }
-
-        var seen: Set<String> = []
-        var phrases: [String] = []
-        phrases.reserveCapacity(min(maxPhrases, matches.count))
-        for match in matches {
-            guard phrases.count < maxPhrases else { break }
-            let hasSignal = match.phrase.unicodeScalars.contains {
-                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
-            }
-            guard hasSignal else { continue }
-            let key = match.phrase.lowercased()
-            if seen.insert(key).inserted {
-                phrases.append(match.phrase)
-            }
-        }
-        return phrases
-    }
-
-    private static func normalizedQuotedPhrases(
-        from query: String,
-        maxPhrases: Int = 4,
-        maxTokensPerPhrase: Int = 8
-    ) -> [String] {
-        var seen: Set<String> = []
-        var normalized: [String] = []
-
-        for phrase in rawQuotedPhrases(from: query, maxPhrases: maxPhrases) {
-            let tokens = normalizedFTSTokens(from: phrase, maxTokens: maxTokensPerPhrase)
-            guard !tokens.isEmpty else { continue }
-            let value = tokens.joined(separator: " ")
-            if seen.insert(value).inserted {
-                normalized.append(value)
-            }
-        }
-
-        return normalized
-    }
-
     private static func normalizedPhraseComparableText(_ text: String) -> String {
         text
             .lowercased()
@@ -1424,19 +1289,6 @@ extension Wax {
             .replacingOccurrences(of: "[", with: "")
             .replacingOccurrences(of: "]", with: "")
     }
-
-    private static let asciiPunctuationScalars: Set<UnicodeScalar> = {
-        let scalars = "!\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~".unicodeScalars
-        return Set(scalars)
-    }()
-
-    private static let quotedPhraseRegexes: [NSRegularExpression] = {
-        let patterns = [
-            #""([^"]+)""#,
-            #"'([^']+)'"#,
-        ]
-        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
-    }()
 
     private static func structuredEntityCandidates(
         query: String,
@@ -1464,7 +1316,7 @@ extension Wax {
             }
         }
 
-        let tokens = structuredAliasTokens(from: query)
+        let tokens = MatchPlan.aliasTokens(from: query)
         var seenTokens: Set<String> = []
         for token in tokens {
             let normalized = StructuredMemoryCanonicalizer.normalizedAlias(token)
@@ -1494,29 +1346,6 @@ extension Wax {
         }
 
         return sorted.prefix(capped).map { EntityKey($0.key) }
-    }
-
-    private static func structuredAliasTokens(from query: String) -> [String] {
-        var tokens: [String] = []
-        var buffer = String.UnicodeScalarView()
-
-        func flush() {
-            if !buffer.isEmpty {
-                tokens.append(String(buffer))
-                buffer.removeAll(keepingCapacity: true)
-            }
-        }
-
-        for scalar in query.unicodeScalars {
-            if scalar.properties.isWhitespace || (scalar.isASCII && asciiPunctuationScalars.contains(scalar)) {
-                flush()
-            } else {
-                buffer.append(scalar)
-            }
-        }
-        flush()
-
-        return tokens
     }
 
     private static func candidateLimit(for topK: Int) -> Int {
