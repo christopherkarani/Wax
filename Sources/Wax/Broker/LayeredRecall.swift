@@ -338,15 +338,13 @@ package enum LayeredRecall {
     }
 
     /// Merges resolved project/repo identity into the caller's frame filter for retrieval (C1/C3).
+    /// Only `scope=project` injects the hard-filter; session/global leave the base filter alone (C7).
     package static func frameFilterForScopedRetrieval(
         base: FrameFilter?,
         scope: Scope,
         identity: Identity
     ) -> FrameFilter? {
-        guard scope != .global else { return base }
-        let applyProjectFilter = scope == .project
-            || (scope == .session && (identity.project != nil || identity.repo != nil))
-        guard applyProjectFilter || scope == .project else { return base }
+        guard scope == .project else { return base }
         guard identity.project != nil || identity.repo != nil else { return base }
 
         var entries = base?.metadataFilter?.requiredEntries ?? [:]
@@ -443,35 +441,32 @@ package enum LayeredRecall {
         return merged
     }
 
-    /// Scope selection after merge (project/session/global + project/repo hard-filter).
+    /// Scope selection after merge (project hard-filter + miss messaging).
+    /// `scope=session` and `scope=global` skip project hard-filter (C7).
     package static func selectHits(
         merged: [Hit],
         scope: Scope,
         identity: Identity
     ) -> (hits: [Hit], projectMiss: Bool, scopeMissMessage: String?) {
-        let applyProjectFilter = scope == .project
-            || (scope == .session && (identity.project != nil || identity.repo != nil))
-        if scope == .global {
+        if scope == .global || scope == .session {
             return (merged, false, nil)
         }
-        if applyProjectFilter || scope == .project {
-            let filtered = filterHitsByProject(merged, project: identity.project, repo: identity.repo)
-            if identity.project == nil && identity.repo == nil {
-                return (
-                    [],
-                    true,
-                    "no frames for project (unresolved); pass project/repo or scope=global"
-                )
-            }
-            if filtered.isEmpty {
-                let label = identity.project.map { "project \($0)" }
-                    ?? identity.repo.map { "repo \($0)" }
-                    ?? "project"
-                return ([], true, "no frames for \(label)")
-            }
-            return (filtered, false, nil)
+        // scope == .project
+        let filtered = filterHitsByProject(merged, project: identity.project, repo: identity.repo)
+        if identity.project == nil && identity.repo == nil {
+            return (
+                [],
+                true,
+                "no frames for project (unresolved); pass project/repo or scope=global"
+            )
         }
-        return (merged, false, nil)
+        if filtered.isEmpty {
+            let label = identity.project.map { "project \($0)" }
+                ?? identity.repo.map { "repo \($0)" }
+                ?? "project"
+            return ([], true, "no frames for \(label)")
+        }
+        return (filtered, false, nil)
     }
 
     package static func hit(from item: RAGContext.Item, horizon: Horizon, sessionID: UUID?) -> Hit {
@@ -653,6 +648,23 @@ package enum LayeredRecall {
         let merged: [Hit]
         if request.scope == .session {
             merged = Array(sessionHits.prefix(request.limit))
+        } else if request.scope == .project {
+            // Filter before merge so foreign ranks cannot consume the result budget.
+            let scopedSession = Self.filterHitsByProject(
+                sessionHits,
+                project: identity.project,
+                repo: identity.repo
+            )
+            let scopedDurable = Self.filterHitsByProject(
+                durableHits,
+                project: identity.project,
+                repo: identity.repo
+            )
+            merged = mergeHits(
+                sessionHits: scopedSession,
+                durableHits: scopedDurable,
+                limit: request.limit
+            )
         } else {
             merged = mergeHits(
                 sessionHits: sessionHits,
@@ -670,8 +682,8 @@ package enum LayeredRecall {
             identity: identity,
             projectMiss: selected.projectMiss,
             scopeMissMessage: selected.scopeMissMessage,
-            requestedModeSummary: primary?.requestedModeSummary ?? "n/a",
-            effectiveModeSummary: primary?.effectiveModeSummary ?? "n/a",
+            requestedModeSummary: primary?.requestedMode.diagnosticsSummary ?? "n/a",
+            effectiveModeSummary: primary?.effectiveMode.diagnosticsSummary ?? "n/a",
             queryEmbeddingState: primary?.queryEmbeddingState.rawValue ?? "n/a",
             searchTopK: request.searchTopK,
             limit: request.limit

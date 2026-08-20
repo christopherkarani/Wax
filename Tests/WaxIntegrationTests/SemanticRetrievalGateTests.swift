@@ -47,7 +47,7 @@ func memoryDefaultInitAutoWiresBuiltInEmbedderAndRetrievesParaphrase() async thr
         #expect(results.items.first?.sources.contains(.vector) == true)
 
         let diagnostics = try #require(results.diagnostics)
-        #expect(diagnostics.effectiveMode == "vector")
+        #expect(diagnostics.effectiveMode == .vectorOnly)
         #expect(diagnostics.queryEmbeddingState == .available)
 
         try await memory.close()
@@ -78,8 +78,14 @@ func memoryBuiltInMiniLMHybridSearchRunsVectorLaneForParaphrase() async throws {
         )
 
         let diagnostics = try #require(results.diagnostics)
-        #expect(diagnostics.requestedMode.contains("hybrid"))
-        #expect(diagnostics.effectiveMode.contains("hybrid"))
+        #expect({
+            if case .hybrid = diagnostics.requestedMode { return true }
+            return false
+        }())
+        #expect({
+            if case .hybrid = diagnostics.effectiveMode { return true }
+            return false
+        }())
         #expect(diagnostics.queryEmbeddingState == .available)
 
         try await memory.close()

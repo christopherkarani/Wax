@@ -35,7 +35,7 @@ Source: `Sources/Wax/Memory.swift`
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
 - `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: RetrievalMode` (`.hybrid()`).
-- `public enum RetrievalMode { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }` (module-scope; `Memory.RetrievalMode` is a typealias)
+- `public enum RetrievalMode { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }` (module-scope; `Memory.RetrievalMode` is a typealias). `diagnosticsSummary` / `CustomStringConvertible` yield the stable `"text"` / `"vector"` / `"hybrid(alpha=0.500)"` form used by docs, MCP, and broker.
   - `.hybrid` degrades to the text lane when no embedder is available; `.vectorOnly` throws when vector search is unavailable. Check `RAGContext.diagnostics` for what actually ran.
 - `public struct TimeRange { afterMs: Int64?, beforeMs: Int64? }`
 
@@ -47,7 +47,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 - `public struct RAGContext: Sendable, Equatable`
   - `public var query: String`, `public var items: [Item]`, `public var totalTokens: Int`
   - `public var diagnostics: RAGContext.Diagnostics?` — requested vs. effective retrieval mode plus query-embedding state. `nil` only for contexts built outside the retrieval pipeline.
-- `RAGContext.Diagnostics`: `requestedMode: String`, `effectiveMode: String` (`"text"`, `"vector"`, `"hybrid(alpha=…)"`), `queryEmbeddingState: QueryEmbeddingState`.
+- `RAGContext.Diagnostics`: `requestedMode: RetrievalMode`, `effectiveMode: RetrievalMode`, `queryEmbeddingState: QueryEmbeddingState`. Use `RetrievalMode.diagnosticsSummary` (or `String(describing:)`) for the historical wire/docs strings (`"text"`, `"vector"`, `"hybrid(alpha=…)"`).
 - `RAGContext.QueryEmbeddingState`: `.notRequested`, `.available`, `.timeout`, `.circuitOpen`, `.noEmbedder`, `.vectorDisabled`, `.failed`.
 - `RAGContext.Item`: `kind` (`.snippet`/`.expanded`/`.surrogate`), `frameId`, `score`, `sources` (`.text`/`.vector`/`.timeline`/`.structured`/`.unknown`), `text`, `metadata`, `explanations`.
   - `score` is the rank key used to order hits. It is not a probability. Hybrid fusion may scale fused ranks to `0...1`; intent or semantic rerank may then write an unbounded composite onto the same field.
