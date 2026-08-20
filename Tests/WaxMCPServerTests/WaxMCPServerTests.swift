@@ -1400,6 +1400,30 @@ func httpHandlerRejectsOversizedContentLengthBeforeReadingBody() async throws {
 }
 
 @Test
+func httpHandlerReturns404AfterRequestEndForUnknownPath() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 1_048),
+        serverFactory: { _, _ in
+            Issue.record("unknown path should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let channel = await NIOAsyncTestingChannel(handler: HTTPHandler(app: app))
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/not-mcp")
+
+    try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    try await channel.writeInbound(HTTPServerRequestPart.end(nil))
+
+    let responseHeadPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+    guard case .head(let response) = responseHeadPart else {
+        Issue.record("expected response head, got \(responseHeadPart)")
+        return
+    }
+    #expect(response.status == HTTPResponseStatus(statusCode: 404))
+    _ = try await channel.finish()
+}
+
+@Test
 func httpHandlerRejectsStreamingOverflowBeforeRequestEnd() async throws {
     let app = MCPHTTPApplication(
         configuration: .init(maxRequestBodyBytes: 10),
