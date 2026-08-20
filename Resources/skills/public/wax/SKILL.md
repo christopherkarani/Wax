@@ -61,7 +61,7 @@ func demoDefault() async throws {
 
     // Verify which retrieval mode actually ran.
     if let diagnostics = results.diagnostics {
-        print(diagnostics.effectiveMode)  // "hybrid(alpha=0.500)" or "text"
+        print(diagnostics.effectiveMode)  // RetrievalMode; prints "hybrid(alpha=0.500)" or "text"
     }
 
     try await memory.close()
