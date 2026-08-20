@@ -218,8 +218,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,
-            structuredMemoryEnabled: structuredMemoryEnabled,
-            noEmbedder: noEmbedder
+            structuredMemoryEnabled: structuredMemoryEnabled
         )
         return server
     }

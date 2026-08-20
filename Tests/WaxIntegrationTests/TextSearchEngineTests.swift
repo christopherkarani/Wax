@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 
 // SQLite3 C API inspector: only available where the system SQLite3 module
 // exists (macOS/iOS). On Linux, tests that require direct SQLite3 C calls
@@ -272,7 +272,7 @@ private enum SQLiteBlobInspector {
 @Test func indexAndSearchReturnsHitsAndSnippet() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Swift is safe and fast.")
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
     #expect(results.count == 1)
     #expect(results[0].frameId == 0)
     #expect(results[0].snippet?.isEmpty == false)
@@ -282,7 +282,8 @@ private enum SQLiteBlobInspector {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 42, text: "task F076 literal NEAR unclosed quote token survives")
 
-    let results = try await engine.search(query: #"task:(F076) NEAR(unclosed "quote"#, topK: 10)
+    let plan = try #require(MatchPlan.plan(query: #"task:(F076) NEAR(unclosed "quote""#))
+    let results = try await engine.search(matchQuery: plan.primaryMatch, topK: 10)
 
     #expect(results.map(\.frameId) == [42])
 }
@@ -292,7 +293,7 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 7, text: "topK validation")
 
     await #expect(throws: WaxError.self) {
-        _ = try await engine.search(query: "topK", topK: 0)
+        _ = try await engine.search(matchQuery: "\"topK\"", topK: 0)
     }
 }
 
@@ -306,7 +307,7 @@ private enum SQLiteBlobInspector {
         ]
     )
 
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
     #expect(results.count == 2)
     #expect(Set(results.map(\.frameId)) == Set([0, 1]))
     #expect(results.allSatisfy { ($0.snippet ?? "").isEmpty == false })
@@ -316,12 +317,12 @@ private enum SQLiteBlobInspector {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 7, text: "Stale searchable text")
 
-    let before = try await engine.search(query: "Stale", topK: 10)
+    let before = try await engine.search(matchQuery: "\"Stale\"", topK: 10)
     #expect(before.map(\.frameId) == [7])
 
     try await engine.indexBatch(frameIds: [7], texts: ["  \n\t  "])
 
-    let after = try await engine.search(query: "Stale", topK: 10)
+    let after = try await engine.search(matchQuery: "\"Stale\"", topK: 10)
     #expect(after.isEmpty)
     let count = try await engine.count()
     #expect(count == 0)
@@ -332,7 +333,7 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 0, text: "Swift")
     try await engine.index(frameId: 1, text: "Swift is safe and fast.")
 
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
     #expect(results.count == 2)
     #expect(results[0].score >= results[1].score)
     #expect(results[0].score != results[1].score)
@@ -343,7 +344,7 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 0, text: "Swift Swift Swift concurrency actors")
     try await engine.index(frameId: 1, text: "Swift concurrency")
 
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
 
     #expect(results.count == 2)
     #expect(results.allSatisfy { (0...1).contains($0.score) })
@@ -356,7 +357,7 @@ private enum SQLiteBlobInspector {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 1, text: "Swift concurrency")
 
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
 
     #expect(results.map(\.frameId) == [1])
     #expect(results[0].score < 0.9)
@@ -368,8 +369,8 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 1, text: "Swift concurrency")
     try await engine.index(frameId: 2, text: "Swift concurrency concurrency concurrency concurrency concurrency")
 
-    let narrow = try await engine.search(query: "Swift", topK: 2)
-    let wide = try await engine.search(query: "Swift", topK: 10)
+    let narrow = try await engine.search(matchQuery: "\"Swift\"", topK: 2)
+    let wide = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
 
     let narrowMiddle = try #require(narrow.first { $0.frameId == 1 })
     let wideMiddle = try #require(wide.first { $0.frameId == 1 })
@@ -383,7 +384,7 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 2, text: "Swift concurrency uses actors and tasks.")
     try await engine.index(frameId: 1, text: "Swift concurrency uses actors and tasks.")
 
-    let results = try await engine.search(query: "Swift", topK: 10)
+    let results = try await engine.search(matchQuery: "\"Swift\"", topK: 10)
     #expect(results.count == 2)
     #expect(results.map(\.frameId) == [1, 2])
 }
@@ -393,7 +394,7 @@ private enum SQLiteBlobInspector {
     try await engine.index(frameId: 0, text: "Hello, World!")
     let blob = try await engine.serialize()
     let engine2 = try FTS5SearchEngine.deserialize(from: blob)
-    let results = try await engine2.search(query: "Hello", topK: 10)
+    let results = try await engine2.search(matchQuery: "\"Hello\"", topK: 10)
     #expect(results.map(\.frameId) == [0])
 }
 
@@ -513,7 +514,7 @@ private enum SQLiteBlobInspector {
 
     let reopened = try await Wax.open(at: fileURL)
     let engine2 = try await FTS5SearchEngine.load(from: reopened)
-    let results = try await engine2.search(query: "hello", topK: 10)
+    let results = try await engine2.search(matchQuery: "\"hello\"", topK: 10)
     #expect(results.map(\.frameId) == [frameId])
     try await reopened.close()
 

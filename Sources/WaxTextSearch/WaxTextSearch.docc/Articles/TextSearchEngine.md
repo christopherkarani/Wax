@@ -52,10 +52,11 @@ This amortizes transaction overhead while keeping memory usage bounded.
 
 ## Searching
 
-Search returns results ranked by BM25 relevance:
+Search executes a planned FTS5 MATCH string and returns BM25-ranked hits. Ranking
+(`MatchPlan` in the Wax module) owns AND/OR planning; do not pass the raw user query.
 
 ```swift
-let results = try await engine.search(query: "quarterly review", topK: 10)
+let results = try await engine.search(matchQuery: "\"quarterly\" \"review\"", topK: 10)
 ```
 
 Each package-internal search hit contains:
@@ -64,16 +65,11 @@ Each package-internal search hit contains:
 - **`score`** — BM25 relevance score (higher is better)
 - **`snippet`** — Context around the match with `[` `]` delimiters and `...` for truncation (up to 10 terms)
 
-### Query Syntax
+### MATCH execute
 
-FTS5 supports rich query operators:
-
-| Syntax | Meaning |
-|--------|---------|
-| `swift actors` | Match both terms (implicit AND) |
-| `swift OR actors` | Match either term |
-| `"swift actors"` | Exact phrase match |
-| `swift*` | Prefix match |
+The engine runs the MATCH string as-is. Callers must supply already-planned literals
+(for example `"swift" "actors"` or `"swift" OR "actors"`). Bare operators in a user
+string (`AND` / `OR` / `NOT` / `NEAR`) must be stripped by the planner, not forwarded here.
 
 ### BM25 Scoring
 

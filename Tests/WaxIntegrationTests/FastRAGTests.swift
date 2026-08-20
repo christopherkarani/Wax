@@ -416,14 +416,17 @@ func queryAwareRerankPrefersIntentAlignedPreviewOverHigherBaseScore() {
     var config = FastRAGConfig()
     config.enableAnswerFocusedRanking = true
 
-    let reranked = FastRAGContextBuilder.rerankCandidatesForAnswer(
+    let ordered = FastRAGContextBuilder.orderCandidatesForAnswer(
         results: results,
         query: "Which city did Person01 move to?",
         config: config,
         analyzer: QueryAnalyzer()
     )
 
-    #expect(reranked.first?.frameId == 2)
+    #expect(ordered.first?.frameId == 2)
+    #expect(ordered.first?.score == 0.85)
+    #expect(ordered.last?.frameId == 1)
+    #expect(ordered.last?.score == 1.00)
 }
 
 @Test

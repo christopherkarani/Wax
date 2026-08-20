@@ -47,7 +47,7 @@ package struct FastRAGContextBuilder: Sendable {
         }
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking
-            ? Self.rerankCandidatesForAnswer(
+            ? Self.orderCandidatesForAnswer(
                 results: response.results,
                 query: query,
                 config: clamped,
@@ -425,7 +425,8 @@ package struct FastRAGContextBuilder: Sendable {
         return false
     }
 
-    static func rerankCandidatesForAnswer(
+    /// Reorder already-ranked hits for an answer budget. Does not rewrite Ranking's published score.
+    static func orderCandidatesForAnswer(
         results: [SearchResponse.Result],
         query: String,
         config: FastRAGConfig,
@@ -452,15 +453,8 @@ package struct FastRAGContextBuilder: Sendable {
             return results
         }
 
-        // Scoring weights calibrated for answer-focused reranking (FastRAG context assembly).
-        // These intentionally differ from UnifiedSearch.intentAwareRerank weights:
-        //   - Higher recall weight (0.80 vs 0.55) — FastRAG needs comprehensive coverage
-        //     since it feeds a deterministic context builder, not a search results page.
-        //   - Higher entity coverage weight (1.25 vs 0.30) — answer extraction depends
-        //     heavily on entity presence, so missing entities are penalized more aggressively.
-        //   - Simpler distractor detection (looksDistractor) — FastRAG doesn't need the
-        //     broader distractor set used by UnifiedSearch for general search quality.
-        func score(_ result: SearchResponse.Result) -> Float {
+        // Composite is only a sort key. Result.score stays Ranking's published score.
+        func sortKey(_ result: SearchResponse.Result) -> Float {
             var total = result.score
             guard let preview = result.previewText, !preview.isEmpty else { return total }
 
@@ -473,34 +467,34 @@ package struct FastRAGContextBuilder: Sendable {
                 let overlap = Float(queryTerms.intersection(previewTerms).count)
                 let recall = overlap / Float(max(1, queryTerms.count))
                 let precision = overlap / Float(max(1, previewTerms.count))
-                total += recall * 0.80     // High recall weight: answer builder needs all relevant content
-                total += precision * 0.40  // Moderate precision: avoids diluting with loosely matching frames
+                total += recall * 0.80
+                total += precision * 0.40
             }
 
             if !queryEntities.isEmpty {
                 let hits = queryEntities.intersection(previewEntities).count
                 let coverage = Float(hits) / Float(max(1, queryEntities.count))
-                total += coverage * (vectorInfluenced ? 1.25 : 0.90)  // Entity match is critical for answer extraction
+                total += coverage * (vectorInfluenced ? 1.25 : 0.90)
                 if hits == 0 {
-                    total -= vectorInfluenced ? 0.65 : 0.35  // Vector results with zero entity overlap are likely distractors
+                    total -= vectorInfluenced ? 0.65 : 0.35
                 }
             }
 
             if !queryYears.isEmpty {
                 let yearHits = queryYears.intersection(previewYears).count
                 let yearCoverage = Float(yearHits) / Float(max(1, queryYears.count))
-                total += yearCoverage * 1.35  // Year match strongly disambiguates temporal queries
+                total += yearCoverage * 1.35
                 if yearHits == 0, !previewYears.isEmpty {
-                    total -= vectorInfluenced ? 1.35 : 1.05  // Wrong year is worse than no year
+                    total -= vectorInfluenced ? 1.35 : 1.05
                 }
             }
 
             if !queryDateKeys.isEmpty {
                 let dateHits = queryDateKeys.intersection(previewDateKeys).count
                 let dateCoverage = Float(dateHits) / Float(max(1, queryDateKeys.count))
-                total += dateCoverage * 1.15  // Full date match (YYYY-MM-DD) is high signal
+                total += dateCoverage * 1.15
                 if dateHits == 0, !previewDateKeys.isEmpty {
-                    total -= vectorInfluenced ? 1.15 : 0.90  // Wrong date is actively harmful
+                    total -= vectorInfluenced ? 1.15 : 0.90
                 }
             }
 
@@ -533,9 +527,9 @@ package struct FastRAGContextBuilder: Sendable {
 
         var head = Array(results.prefix(cappedWindow))
         head.sort { lhs, rhs in
-            let lhsScore = score(lhs)
-            let rhsScore = score(rhs)
-            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            let lhsKey = sortKey(lhs)
+            let rhsKey = sortKey(rhs)
+            if lhsKey != rhsKey { return lhsKey > rhsKey }
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             return lhs.frameId < rhs.frameId
         }
