@@ -208,14 +208,15 @@ package actor AgentBrokerService {
 }
 
 extension AgentBrokerService {
-    package static let maxContentBytes = 128 * 1024
-    package static let maxTopK = 200
-    package static let maxRecallLimit = 100
-    static let maxGraphLimit = 500
-    static let maxGraphIdentifierBytes = 256
-    static let maxGraphKindBytes = 64
+    /// Forwarded from ``BrokerLimits`` for MCP/CLI callers that already import the service.
+    package static let maxContentBytes = BrokerLimits.maxContentBytes
+    package static let maxTopK = BrokerLimits.maxTopK
+    package static let maxRecallLimit = BrokerLimits.maxRecallLimit
+    static let maxGraphLimit = BrokerLimits.maxGraphLimit
+    static let maxGraphIdentifierBytes = BrokerLimits.maxGraphIdentifierBytes
+    static let maxGraphKindBytes = BrokerLimits.maxGraphKindBytes
     static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
-    static let maxCompactContextTokenBudget = 32_000
+    static let maxCompactContextTokenBudget = BrokerLimits.maxCompactContextTokenBudget
 
     typealias MemoryHorizon = LayeredRecall.Horizon
     typealias LayeredMemoryHit = LayeredRecall.Hit
@@ -386,10 +387,6 @@ extension AgentBrokerService {
             "pendingFrames": .from(after.pendingFrames),
             "display_text": .string("Remembered. \(added) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."),
         ])
-    }
-
-    func memoryAppend(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        try await remember(try BrokerCommand.Remember.decode(BrokerArguments(arguments)))
     }
 
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {

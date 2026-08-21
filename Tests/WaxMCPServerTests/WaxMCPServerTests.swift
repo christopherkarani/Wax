@@ -4375,8 +4375,8 @@ func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func remember(arguments: [String: AgentBrokerValue])"))
-    let end = try #require(source[start.upperBound...].range(of: "func memoryAppend(arguments: [String: AgentBrokerValue])"))
+    let start = try #require(source.range(of: "func completeRemember("))
+    let end = try #require(source[start.upperBound...].range(of: "func recall(_ command: BrokerCommand.Recall)"))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let appendEvent = try #require(body.range(of: "appendSessionEvent("))
@@ -4395,8 +4395,8 @@ func brokerHandoffRecordsEventBeforeCommittingHandoffFrame() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func handoff(arguments: [String: AgentBrokerValue])"))
-    let end = try #require(source[start.upperBound...].range(of: "func handoffLatest(arguments: [String: AgentBrokerValue])"))
+    let start = try #require(source.range(of: "func handoff(_ command: BrokerCommand.Handoff)"))
+    let end = try #require(source[start.upperBound...].range(of: "func handoffLatest(_ command: BrokerCommand.HandoffLatest)"))
     let body = source[start.lowerBound..<end.lowerBound]
 
     #expect(body.contains("commit: false"))
@@ -4421,8 +4421,8 @@ func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
     let body = source[start.lowerBound..<end.lowerBound]
 
     let appendEvent = try #require(body.range(of: "appendSessionEvent("))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)"))
-    #expect(appendEvent.lowerBound < saveManifest.lowerBound)
+    let persistManifest = try #require(body.range(of: "virtualSessions.updateLive(sessionID)"))
+    #expect(appendEvent.lowerBound < persistManifest.lowerBound)
 }
 
 @Test

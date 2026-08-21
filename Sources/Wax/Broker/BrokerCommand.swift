@@ -143,7 +143,7 @@ extension BrokerCommand.Remember {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         let content = try args.requiredStringPreservingWhitespace(
             "content",
-            maxBytes: AgentBrokerService.maxContentBytes
+            maxBytes: BrokerLimits.maxContentBytes
         )
         let sessionID = try BrokerCommand.parseOptionalSessionID(args)
         let writeScope = try BrokerCommand.parseRememberWriteScope(args)
@@ -178,9 +178,9 @@ extension BrokerCommand.Recall {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         let query = try BrokerCommand.requireNonEmptyQuery(args)
         let limit = try args.optionalInt("limit") ?? 5
-        guard (1...AgentBrokerService.maxRecallLimit).contains(limit) else {
+        guard (1...BrokerLimits.maxRecallLimit).contains(limit) else {
             throw BrokerValidationError.invalid(
-                "limit must be between 1 and \(AgentBrokerService.maxRecallLimit)"
+                "limit must be between 1 and \(BrokerLimits.maxRecallLimit)"
             )
         }
         let scope = try BrokerCommand.parseRecallScope(args)
@@ -190,9 +190,9 @@ extension BrokerCommand.Recall {
         }
         let mode = try BrokerCommand.parseRecallMode(args)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
-        if let requestedTopK, !(1...AgentBrokerService.maxTopK).contains(requestedTopK) {
+        if let requestedTopK, !(1...BrokerLimits.maxTopK).contains(requestedTopK) {
             throw BrokerValidationError.invalid(
-                "search_top_k must be between 1 and \(AgentBrokerService.maxTopK)"
+                "search_top_k must be between 1 and \(BrokerLimits.maxTopK)"
             )
         }
         return Self(
@@ -218,8 +218,8 @@ extension BrokerCommand.Search {
             alpha: try args.optionalDouble("alpha")
         )
         let topK = try args.optionalInt("topK") ?? 10
-        guard (1...AgentBrokerService.maxTopK).contains(topK) else {
-            throw BrokerValidationError.invalid("topK must be between 1 and \(AgentBrokerService.maxTopK)")
+        guard (1...BrokerLimits.maxTopK).contains(topK) else {
+            throw BrokerValidationError.invalid("topK must be between 1 and \(BrokerLimits.maxTopK)")
         }
         return Self(
             query: query,
@@ -234,8 +234,8 @@ extension BrokerCommand.MemorySearch {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         let query = try BrokerCommand.requireNonEmptyQuery(args)
         let topK = try args.optionalInt("topK") ?? 10
-        guard (1...AgentBrokerService.maxTopK).contains(topK) else {
-            throw BrokerValidationError.invalid("topK must be between 1 and \(AgentBrokerService.maxTopK)")
+        guard (1...BrokerLimits.maxTopK).contains(topK) else {
+            throw BrokerValidationError.invalid("topK must be between 1 and \(BrokerLimits.maxTopK)")
         }
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let mode = try BrokerCommand.parseSearchMode(
@@ -288,7 +288,7 @@ extension BrokerCommand.Handoff {
         Self(
             content: try args.requiredStringPreservingWhitespace(
                 "content",
-                maxBytes: AgentBrokerService.maxContentBytes
+                maxBytes: BrokerLimits.maxContentBytes
             ),
             sessionID: try BrokerCommand.parseOptionalSessionID(args),
             project: try args.optionalString("project"),
@@ -315,7 +315,7 @@ extension BrokerCommand {
     }
 
     package static func requireNonEmptyQuery(_ args: BrokerArguments) throws -> String {
-        let query = try args.requiredString("query", maxBytes: AgentBrokerService.maxContentBytes)
+        let query = try args.requiredString("query", maxBytes: BrokerLimits.maxContentBytes)
         guard !query.isEmpty else {
             throw BrokerValidationError.invalid("query must not be empty")
         }
