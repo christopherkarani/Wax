@@ -63,3 +63,5 @@ Package.resolved
 .qwen/
 .skynex/production-gate.json
 .skynex/audit.log
+Resources/npm/waxmcp/dist/
+.grok/
