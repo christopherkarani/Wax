@@ -10,6 +10,7 @@ REQUESTED_VERSION="$1"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PKG_DIR="$ROOT/Resources/npm/waxmcp"
 SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+CLI_SWIFT="$ROOT/Sources/WaxCLI/WaxCLICommand.swift"
 
 if [[ ! -f "$PKG_DIR/package.json" ]]; then
   echo "error: missing $PKG_DIR/package.json" >&2
@@ -18,6 +19,11 @@ fi
 
 if [[ ! -f "$SERVER_SWIFT" ]]; then
   echo "error: missing $SERVER_SWIFT" >&2
+  exit 2
+fi
+
+if [[ ! -f "$CLI_SWIFT" ]]; then
+  echo "error: missing $CLI_SWIFT" >&2
   exit 2
 fi
 
@@ -34,5 +40,6 @@ npm --prefix "$PKG_DIR" version "$REQUESTED_VERSION" --no-git-tag-version --allo
 RELEASE_VERSION="$(node -p "require('$PKG_DIR/package.json').version")"
 
 perl -0pi -e 's/static let version\s*=\s*"[^"]+"/static let version = "'"$RELEASE_VERSION"'"/' "$SERVER_SWIFT"
+perl -0pi -e 's/(CommandConfiguration\(\s*commandName:\s*"wax-cli",\s*abstract:\s*"[^"]*",\s*version:\s*)"[^"]+"/${1}"'"$RELEASE_VERSION"'"/s' "$CLI_SWIFT"
 
 echo "$RELEASE_VERSION"
