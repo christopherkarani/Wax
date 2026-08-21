@@ -42,6 +42,65 @@ private func withAgentBrokerService<T>(
 }
 
 @Test
+func agentBrokerResponseWireFormatMatchesLegacyShape() throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+
+    let success = AgentBrokerResponse.success(
+        id: "req-1",
+        payload: .object(["status": .string("ok")])
+    )
+    #expect(
+        String(data: try encoder.encode(success), encoding: .utf8)
+            == #"{"id":"req-1","ok":true,"payload":{"status":"ok"},"shouldExit":false}"#
+    )
+
+    let successNoID = AgentBrokerResponse.success(payload: .object([:]), shouldExit: true)
+    #expect(
+        String(data: try encoder.encode(successNoID), encoding: .utf8)
+            == #"{"ok":true,"payload":{},"shouldExit":true}"#
+    )
+
+    let failure = AgentBrokerResponse.failure(
+        id: "req-2",
+        payload: .object(["code": .string("bad_request")]),
+        message: "unsupported argument"
+    )
+    #expect(
+        String(data: try encoder.encode(failure), encoding: .utf8)
+            == #"{"error":"unsupported argument","id":"req-2","ok":false,"payload":{"code":"bad_request"},"shouldExit":false}"#
+    )
+
+    let failureNoPayload = AgentBrokerResponse.failure(id: "req-3", message: "boom")
+    #expect(
+        String(data: try encoder.encode(failureNoPayload), encoding: .utf8)
+            == #"{"error":"boom","id":"req-3","ok":false,"shouldExit":false}"#
+    )
+
+    let decoder = JSONDecoder()
+    let decodedSuccess = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-1","ok":true,"payload":{"status":"ok"},"shouldExit":false}"#.utf8)
+    )
+    #expect(decodedSuccess == success)
+
+    let decodedLegacyEmptyPayload = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-4","ok":true,"shouldExit":false}"#.utf8)
+    )
+    #expect(decodedLegacyEmptyPayload.ok)
+    #expect(decodedLegacyEmptyPayload.payload == nil)
+
+    let decodedFailure = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(
+            #"{"id":"req-2","ok":false,"payload":{"code":"bad_request"},"error":"unsupported argument","shouldExit":false}"#.utf8
+        )
+    )
+    #expect(decodedFailure == failure)
+}
+
+@Test
 func brokerRejectsInvalidEmbedderChoice() async throws {
     let rootURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-broker-invalid-embedder-\(UUID().uuidString)", isDirectory: true)
@@ -314,7 +373,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
             return
         }
 
-        let response = AgentBrokerResponse(id: "__ping__", ok: true, payload: .object([:]))
+        let response = AgentBrokerResponse.success(id: "__ping__", payload: .object([:]))
         guard let payload = try? JSONEncoder().encode(response) else {
             close(client)
             return

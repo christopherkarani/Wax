@@ -158,25 +158,116 @@ package struct AgentBrokerRequest: Sendable, Codable, Equatable {
     }
 }
 
-package struct AgentBrokerResponse: Sendable, Codable, Equatable {
+package struct AgentBrokerResponse: Sendable, Equatable, Codable {
+    package enum Outcome: Sendable, Equatable {
+        case success(payload: AgentBrokerValue)
+        case failure(payload: AgentBrokerValue?, message: String)
+    }
+
     package var id: String?
-    package var ok: Bool
-    package var payload: AgentBrokerValue?
-    package var error: String?
+    package var outcome: Outcome
     package var shouldExit: Bool
 
     package init(
         id: String? = nil,
-        ok: Bool,
-        payload: AgentBrokerValue? = nil,
-        error: String? = nil,
+        outcome: Outcome,
         shouldExit: Bool = false
     ) {
         self.id = id
-        self.ok = ok
-        self.payload = payload
-        self.error = error
+        self.outcome = outcome
         self.shouldExit = shouldExit
+    }
+
+    package static func success(
+        id: String? = nil,
+        payload: AgentBrokerValue,
+        shouldExit: Bool = false
+    ) -> AgentBrokerResponse {
+        AgentBrokerResponse(
+            id: id,
+            outcome: .success(payload: payload),
+            shouldExit: shouldExit
+        )
+    }
+
+    package static func failure(
+        id: String? = nil,
+        payload: AgentBrokerValue? = nil,
+        message: String,
+        shouldExit: Bool = false
+    ) -> AgentBrokerResponse {
+        AgentBrokerResponse(
+            id: id,
+            outcome: .failure(payload: payload, message: message),
+            shouldExit: shouldExit
+        )
+    }
+
+    package var ok: Bool {
+        if case .success = outcome {
+            return true
+        }
+        return false
+    }
+
+    /// Success payload (nil when it is `.null` or the response failed with no payload).
+    package var payload: AgentBrokerValue? {
+        switch outcome {
+        case .success(let payload):
+            return payload == .null ? nil : payload
+        case .failure(let payload, _):
+            return payload
+        }
+    }
+
+    package var error: String? {
+        if case .failure(_, let message) = outcome {
+            return message
+        }
+        return nil
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decodeIfPresent(String.self, forKey: .id)
+        let ok = try container.decode(Bool.self, forKey: .ok)
+        let payload = try container.decodeIfPresent(AgentBrokerValue.self, forKey: .payload)
+        let error = try container.decodeIfPresent(String.self, forKey: .error)
+        let shouldExit = try container.decodeIfPresent(Bool.self, forKey: .shouldExit) ?? false
+        self.id = id
+        self.shouldExit = shouldExit
+        if ok {
+            self.outcome = .success(payload: payload ?? .null)
+        } else {
+            self.outcome = .failure(payload: payload, message: error ?? "Broker execution failed")
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        switch outcome {
+        case .success(let payload):
+            try container.encode(true, forKey: .ok)
+            if payload == .null {
+                try container.encodeNil(forKey: .payload)
+            } else {
+                try container.encode(payload, forKey: .payload)
+            }
+        case .failure(let payload, let message):
+            try container.encode(false, forKey: .ok)
+            try container.encodeIfPresent(payload, forKey: .payload)
+            try container.encodeIfPresent(message, forKey: .error)
+        }
+        try container.encode(shouldExit, forKey: .shouldExit)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case ok
+        case payload
+        case error
+        case shouldExit
     }
 }
 

@@ -94,27 +94,28 @@ enum WaxMCPTools {
                 )
             )
 
-            guard response.ok else {
-                if let payload = response.payload?.objectValue,
-                   let code = payload["code"]?.stringValue {
-                    let message = response.error
-                        ?? payload["reason"]?.stringValue
+            switch response.outcome {
+            case .failure(let payload, let message):
+                if let fields = payload?.objectValue,
+                   let code = fields["code"]?.stringValue {
+                    let failureMessage = message
+                        ?? fields["reason"]?.stringValue
                         ?? "Broker execution failed"
                     return structuredErrorResult(
-                        message: message,
+                        message: failureMessage,
                         code: code,
-                        fields: payload
+                        fields: fields
                     )
                 }
-                let message = response.error ?? "Broker execution failed"
-                return errorResult(message: message, code: errorCode(for: message))
+                let failureMessage = message ?? "Broker execution failed"
+                return errorResult(message: failureMessage, code: errorCode(for: failureMessage))
+            case .success:
+                guard let payload = response.payload else {
+                    return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
+                }
+                sessionHint?.remember(name: params.name, payload: payload)
+                return renderResult(name: params.name, payload: payload, verbosity: verbosity)
             }
-
-            guard let payload = response.payload else {
-                return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
-            }
-            sessionHint?.remember(name: params.name, payload: payload)
-            return renderResult(name: params.name, payload: payload, verbosity: verbosity)
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
         } catch {
