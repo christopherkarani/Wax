@@ -11,7 +11,7 @@ import WaxCore
     let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
 
-    let session = try await wax.structuredMemory()
+    let session = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
     _ = try await session.upsertEntity(
         key: EntityKey("person:alice"),
         kind: "person",
@@ -30,7 +30,7 @@ import WaxCore
     try await wax.close()
 
     let reopened = try await Wax.open(at: fileURL)
-    let session2 = try await reopened.structuredMemory()
+    let session2 = try await reopened.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
     let result = try await session2.facts(
         about: EntityKey("person:alice"),
         predicate: PredicateKey("status"),

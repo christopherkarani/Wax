@@ -1690,7 +1690,7 @@ package actor Wax {
 
         if stagedVecIndex == nil {
             if pendingMutationSummary.hasPendingEmbedding {
-                throw WaxError.io("vector index must be staged before committing embeddings")
+                throw WaxError.vectorIndexNotStaged
             }
         } else if let stagedVecIndex {
             let latestPendingEmbeddingSequence = pendingMutationSummary.latestPendingEmbeddingSequence

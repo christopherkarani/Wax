@@ -44,10 +44,10 @@ private actor HangingVectorEngine: VectorSearchEngine {
 func unifiedSearchVectorTimeoutFallsBackToTextLane() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(Data("Swift programming language".utf8))
-        try await text.index(frameId: id0, text: "Swift programming language")
+        try await text.indexText(frameId: id0, text: "Swift programming language")
         try await text.commit()
 
         let overrides = UnifiedSearchEngineOverrides(

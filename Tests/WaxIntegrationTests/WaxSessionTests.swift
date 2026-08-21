@@ -168,10 +168,11 @@ import WaxCore
             try await session.commit()
             #expect(Bool(false))
         } catch let error as WaxError {
-            guard case .io(let reason) = error else {
+            guard case .vectorIndexNotStaged = error else {
                 #expect(Bool(false))
                 return
             }
+            let reason = error.errorDescription ?? ""
             #expect(reason.contains("vector index must be staged before committing embeddings"))
         }
 
@@ -180,10 +181,11 @@ import WaxCore
             try await wax.close()
             #expect(Bool(false))
         } catch let error as WaxError {
-            guard case .io(let reason) = error else {
+            guard case .vectorIndexNotStaged = error else {
                 #expect(Bool(false))
                 return
             }
+            let reason = error.errorDescription ?? ""
             #expect(reason.contains("vector index must be staged before committing embeddings"))
         }
     }

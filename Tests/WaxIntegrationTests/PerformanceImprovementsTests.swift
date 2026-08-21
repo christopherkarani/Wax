@@ -43,17 +43,17 @@ actor CountingEmbedder: EmbeddingProvider {
 func stagingLexIndexDoesNotChangeWhenNoTextMutations() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let content = "hello world"
         let id = try await wax.put(Data(content.utf8), options: FrameMetaSubset(searchText: content))
-        try await text.index(frameId: id, text: content)
+        try await text.indexText(frameId: id, text: content)
 
-        try await text.stageForCommit()
+        try await text.stage()
         let stamp1 = await wax.stagedLexIndexStamp()
         #expect(stamp1 != nil)
 
-        try await text.stageForCommit()
+        try await text.stage()
         let stamp2 = await wax.stagedLexIndexStamp()
         #expect(stamp1 == stamp2)
 
@@ -203,10 +203,11 @@ func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
             try await wax.close()
             Issue.record("Expected close to propagate auto-commit failure for pending embeddings")
         } catch let error as WaxError {
-            guard case .io(let message) = error else {
-                Issue.record("Expected WaxError.io, got \(error)")
+            guard case .vectorIndexNotStaged = error else {
+                Issue.record("Expected WaxError.vectorIndexNotStaged, got \(error)")
                 return
             }
+            let message = error.errorDescription ?? ""
             #expect(message.contains("vector index must be staged before committing embeddings"))
         }
     }

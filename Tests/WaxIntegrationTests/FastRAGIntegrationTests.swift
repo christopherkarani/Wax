@@ -7,11 +7,11 @@ import WaxCore
 func fastRAGIntegrationCreateRecallReopen() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let payload = "Swift makes concurrency safe."
         let frameId = try await wax.put(Data(payload.utf8), options: FrameMetaSubset(searchText: payload))
-        try await text.index(frameId: frameId, text: payload)
+        try await text.indexText(frameId: frameId, text: payload)
         try await text.commit()
 
         let builder = FastRAGContextBuilder()

@@ -456,10 +456,11 @@ import WaxVectorSearch
         try await wax.close()
         Issue.record("Expected close to propagate auto-commit failure")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexNotStaged = error else {
+            Issue.record("Expected WaxError.vectorIndexNotStaged, got \(error)")
             return
         }
+        let message = error.errorDescription ?? ""
         #expect(message.contains("vector index must be staged before committing embeddings"))
     }
     try FileManager.default.removeItem(at: tempDir)
@@ -517,10 +518,11 @@ import WaxVectorSearch
         try await wax.close()
         Issue.record("Expected close to propagate auto-commit failure")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexNotStaged = error else {
+            Issue.record("Expected WaxError.vectorIndexNotStaged, got \(error)")
             return
         }
+        let message = error.errorDescription ?? ""
         #expect(message.contains("vector index must be staged before committing embeddings"))
     }
     try FileManager.default.removeItem(at: tempDir)
@@ -616,10 +618,11 @@ import WaxVectorSearch
             try await wax.close()
             Issue.record("Expected close to propagate auto-commit failure")
         } catch let error as WaxError {
-            guard case .io(let message) = error else {
-                Issue.record("Expected WaxError.io, got \(error)")
+            guard case .vectorIndexNotStaged = error else {
+                Issue.record("Expected WaxError.vectorIndexNotStaged, got \(error)")
                 return
             }
+            let message = error.errorDescription ?? ""
             #expect(message.contains("vector index must be staged before committing embeddings"))
         }
     }
