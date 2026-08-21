@@ -263,6 +263,75 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func stage2bSessionCloseOpenAndFactsQueryDecode() throws {
+        let close = try BrokerCommand.decode(
+            command: "session_close",
+            arguments: [
+                "session_id": .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+                "content": .string("done"),
+            ]
+        )
+        guard case .sessionClose(let payload) = close else {
+            Issue.record("expected session_close")
+            return
+        }
+        #expect(payload.content == "done")
+
+        let open = try BrokerCommand.decode(
+            command: "session_open",
+            arguments: ["project": .string("wax"), "recall_query": .string("prior work")]
+        )
+        guard case .sessionOpen(let opened) = open else {
+            Issue.record("expected session_open")
+            return
+        }
+        #expect(opened.project == "wax")
+        #expect(opened.recallQuery == "prior work")
+
+        let facts = try BrokerCommand.decode(
+            command: "facts_query",
+            arguments: ["subject": .string("project:wax"), "limit": .int(5)]
+        )
+        guard case .factsQuery(let query) = facts else {
+            Issue.record("expected facts_query")
+            return
+        }
+        #expect(query.subject == "project:wax")
+        #expect(query.limit == 5)
+    }
+
+    @Test
+    func stage2bCompactContextAndKnowledgeCaptureDecode() throws {
+        let compact = try BrokerCommand.decode(
+            command: "compact_context",
+            arguments: ["query": .string("summarize"), "token_budget": .int(512)]
+        )
+        guard case .compactContext(let payload) = compact else {
+            Issue.record("expected compact_context")
+            return
+        }
+        #expect(payload.query == "summarize")
+        #expect(payload.tokenBudget == 512)
+        #expect(payload.mode == .textOnly)
+
+        let capture = try BrokerCommand.decode(
+            command: "knowledge_capture",
+            arguments: [
+                "content": .string("Wax owns broker memory"),
+                "subject": .string("project:wax"),
+                "predicate": .string("owns"),
+                "object": .string("broker memory"),
+            ]
+        )
+        guard case .knowledgeCapture(let knowledge) = capture else {
+            Issue.record("expected knowledge_capture")
+            return
+        }
+        #expect(knowledge.writeSemantics.durability == .durable)
+        #expect(knowledge.object == .string("broker memory"))
+    }
+
+    @Test
     func unmigratedCommandsPassthroughAfterSurfaceValidation() throws {
         let decoded = try BrokerCommand.decode(command: "corpus_search", arguments: [
             "query": .string("hello"),

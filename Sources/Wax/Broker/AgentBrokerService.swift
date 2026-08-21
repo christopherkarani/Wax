@@ -200,6 +200,27 @@ package actor AgentBrokerService {
             case .shutdown:
                 payload = .object(["status": .string("ok")])
                 shouldExit = true
+            case .sessionSynthesize(let command):
+                payload = try await sessionSynthesize(command)
+                shouldExit = false
+            case .knowledgeCapture(let command):
+                payload = try await knowledgeCapture(command)
+                shouldExit = false
+            case .sessionClose(let command):
+                payload = try await sessionClose(command)
+                shouldExit = false
+            case .sessionOpen(let command):
+                payload = try await sessionOpen(command)
+                shouldExit = false
+            case .compactContext(let command):
+                payload = try await compactContext(command)
+                shouldExit = false
+            case .markdownExport(let command):
+                payload = try await markdownExport(command)
+                shouldExit = false
+            case .factsQuery(let command):
+                payload = try await factsQuery(command)
+                shouldExit = false
             case .passthrough(let command, let arguments):
                 (payload, shouldExit) = try await handlePassthrough(
                     command: command,
@@ -270,26 +291,12 @@ extension AgentBrokerService {
         arguments: [String: AgentBrokerValue]
     ) async throws -> (AgentBrokerValue, Bool) {
         switch command {
-        case "session_synthesize":
-            return (try await sessionSynthesize(arguments: arguments), false)
         case "memory_promote":
             return (try await memoryPromote(arguments: arguments), false)
         case "promote":
             return (try await promote(arguments: arguments), false)
-        case "knowledge_capture":
-            return (try await knowledgeCapture(arguments: arguments), false)
-        case "session_close":
-            return (try await sessionClose(arguments: arguments), false)
-        case "session_open":
-            return (try await sessionOpen(arguments: arguments), false)
-        case "compact_context":
-            return (try await compactContext(arguments: arguments), false)
-        case "markdown_export":
-            return (try await markdownExport(arguments: arguments), false)
         case "fact_assert":
             return (try await factAssert(arguments: arguments), false)
-        case "facts_query":
-            return (try await factsQuery(arguments: arguments), false)
         case "corpus_search":
             return (try await corpusSearch(arguments: arguments), false)
         default:
@@ -686,9 +693,8 @@ extension AgentBrokerService {
         ])
     }
 
-    func sessionSynthesize(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let sessionID = try parseOptionalSessionID(args)
+    func sessionSynthesize(_ command: BrokerCommand.SessionSynthesize) async throws -> AgentBrokerValue {
+        let sessionID = command.sessionID
         guard let resolvedSessionID = try resolveSessionID(sessionID) else {
             if activeSessions.count > 1 {
                 throw BrokerValidationError.invalid("session_id is required when more than one session is active")
@@ -702,7 +708,7 @@ extension AgentBrokerService {
         let sessionDocuments = try await session.memory.corpusSourceDocuments()
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
         let recallSignals = try await sessionSignals(for: resolvedSessionID)
-        let settings = try parsePromotionSettings(args)
+        let settings = promotionSettingsMerging(command)
         let synthesis = BrokerMemoryInsights.synthesizeSession(
             documents: sessionDocuments,
             scope: scopeContext,
@@ -864,30 +870,22 @@ extension AgentBrokerService {
         ])
     }
 
-    func knowledgeCapture(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        var writeSemantics = try parseWriteSemantics(args)
-        if !writeSemantics.lock, writeSemantics.durability == nil {
-            writeSemantics.durability = .durable
-        }
-        let clientCWD = try args.optionalString("cwd")
+    func knowledgeCapture(_ command: BrokerCommand.KnowledgeCapture) async throws -> AgentBrokerValue {
         let metadata = MemorySemantics.normalizeWriteMetadata(
-            metadata: try coerceMetadata(try args.optionalObject("metadata")),
-            semantics: writeSemantics,
+            metadata: command.metadata,
+            semantics: command.writeSemantics,
             sessionID: nil,
-            inferredScope: writeScope(for: nil, clientCWD: clientCWD)
+            inferredScope: writeScope(for: nil, clientCWD: command.cwd)
         )
-        try validateDurableWriteContent(content: content, metadata: metadata)
+        try validateDurableWriteContent(content: command.content, metadata: metadata)
 
-        let subject = try args.optionalString("subject")
-        let predicate = try args.optionalString("predicate")
-        let objectValue = try args.optionalValue("object")
-        let kind = try args.optionalString("kind")
-        let aliases = try args.optionalStringArray("aliases") ?? []
-        let parsedObject = try objectValue.map { try parseFactValue($0) }
+        let subject = command.subject
+        let predicate = command.predicate
+        let kind = command.kind
+        let aliases = command.aliases
+        let parsedObject = try command.object.map { try parseFactValue($0) }
 
-        try await longTermMemory.remember(content, metadata: metadata)
+        try await longTermMemory.remember(command.content, metadata: metadata)
 
         var entityID: Int64?
         if let subject {
@@ -929,7 +927,7 @@ extension AgentBrokerService {
             "fact_id": .from(factID),
             "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
-            "display_text": .string(MemorySemantics.summarizeCandidate(content)),
+            "display_text": .string(MemorySemantics.summarizeCandidate(command.content)),
         ])
     }
 
@@ -1098,14 +1096,11 @@ extension AgentBrokerService {
     }
 
     /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
-    func sessionClose(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        guard let sessionID = try parseOptionalSessionID(args) else {
-            throw BrokerValidationError.invalid("session_id is required for session_close")
-        }
-        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        let project = try args.optionalString("project")
-        let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
+    func sessionClose(_ command: BrokerCommand.SessionClose) async throws -> AgentBrokerValue {
+        let sessionID = command.sessionID
+        let content = command.content
+        let project = command.project
+        let pendingTasks = command.pendingTasks
 
         if activeSessions[sessionID] == nil {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
@@ -1172,28 +1167,25 @@ extension AgentBrokerService {
     }
 
     /// `handoff_latest` + `session_start` + optional `recall` in one round-trip (Phase 2).
-    func sessionOpen(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let project = try args.optionalString("project")
-        let repo = try args.optionalString("repo")
-        let agentID = try args.optionalString("agent_id")
-        let runID = try args.optionalString("run_id")
-        let recallQuery = try args.optionalString("recall_query")
-        let cwd = try args.optionalString("cwd")
+    func sessionOpen(_ command: BrokerCommand.SessionOpen) async throws -> AgentBrokerValue {
+        let project = command.project
+        let repo = command.repo
+        let agentID = command.agentID
+        let runID = command.runID
+        let recallQuery = command.recallQuery
+        let cwd = command.cwd
 
-        var handoffArgs: [String: AgentBrokerValue] = [:]
-        if let project {
-            handoffArgs["project"] = .string(project)
-        }
-        let handoffPayload = try await handoffLatest(try BrokerCommand.HandoffLatest.decode(BrokerArguments(handoffArgs)))
-
-        var startArgs: [String: AgentBrokerValue] = [:]
-        if let agentID { startArgs["agent_id"] = .string(agentID) }
-        if let runID { startArgs["run_id"] = .string(runID) }
-        if let cwd { startArgs["cwd"] = .string(cwd) }
-        if let project { startArgs["project"] = .string(project) }
-        if let repo { startArgs["repo"] = .string(repo) }
-        let startPayload = try await sessionStart(try BrokerCommand.SessionStart.decode(BrokerArguments(startArgs)))
+        let handoffPayload = try await handoffLatest(.init(project: project))
+        let startPayload = try await sessionStart(
+            .init(
+                sessionID: nil,
+                agentID: agentID,
+                runID: runID,
+                cwd: cwd,
+                project: project,
+                repo: repo
+            )
+        )
         let startObject = startPayload.objectValue
         let sessionID = startObject?["session_id"]?.stringValue
 
@@ -1323,21 +1315,13 @@ extension AgentBrokerService {
         ])
     }
 
-    func compactContext(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let query = try requireNonEmptyQuery(args)
-        let tokenBudget = try args.optionalInt("token_budget") ?? 1800
-        guard (128...Self.maxCompactContextTokenBudget).contains(tokenBudget) else {
-            throw BrokerValidationError.invalid("token_budget must be between 128 and \(Self.maxCompactContextTokenBudget)")
-        }
-        let maxItems = try args.optionalInt("max_items") ?? 12
-        guard (1...64).contains(maxItems) else {
-            throw BrokerValidationError.invalid("max_items must be between 1 and 64")
-        }
-        let modeRaw = try args.optionalString("mode")?.lowercased()
-        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
+    func compactContext(_ command: BrokerCommand.CompactContext) async throws -> AgentBrokerValue {
+        let query = command.query
+        let tokenBudget = command.tokenBudget
+        let maxItems = command.maxItems
+        let mode = command.mode
         let sessionID: UUID?
-        switch try resolveSessionScope(try parseOptionalSessionID(args), policy: .requireUnambiguousWorking) {
+        switch try resolveSessionScope(command.sessionID, policy: .requireUnambiguousWorking) {
         case .session(let resolved):
             sessionID = resolved
         case .none, .durableOnly:
@@ -1376,15 +1360,16 @@ extension AgentBrokerService {
         ])
     }
 
-    func markdownExport(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let outputDir = try args.requiredString("output_dir", maxBytes: 4096)
-        let sessionID = try parseOptionalSessionID(args)
-        let allProjects = try args.optionalBool("all_projects") ?? false
-        let explicitProject = try args.optionalString("project")
-        let clientCWD = try args.optionalString("cwd")
+    func markdownExport(_ command: BrokerCommand.MarkdownExport) async throws -> AgentBrokerValue {
+        let sessionID = command.sessionID
+        let allProjects = command.allProjects
+        let explicitProject = command.project
+        let clientCWD = command.cwd
         try validateMarkdownExportSession(sessionID)
-        let exportURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(outputDir), isDirectory: true).standardizedFileURL
+        let exportURL = URL(
+            fileURLWithPath: AgentBrokerPathing.expandPath(command.outputDir),
+            isDirectory: true
+        ).standardizedFileURL
         let inferredProject: String?
         if allProjects {
             inferredProject = nil
@@ -1504,17 +1489,13 @@ extension AgentBrokerService {
         ])
     }
 
-    func factsQuery(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let limit = try args.optionalInt("limit") ?? 20
-        guard (1...Self.maxGraphLimit).contains(limit) else {
-            throw BrokerValidationError.invalid("limit must be between 1 and \(Self.maxGraphLimit)")
-        }
-        let subject = try args.optionalString("subject").map { EntityKey($0) }
-        let predicate = try args.optionalString("predicate").map { PredicateKey($0) }
-        let asOfMs = try args.optionalInt64("as_of")
-        let systemAsOfMs = try args.optionalInt64("system_as_of")
-        let validAsOfMs = try args.optionalInt64("valid_as_of")
+    func factsQuery(_ command: BrokerCommand.FactsQuery) async throws -> AgentBrokerValue {
+        let limit = command.limit
+        let subject = command.subject.map { EntityKey($0) }
+        let predicate = command.predicate.map { PredicateKey($0) }
+        let asOfMs = command.asOfMs
+        let systemAsOfMs = command.systemAsOfMs
+        let validAsOfMs = command.validAsOfMs
         let result = try await longTermMemory.facts(
             about: subject,
             predicate: predicate,
@@ -2614,6 +2595,14 @@ extension AgentBrokerService {
             minimumConfidence: minimumConfidence,
             minimumRecallCount: minimumRecallCount,
             maxCandidates: maxCandidates
+        )
+    }
+
+    func promotionSettingsMerging(_ command: BrokerCommand.SessionSynthesize) -> BrokerPromotionSettings {
+        BrokerPromotionSettings(
+            minimumConfidence: command.minimumConfidence ?? promotionSettings.minimumConfidence,
+            minimumRecallCount: command.minimumRecallCount ?? promotionSettings.minimumRecallCount,
+            maxCandidates: command.maxCandidates ?? promotionSettings.maxCandidates
         )
     }
 

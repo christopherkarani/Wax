@@ -4436,11 +4436,11 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "func knowledgeCapture(arguments: [String: AgentBrokerValue])"))
-    let end = try #require(source[start.upperBound...].range(of: "func stats() async throws -> AgentBrokerValue"))
+    let start = try #require(source.range(of: "func knowledgeCapture(_ command: BrokerCommand.KnowledgeCapture)"))
+    let end = try #require(source[start.upperBound...].range(of: "func stats(_ command: BrokerCommand.Stats"))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let remember = try #require(body.range(of: "try await longTermMemory.remember(content, metadata: metadata)"))
+    let remember = try #require(body.range(of: "try await longTermMemory.remember(command.content, metadata: metadata)"))
     let upsert = try #require(body.range(of: "longTermMemory.upsertEntity("))
     let assertFact = try #require(body.range(of: "longTermMemory.assertFact("))
     let flush = try #require(body.range(of: "try await longTermMemory.flush()"))

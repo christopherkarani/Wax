@@ -14,4 +14,5 @@ package enum BrokerLimits {
     package static let maxMemoryIDBytes = 512
     package static let maxPathBytes = 4096
     package static let maxCompactContextTokenBudget = 32_000
+    package static let maxCompactContextItems = 64
 }

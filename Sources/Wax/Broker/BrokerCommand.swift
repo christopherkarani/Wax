@@ -26,6 +26,13 @@ package enum BrokerCommand: Sendable, Equatable {
     case factRetract(FactRetract)
     /// `shutdown` / `exit` / `quit` — same handler, exits the broker process.
     case shutdown
+    case sessionSynthesize(SessionSynthesize)
+    case knowledgeCapture(KnowledgeCapture)
+    case sessionClose(SessionClose)
+    case sessionOpen(SessionOpen)
+    case compactContext(CompactContext)
+    case markdownExport(MarkdownExport)
+    case factsQuery(FactsQuery)
     /// Known command not yet migrated to a typed payload.
     case passthrough(command: String, arguments: [String: AgentBrokerValue])
 
@@ -138,6 +145,67 @@ package enum BrokerCommand: Sendable, Equatable {
         package var atMs: Int64?
     }
 
+    package struct SessionSynthesize: Sendable, Equatable {
+        package var sessionID: UUID?
+        package var minimumConfidence: Float?
+        package var minimumRecallCount: Int?
+        package var maxCandidates: Int?
+    }
+
+    package struct KnowledgeCapture: Sendable, Equatable {
+        package var content: String
+        package var metadata: [String: String]
+        package var writeSemantics: MemoryWriteSemantics
+        package var cwd: String?
+        package var subject: String?
+        package var kind: String?
+        package var aliases: [String]
+        package var predicate: String?
+        /// Raw wire object; handler parses to ``FactValue``.
+        package var object: AgentBrokerValue?
+    }
+
+    package struct SessionClose: Sendable, Equatable {
+        package var sessionID: UUID
+        package var content: String
+        package var project: String?
+        package var pendingTasks: [String]
+    }
+
+    package struct SessionOpen: Sendable, Equatable {
+        package var project: String?
+        package var repo: String?
+        package var agentID: String?
+        package var runID: String?
+        package var recallQuery: String?
+        package var cwd: String?
+    }
+
+    package struct CompactContext: Sendable, Equatable {
+        package var query: String
+        package var sessionID: UUID?
+        package var tokenBudget: Int
+        package var maxItems: Int
+        package var mode: RetrievalMode
+    }
+
+    package struct MarkdownExport: Sendable, Equatable {
+        package var outputDir: String
+        package var sessionID: UUID?
+        package var project: String?
+        package var allProjects: Bool
+        package var cwd: String?
+    }
+
+    package struct FactsQuery: Sendable, Equatable {
+        package var subject: String?
+        package var predicate: String?
+        package var asOfMs: Int64?
+        package var systemAsOfMs: Int64?
+        package var validAsOfMs: Int64?
+        package var limit: Int
+    }
+
     /// Validates the argument surface and decodes a typed command (or passthrough).
     package static func decode(
         command rawCommand: String,
@@ -188,6 +256,20 @@ package enum BrokerCommand: Sendable, Equatable {
             return .factRetract(try FactRetract.decode(args))
         case "shutdown", "exit", "quit":
             return .shutdown
+        case "session_synthesize":
+            return .sessionSynthesize(try SessionSynthesize.decode(args))
+        case "knowledge_capture":
+            return .knowledgeCapture(try KnowledgeCapture.decode(args))
+        case "session_close":
+            return .sessionClose(try SessionClose.decode(args))
+        case "session_open":
+            return .sessionOpen(try SessionOpen.decode(args))
+        case "compact_context":
+            return .compactContext(try CompactContext.decode(args))
+        case "markdown_export":
+            return .markdownExport(try MarkdownExport.decode(args))
+        case "facts_query":
+            return .factsQuery(try FactsQuery.decode(args))
         default:
             return .passthrough(command: command, arguments: arguments)
         }
@@ -405,6 +487,131 @@ extension BrokerCommand.FactRetract {
         Self(
             factID: try args.requiredInt64("fact_id"),
             atMs: try args.optionalInt64("at_ms")
+        )
+    }
+}
+
+extension BrokerCommand.SessionSynthesize {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let maxCandidates = try args.optionalInt("max_candidates").map {
+            min(max(1, $0), BrokerPromotionSettings.maxCandidateLimit)
+        }
+        return Self(
+            sessionID: try BrokerCommand.parseOptionalSessionID(args),
+            minimumConfidence: try args.optionalFloat("minimum_confidence").map { min(max($0, 0), 1) },
+            minimumRecallCount: try args.optionalInt("minimum_recall_count").map { max(0, $0) },
+            maxCandidates: maxCandidates
+        )
+    }
+}
+
+extension BrokerCommand.KnowledgeCapture {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        var writeSemantics = try BrokerCommand.parseWriteSemantics(args)
+        if !writeSemantics.lock, writeSemantics.durability == nil {
+            writeSemantics.durability = .durable
+        }
+        return Self(
+            content: try args.requiredStringPreservingWhitespace(
+                "content",
+                maxBytes: BrokerLimits.maxContentBytes
+            ),
+            metadata: try BrokerCommand.coerceMetadata(try args.optionalObject("metadata")),
+            writeSemantics: writeSemantics,
+            cwd: try args.optionalString("cwd"),
+            subject: try args.optionalString("subject"),
+            kind: try args.optionalString("kind"),
+            aliases: try args.optionalStringArray("aliases") ?? [],
+            predicate: try args.optionalString("predicate"),
+            object: try args.optionalValue("object")
+        )
+    }
+}
+
+extension BrokerCommand.SessionClose {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        guard let sessionID = try BrokerCommand.parseOptionalSessionID(args) else {
+            throw BrokerValidationError.invalid("session_id is required for session_close")
+        }
+        return Self(
+            sessionID: sessionID,
+            content: try args.requiredStringPreservingWhitespace(
+                "content",
+                maxBytes: BrokerLimits.maxContentBytes
+            ),
+            project: try args.optionalString("project"),
+            pendingTasks: try args.optionalStringArray("pending_tasks") ?? []
+        )
+    }
+}
+
+extension BrokerCommand.SessionOpen {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            project: try args.optionalString("project"),
+            repo: try args.optionalString("repo"),
+            agentID: try args.optionalString("agent_id"),
+            runID: try args.optionalString("run_id"),
+            recallQuery: try args.optionalString("recall_query"),
+            cwd: try args.optionalString("cwd")
+        )
+    }
+}
+
+extension BrokerCommand.CompactContext {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let tokenBudget = try args.optionalInt("token_budget") ?? 1800
+        guard (128...BrokerLimits.maxCompactContextTokenBudget).contains(tokenBudget) else {
+            throw BrokerValidationError.invalid(
+                "token_budget must be between 128 and \(BrokerLimits.maxCompactContextTokenBudget)"
+            )
+        }
+        let maxItems = try args.optionalInt("max_items") ?? 12
+        guard (1...BrokerLimits.maxCompactContextItems).contains(maxItems) else {
+            throw BrokerValidationError.invalid(
+                "max_items must be between 1 and \(BrokerLimits.maxCompactContextItems)"
+            )
+        }
+        let modeRaw = try args.optionalString("mode")?.lowercased()
+        let mode = try BrokerCommand.parseSearchMode(
+            modeRaw: modeRaw,
+            alpha: try args.optionalDouble("alpha")
+        )
+        return Self(
+            query: try BrokerCommand.requireNonEmptyQuery(args),
+            sessionID: try BrokerCommand.parseOptionalSessionID(args),
+            tokenBudget: tokenBudget,
+            maxItems: maxItems,
+            mode: mode
+        )
+    }
+}
+
+extension BrokerCommand.MarkdownExport {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            outputDir: try args.requiredString("output_dir", maxBytes: BrokerLimits.maxPathBytes),
+            sessionID: try BrokerCommand.parseOptionalSessionID(args),
+            project: try args.optionalString("project"),
+            allProjects: try args.optionalBool("all_projects") ?? false,
+            cwd: try args.optionalString("cwd")
+        )
+    }
+}
+
+extension BrokerCommand.FactsQuery {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let limit = try args.optionalInt("limit") ?? 20
+        guard (1...BrokerLimits.maxGraphLimit).contains(limit) else {
+            throw BrokerValidationError.invalid("limit must be between 1 and \(BrokerLimits.maxGraphLimit)")
+        }
+        return Self(
+            subject: try args.optionalString("subject"),
+            predicate: try args.optionalString("predicate"),
+            asOfMs: try args.optionalInt64("as_of"),
+            systemAsOfMs: try args.optionalInt64("system_as_of"),
+            validAsOfMs: try args.optionalInt64("valid_as_of"),
+            limit: limit
         )
     }
 }
