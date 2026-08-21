@@ -2,8 +2,7 @@ import Foundation
 
 /// Thin typed accessor over a broker argument bag.
 ///
-/// Pure value wrapper — no I/O. Used by ``BrokerCommand`` decode and remaining
-/// passthrough handlers.
+/// Pure value wrapper — no I/O. Used by ``BrokerCommand`` decode.
 package struct BrokerArguments: Sendable {
     package let values: [String: AgentBrokerValue]
 

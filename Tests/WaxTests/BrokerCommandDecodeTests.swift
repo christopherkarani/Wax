@@ -383,6 +383,46 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func factAssertRequiresObject() {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("owns"),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func corpusSearchRejectsOutOfRangeTopK() {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "corpus_search",
+                arguments: ["query": .string("hello"), "topK": .int(0)]
+            )
+        }
+    }
+
+    @Test
+    func everyRegisteredCommandHasTypedDecode() {
+        for command in AgentBrokerCommandSurface.commandArguments.keys.sorted() {
+            do {
+                _ = try BrokerCommand.decode(command: command, arguments: [:])
+            } catch let error as BrokerValidationError {
+                let message = error.errorDescription ?? String(describing: error)
+                #expect(
+                    !message.contains("Unknown broker command"),
+                    "\(command) fell through to unknown instead of a typed payload"
+                )
+            } catch {
+                Issue.record("\(command) threw unexpected error \(error)")
+            }
+        }
+    }
+
+    @Test
     func unknownCommandRejectedAtDecode() {
         #expect(throws: BrokerValidationError.self) {
             _ = try BrokerCommand.decode(command: "not_a_real_command", arguments: [:])

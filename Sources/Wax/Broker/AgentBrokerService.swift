@@ -262,13 +262,7 @@ package actor AgentBrokerService {
 extension AgentBrokerService {
     /// Forwarded from ``BrokerLimits`` for MCP/CLI callers that already import the service.
     package static let maxContentBytes = BrokerLimits.maxContentBytes
-    package static let maxTopK = BrokerLimits.maxTopK
-    package static let maxRecallLimit = BrokerLimits.maxRecallLimit
     static let maxGraphLimit = BrokerLimits.maxGraphLimit
-    static let maxGraphIdentifierBytes = BrokerLimits.maxGraphIdentifierBytes
-    static let maxGraphKindBytes = BrokerLimits.maxGraphKindBytes
-    static let maxPromotionCandidates = BrokerPromotionSettings.maxCandidateLimit
-    static let maxCompactContextTokenBudget = BrokerLimits.maxCompactContextTokenBudget
 
     typealias MemoryHorizon = LayeredRecall.Horizon
     typealias LayeredMemoryHit = LayeredRecall.Hit
@@ -491,14 +485,6 @@ extension AgentBrokerService {
             payload["scope_miss_message"] = .string(scopeMissMessage)
         }
         return .object(payload)
-    }
-
-    private func parseRecallScope(_ args: BrokerArguments) throws -> LayeredRecall.Scope {
-        try BrokerCommand.parseRecallScope(args)
-    }
-
-    private func normalizedOrNil(_ value: String?) -> String? {
-        BrokerCommand.normalizedOrNil(value)
     }
 
     package static func filterRecallItemsByProject(
@@ -1191,11 +1177,11 @@ extension AgentBrokerService {
         let resolvedProject: String?
         let resolvedRepo: String?
         if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
-            resolvedProject = live.manifest.project ?? normalizedOrNil(project) ?? inferred.projectName
-            resolvedRepo = live.manifest.repo ?? normalizedOrNil(repo) ?? inferred.repoName
+            resolvedProject = live.manifest.project ?? BrokerCommand.normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = live.manifest.repo ?? BrokerCommand.normalizedOrNil(repo) ?? inferred.repoName
         } else {
-            resolvedProject = normalizedOrNil(project) ?? inferred.projectName
-            resolvedRepo = normalizedOrNil(repo) ?? inferred.repoName
+            resolvedProject = BrokerCommand.normalizedOrNil(project) ?? inferred.projectName
+            resolvedRepo = BrokerCommand.normalizedOrNil(repo) ?? inferred.repoName
         }
 
         var recallPayload: AgentBrokerValue?
@@ -2439,10 +2425,6 @@ extension AgentBrokerService {
         }
     }
 
-    func parseOptionalSessionID(_ args: BrokerArguments) throws -> UUID? {
-        try BrokerCommand.parseOptionalSessionID(args)
-    }
-
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
         if let sessionID, let session = activeSessions[sessionID] {
             return MemoryScopeContext(
@@ -2520,53 +2502,6 @@ extension AgentBrokerService {
                 return .durableOnly
             }
         }
-    }
-
-    func requireNonEmptyQuery(_ args: BrokerArguments) throws -> String {
-        try BrokerCommand.requireNonEmptyQuery(args)
-    }
-
-    typealias ParsedSearchFilters = BrokerCommand.ParsedSearchFilters
-
-    func parseSearchFilters(_ args: BrokerArguments) throws -> ParsedSearchFilters {
-        try BrokerCommand.parseSearchFilters(args)
-    }
-
-    func parseRecallMode(_ args: BrokerArguments) throws -> Memory.RetrievalMode? {
-        try BrokerCommand.parseRecallMode(args)
-    }
-
-    func parseSearchMode(
-        modeRaw: String?,
-        alpha: Double?
-    ) throws -> Memory.RetrievalMode {
-        try BrokerCommand.parseSearchMode(modeRaw: modeRaw, alpha: alpha)
-    }
-
-    func validatedHybridAlpha(_ alpha: Double) throws -> Float {
-        try BrokerCommand.validatedHybridAlpha(alpha)
-    }
-
-    func coerceMetadata(_ object: [String: AgentBrokerValue]?) throws -> [String: String] {
-        try BrokerCommand.coerceMetadata(object)
-    }
-
-    func parseWriteSemantics(_ args: BrokerArguments) throws -> MemoryWriteSemantics {
-        try BrokerCommand.parseWriteSemantics(args)
-    }
-
-    func parsePromotionSettings(_ args: BrokerArguments) throws -> BrokerPromotionSettings {
-        let minimumConfidence = try args.optionalFloat("minimum_confidence").map { min(max($0, 0), 1) }
-            ?? promotionSettings.minimumConfidence
-        let minimumRecallCount = try args.optionalInt("minimum_recall_count").map { max(0, $0) }
-            ?? promotionSettings.minimumRecallCount
-        let maxCandidates = try args.optionalInt("max_candidates").map { min(max(1, $0), Self.maxPromotionCandidates) }
-            ?? promotionSettings.maxCandidates
-        return BrokerPromotionSettings(
-            minimumConfidence: minimumConfidence,
-            minimumRecallCount: minimumRecallCount,
-            maxCandidates: maxCandidates
-        )
     }
 
     func promotionSettingsMerging(_ command: BrokerCommand.SessionSynthesize) -> BrokerPromotionSettings {
