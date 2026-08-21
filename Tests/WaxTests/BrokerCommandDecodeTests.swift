@@ -480,4 +480,23 @@ struct BrokerCommandDecodeTests {
             )
         }
     }
+
+    @Test
+    func entityResolveRejectsOutOfRangeLimit() {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "entity_resolve",
+                arguments: ["alias": .string("Wax"), "limit": .int(0)]
+            )
+        }
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "entity_resolve",
+                arguments: [
+                    "alias": .string("Wax"),
+                    "limit": .int(Int64(BrokerLimits.maxEntityResolveLimit) + 1),
+                ]
+            )
+        }
+    }
 }
