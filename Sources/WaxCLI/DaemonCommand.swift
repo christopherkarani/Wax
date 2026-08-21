@@ -265,13 +265,12 @@ private extension DaemonCommand {
                 let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
                 response = await service.handle(request)
             } catch {
-                response = AgentBrokerResponse(
-                    ok: false,
-                    error: "Invalid request: \(error.localizedDescription)"
+                response = AgentBrokerResponse.failure(
+                    message: "Invalid request: \(error.localizedDescription)"
                 )
             }
         } else {
-            response = AgentBrokerResponse(ok: false, error: "Invalid request: empty payload")
+            response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
         }
 
         try writeJSONLine(response, to: fileHandle)
@@ -291,9 +290,8 @@ private extension DaemonCommand {
         do {
             request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(trimmed.utf8))
         } catch {
-            let response = AgentBrokerResponse(
-                ok: false,
-                error: "Invalid request: \(error.localizedDescription)"
+            let response = AgentBrokerResponse.failure(
+                message: "Invalid request: \(error.localizedDescription)"
             )
             try writeJSONLine(response, to: output)
             return
