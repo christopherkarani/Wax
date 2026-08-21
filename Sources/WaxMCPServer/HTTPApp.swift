@@ -45,6 +45,9 @@ actor MCPHTTPApplication {
     private let validationPipeline: (any HTTPRequestValidationPipeline)?
     private var channel: Channel?
     private var sessions: [String: SessionContext] = [:]
+    /// In-flight recoveries keyed by client `Mcp-Session-Id` so concurrent stale
+    /// tool calls wait for one recreate instead of racing.
+    private var sessionRecoveryTasks: [String: Task<Bool, Never>] = [:]
     private var cleanupTask: Task<Void, Never>?
 
     nonisolated let logger: Logger
@@ -166,10 +169,18 @@ actor MCPHTTPApplication {
             return response
         }
 
-        if request.method.uppercased() == "POST",
-           let body = request.body,
-           isInitializeRequest(body) {
-            return await createSessionAndHandle(request)
+        // Unknown or missing session map entry.
+        if request.method.uppercased() == "POST", let body = request.body {
+            if isInitializeRequest(body) {
+                // Reuse the client's id when present so Cursor can keep its cached header
+                // after wax-mcp restarts (otherwise a fresh UUID leaves the client stuck).
+                return await createSessionAndHandle(request, preferredSessionID: sessionID)
+            }
+            if let sessionID {
+                // Cursor keeps calling tools with a stale Mcp-Session-Id after process
+                // restart and does not re-initialize. Recreate under the same id.
+                return await recoverSessionAndHandle(request, sessionID: sessionID)
+            }
         }
 
         if sessionID != nil {
@@ -186,8 +197,22 @@ actor MCPHTTPApplication {
         func generateSessionID() -> String { sessionID }
     }
 
-    private func createSessionAndHandle(_ request: HTTPRequest) async -> HTTPResponse {
-        let sessionID = UUID().uuidString
+    private func isValidClientSessionID(_ sessionID: String) -> Bool {
+        !sessionID.isEmpty && sessionID.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
+    }
+
+    private func resolveSessionID(preferred: String?) -> String {
+        if let preferred, isValidClientSessionID(preferred) {
+            return preferred
+        }
+        return UUID().uuidString
+    }
+
+    private func createSessionAndHandle(
+        _ request: HTTPRequest,
+        preferredSessionID: String? = nil
+    ) async -> HTTPResponse {
+        let sessionID = resolveSessionID(preferred: preferredSessionID)
         let transport = StatefulHTTPServerTransport(
             sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
             validationPipeline: validationPipeline,
@@ -217,13 +242,164 @@ actor MCPHTTPApplication {
         }
     }
 
+    /// Recreate an HTTP MCP session under the client's existing `Mcp-Session-Id`.
+    ///
+    /// Used when the in-memory map was wiped (process restart) but the client still
+    /// holds the old id. Synthetic `initialize` binds the transport session so
+    /// subsequent `tools/call` passes `SessionValidator`.
+    private func recoverSessionAndHandle(
+        _ request: HTTPRequest,
+        sessionID: String
+    ) async -> HTTPResponse {
+        guard isValidClientSessionID(sessionID) else {
+            return .error(
+                statusCode: 400,
+                .invalidRequest("Bad Request: Invalid \(HTTPHeaderName.sessionID) header")
+            )
+        }
+
+        guard await ensureRecoveredSession(sessionID: sessionID) else {
+            return .error(
+                statusCode: 500,
+                .internalError("Failed to recover MCP HTTP session")
+            )
+        }
+
+        guard var session = sessions[sessionID] else {
+            return .error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired"))
+        }
+        session.lastAccessedAt = Date()
+        sessions[sessionID] = session
+        return await session.transport.handleRequest(request)
+    }
+
+    private func ensureRecoveredSession(sessionID: String) async -> Bool {
+        if sessions[sessionID] != nil {
+            return true
+        }
+        if let existing = sessionRecoveryTasks[sessionID] {
+            return await existing.value
+        }
+        let task = Task<Bool, Never> {
+            await self.createRecoveredSession(sessionID: sessionID)
+        }
+        sessionRecoveryTasks[sessionID] = task
+        let recovered = await task.value
+        sessionRecoveryTasks[sessionID] = nil
+        return recovered
+    }
+
+    private func createRecoveredSession(sessionID: String) async -> Bool {
+        if sessions[sessionID] != nil {
+            return true
+        }
+
+        let transport = StatefulHTTPServerTransport(
+            sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
+            validationPipeline: validationPipeline,
+            retryInterval: configuration.retryInterval,
+            logger: logger
+        )
+
+        do {
+            let server = try await serverFactory(sessionID, transport)
+            try await server.start(transport: transport)
+
+            let initRequest = HTTPRequest(
+                method: "POST",
+                headers: [
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                ],
+                body: Self.syntheticInitializeBody,
+                path: configuration.endpoint
+            )
+            let initResponse = await transport.handleRequest(initRequest)
+            guard await Self.consumeSuccessfulInitializeResponse(initResponse) else {
+                await transport.disconnect()
+                logger.error(
+                    "HTTP session recovery initialize failed",
+                    metadata: ["sessionID": "\(sessionID)"]
+                )
+                return false
+            }
+
+            // Optional hygiene notification; ignore failures.
+            let initializedNotification = HTTPRequest(
+                method: "POST",
+                headers: [
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    HTTPHeaderName.sessionID: sessionID,
+                ],
+                body: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8),
+                path: configuration.endpoint
+            )
+            _ = await transport.handleRequest(initializedNotification)
+
+            sessions[sessionID] = SessionContext(
+                server: server,
+                transport: transport,
+                createdAt: Date(),
+                lastAccessedAt: Date()
+            )
+            logger.info(
+                "Recovered HTTP session after map miss",
+                metadata: ["sessionID": "\(sessionID)"]
+            )
+            return true
+        } catch {
+            await transport.disconnect()
+            logger.error(
+                "HTTP session recovery failed",
+                metadata: [
+                    "sessionID": "\(sessionID)",
+                    "error": "\(error.localizedDescription)",
+                ]
+            )
+            return false
+        }
+    }
+
+    private static let syntheticInitializeBody = Data(
+        #"{"jsonrpc":"2.0","id":"wax-session-recover","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"wax-mcp-session-recover","version":"0.0.0"}}}"#
+            .utf8
+    )
+
+    private static func consumeSuccessfulInitializeResponse(_ response: HTTPResponse) async -> Bool {
+        switch response {
+        case .error:
+            return false
+        case .accepted, .ok, .data:
+            return true
+        case .stream(let stream, _):
+            do {
+                for try await chunk in stream {
+                    if let text = String(data: chunk, encoding: .utf8),
+                       text.contains("\"result\"") {
+                        return true
+                    }
+                }
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
     private func closeSession(_ sessionID: String) async {
+        sessionRecoveryTasks[sessionID]?.cancel()
+        sessionRecoveryTasks[sessionID] = nil
         guard let session = sessions.removeValue(forKey: sessionID) else { return }
         await session.transport.disconnect()
         logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)"])
     }
 
     private func closeAllSessions() async {
+        for task in sessionRecoveryTasks.values {
+            task.cancel()
+        }
+        sessionRecoveryTasks.removeAll()
         for sessionID in sessions.keys {
             await closeSession(sessionID)
         }
