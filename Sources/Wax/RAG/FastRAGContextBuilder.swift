@@ -91,8 +91,10 @@ package struct FastRAGContextBuilder: Sendable {
         //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
         //    recency for stores where all frames are old relative to wall clock.
         // Both values derive from store state, so tier selection and access-recency
-        // explanations stay deterministic; the zero fallback is unreachable whenever
-        // surrogate work or access stats exist.
+        // explanations stay deterministic. The zero fallback is reachable only for
+        // direct callers that set neither deterministicNowMs nor prefetchable frame
+        // metas (production always sets deterministicNowMs via ragConfigForRecall);
+        // accessReasons clamps negative ages to zero in that case.
         let nowMs = clamped.deterministicNowMs
             ?? sourceFrameMetasTask.values.map(\.timestamp).max()
             ?? 0
