@@ -548,8 +548,8 @@ extension BrokerCommand.SessionClose {
 extension BrokerCommand.SessionOpen {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(
-            project: try args.optionalString("project"),
-            repo: try args.optionalString("repo"),
+            project: BrokerCommand.normalizedOrNil(try args.optionalString("project")),
+            repo: BrokerCommand.normalizedOrNil(try args.optionalString("repo")),
             agentID: try args.optionalString("agent_id"),
             runID: try args.optionalString("run_id"),
             recallQuery: try args.optionalString("recall_query"),

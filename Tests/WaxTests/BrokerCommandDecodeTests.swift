@@ -288,6 +288,20 @@ struct BrokerCommandDecodeTests {
         #expect(opened.project == "wax")
         #expect(opened.recallQuery == "prior work")
 
+        let blankOpen = try BrokerCommand.decode(
+            command: "session_open",
+            arguments: [
+                "project": .string("   "),
+                "repo": .string(""),
+            ]
+        )
+        guard case .sessionOpen(let blank) = blankOpen else {
+            Issue.record("expected session_open")
+            return
+        }
+        #expect(blank.project == nil)
+        #expect(blank.repo == nil)
+
         let facts = try BrokerCommand.decode(
             command: "facts_query",
             arguments: ["subject": .string("project:wax"), "limit": .int(5)]
@@ -329,6 +343,34 @@ struct BrokerCommandDecodeTests {
         }
         #expect(knowledge.writeSemantics.durability == .durable)
         #expect(knowledge.object == .string("broker memory"))
+
+        let exported = try BrokerCommand.decode(
+            command: "markdown_export",
+            arguments: ["output_dir": .string("/tmp/wax-md")]
+        )
+        guard case .markdownExport(let markdown) = exported else {
+            Issue.record("expected markdown_export")
+            return
+        }
+        #expect(markdown.outputDir == "/tmp/wax-md")
+        #expect(markdown.allProjects == false)
+
+        let synthesize = try BrokerCommand.decode(
+            command: "session_synthesize",
+            arguments: ["max_candidates": .int(3)]
+        )
+        guard case .sessionSynthesize(let settings) = synthesize else {
+            Issue.record("expected session_synthesize")
+            return
+        }
+        #expect(settings.maxCandidates == 3)
+
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "session_close",
+                arguments: ["content": .string("done")]
+            )
+        }
     }
 
     @Test
