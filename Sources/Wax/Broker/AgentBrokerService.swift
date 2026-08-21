@@ -232,28 +232,21 @@ package actor AgentBrokerService {
                 shouldExit = false
             }
 
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.success(
                 id: request.id,
-                ok: true,
                 payload: payload,
-                error: nil,
                 shouldExit: shouldExit
             )
         } catch let error as BrokerSessionInactiveError {
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.failure(
                 id: request.id,
-                ok: false,
                 payload: error.brokerPayload(),
-                error: error.localizedDescription,
-                shouldExit: false
+                message: error.localizedDescription
             )
         } catch {
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.failure(
                 id: request.id,
-                ok: false,
-                payload: nil,
-                error: error.localizedDescription,
-                shouldExit: false
+                message: error.localizedDescription
             )
         }
     }
