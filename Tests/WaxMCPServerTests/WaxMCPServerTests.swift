@@ -84,12 +84,26 @@ func agentBrokerResponseWireFormatMatchesLegacyShape() throws {
     )
     #expect(decodedSuccess == success)
 
+    let successNullPayload = AgentBrokerResponse.success(payload: .null)
+    #expect(
+        String(data: try encoder.encode(successNullPayload), encoding: .utf8)
+            == #"{"ok":true,"payload":null,"shouldExit":false}"#
+    )
+
     let decodedLegacyEmptyPayload = try decoder.decode(
         AgentBrokerResponse.self,
         from: Data(#"{"id":"req-4","ok":true,"shouldExit":false}"#.utf8)
     )
     #expect(decodedLegacyEmptyPayload.ok)
     #expect(decodedLegacyEmptyPayload.payload == nil)
+
+    let decodedLegacyFailureWithoutError = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-5","ok":false,"shouldExit":false}"#.utf8)
+    )
+    #expect(!decodedLegacyFailureWithoutError.ok)
+    #expect(decodedLegacyFailureWithoutError.error == "Broker execution failed")
+    #expect(decodedLegacyFailureWithoutError.payload == nil)
 
     let decodedFailure = try decoder.decode(
         AgentBrokerResponse.self,

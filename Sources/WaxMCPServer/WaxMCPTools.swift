@@ -98,17 +98,13 @@ enum WaxMCPTools {
             case .failure(let payload, let message):
                 if let fields = payload?.objectValue,
                    let code = fields["code"]?.stringValue {
-                    let failureMessage = message
-                        ?? fields["reason"]?.stringValue
-                        ?? "Broker execution failed"
                     return structuredErrorResult(
-                        message: failureMessage,
+                        message: message,
                         code: code,
                         fields: fields
                     )
                 }
-                let failureMessage = message ?? "Broker execution failed"
-                return errorResult(message: failureMessage, code: errorCode(for: failureMessage))
+                return errorResult(message: message, code: errorCode(for: message))
             case .success:
                 guard let payload = response.payload else {
                     return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
