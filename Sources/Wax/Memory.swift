@@ -176,23 +176,20 @@ public actor Memory {
         return try await search(query, options: options)
     }
 
-    public func search<S: SearchStrategy>(
+    /// Search with an optional strategy and reranker.
+    ///
+    /// `strategy` is required at the call site (pass `nil` to skip) so this overload
+    /// does not collide with ``search(_:options:)``.
+    public func search(
         _ query: String,
-        strategy: S,
+        strategy: (any SearchStrategy)?,
+        reranker: (any ResultReranker)? = nil,
         options: SearchOptions = .default
     ) async throws -> Results {
         var resolved = options
-        strategy.configure(&resolved)
-        return try await search(query, options: resolved)
-    }
-
-    public func search<S: SearchStrategy, R: ResultReranker>(
-        _ query: String,
-        strategy: S,
-        options: SearchOptions = .default,
-        reranker: R
-    ) async throws -> Results {
-        let results = try await search(query, strategy: strategy, options: options)
+        strategy?.configure(&resolved)
+        let results = try await search(query, options: resolved)
+        guard let reranker else { return results }
         return try await reranker.rerank(query: query, results: results)
     }
 

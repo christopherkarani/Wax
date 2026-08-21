@@ -14,7 +14,8 @@ Source: `Sources/Wax/Memory.swift`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`
 - `public func search(_ query: String, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
 - `public func search(_ query: String, configure: (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
-- `public func search(_:strategy:options:)` / `search(_:strategy:options:reranker:)` with `SearchStrategy` / `ResultReranker`
+- `public func search(_ query: String, strategy: (any SearchStrategy)?, reranker: (any ResultReranker)? = nil, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
+- Deprecated aliases: `search(_:strategy:options:)` and `search(_:strategy:options:reranker:)` (generic shims; use the existential form)
 - `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed).
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage.
 - `public func close() async throws` — flushes, then closes.
@@ -119,6 +120,12 @@ try await photos.close()
 ```
 
 Video does not transcribe and does not store media bytes. The host supplies transcripts.
+
+## Migration
+
+- `OrchestratorConfig.useMetalVectorSearch` is a deprecated `package` shim. Use `vectorEnginePreference` (`true` → `.auto`, `false` → `.cpuOnly`).
+- Hybrid search may run as text-only; compare `RAGContext.diagnostics.requestedMode` with `effectiveMode` (and `queryEmbeddingState`).
+- `Memory.search(_:strategy:options:)` and `Memory.search(_:strategy:options:reranker:)` are deprecated shims. Use `search(_:strategy:reranker:options:)` with `any SearchStrategy` / `any ResultReranker`.
 
 ## Package-only (NOT public API)
 
