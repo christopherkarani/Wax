@@ -135,107 +135,49 @@ package actor AgentBrokerService {
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
         do {
-            let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            try AgentBrokerCommandSurface.validateArgumentSurface(
-                command: command,
-                providedKeys: Set(request.arguments.keys)
+            let decoded = try BrokerCommand.decode(
+                command: request.command,
+                arguments: request.arguments
             )
             let payload: AgentBrokerValue
             let shouldExit: Bool
 
-            switch command {
-            case "memory_append":
-                payload = try await memoryAppend(arguments: request.arguments)
+            switch decoded {
+            case .remember(let command):
+                payload = try await remember(command)
                 shouldExit = false
-            case "memory_search":
-                payload = try await memorySearch(arguments: request.arguments)
+            case .memoryAppend(let command):
+                payload = try await remember(command)
                 shouldExit = false
-            case "memory_get":
-                payload = try await memoryGet(arguments: request.arguments)
+            case .recall(let command):
+                payload = try await recall(command)
                 shouldExit = false
-            case "remember":
-                payload = try await remember(arguments: request.arguments)
+            case .search(let command):
+                payload = try await search(command)
                 shouldExit = false
-            case "recall":
-                payload = try await recall(arguments: request.arguments)
+            case .memorySearch(let command):
+                payload = try await memorySearch(command)
                 shouldExit = false
-            case "search":
-                payload = try await search(arguments: request.arguments)
+            case .sessionStart(let command):
+                payload = try await sessionStart(command)
                 shouldExit = false
-            case "session_synthesize":
-                payload = try await sessionSynthesize(arguments: request.arguments)
+            case .sessionResume(let command):
+                payload = try await sessionResume(command)
                 shouldExit = false
-            case "memory_promote":
-                payload = try await memoryPromote(arguments: request.arguments)
+            case .sessionEnd(let command):
+                payload = try await sessionEnd(command)
                 shouldExit = false
-            case "promote":
-                payload = try await promote(arguments: request.arguments)
+            case .handoff(let command):
+                payload = try await handoff(command)
                 shouldExit = false
-            case "memory_health":
-                payload = try await memoryHealth()
+            case .handoffLatest(let command):
+                payload = try await handoffLatest(command)
                 shouldExit = false
-            case "knowledge_capture":
-                payload = try await knowledgeCapture(arguments: request.arguments)
-                shouldExit = false
-            case "stats":
-                payload = try await stats(arguments: request.arguments)
-                shouldExit = false
-            case "flush":
-                payload = try await flush()
-                shouldExit = false
-            case "session_start":
-                payload = try await sessionStart(arguments: request.arguments)
-                shouldExit = false
-            case "session_resume":
-                payload = try await sessionResume(arguments: request.arguments)
-                shouldExit = false
-            case "session_end":
-                payload = try await sessionEnd(arguments: request.arguments)
-                shouldExit = false
-            case "session_close":
-                payload = try await sessionClose(arguments: request.arguments)
-                shouldExit = false
-            case "session_open":
-                payload = try await sessionOpen(arguments: request.arguments)
-                shouldExit = false
-            case "handoff":
-                payload = try await handoff(arguments: request.arguments)
-                shouldExit = false
-            case "handoff_latest":
-                payload = try await handoffLatest(arguments: request.arguments)
-                shouldExit = false
-            case "compact_context":
-                payload = try await compactContext(arguments: request.arguments)
-                shouldExit = false
-            case "markdown_export":
-                payload = try await markdownExport(arguments: request.arguments)
-                shouldExit = false
-            case "markdown_sync":
-                payload = try await markdownSync(arguments: request.arguments)
-                shouldExit = false
-            case "entity_upsert":
-                payload = try await entityUpsert(arguments: request.arguments)
-                shouldExit = false
-            case "fact_assert":
-                payload = try await factAssert(arguments: request.arguments)
-                shouldExit = false
-            case "fact_retract":
-                payload = try await factRetract(arguments: request.arguments)
-                shouldExit = false
-            case "facts_query":
-                payload = try await factsQuery(arguments: request.arguments)
-                shouldExit = false
-            case "entity_resolve":
-                payload = try await entityResolve(arguments: request.arguments)
-                shouldExit = false
-            case "corpus_search":
-                payload = try await corpusSearch(arguments: request.arguments)
-                shouldExit = false
-            case "shutdown", "exit", "quit":
-                payload = .object(["status": .string("ok")])
-                shouldExit = true
-            default:
-                throw BrokerValidationError.invalid("Unknown broker command '\(request.command)'.")
+            case .passthrough(let command, let arguments):
+                (payload, shouldExit) = try await handlePassthrough(
+                    command: command,
+                    arguments: arguments
+                )
             }
 
             return AgentBrokerResponse(
@@ -267,8 +209,8 @@ package actor AgentBrokerService {
 
 extension AgentBrokerService {
     package static let maxContentBytes = 128 * 1024
-    static let maxTopK = 200
-    static let maxRecallLimit = 100
+    package static let maxTopK = 200
+    package static let maxRecallLimit = 100
     static let maxGraphLimit = 500
     static let maxGraphIdentifierBytes = 256
     static let maxGraphKindBytes = 64
@@ -295,39 +237,69 @@ extension AgentBrokerService {
         var handoffSummaryPath: String?
     }
 
-    func remember(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        let sessionID = try parseOptionalSessionID(args)
-        if let rememberScope = try parseRememberWriteScope(args) {
-            switch rememberScope {
-            case .session:
-                guard sessionID != nil else {
-                    throw BrokerValidationError.invalid("scope session requires session_id")
-                }
-            case .durable:
-                if sessionID != nil {
-                    throw BrokerValidationError.invalid("scope durable forbids session_id")
-                }
-            }
+    func handlePassthrough(
+        command: String,
+        arguments: [String: AgentBrokerValue]
+    ) async throws -> (AgentBrokerValue, Bool) {
+        switch command {
+        case "memory_get":
+            return (try await memoryGet(arguments: arguments), false)
+        case "session_synthesize":
+            return (try await sessionSynthesize(arguments: arguments), false)
+        case "memory_promote":
+            return (try await memoryPromote(arguments: arguments), false)
+        case "promote":
+            return (try await promote(arguments: arguments), false)
+        case "memory_health":
+            return (try await memoryHealth(), false)
+        case "knowledge_capture":
+            return (try await knowledgeCapture(arguments: arguments), false)
+        case "stats":
+            return (try await stats(arguments: arguments), false)
+        case "flush":
+            return (try await flush(), false)
+        case "session_close":
+            return (try await sessionClose(arguments: arguments), false)
+        case "session_open":
+            return (try await sessionOpen(arguments: arguments), false)
+        case "compact_context":
+            return (try await compactContext(arguments: arguments), false)
+        case "markdown_export":
+            return (try await markdownExport(arguments: arguments), false)
+        case "markdown_sync":
+            return (try await markdownSync(arguments: arguments), false)
+        case "entity_upsert":
+            return (try await entityUpsert(arguments: arguments), false)
+        case "fact_assert":
+            return (try await factAssert(arguments: arguments), false)
+        case "fact_retract":
+            return (try await factRetract(arguments: arguments), false)
+        case "facts_query":
+            return (try await factsQuery(arguments: arguments), false)
+        case "entity_resolve":
+            return (try await entityResolve(arguments: arguments), false)
+        case "corpus_search":
+            return (try await corpusSearch(arguments: arguments), false)
+        case "shutdown", "exit", "quit":
+            return (.object(["status": .string("ok")]), true)
+        default:
+            throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
         }
+    }
+
+    func remember(_ command: BrokerCommand.Remember) async throws -> AgentBrokerValue {
+        let sessionID = command.sessionID
         // Rebind before writeScope so session manifest project/repo stamp correctly after a broker hop.
         if let sessionID {
             _ = try await memory(for: sessionID)
         }
-        let rawMetadata = try coerceMetadata(try args.optionalObject("metadata"))
-        if rawMetadata["session_id"] != nil {
-            throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
-        }
-        let writeSemantics = try parseWriteSemantics(args)
-        let clientCWD = try args.optionalString("cwd")
         let metadata = MemorySemantics.normalizeWriteMetadata(
-            metadata: rawMetadata,
-            semantics: writeSemantics,
+            metadata: command.metadata,
+            semantics: command.writeSemantics,
             sessionID: sessionID,
-            inferredScope: writeScope(for: sessionID, clientCWD: clientCWD)
+            inferredScope: writeScope(for: sessionID, clientCWD: command.cwd)
         )
-        try validateDurableWriteContent(content: content, metadata: metadata)
+        try validateDurableWriteContent(content: command.content, metadata: metadata)
         let memory = try await memory(for: sessionID)
         if let sessionID {
             try await refreshSessionManifest(sessionID)
@@ -346,24 +318,11 @@ extension AgentBrokerService {
 
         return try await completeRemember(
             memory: memory,
-            content: content,
+            content: command.content,
             metadata: metadata,
             sessionID: sessionID,
             before: before
         )
-    }
-
-    private enum RememberWriteScope: String {
-        case session
-        case durable
-    }
-
-    private func parseRememberWriteScope(_ args: BrokerArguments) throws -> RememberWriteScope? {
-        guard let raw = try args.optionalString("scope")?.lowercased() else { return nil }
-        guard let scope = RememberWriteScope(rawValue: raw) else {
-            throw BrokerValidationError.invalid("scope must be one of: session, durable")
-        }
-        return scope
     }
 
     /// Suspends until `memory` can accept remember writes, or fails after `timeout`.
@@ -430,37 +389,24 @@ extension AgentBrokerService {
     }
 
     func memoryAppend(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        try await remember(arguments: arguments)
+        try await remember(try BrokerCommand.Remember.decode(BrokerArguments(arguments)))
     }
 
-    func recall(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let query = try requireNonEmptyQuery(args)
-        let limit = try args.optionalInt("limit") ?? 5
-        guard (1...Self.maxRecallLimit).contains(limit) else {
-            throw BrokerValidationError.invalid("limit must be between 1 and \(Self.maxRecallLimit)")
-        }
-        let recallScope = try parseRecallScope(args)
-        let explicitProject = try args.optionalString("project")
-        let explicitRepo = try args.optionalString("repo")
-        let clientCWD = try args.optionalString("cwd")
-        let parsedFilters = try parseSearchFilters(args)
-
-        if recallScope == .session, parsedFilters.sessionId == nil {
-            throw BrokerValidationError.invalid("scope session requires session_id")
-        }
+    func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
+        let query = command.query
+        let limit = command.limit
+        let recallScope = command.scope
+        let explicitProject = command.explicitProject
+        let explicitRepo = command.explicitRepo
+        let clientCWD = command.clientCWD
+        let parsedFilters = command.filters
+        let mode = command.mode
+        let effectiveTopK = command.searchTopK
 
         // Rebind session lane before resolving project from session manifest (C4).
         if let sessionID = parsedFilters.sessionId {
             _ = try await memory(for: sessionID)
         }
-
-        let mode = try parseRecallMode(args)
-        let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
-        if let requestedTopK, !(1...Self.maxTopK).contains(requestedTopK) {
-            throw BrokerValidationError.invalid("search_top_k must be between 1 and \(Self.maxTopK)")
-        }
-        let effectiveTopK = requestedTopK ?? limit
 
         let request = LayeredRecall.RecallRequest(
             query: query,
@@ -549,17 +495,11 @@ extension AgentBrokerService {
     }
 
     private func parseRecallScope(_ args: BrokerArguments) throws -> LayeredRecall.Scope {
-        let raw = try args.optionalString("scope")?.lowercased() ?? LayeredRecall.Scope.project.rawValue
-        guard let scope = LayeredRecall.Scope(rawValue: raw) else {
-            throw BrokerValidationError.invalid("scope must be one of: project, session, global")
-        }
-        return scope
+        try BrokerCommand.parseRecallScope(args)
     }
 
     private func normalizedOrNil(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        BrokerCommand.normalizedOrNil(value)
     }
 
     package static func filterRecallItemsByProject(
@@ -605,16 +545,11 @@ extension AgentBrokerService {
         )
     }
 
-    func search(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let query = try requireNonEmptyQuery(args)
-        let modeRaw = try args.optionalString("mode")?.lowercased()
-        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let topK = try args.optionalInt("topK") ?? 10
-        guard (1...Self.maxTopK).contains(topK) else {
-            throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
-        }
-        let parsedFilters = try parseSearchFilters(args)
+    func search(_ command: BrokerCommand.Search) async throws -> AgentBrokerValue {
+        let query = command.query
+        let mode = command.mode
+        let topK = command.topK
+        let parsedFilters = command.filters
         let memory = try await memory(for: parsedFilters.sessionId)
         let execution = try await memory.searchExecution(
             query: query,
@@ -658,25 +593,20 @@ extension AgentBrokerService {
         ])
     }
 
-    func memorySearch(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let query = try requireNonEmptyQuery(args)
-        let topK = try args.optionalInt("topK") ?? 10
-        guard (1...Self.maxTopK).contains(topK) else {
-            throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
-        }
-        let modeRaw = try args.optionalString("mode")?.lowercased()
-        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let requestedWorking = try args.optionalBool("include_working") ?? true
-        let requestedEpisodic = try args.optionalBool("include_episodic") ?? true
-        let requestedDurable = try args.optionalBool("include_durable") ?? true
+    func memorySearch(_ command: BrokerCommand.MemorySearch) async throws -> AgentBrokerValue {
+        let query = command.query
+        let topK = command.topK
+        let mode = command.mode
+        let requestedWorking = command.includeWorking
+        let requestedEpisodic = command.includeEpisodic
+        let requestedDurable = command.includeDurable
         let policy: SessionResolutionPolicy
         if requestedWorking || requestedEpisodic {
             policy = requestedDurable ? .durableOnlyWhenAmbiguous : .requireUnambiguousWorking
         } else {
             policy = .unscoped
         }
-        let scope = try resolveSessionScope(try parseOptionalSessionID(args), policy: policy)
+        let scope = try resolveSessionScope(command.sessionID, policy: policy)
         let sessionID: UUID?
         let includeWorking: Bool
         let includeEpisodic: Bool
@@ -1117,14 +1047,13 @@ extension AgentBrokerService {
         ])
     }
 
-    func sessionStart(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let explicitSessionID = try parseOptionalSessionID(args)
-        let requestedAgentID = try args.optionalString("agent_id")
-        let requestedRunID = try args.optionalString("run_id")
-        let requestedCWD = try args.optionalString("cwd")
-        let explicitProject = normalizedOrNil(try args.optionalString("project"))
-        let explicitRepo = normalizedOrNil(try args.optionalString("repo"))
+    func sessionStart(_ command: BrokerCommand.SessionStart) async throws -> AgentBrokerValue {
+        let explicitSessionID = command.sessionID
+        let requestedAgentID = command.agentID
+        let requestedRunID = command.runID
+        let requestedCWD = command.cwd
+        let explicitProject = command.project
+        let explicitRepo = command.repo
         var inferredScope = requestedCWD.map {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
         } ?? scopeContext
@@ -1146,22 +1075,17 @@ extension AgentBrokerService {
         return renderSessionLifecycleResult(result)
     }
 
-    func sessionResume(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let explicitSessionID = try parseOptionalSessionID(args)
-        let requestedAgentID = try args.optionalString("agent_id")
-        let requestedRunID = try args.optionalString("run_id")
+    func sessionResume(_ command: BrokerCommand.SessionResume) async throws -> AgentBrokerValue {
         let result = try await virtualSessions.resume(
-            explicitSessionID: explicitSessionID,
-            agentID: requestedAgentID,
-            runID: requestedRunID
+            explicitSessionID: command.sessionID,
+            agentID: command.agentID,
+            runID: command.runID
         )
         return renderSessionLifecycleResult(result)
     }
 
-    func sessionEnd(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let requested = try parseOptionalSessionID(args)
+    func sessionEnd(_ command: BrokerCommand.SessionEnd) async throws -> AgentBrokerValue {
+        let requested = command.sessionID
         // Explicit session_id must rebind an active-on-disk manifest after a broker hop (C4),
         // matching remember/recall/handoff/session_close. Omitted id stays live-map only.
         if let requested {
@@ -1262,7 +1186,7 @@ extension AgentBrokerService {
         if let project {
             handoffArgs["project"] = .string(project)
         }
-        let handoffPayload = try await handoffLatest(arguments: handoffArgs)
+        let handoffPayload = try await handoffLatest(try BrokerCommand.HandoffLatest.decode(BrokerArguments(handoffArgs)))
 
         var startArgs: [String: AgentBrokerValue] = [:]
         if let agentID { startArgs["agent_id"] = .string(agentID) }
@@ -1270,7 +1194,7 @@ extension AgentBrokerService {
         if let cwd { startArgs["cwd"] = .string(cwd) }
         if let project { startArgs["project"] = .string(project) }
         if let repo { startArgs["repo"] = .string(repo) }
-        let startPayload = try await sessionStart(arguments: startArgs)
+        let startPayload = try await sessionStart(try BrokerCommand.SessionStart.decode(BrokerArguments(startArgs)))
         let startObject = startPayload.objectValue
         let sessionID = startObject?["session_id"]?.stringValue
 
@@ -1312,7 +1236,7 @@ extension AgentBrokerService {
             if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
             if let sessionID { recallArgs["session_id"] = .string(sessionID) }
             if let cwd { recallArgs["cwd"] = .string(cwd) }
-            recallPayload = try await recall(arguments: recallArgs)
+            recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
         var payload: [String: AgentBrokerValue] = [
@@ -1359,12 +1283,11 @@ extension AgentBrokerService {
         ])
     }
 
-    func handoff(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let content = try args.requiredStringPreservingWhitespace("content", maxBytes: Self.maxContentBytes)
-        let project = try args.optionalString("project")
-        let pendingTasks = try args.optionalStringArray("pending_tasks") ?? []
-        let sessionID = try parseOptionalSessionID(args)
+    func handoff(_ command: BrokerCommand.Handoff) async throws -> AgentBrokerValue {
+        let content = command.content
+        let project = command.project
+        let pendingTasks = command.pendingTasks
+        let sessionID = command.sessionID
         try await validateActiveSession(sessionID)
         let frameId = try await longTermMemory.rememberHandoff(
             content: content,
@@ -1385,9 +1308,8 @@ extension AgentBrokerService {
         ])
     }
 
-    func handoffLatest(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let project = try args.optionalString("project")
+    func handoffLatest(_ command: BrokerCommand.HandoffLatest) async throws -> AgentBrokerValue {
+        let project = command.project
         guard let latest = try await longTermMemory.latestHandoff(project: project) else {
             return .object(["found": .bool(false)])
         }
@@ -2572,11 +2494,7 @@ extension AgentBrokerService {
     }
 
     func parseOptionalSessionID(_ args: BrokerArguments) throws -> UUID? {
-        guard let raw = try args.optionalString("session_id") else { return nil }
-        guard let value = UUID(uuidString: raw) else {
-            throw BrokerValidationError.invalid("session_id must be a valid UUID")
-        }
-        return value
+        try BrokerCommand.parseOptionalSessionID(args)
     }
 
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
@@ -2659,252 +2577,36 @@ extension AgentBrokerService {
     }
 
     func requireNonEmptyQuery(_ args: BrokerArguments) throws -> String {
-        let query = try args.requiredString("query", maxBytes: Self.maxContentBytes)
-        guard !query.isEmpty else {
-            throw BrokerValidationError.invalid("query must not be empty")
-        }
-        return query
+        try BrokerCommand.requireNonEmptyQuery(args)
     }
 
-    struct ParsedSearchFilters {
-        let sessionId: UUID?
-        let frameFilter: FrameFilter?
-        let timeRange: SearchTimeRange?
-        let summary: AgentBrokerValue
-    }
+    typealias ParsedSearchFilters = BrokerCommand.ParsedSearchFilters
 
     func parseSearchFilters(_ args: BrokerArguments) throws -> ParsedSearchFilters {
-        let sessionID = try parseOptionalSessionID(args)
-        let filters = try args.optionalObject("filters")
-
-        var metadataEntries: [String: String] = [:]
-        var labels: [String] = []
-        var includeDeleted = false
-        var includeSuperseded = false
-        var includeSurrogates = false
-        var frameIds: Set<UInt64>?
-        var timeAfterMs: Int64?
-        var timeBeforeMs: Int64?
-
-        if let filters {
-            let allowedFilterKeys: Set<String> = [
-                "metadata",
-                "labels",
-                "include_deleted",
-                "include_superseded",
-                "include_surrogates",
-                "frame_ids",
-                "time_after_ms",
-                "time_before_ms",
-            ]
-            let unknownFilterKeys = Set(filters.keys).subtracting(allowedFilterKeys)
-            guard unknownFilterKeys.isEmpty else {
-                let names = unknownFilterKeys.sorted().map { "filters.\($0)" }.joined(separator: ", ")
-                throw BrokerValidationError.invalid("unsupported filter key(s): \(names)")
-            }
-
-            if let metadataRaw = filters["metadata"] {
-                guard let metadataObject = metadataRaw.objectValue else {
-                    throw BrokerValidationError.invalid("filters.metadata must be an object")
-                }
-                if let exact = metadataObject["exact"] {
-                    guard metadataObject.count == 1 else {
-                        throw BrokerValidationError.invalid("filters.metadata may be either a flat object or {\"exact\": {...}}")
-                    }
-                    guard let exactObject = exact.objectValue else {
-                        throw BrokerValidationError.invalid("filters.metadata.exact must be an object")
-                    }
-                    metadataEntries = try coerceMetadata(exactObject)
-                } else {
-                    metadataEntries = try coerceMetadata(metadataObject)
-                }
-            }
-            if let labelsRaw = filters["labels"] {
-                guard let rawArray = labelsRaw.arrayValue else {
-                    throw BrokerValidationError.invalid("filters.labels must be an array of strings")
-                }
-                labels = try rawArray.map { value in
-                    guard let raw = value.stringValue else {
-                        throw BrokerValidationError.invalid("filters.labels must contain only strings")
-                    }
-                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else {
-                        throw BrokerValidationError.invalid("filters.labels must not contain empty values")
-                    }
-                    return trimmed
-                }
-            }
-            if let includeRaw = filters["include_deleted"] {
-                guard let parsed = includeRaw.boolValue else {
-                    throw BrokerValidationError.invalid("filters.include_deleted must be a boolean")
-                }
-                includeDeleted = parsed
-            }
-            if let includeRaw = filters["include_superseded"] {
-                guard let parsed = includeRaw.boolValue else {
-                    throw BrokerValidationError.invalid("filters.include_superseded must be a boolean")
-                }
-                includeSuperseded = parsed
-            }
-            if let includeRaw = filters["include_surrogates"] {
-                guard let parsed = includeRaw.boolValue else {
-                    throw BrokerValidationError.invalid("filters.include_surrogates must be a boolean")
-                }
-                includeSurrogates = parsed
-            }
-            if let frameIdsRaw = filters["frame_ids"] {
-                guard let rawArray = frameIdsRaw.arrayValue else {
-                    throw BrokerValidationError.invalid("filters.frame_ids must be an array of non-negative integers")
-                }
-                var parsedFrameIds = Set<UInt64>()
-                parsedFrameIds.reserveCapacity(rawArray.count)
-                for value in rawArray {
-                    guard case .int(let raw) = value, raw >= 0 else {
-                        throw BrokerValidationError.invalid("filters.frame_ids must contain only non-negative integers")
-                    }
-                    parsedFrameIds.insert(UInt64(raw))
-                }
-                frameIds = parsedFrameIds
-            }
-            if let timeAfterRaw = filters["time_after_ms"] {
-                guard let parsed = timeAfterRaw.intValue else {
-                    throw BrokerValidationError.invalid("filters.time_after_ms must be an integer")
-                }
-                timeAfterMs = parsed
-            }
-            if let timeBeforeRaw = filters["time_before_ms"] {
-                guard let parsed = timeBeforeRaw.intValue else {
-                    throw BrokerValidationError.invalid("filters.time_before_ms must be an integer")
-                }
-                timeBeforeMs = parsed
-            }
-        }
-        let metadataFilter: MetadataFilter? = (!metadataEntries.isEmpty || !labels.isEmpty)
-            ? MetadataFilter(requiredEntries: metadataEntries, requiredLabels: labels)
-            : nil
-        let frameFilter: FrameFilter? = (metadataFilter != nil || includeDeleted || includeSuperseded || includeSurrogates || frameIds != nil)
-            ? FrameFilter(
-                includeDeleted: includeDeleted,
-                includeSuperseded: includeSuperseded,
-                includeSurrogates: includeSurrogates,
-                frameIds: frameIds,
-                metadataFilter: metadataFilter
-            )
-            : nil
-        let timeRange: SearchTimeRange? = (timeAfterMs != nil || timeBeforeMs != nil)
-            ? SearchTimeRange(after: timeAfterMs, before: timeBeforeMs)
-            : nil
-        return ParsedSearchFilters(
-            sessionId: sessionID,
-            frameFilter: frameFilter,
-            timeRange: timeRange,
-            summary: .object([
-                "session_id": .from(sessionID?.uuidString),
-                "metadata": .object(metadataEntries.mapValues(AgentBrokerValue.string)),
-                "labels": .array(labels.map(AgentBrokerValue.string)),
-                "time_after_ms": .from(timeAfterMs),
-                "time_before_ms": .from(timeBeforeMs),
-                "include_deleted": .from(includeDeleted),
-                "include_superseded": .from(includeSuperseded),
-                "include_surrogates": .from(includeSurrogates),
-                "frame_ids": .array((frameIds ?? []).sorted().map(AgentBrokerValue.from)),
-                "has_frame_filter": .from(frameFilter != nil),
-                "has_time_range": .from(timeRange != nil),
-            ])
-        )
+        try BrokerCommand.parseSearchFilters(args)
     }
 
     func parseRecallMode(_ args: BrokerArguments) throws -> Memory.RetrievalMode? {
-        let modeRaw = try args.optionalString("mode")?.lowercased()
-        let alpha = try args.optionalDouble("alpha")
-
-        guard let modeRaw else {
-            if let alpha {
-                return .hybrid(alpha: try validatedHybridAlpha(alpha))
-            }
-            return nil
-        }
-        if alpha != nil, modeRaw != "hybrid" {
-            throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
-        }
-
-        switch modeRaw {
-        case "text":
-            return .textOnly
-        case "vector":
-            return .vectorOnly
-        case "hybrid":
-            return .hybrid(alpha: try validatedHybridAlpha(alpha ?? 0.5))
-        default:
-            throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
-        }
+        try BrokerCommand.parseRecallMode(args)
     }
 
     func parseSearchMode(
         modeRaw: String?,
         alpha: Double?
     ) throws -> Memory.RetrievalMode {
-        let resolvedMode = modeRaw ?? "text"
-        if alpha != nil, resolvedMode != "hybrid" {
-            throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
-        }
-        let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
-        switch resolvedMode {
-        case "text":
-            return .textOnly
-        case "vector":
-            return .vectorOnly
-        case "hybrid":
-            return .hybrid(alpha: validatedAlpha)
-        default:
-            throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
-        }
+        try BrokerCommand.parseSearchMode(modeRaw: modeRaw, alpha: alpha)
     }
 
     func validatedHybridAlpha(_ alpha: Double) throws -> Float {
-        guard (0.0...1.0).contains(alpha) else {
-            throw BrokerValidationError.invalid("alpha must be between 0 and 1")
-        }
-        return Float(alpha)
+        try BrokerCommand.validatedHybridAlpha(alpha)
     }
 
     func coerceMetadata(_ object: [String: AgentBrokerValue]?) throws -> [String: String] {
-        guard let object else { return [:] }
-        return try object.reduce(into: [String: String]()) { partial, entry in
-            switch entry.value {
-            case .string(let value):
-                partial[entry.key] = value
-            case .bool(let value):
-                partial[entry.key] = value ? "true" : "false"
-            case .int(let value):
-                partial[entry.key] = String(value)
-            case .double(let value):
-                partial[entry.key] = String(value)
-            default:
-                throw BrokerValidationError.invalid("metadata.\(entry.key) must be a scalar")
-            }
-        }
+        try BrokerCommand.coerceMetadata(object)
     }
 
     func parseWriteSemantics(_ args: BrokerArguments) throws -> MemoryWriteSemantics {
-        let type = try args.optionalString("memory_type").flatMap(MemoryType.init(rawValue:))
-        if try args.optionalString("memory_type") != nil, type == nil {
-            throw BrokerValidationError.invalid("memory_type must be one of: \(MemoryType.allCases.map(\.rawValue).joined(separator: ", "))")
-        }
-        let durability = try args.optionalString("durability").flatMap(MemoryDurability.init(rawValue:))
-        if try args.optionalString("durability") != nil, durability == nil {
-            throw BrokerValidationError.invalid("durability must be one of: \(MemoryDurability.allCases.map(\.rawValue).joined(separator: ", "))")
-        }
-        return MemoryWriteSemantics(
-            type: type,
-            durability: durability,
-            project: try args.optionalString("project"),
-            repo: try args.optionalString("repo"),
-            confidence: try args.optionalFloat("confidence"),
-            expiresInDays: try args.optionalInt("expires_in_days"),
-            reviewed: try args.optionalBool("reviewed") ?? false,
-            lock: try args.optionalBool("locked") ?? false
-        )
+        try BrokerCommand.parseWriteSemantics(args)
     }
 
     func parsePromotionSettings(_ args: BrokerArguments) throws -> BrokerPromotionSettings {
@@ -3298,164 +3000,6 @@ private struct BrokerStartupError: LocalizedError {
     }
 
     var errorDescription: String? { message }
-}
-
-struct BrokerArguments {
-    let values: [String: AgentBrokerValue]
-
-    init(_ values: [String: AgentBrokerValue]) {
-        self.values = values
-    }
-
-    func requiredString(_ key: String, maxBytes: Int) throws -> String {
-        guard let raw = try optionalString(key) else {
-            throw BrokerValidationError.missing(key)
-        }
-        guard raw.utf8.count <= maxBytes else {
-            throw BrokerValidationError.invalid("\(key) exceeds \(maxBytes) bytes")
-        }
-        return raw
-    }
-
-    func requiredStringPreservingWhitespace(_ key: String, maxBytes: Int) throws -> String {
-        guard let raw = try optionalStringPreservingWhitespace(key) else {
-            throw BrokerValidationError.missing(key)
-        }
-        guard raw.utf8.count <= maxBytes else {
-            throw BrokerValidationError.invalid("\(key) exceeds \(maxBytes) bytes")
-        }
-        return raw
-    }
-
-    func optionalString(_ key: String) throws -> String? {
-        try optionalStringPreservingWhitespace(key)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    func optionalStringPreservingWhitespace(_ key: String) throws -> String? {
-        guard let value = values[key] else { return nil }
-        // CLI/MCP often send explicit JSON null for omitted optional filters.
-        if value == .null { return nil }
-        guard let stringValue = value.stringValue else {
-            throw BrokerValidationError.invalid("\(key) must be a string")
-        }
-        return stringValue
-    }
-
-    func optionalStringArray(_ key: String) throws -> [String]? {
-        guard let value = values[key] else { return nil }
-        if value == .null { return nil }
-        guard let array = value.arrayValue else {
-            throw BrokerValidationError.invalid("\(key) must be an array of strings")
-        }
-        return try array.map { element in
-            guard let stringValue = element.stringValue else {
-                throw BrokerValidationError.invalid("\(key) must contain only strings")
-            }
-            return stringValue
-        }
-    }
-
-    func optionalObject(_ key: String) throws -> [String: AgentBrokerValue]? {
-        guard let value = values[key] else { return nil }
-        if value == .null { return nil }
-        guard let object = value.objectValue else {
-            throw BrokerValidationError.invalid("\(key) must be an object")
-        }
-        return object
-    }
-
-    func optionalBool(_ key: String) throws -> Bool? {
-        guard let value = values[key] else { return nil }
-        guard let boolValue = value.boolValue else {
-            throw BrokerValidationError.invalid("\(key) must be a boolean")
-        }
-        return boolValue
-    }
-
-    func optionalInt(_ key: String) throws -> Int? {
-        guard let parsed = try optionalInt64(key) else { return nil }
-        guard let intValue = Int(exactly: parsed) else {
-            throw BrokerValidationError.invalid("\(key) is out of range")
-        }
-        return intValue
-    }
-
-    func optionalUInt64(_ key: String) throws -> UInt64? {
-        guard let value = values[key] else { return nil }
-        guard let intValue = value.intValue, intValue >= 0 else {
-            throw BrokerValidationError.invalid("\(key) must be a non-negative integer")
-        }
-        return UInt64(intValue)
-    }
-
-    func requiredInt64(_ key: String) throws -> Int64 {
-        guard let value = values[key], let intValue = value.intValue else {
-            throw BrokerValidationError.missing(key)
-        }
-        return intValue
-    }
-
-    func optionalInt64(_ key: String) throws -> Int64? {
-        guard let value = values[key] else { return nil }
-        switch value {
-        case .int(let intValue):
-            return intValue
-        case .double(let double):
-            guard double.isFinite else {
-                throw BrokerValidationError.invalid("\(key) is out of range")
-            }
-            guard double.rounded() == double else {
-                throw BrokerValidationError.invalid("\(key) must be an integer")
-            }
-            guard let intValue = Int64(exactly: double) else {
-                throw BrokerValidationError.invalid("\(key) is out of range")
-            }
-            return intValue
-        default:
-            throw BrokerValidationError.invalid("\(key) must be an integer")
-        }
-    }
-
-    func optionalDouble(_ key: String) throws -> Double? {
-        guard let value = values[key] else { return nil }
-        guard let doubleValue = value.doubleValue else {
-            throw BrokerValidationError.invalid("\(key) must be a number")
-        }
-        return doubleValue
-    }
-
-    func optionalFloat(_ key: String) throws -> Float? {
-        guard let value = try optionalDouble(key) else { return nil }
-        guard value.isFinite else {
-            throw BrokerValidationError.invalid("\(key) must be a finite number")
-        }
-        return Float(value)
-    }
-
-    func requiredValue(_ key: String) throws -> AgentBrokerValue {
-        guard let value = values[key] else {
-            throw BrokerValidationError.missing(key)
-        }
-        return value
-    }
-
-    func optionalValue(_ key: String) throws -> AgentBrokerValue? {
-        values[key]
-    }
-}
-
-enum BrokerValidationError: LocalizedError {
-    case missing(String)
-    case invalid(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .missing(let key):
-            return "Missing required argument '\(key)'."
-        case .invalid(let message):
-            return message
-        }
-    }
 }
 
 /// A structured inactive-session failure for broker hops.
