@@ -1521,6 +1521,117 @@ func httpApplicationRejectsUnauthorizedOffLoopbackRequests() async throws {
 }
 
 @Test
+func httpInitializeReusesClientSessionIDWhenUnknown() async throws {
+    let preferredID = "cursor-stale-session-reuse-001"
+    let app = MCPHTTPApplication(
+        serverFactory: { _, _ in
+            Server(
+                name: "wax-mcp-test",
+                version: "0.0.0",
+                capabilities: .init(tools: .init(listChanged: false))
+            )
+        }
+    )
+    let body = try JSONSerialization.data(withJSONObject: [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+            "protocolVersion": "2024-11-05",
+            "capabilities": [:] as [String: Any],
+            "clientInfo": ["name": "cursor-probe", "version": "0"],
+        ],
+    ])
+
+    let response = await app.handleHTTPRequest(HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            HTTPHeaderName.sessionID: preferredID,
+        ],
+        body: body,
+        path: "/mcp"
+    ))
+
+    #expect(response.statusCode == 200)
+    #expect(response.headers[HTTPHeaderName.sessionID] == preferredID)
+}
+
+@Test
+func httpRecoversUnknownSessionForToolsListWithoutClientReinit() async throws {
+    let staleID = "cursor-stale-session-tools-002"
+    let app = MCPHTTPApplication(
+        serverFactory: { _, _ in
+            Server(
+                name: "wax-mcp-test",
+                version: "0.0.0",
+                capabilities: .init(tools: .init(listChanged: false))
+            )
+        }
+    )
+    let body = try JSONSerialization.data(withJSONObject: [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": [:] as [String: Any],
+    ])
+
+    let response = await app.handleHTTPRequest(HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            HTTPHeaderName.sessionID: staleID,
+        ],
+        body: body,
+        path: "/mcp"
+    ))
+
+    #expect(response.statusCode == 200)
+    #expect(response.headers[HTTPHeaderName.sessionID] == staleID)
+    // Second call should hit the live map, not recover again.
+    let again = await app.handleHTTPRequest(HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            HTTPHeaderName.sessionID: staleID,
+        ],
+        body: body,
+        path: "/mcp"
+    ))
+    #expect(again.statusCode == 200)
+    #expect(again.headers[HTTPHeaderName.sessionID] == staleID)
+}
+
+@Test
+func httpMissingSessionHeaderOnNonInitializeStillFails() async throws {
+    let app = MCPHTTPApplication(
+        serverFactory: { _, _ in
+            Issue.record("missing session header should not create a server")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let body = try JSONSerialization.data(withJSONObject: [
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/list",
+        "params": [:] as [String: Any],
+    ])
+    let response = await app.handleHTTPRequest(HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        ],
+        body: body,
+        path: "/mcp"
+    ))
+    #expect(response.statusCode == 400)
+}
+
+@Test
 func httpSessionCleanupTaskStopsWithApplicationStop() async throws {
     let app = MCPHTTPApplication(
         configuration: .init(port: 0, sessionCleanupInterval: .milliseconds(10)),
@@ -7425,8 +7536,14 @@ struct WaxMCPProcessTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+        let packageJSON = packageRoot
+            .appendingPathComponent("Resources/npm/waxmcp/package.json")
+        let packageData = try Data(contentsOf: packageJSON)
+        let packageObject = try JSONSerialization.jsonObject(with: packageData) as? [String: Any]
+        let expectedVersion = try #require(packageObject?["version"] as? String)
+
         let mcp = try MCPServerProcessHarness.waxMCPBinaryURLForTests(packageRoot: packageRoot)
-        try expectVersion(executable: mcp, expectedSubstring: "0.1.28")
+        try expectVersion(executable: mcp, expectedSubstring: expectedVersion)
 
         let cliCandidates = [
             mcp.deletingLastPathComponent().appendingPathComponent("wax-cli"),
@@ -7434,7 +7551,7 @@ struct WaxMCPProcessTests {
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
         ]
         let cli = try #require(cliCandidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
-        try expectVersion(executable: cli, expectedSubstring: "0.1.")
+        try expectVersion(executable: cli, expectedSubstring: expectedVersion)
     }
 }
 
