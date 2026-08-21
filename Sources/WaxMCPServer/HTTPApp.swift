@@ -370,17 +370,24 @@ actor MCPHTTPApplication {
         switch response {
         case .error:
             return false
-        case .accepted, .ok, .data:
-            return true
+        case .accepted, .ok:
+            // Initialize should return a JSON-RPC result body/stream; bare
+            // accepted/ok without payload is not enough to bind the session.
+            return false
+        case .data(let data, _):
+            guard let text = String(data: data, encoding: .utf8) else { return false }
+            return text.contains("\"result\"")
         case .stream(let stream, _):
             do {
                 for try await chunk in stream {
-                    if let text = String(data: chunk, encoding: .utf8),
-                       text.contains("\"result\"") {
+                    guard let text = String(data: chunk, encoding: .utf8) else { continue }
+                    if text.contains("\"result\"") {
                         return true
                     }
                 }
-                return true
+                // Stream finished without a JSON-RPC result — treat as failure so
+                // we do not register a half-initialized transport session.
+                return false
             } catch {
                 return false
             }

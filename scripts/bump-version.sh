@@ -9,12 +9,13 @@ set -euo pipefail
 # Surfaces managed:
 #   1. Resources/npm/waxmcp/package.json (npm package)
 #   2. Sources/WaxMCPServer/main.swift (Swift server)
-#   3. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw plugin version)
-#   4. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw waxmcp dependency)
-#   5. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew URL)
-#   6. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew SHA256)
-#   7. .pi/extensions/wax-agents/package.json (OpenCode/pi extension)
-#   8. Resources/hermes/README.md (Hermes MCP config reference)
+#   3. Sources/WaxCLI/WaxCLICommand.swift (wax-cli --version)
+#   4. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw plugin version)
+#   5. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw waxmcp dependency)
+#   6. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew URL)
+#   7. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew SHA256)
+#   8. .pi/extensions/wax-agents/package.json (OpenCode/pi extension)
+#   9. Resources/hermes/README.md (Hermes MCP config reference)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,6 +23,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Configuration ───────────────────────────────────────────────────────────
 NPM_PKG="$ROOT/Resources/npm/waxmcp"
 SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+CLI_SWIFT="$ROOT/Sources/WaxCLI/WaxCLICommand.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
@@ -77,6 +79,11 @@ read_pkg_version() {
 # Read current version from main.swift
 read_swift_version() {
   grep -oE 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' "$SERVER_SWIFT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "NOT_FOUND"
+}
+
+# Read version from wax-cli ArgumentParser configuration
+read_cli_version() {
+  perl -0ne 'if (/CommandConfiguration\(\s*commandName:\s*"wax-cli".*?version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s) { print "$1\n" }' "$CLI_SWIFT" || echo "NOT_FOUND"
 }
 
 # Read current version from Homebrew formula URL
@@ -144,6 +151,7 @@ echo ""
 
 CURRENT_NPM=$(read_pkg_version "$NPM_PKG")
 CURRENT_SWIFT=$(read_swift_version)
+CURRENT_CLI=$(read_cli_version)
 CURRENT_OPENCLAW=$(read_pkg_version "$OPENCLAW_PKG")
 CURRENT_OPENCLAW_DEP=$(node -p "require('$OPENCLAW_PKG/package.json').dependencies.waxmcp" 2>/dev/null || echo "NOT_FOUND")
 CURRENT_HOMEBREW=$(read_homebrew_version)
@@ -184,6 +192,7 @@ echo ""
 # ── Idempotency check ───────────────────────────────────────────────────────
 if [[ "$CURRENT_NPM" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_SWIFT" == "$TARGET_VERSION" ]] && \
+   [[ "$CURRENT_CLI" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW_DEP" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_HOMEBREW" == "$TARGET_VERSION" ]] && \
@@ -201,6 +210,7 @@ printf "  %-50s ├ %-10s ┼ %-10s\n" "$(printf '%*s' 50 '' | tr ' ' '-')" "$(p
 
 [[ "$CURRENT_NPM" != "$TARGET_VERSION" ]] && print_row "npm/waxmcp/package.json" "$CURRENT_NPM" "$TARGET_VERSION"
 [[ "$CURRENT_SWIFT" != "$TARGET_VERSION" ]] && print_row "Sources/WaxMCPServer/main.swift" "$CURRENT_SWIFT" "$TARGET_VERSION"
+[[ "$CURRENT_CLI" != "$TARGET_VERSION" ]] && print_row "Sources/WaxCLI/WaxCLICommand.swift" "$CURRENT_CLI" "$TARGET_VERSION"
 [[ "$CURRENT_OPENCLAW" != "$TARGET_VERSION" ]] && print_row "openclaw plugin (version)" "$CURRENT_OPENCLAW" "$TARGET_VERSION"
 [[ "$CURRENT_OPENCLAW_DEP" != "$TARGET_VERSION" ]] && print_row "openclaw plugin (waxmcp dep)" "$CURRENT_OPENCLAW_DEP" "$TARGET_VERSION"
 [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]] && print_row "homebrew formula (url)" "$CURRENT_HOMEBREW" "$TARGET_VERSION"
@@ -221,14 +231,15 @@ fi
 echo "📝 Applying version bumps..."
 echo ""
 
-# Surface 1+2: Already done by sync-waxmcp-version.sh (called above)
+# Surface 1+2+CLI: Already done by sync-waxmcp-version.sh (called above)
 # We just verify it worked
 NEW_NPM=$(read_pkg_version "$NPM_PKG")
 NEW_SWIFT=$(read_swift_version)
-if [[ "$NEW_NPM" != "$TARGET_VERSION" ]] || [[ "$NEW_SWIFT" != "$TARGET_VERSION" ]]; then
-  fail "sync-waxmcp-version.sh did not bump correctly (npm=$NEW_NPM, swift=$NEW_SWIFT)"
+NEW_CLI=$(read_cli_version)
+if [[ "$NEW_NPM" != "$TARGET_VERSION" ]] || [[ "$NEW_SWIFT" != "$TARGET_VERSION" ]] || [[ "$NEW_CLI" != "$TARGET_VERSION" ]]; then
+  fail "sync-waxmcp-version.sh did not bump correctly (npm=$NEW_NPM, swift=$NEW_SWIFT, cli=$NEW_CLI)"
 fi
-info "npm/waxmcp + Swift server → $TARGET_VERSION"
+info "npm/waxmcp + Swift server + wax-cli → $TARGET_VERSION"
 
 # Surface 3+4: OpenClaw plugin
 if [[ "$CURRENT_OPENCLAW" != "$TARGET_VERSION" ]] || [[ "$CURRENT_OPENCLAW_DEP" != "$TARGET_VERSION" ]]; then

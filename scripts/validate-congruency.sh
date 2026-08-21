@@ -16,6 +16,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Configuration ───────────────────────────────────────────────────────────
 NPM_PKG="$ROOT/Resources/npm/waxmcp"
 SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+CLI_SWIFT="$ROOT/Sources/WaxCLI/WaxCLICommand.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
@@ -43,6 +44,11 @@ read_swift_version() {
   grep -oE 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' "$SERVER_SWIFT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "NOT_FOUND"
 }
 
+# Read version from wax-cli ArgumentParser configuration
+read_cli_version() {
+  perl -0ne 'if (/CommandConfiguration\(\s*commandName:\s*"wax-cli".*?version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s) { print "$1\n" }' "$CLI_SWIFT" || echo "NOT_FOUND"
+}
+
 # Read waxmcp dependency from OpenClaw plugin
 read_openclaw_dep() {
   node -p "require('$OPENCLAW_PKG/package.json').dependencies.waxmcp" 2>/dev/null || echo "NOT_FOUND"
@@ -66,6 +72,7 @@ done
 # ── Read all versions ───────────────────────────────────────────────────────
 NPM_VERSION=$(read_pkg_version "$NPM_PKG")
 SWIFT_VERSION=$(read_swift_version)
+CLI_VERSION=$(read_cli_version)
 OPENCLAW_VERSION=$(read_pkg_version "$OPENCLAW_PKG")
 OPENCLAW_DEP=$(read_openclaw_dep)
 HOMEBREW_VERSION=$(read_homebrew_version)
@@ -82,6 +89,11 @@ MISMATCHES=()
 if [[ "$SWIFT_VERSION" != "$CANONICAL" ]]; then
   CONGRUENT=false
   MISMATCHES+=("swift:$SWIFT_VERSION")
+fi
+
+if [[ "$CLI_VERSION" != "$CANONICAL" ]]; then
+  CONGRUENT=false
+  MISMATCHES+=("cli:$CLI_VERSION")
 fi
 
 if [[ "$OPENCLAW_VERSION" != "$CANONICAL" ]]; then
@@ -131,6 +143,7 @@ if [[ "$JSON" == true ]]; then
   echo "  \"versions\": {"
   echo "    \"npm\": \"$NPM_VERSION\","
   echo "    \"swift\": \"$SWIFT_VERSION\","
+  echo "    \"cli\": \"$CLI_VERSION\","
   echo "    \"openclaw\": \"$OPENCLAW_VERSION\","
   echo "    \"openclaw-dep\": \"$OPENCLAW_DEP\","
   echo "    \"homebrew\": \"$HOMEBREW_VERSION\","
@@ -166,7 +179,7 @@ else
       printf "  %-20s │ %-10s │ %s\n" "Surface" "Version" "Status"
       printf "  %-20s ├ %-10s ┼ %s\n" "$(printf '%*s' 20 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')" "$(printf '%*s' 8 '' | tr ' ' '-')"
 
-      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}"; do
+      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "cli:$CLI_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}"; do
         name="${surface%%:*}"
         version="${surface#*:}"
         if [[ "$version" == "$CANONICAL" ]]; then
