@@ -205,14 +205,24 @@ package actor MemoryOrchestrator {
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
     private var hasEnsuredMemoryBinding = false
-    private var queryEmbeddingCircuitOpenedAt: ContinuousClock.Instant?
+    /// Injectable wall-clock source (ms since epoch). Defaults to real time at this
+    /// shell boundary so recall decisions remain pure functions of `(store, query, nowMs)`.
+    private let nowProvider: @Sendable () -> Int64
+    private var queryEmbeddingCircuitOpenedAtMs: Int64?
 
     /// Stays open for `config.queryEmbeddingCircuitCooldown` after a query-embedding
     /// timeout, then allows one half-open probe; probe success closes the circuit,
     /// another timeout re-opens it for a fresh cooldown window.
     private var queryEmbeddingCircuitOpen: Bool {
-        guard let openedAt = queryEmbeddingCircuitOpenedAt else { return false }
-        return ContinuousClock.now - openedAt < config.queryEmbeddingCircuitCooldown
+        guard let openedAtMs = queryEmbeddingCircuitOpenedAtMs else { return false }
+        return nowProvider() - openedAtMs < Self.circuitCooldownMs(config.queryEmbeddingCircuitCooldown)
+    }
+
+    /// Mirrors the previous `ContinuousClock` comparison: open while elapsed < cooldown,
+    /// closed once elapsed >= cooldown (boundary inclusive half-close).
+    private static func circuitCooldownMs(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1000
+            + duration.components.attoseconds / 1_000_000_000_000_000
     }
 
     private var requiresEmbedderForSave: Bool {
@@ -252,7 +262,8 @@ package actor MemoryOrchestrator {
         config: OrchestratorConfig = .default,
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
-        initialEmbeddingStatus: EmbeddingStatus? = nil
+        initialEmbeddingStatus: EmbeddingStatus? = nil,
+        nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
@@ -334,6 +345,7 @@ package actor MemoryOrchestrator {
         self.ragBuilder = FastRAGContextBuilder()
         self.embedder = embedder
         self.embeddingStatus = resolvedStatus
+        self.nowProvider = nowMsProvider
         self.embeddingCache = EmbeddingMemoizer.fromConfig(
             capacity: resolvedConfig.embeddingCacheCapacity,
             enabled: embedder != nil
@@ -1033,15 +1045,19 @@ package actor MemoryOrchestrator {
         } else {
             [:]
         }
+        let recallNowMs = recallConfig.deterministicNowMs ?? nowProvider()
         let enrichedItems = context.items.map { item in
             var item = item
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId]).reasons
+            let accessReasons = MemorySemantics.accessReasons(
+                stats: accessStatsMap[item.frameId],
+                nowMs: recallNowMs
+            ).reasons
             if !accessReasons.isEmpty {
                 item.explanations = dedupedExplanations(item.explanations + accessReasons)
             }
             return item
         }
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
+        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId), nowMs: recallNowMs)
         return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
@@ -1125,13 +1141,17 @@ package actor MemoryOrchestrator {
         )
         let response = try await session.search(request)
 
+        let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
             await accessStatsManager.getStats(frameIds: response.results.map(\.frameId))
         } else {
             [:]
         }
         let hits = response.results.map { result in
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[result.frameId]).reasons
+            let accessReasons = MemorySemantics.accessReasons(
+                stats: accessStatsMap[result.frameId],
+                nowMs: searchNowMs
+            ).reasons
             return MemorySearchHit(
                 frameId: result.frameId,
                 score: result.score,
@@ -1141,7 +1161,7 @@ package actor MemoryOrchestrator {
                 explanations: dedupedExplanations(result.explanations + accessReasons)
             )
         }
-        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
+        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId), nowMs: searchNowMs)
         return SearchExecution(
             hits: hits,
             requestedMode: mode,
@@ -1314,7 +1334,7 @@ package actor MemoryOrchestrator {
     private func ragConfigForRecall() -> FastRAGConfig {
         var recallConfig = config.rag
         if recallConfig.deterministicNowMs == nil {
-            recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            recallConfig.deterministicNowMs = nowProvider()
         }
         return recallConfig
     }
@@ -2089,11 +2109,11 @@ package actor MemoryOrchestrator {
                     timeout: config.queryEmbeddingTimeout,
                     isQuery: true
                 )
-                queryEmbeddingCircuitOpenedAt = nil
+                queryEmbeddingCircuitOpenedAtMs = nil
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpenedAt = .now
+                    queryEmbeddingCircuitOpenedAtMs = nowProvider()
                     return QueryEmbeddingResult(embedding: nil, state: .timeout)
                 }
                 WaxDiagnostics.logSwallowed(
@@ -2121,11 +2141,11 @@ package actor MemoryOrchestrator {
                     timeout: config.queryEmbeddingTimeout,
                     isQuery: true
                 )
-                queryEmbeddingCircuitOpenedAt = nil
+                queryEmbeddingCircuitOpenedAtMs = nil
                 return QueryEmbeddingResult(embedding: embedding, state: .available)
             } catch {
                 if error is AsyncTimeout.TimeoutError {
-                    queryEmbeddingCircuitOpenedAt = .now
+                    queryEmbeddingCircuitOpenedAtMs = nowProvider()
                 }
                 throw error
             }
@@ -2242,9 +2262,9 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func recordAccessesIfEnabled(frameIds: [UInt64]) async {
+    private func recordAccessesIfEnabled(frameIds: [UInt64], nowMs: Int64) async {
         guard config.enableAccessStatsScoring, !frameIds.isEmpty else { return }
-        await accessStatsManager.recordAccesses(frameIds: frameIds)
+        await accessStatsManager.recordAccesses(frameIds: frameIds, nowMs: nowMs)
     }
 
     private func loadPersistedAccessStatsIfNeeded() async throws {

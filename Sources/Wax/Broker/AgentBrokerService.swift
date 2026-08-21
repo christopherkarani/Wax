@@ -294,7 +294,8 @@ extension AgentBrokerService {
             metadata: command.metadata,
             semantics: command.writeSemantics,
             sessionID: sessionID,
-            inferredScope: writeScope(for: sessionID, clientCWD: command.cwd)
+            inferredScope: writeScope(for: sessionID, clientCWD: command.cwd),
+            nowMs: Self.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
         let memory = try await memory(for: sessionID)
@@ -748,7 +749,8 @@ extension AgentBrokerService {
             metadata: baseMetadata,
             semantics: writeSemantics,
             sessionID: nil,
-            inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd)
+            inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
+            nowMs: Self.nowMs()
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
@@ -842,7 +844,8 @@ extension AgentBrokerService {
             metadata: command.metadata,
             semantics: command.writeSemantics,
             sessionID: nil,
-            inferredScope: writeScope(for: nil, clientCWD: command.cwd)
+            inferredScope: writeScope(for: nil, clientCWD: command.cwd),
+            nowMs: Self.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
 
@@ -2513,7 +2516,7 @@ extension AgentBrokerService {
     }
 
     func validateDurableWriteContent(content: String, metadata: [String: String]) throws {
-        let semantics = MemorySemantics.parse(metadata: metadata)
+        let semantics = MemorySemantics.parse(metadata: metadata, nowMs: Self.nowMs())
         guard semantics.durability == .durable || semantics.durability == .locked else { return }
         if let detected = SecretHeuristics.detectSecretLikeContent(content, metadata: metadata) {
             throw BrokerValidationError.invalid("Refusing to store durable memory containing secret-like content (\(detected))")
@@ -2826,7 +2829,7 @@ extension AgentBrokerService {
     func renderMemoryMarkdown(documents: [MemoryOrchestrator.CorpusSourceDocument]) -> String {
         var sections: [MemoryType: [String]] = [:]
         for document in documents {
-            let info = MemorySemantics.parse(metadata: document.metadata)
+            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
             guard info.durability == .durable || info.durability == .locked else { continue }
             let type = info.type
             let marker = marker(for: document, kind: .memory)

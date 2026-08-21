@@ -85,6 +85,18 @@ package struct FastRAGContextBuilder: Sendable {
             ? await wax.frameMetas(frameIds: sourceFrameIds)
             : [:]
 
+        // nowMs resolution order:
+        // 1. deterministicNowMs if explicitly set (always the case when called via MemoryOrchestrator.recall)
+        // 2. max frame timestamp — provides a stable, deterministic "now" for direct callers
+        //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
+        //    recency for stores where all frames are old relative to wall clock.
+        // Both values derive from store state, so tier selection and access-recency
+        // explanations stay deterministic; the zero fallback is unreachable whenever
+        // surrogate work or access stats exist.
+        let nowMs = clamped.deterministicNowMs
+            ?? sourceFrameMetasTask.values.map(\.timestamp).max()
+            ?? 0
+
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
             for result in rankedResults {
@@ -109,7 +121,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: nowMs
                             )
                         )
                     )
@@ -178,15 +191,6 @@ package struct FastRAGContextBuilder: Sendable {
 
             // Get only source frame metas needed for timestamp access.
             let frameMetaMap = sourceFrameMetasTask
-            // nowMs resolution order:
-            // 1. deterministicNowMs if explicitly set (always the case when called via MemoryOrchestrator.recall)
-            // 2. max frame timestamp — provides a stable, deterministic "now" for direct callers
-            //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
-            //    recency for stores where all frames are old relative to wall clock.
-            // 3. Wall clock — final fallback for empty frame sets.
-            let nowMs = clamped.deterministicNowMs
-                ?? frameMetaMap.values.map(\.timestamp).max()
-                ?? Int64(Date().timeIntervalSince1970 * 1000)
 
             // Parallel tier selection and tier extraction, preserving response order.
             let surrogateWorkItems = rankedResults
@@ -252,7 +256,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: nowMs
                             )
                         )
                     )
@@ -345,7 +350,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: nowMs
                             )
                         )
                     )
@@ -381,9 +387,10 @@ package struct FastRAGContextBuilder: Sendable {
     private func enrichedExplanations(
         _ existing: [String],
         frameId: UInt64,
-        accessStatsMap: [UInt64: FrameAccessStats]
+        accessStatsMap: [UInt64: FrameAccessStats],
+        nowMs: Int64
     ) -> [String] {
-        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId]).reasons
+        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: nowMs).reasons
         var seen = Set<String>()
         var combined: [String] = []
         for reason in existing + accessReasons {
