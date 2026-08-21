@@ -5,29 +5,34 @@ import Foundation
 import Security
 #endif
 
-// LicenseValidator is nonisolated — all access to mutable statics goes through `lock`.
-// Do NOT add @MainActor here; the MCP server runs on a non-main executor and calling
-// MainActor.run { } from a dispatchMain() context risks deadlocks.
+// LicenseValidator is nonisolated — mutable statics are serialized via NSLock.
+// Synchronization.Mutex is macOS 15+/iOS 18+; this package's floor is macOS 14
+// (`Package.swift` platforms). UserDefaults is not Sendable; it is only touched
+// inside the lock. Do NOT add @MainActor here; the MCP server runs on a non-main
+// executor and calling MainActor.run { } from a dispatchMain() context risks deadlocks.
 enum LicenseValidator {
-    private static let lock = NSLock()
+    private final class LockedState: @unchecked Sendable {
+        let lock = NSLock()
+        var trialDefaults: UserDefaults = .standard
+        var firstLaunchKey = "wax_first_launch"
+        var keychainEnabled = true
+    }
+
+    private static let locked = LockedState()
 
     // These are mutated only from tests; production code treats them as constants.
     static var trialDefaults: UserDefaults {
-        get { lock.withLock { _trialDefaults } }
-        set { lock.withLock { _trialDefaults = newValue } }
+        get { locked.lock.withLock { locked.trialDefaults } }
+        set { locked.lock.withLock { locked.trialDefaults = newValue } }
     }
     static var firstLaunchKey: String {
-        get { lock.withLock { _firstLaunchKey } }
-        set { lock.withLock { _firstLaunchKey = newValue } }
+        get { locked.lock.withLock { locked.firstLaunchKey } }
+        set { locked.lock.withLock { locked.firstLaunchKey = newValue } }
     }
     static var keychainEnabled: Bool {
-        get { lock.withLock { _keychainEnabled } }
-        set { lock.withLock { _keychainEnabled = newValue } }
+        get { locked.lock.withLock { locked.keychainEnabled } }
+        set { locked.lock.withLock { locked.keychainEnabled = newValue } }
     }
-
-    nonisolated(unsafe) private static var _trialDefaults: UserDefaults = .standard
-    nonisolated(unsafe) private static var _firstLaunchKey = "wax_first_launch"
-    nonisolated(unsafe) private static var _keychainEnabled = true
 
     private static let keyPattern = #"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"#
     private static let keyRegex = try? NSRegularExpression(pattern: keyPattern)

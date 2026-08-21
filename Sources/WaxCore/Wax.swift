@@ -1,4 +1,5 @@
 import Foundation
+#if DEBUG
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -22,6 +23,7 @@ private func posixKill(_ pid: Int32, _ signal: Int32) -> Int32 {
     Glibc.kill(pid, signal)
     #endif
 }
+#endif
 
 package struct WaxStats: Equatable, Sendable {
     package var frameCount: UInt64
@@ -1821,17 +1823,23 @@ package actor Wax {
         try await io.run {
             try file.writeAll(tocBytes, at: tocOffset)
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
+        #endif
 
         try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterFooterWriteBeforeFsync)
+        #endif
 
         try await io.run {
             try file.fsync()
         }
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterFooterFsyncBeforeHeader)
+        #endif
 
         header.footerOffset = footerOffset
         header.fileGeneration = footer.generation
@@ -1843,7 +1851,9 @@ package actor Wax {
         header.headerPageGeneration &+= 1
 
         try await writeHeaderPage(header)
+        #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterHeaderWriteBeforeFinalFsync)
+        #endif
         try await io.run {
             try file.fsync()
             wal.recordCheckpoint()
@@ -3005,6 +3015,7 @@ package actor Wax {
 
     // MARK: - Internal helpers
 
+#if DEBUG
     private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
         let env = ProcessInfo.processInfo.environment
         guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
@@ -3015,6 +3026,12 @@ package actor Wax {
         _ = posixKill(posixGetPID(), SIGKILL)
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
+#else
+    @inline(__always)
+    private static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
+        _ = checkpoint
+    }
+#endif
 
     private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {
         var snapshotPage = header
