@@ -488,9 +488,20 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     private var requestState: RequestState?
+    private var channelContext: ChannelHandlerContext?
 
     init(app: MCPHTTPApplication) {
         self.app = app
+    }
+
+    func handlerAdded(context: ChannelHandlerContext) {
+        channelContext = context
+    }
+
+    func handlerRemoved(context: ChannelHandlerContext) {
+        if channelContext === context {
+            channelContext = nil
+        }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -529,9 +540,18 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         case .end:
             guard let state = requestState else { return }
             requestState = nil
-            nonisolated(unsafe) let ctx = context
-            Task { @MainActor in
-                await self.handleRequest(state: state, context: ctx)
+            let version = state.head.version
+            let path = state.head.uri.split(separator: "?").first.map(String.init) ?? state.head.uri
+            let exceededBodyLimit = state.exceededBodyLimit
+            let request = makeHTTPRequest(from: state)
+            let eventLoop = context.eventLoop
+            Task {
+                let response = await self.completeRequest(
+                    path: path,
+                    exceededBodyLimit: exceededBodyLimit,
+                    request: request
+                )
+                await self.writeResponse(response, version: version, eventLoop: eventLoop)
             }
         }
     }
@@ -551,24 +571,22 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
     }
 
-    private func handleRequest(state: RequestState, context: ChannelHandlerContext) async {
-        let head = state.head
-        let path = head.uri.split(separator: "?").first.map(String.init) ?? head.uri
+    private func completeRequest(
+        path: String,
+        exceededBodyLimit: Bool,
+        request: HTTPRequest
+    ) async -> HTTPResponse {
         let endpoint = await app.endpoint
 
-        guard !state.exceededBodyLimit else {
-            await writeResponse(.error(statusCode: 413, .invalidRequest("Payload Too Large")), version: head.version, context: context)
-            return
+        if exceededBodyLimit {
+            return .error(statusCode: 413, .invalidRequest("Payload Too Large"))
         }
 
         guard path == endpoint else {
-            await writeResponse(.error(statusCode: 404, .invalidRequest("Not Found")), version: head.version, context: context)
-            return
+            return .error(statusCode: 404, .invalidRequest("Not Found"))
         }
 
-        let request = makeHTTPRequest(from: state)
-        let response = await app.handleHTTPRequest(request)
-        await writeResponse(response, version: head.version, context: context)
+        return await app.handleHTTPRequest(request)
     }
 
     private func makeHTTPRequest(from state: RequestState) -> HTTPRequest {
@@ -596,56 +614,93 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     private func writeResponse(
         _ response: HTTPResponse,
         version: HTTPVersion,
-        context: ChannelHandlerContext
+        eventLoop: EventLoop
     ) async {
-        nonisolated(unsafe) let ctx = context
-        let eventLoop = ctx.eventLoop
         let statusCode = response.statusCode
         let headers = response.headers
 
         switch response {
         case .stream(let stream, _):
-            eventLoop.execute {
-                var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
-                for (name, value) in headers {
-                    head.headers.add(name: name, value: value)
-                }
-                ctx.write(self.wrapOutboundOut(.head(head)), promise: nil)
-                ctx.flush()
+            await hop(eventLoop) {
+                self.writeHeadAndFlush(statusCode: statusCode, headers: headers, version: version)
             }
 
             do {
                 for try await chunk in stream {
-                    eventLoop.execute {
-                        var buffer = ctx.channel.allocator.buffer(capacity: chunk.count)
-                        buffer.writeBytes(chunk)
-                        ctx.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+                    await hop(eventLoop) {
+                        self.writeBodyChunk(chunk)
                     }
                 }
             } catch {
                 // Let the connection drain naturally.
             }
 
-            eventLoop.execute {
-                ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            await hop(eventLoop) {
+                self.writeEnd()
             }
 
         default:
             let bodyData = response.bodyData
-            eventLoop.execute {
-                var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
-                for (name, value) in headers {
-                    head.headers.add(name: name, value: value)
-                }
-                ctx.write(self.wrapOutboundOut(.head(head)), promise: nil)
-                if let body = bodyData {
-                    var buffer = ctx.channel.allocator.buffer(capacity: body.count)
-                    buffer.writeBytes(body)
-                    ctx.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
-                }
-                ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            await hop(eventLoop) {
+                self.writeCompleteResponse(
+                    statusCode: statusCode,
+                    headers: headers,
+                    version: version,
+                    bodyData: bodyData
+                )
             }
         }
+    }
+
+    private func hop(_ eventLoop: EventLoop, _ body: @escaping @Sendable () -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            eventLoop.execute {
+                body()
+                continuation.resume()
+            }
+        }
+    }
+
+    private func writeHeadAndFlush(statusCode: Int, headers: [String: String], version: HTTPVersion) {
+        guard let context = channelContext else { return }
+        var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
+        for (name, value) in headers {
+            head.headers.add(name: name, value: value)
+        }
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        context.flush()
+    }
+
+    private func writeBodyChunk(_ chunk: Data) {
+        guard let context = channelContext else { return }
+        var buffer = context.channel.allocator.buffer(capacity: chunk.count)
+        buffer.writeBytes(chunk)
+        context.writeAndFlush(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+    }
+
+    private func writeEnd() {
+        guard let context = channelContext else { return }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+    }
+
+    private func writeCompleteResponse(
+        statusCode: Int,
+        headers: [String: String],
+        version: HTTPVersion,
+        bodyData: Data?
+    ) {
+        guard let context = channelContext else { return }
+        var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
+        for (name, value) in headers {
+            head.headers.add(name: name, value: value)
+        }
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        if let body = bodyData {
+            var buffer = context.channel.allocator.buffer(capacity: body.count)
+            buffer.writeBytes(body)
+            context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+        }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
     }
 }
 #endif
