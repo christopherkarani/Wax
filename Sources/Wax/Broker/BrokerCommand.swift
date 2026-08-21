@@ -515,9 +515,15 @@ extension BrokerCommand.EntityUpsert {
 
 extension BrokerCommand.EntityResolve {
     package static func decode(_ args: BrokerArguments) throws -> Self {
-        Self(
+        let limit = try args.optionalInt("limit") ?? 10
+        guard (1...BrokerLimits.maxEntityResolveLimit).contains(limit) else {
+            throw BrokerValidationError.invalid(
+                "limit must be between 1 and \(BrokerLimits.maxEntityResolveLimit)"
+            )
+        }
+        return Self(
             alias: try args.requiredString("alias", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
-            limit: try args.optionalInt("limit") ?? 10
+            limit: limit
         )
     }
 }

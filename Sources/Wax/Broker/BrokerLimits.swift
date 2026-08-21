@@ -9,6 +9,7 @@ package enum BrokerLimits {
     package static let maxTopK = 200
     package static let maxRecallLimit = 100
     package static let maxGraphLimit = 500
+    package static let maxEntityResolveLimit = 100
     package static let maxGraphIdentifierBytes = 256
     package static let maxGraphKindBytes = 64
     package static let maxMemoryIDBytes = 512

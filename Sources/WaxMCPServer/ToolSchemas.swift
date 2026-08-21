@@ -924,7 +924,7 @@ enum ToolSchemas {
                 "type": "integer",
                 "description": "Maximum matches to return. Default: 10.",
                 "minimum": 1,
-                "maximum": 100,
+                "maximum": .int(BrokerLimits.maxEntityResolveLimit),
             ],
         ],
         required: ["alias"]
