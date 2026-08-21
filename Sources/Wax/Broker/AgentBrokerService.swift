@@ -173,6 +173,33 @@ package actor AgentBrokerService {
             case .handoffLatest(let command):
                 payload = try await handoffLatest(command)
                 shouldExit = false
+            case .memoryGet(let command):
+                payload = try await memoryGet(command)
+                shouldExit = false
+            case .memoryHealth:
+                payload = try await memoryHealth()
+                shouldExit = false
+            case .stats(let command):
+                payload = try await stats(command)
+                shouldExit = false
+            case .flush:
+                payload = try await flush()
+                shouldExit = false
+            case .markdownSync(let command):
+                payload = try await markdownSync(command)
+                shouldExit = false
+            case .entityUpsert(let command):
+                payload = try await entityUpsert(command)
+                shouldExit = false
+            case .entityResolve(let command):
+                payload = try await entityResolve(command)
+                shouldExit = false
+            case .factRetract(let command):
+                payload = try await factRetract(command)
+                shouldExit = false
+            case .shutdown:
+                payload = .object(["status": .string("ok")])
+                shouldExit = true
             case .passthrough(let command, let arguments):
                 (payload, shouldExit) = try await handlePassthrough(
                     command: command,
@@ -243,22 +270,14 @@ extension AgentBrokerService {
         arguments: [String: AgentBrokerValue]
     ) async throws -> (AgentBrokerValue, Bool) {
         switch command {
-        case "memory_get":
-            return (try await memoryGet(arguments: arguments), false)
         case "session_synthesize":
             return (try await sessionSynthesize(arguments: arguments), false)
         case "memory_promote":
             return (try await memoryPromote(arguments: arguments), false)
         case "promote":
             return (try await promote(arguments: arguments), false)
-        case "memory_health":
-            return (try await memoryHealth(), false)
         case "knowledge_capture":
             return (try await knowledgeCapture(arguments: arguments), false)
-        case "stats":
-            return (try await stats(arguments: arguments), false)
-        case "flush":
-            return (try await flush(), false)
         case "session_close":
             return (try await sessionClose(arguments: arguments), false)
         case "session_open":
@@ -267,22 +286,12 @@ extension AgentBrokerService {
             return (try await compactContext(arguments: arguments), false)
         case "markdown_export":
             return (try await markdownExport(arguments: arguments), false)
-        case "markdown_sync":
-            return (try await markdownSync(arguments: arguments), false)
-        case "entity_upsert":
-            return (try await entityUpsert(arguments: arguments), false)
         case "fact_assert":
             return (try await factAssert(arguments: arguments), false)
-        case "fact_retract":
-            return (try await factRetract(arguments: arguments), false)
         case "facts_query":
             return (try await factsQuery(arguments: arguments), false)
-        case "entity_resolve":
-            return (try await entityResolve(arguments: arguments), false)
         case "corpus_search":
             return (try await corpusSearch(arguments: arguments), false)
-        case "shutdown", "exit", "quit":
-            return (.object(["status": .string("ok")]), true)
         default:
             throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
         }
@@ -659,10 +668,8 @@ extension AgentBrokerService {
         ])
     }
 
-    func memoryGet(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let memoryID = try args.requiredString("memory_id", maxBytes: 512)
-        let reference = try parseMemoryReference(memoryID)
+    func memoryGet(_ command: BrokerCommand.MemoryGet) async throws -> AgentBrokerValue {
+        let reference = try parseMemoryReference(command.memoryID)
         let hit = try await layeredMemoryGet(reference: reference)
         return .object([
             "memory_id": .string(hit.reference),
@@ -926,13 +933,8 @@ extension AgentBrokerService {
         ])
     }
 
-    func stats() async throws -> AgentBrokerValue {
-        try await stats(arguments: [:])
-    }
-
-    func stats(arguments: [String: AgentBrokerValue] = [:]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let requestedSessionID = try parseOptionalSessionID(args)
+    func stats(_ command: BrokerCommand.Stats = .init(sessionID: nil)) async throws -> AgentBrokerValue {
+        let requestedSessionID = command.sessionID
         let stats = await longTermMemory.runtimeStats()
         let activeSessionIDs = activeSessions.keys.sorted { $0.uuidString < $1.uuidString }
         let diskBytes: UInt64 = {
@@ -1421,11 +1423,9 @@ extension AgentBrokerService {
         }
     }
 
-    func markdownSync(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let rootDir = try args.requiredString("root_dir", maxBytes: 4096)
-        let dryRun = try args.optionalBool("dry_run") ?? false
-        let rootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rootDir), isDirectory: true).standardizedFileURL
+    func markdownSync(_ command: BrokerCommand.MarkdownSync) async throws -> AgentBrokerValue {
+        let dryRun = command.dryRun
+        let rootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(command.rootDir), isDirectory: true).standardizedFileURL
         let report = try await syncMarkdownProjection(rootURL: rootURL, dryRun: dryRun)
         return .object([
             "status": .string("ok"),
@@ -1450,21 +1450,17 @@ extension AgentBrokerService {
         ])
     }
 
-    func entityUpsert(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let key = try args.requiredString("key", maxBytes: Self.maxGraphIdentifierBytes)
-        let kind = try args.requiredString("kind", maxBytes: Self.maxGraphKindBytes)
-        let aliases = try args.optionalStringArray("aliases") ?? []
+    func entityUpsert(_ command: BrokerCommand.EntityUpsert) async throws -> AgentBrokerValue {
         let entityID = try await longTermMemory.upsertEntity(
-            key: EntityKey(key),
-            kind: kind,
-            aliases: aliases,
+            key: EntityKey(command.key),
+            kind: command.kind,
+            aliases: command.aliases,
             commit: true
         )
         return .object([
             "status": .string("ok"),
             "entity_id": .from(entityID.rawValue),
-            "key": .string(key),
+            "key": .string(command.key),
             "committed": .bool(true),
         ])
     }
@@ -1494,15 +1490,16 @@ extension AgentBrokerService {
         ])
     }
 
-    func factRetract(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let factID = try args.requiredInt64("fact_id")
-        let atMs = try args.optionalInt64("at_ms")
-        try await longTermMemory.retractFact(factId: FactRowID(rawValue: factID), atMs: atMs, commit: true)
+    func factRetract(_ command: BrokerCommand.FactRetract) async throws -> AgentBrokerValue {
+        try await longTermMemory.retractFact(
+            factId: FactRowID(rawValue: command.factID),
+            atMs: command.atMs,
+            commit: true
+        )
         return .object([
             "status": .string("ok"),
-            "fact_id": .from(factID),
-            "at_ms": .from(atMs),
+            "fact_id": .from(command.factID),
+            "at_ms": .from(command.atMs),
             "committed": .bool(true),
         ])
     }
@@ -1555,11 +1552,11 @@ extension AgentBrokerService {
         ])
     }
 
-    func entityResolve(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let alias = try args.requiredString("alias", maxBytes: Self.maxGraphIdentifierBytes)
-        let limit = try args.optionalInt("limit") ?? 10
-        let matches = try await longTermMemory.resolveEntities(matchingAlias: alias, limit: limit)
+    func entityResolve(_ command: BrokerCommand.EntityResolve) async throws -> AgentBrokerValue {
+        let matches = try await longTermMemory.resolveEntities(
+            matchingAlias: command.alias,
+            limit: command.limit
+        )
         let entities: [AgentBrokerValue] = matches.map { match in
             .object([
                 "id": .from(match.id),

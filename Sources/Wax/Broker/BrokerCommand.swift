@@ -2,9 +2,9 @@ import Foundation
 
 /// Typed broker command decoded from the wire (`command` + `arguments`).
 ///
-/// Stage-1 covers high-traffic memory/session/handoff tools. Remaining commands
-/// decode as ``passthrough`` after surface allowlist validation so handlers can
-/// migrate incrementally without changing JSON wire shape.
+/// Migrated tools decode to associated payloads. Remaining commands decode as
+/// ``passthrough`` after surface allowlist validation so handlers can migrate
+/// incrementally without changing JSON wire shape.
 package enum BrokerCommand: Sendable, Equatable {
     case remember(Remember)
     case memoryAppend(Remember)
@@ -16,6 +16,16 @@ package enum BrokerCommand: Sendable, Equatable {
     case sessionEnd(SessionEnd)
     case handoff(Handoff)
     case handoffLatest(HandoffLatest)
+    case memoryGet(MemoryGet)
+    case memoryHealth
+    case stats(Stats)
+    case flush
+    case markdownSync(MarkdownSync)
+    case entityUpsert(EntityUpsert)
+    case entityResolve(EntityResolve)
+    case factRetract(FactRetract)
+    /// `shutdown` / `exit` / `quit` — same handler, exits the broker process.
+    case shutdown
     /// Known command not yet migrated to a typed payload.
     case passthrough(command: String, arguments: [String: AgentBrokerValue])
 
@@ -99,6 +109,35 @@ package enum BrokerCommand: Sendable, Equatable {
         package var project: String?
     }
 
+    package struct MemoryGet: Sendable, Equatable {
+        package var memoryID: String
+    }
+
+    package struct Stats: Sendable, Equatable {
+        package var sessionID: UUID?
+    }
+
+    package struct MarkdownSync: Sendable, Equatable {
+        package var rootDir: String
+        package var dryRun: Bool
+    }
+
+    package struct EntityUpsert: Sendable, Equatable {
+        package var key: String
+        package var kind: String
+        package var aliases: [String]
+    }
+
+    package struct EntityResolve: Sendable, Equatable {
+        package var alias: String
+        package var limit: Int
+    }
+
+    package struct FactRetract: Sendable, Equatable {
+        package var factID: Int64
+        package var atMs: Int64?
+    }
+
     /// Validates the argument surface and decodes a typed command (or passthrough).
     package static func decode(
         command rawCommand: String,
@@ -131,6 +170,24 @@ package enum BrokerCommand: Sendable, Equatable {
             return .handoff(try Handoff.decode(args))
         case "handoff_latest":
             return .handoffLatest(try HandoffLatest.decode(args))
+        case "memory_get":
+            return .memoryGet(try MemoryGet.decode(args))
+        case "memory_health":
+            return .memoryHealth
+        case "stats":
+            return .stats(try Stats.decode(args))
+        case "flush":
+            return .flush
+        case "markdown_sync":
+            return .markdownSync(try MarkdownSync.decode(args))
+        case "entity_upsert":
+            return .entityUpsert(try EntityUpsert.decode(args))
+        case "entity_resolve":
+            return .entityResolve(try EntityResolve.decode(args))
+        case "fact_retract":
+            return .factRetract(try FactRetract.decode(args))
+        case "shutdown", "exit", "quit":
+            return .shutdown
         default:
             return .passthrough(command: command, arguments: arguments)
         }
@@ -300,6 +357,55 @@ extension BrokerCommand.Handoff {
 extension BrokerCommand.HandoffLatest {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(project: try args.optionalString("project"))
+    }
+}
+
+extension BrokerCommand.MemoryGet {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(memoryID: try args.requiredString("memory_id", maxBytes: BrokerLimits.maxMemoryIDBytes))
+    }
+}
+
+extension BrokerCommand.Stats {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(sessionID: try BrokerCommand.parseOptionalSessionID(args))
+    }
+}
+
+extension BrokerCommand.MarkdownSync {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            rootDir: try args.requiredString("root_dir", maxBytes: BrokerLimits.maxPathBytes),
+            dryRun: try args.optionalBool("dry_run") ?? false
+        )
+    }
+}
+
+extension BrokerCommand.EntityUpsert {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            key: try args.requiredString("key", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
+            kind: try args.requiredString("kind", maxBytes: BrokerLimits.maxGraphKindBytes),
+            aliases: try args.optionalStringArray("aliases") ?? []
+        )
+    }
+}
+
+extension BrokerCommand.EntityResolve {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            alias: try args.requiredString("alias", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
+            limit: try args.optionalInt("limit") ?? 10
+        )
+    }
+}
+
+extension BrokerCommand.FactRetract {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            factID: try args.requiredInt64("fact_id"),
+            atMs: try args.optionalInt64("at_ms")
+        )
     }
 }
 

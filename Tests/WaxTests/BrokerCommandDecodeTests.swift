@@ -180,14 +180,99 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func stage2aEmptyArgCommandsDecode() throws {
+        #expect(try BrokerCommand.decode(command: "flush", arguments: [:]) == .flush)
+        #expect(try BrokerCommand.decode(command: "memory_health", arguments: [:]) == .memoryHealth)
+        #expect(try BrokerCommand.decode(command: "shutdown", arguments: [:]) == .shutdown)
+        #expect(try BrokerCommand.decode(command: "exit", arguments: [:]) == .shutdown)
+        #expect(try BrokerCommand.decode(command: "quit", arguments: [:]) == .shutdown)
+    }
+
+    @Test
+    func stage2aStatsAndMemoryGetDecode() throws {
+        let stats = try BrokerCommand.decode(
+            command: "stats",
+            arguments: ["session_id": .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")]
+        )
+        guard case .stats(let payload) = stats else {
+            Issue.record("expected stats")
+            return
+        }
+        #expect(payload.sessionID == UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+
+        let get = try BrokerCommand.decode(
+            command: "memory_get",
+            arguments: ["memory_id": .string("durable:42")]
+        )
+        guard case .memoryGet(let memoryGet) = get else {
+            Issue.record("expected memory_get")
+            return
+        }
+        #expect(memoryGet.memoryID == "durable:42")
+    }
+
+    @Test
+    func stage2aGraphAndMarkdownSyncDecode() throws {
+        let upsert = try BrokerCommand.decode(
+            command: "entity_upsert",
+            arguments: [
+                "key": .string("project:wax"),
+                "kind": .string("project"),
+                "aliases": .array([.string("Wax")]),
+            ]
+        )
+        guard case .entityUpsert(let entity) = upsert else {
+            Issue.record("expected entity_upsert")
+            return
+        }
+        #expect(entity.key == "project:wax")
+        #expect(entity.aliases == ["Wax"])
+
+        let resolve = try BrokerCommand.decode(
+            command: "entity_resolve",
+            arguments: ["alias": .string("Wax")]
+        )
+        guard case .entityResolve(let match) = resolve else {
+            Issue.record("expected entity_resolve")
+            return
+        }
+        #expect(match.alias == "Wax")
+        #expect(match.limit == 10)
+
+        let retract = try BrokerCommand.decode(
+            command: "fact_retract",
+            arguments: ["fact_id": .int(9), "at_ms": .int(100)]
+        )
+        guard case .factRetract(let fact) = retract else {
+            Issue.record("expected fact_retract")
+            return
+        }
+        #expect(fact.factID == 9)
+        #expect(fact.atMs == 100)
+
+        let sync = try BrokerCommand.decode(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string("/tmp/proj"), "dry_run": .bool(true)]
+        )
+        guard case .markdownSync(let markdown) = sync else {
+            Issue.record("expected markdown_sync")
+            return
+        }
+        #expect(markdown.rootDir == "/tmp/proj")
+        #expect(markdown.dryRun)
+    }
+
+    @Test
     func unmigratedCommandsPassthroughAfterSurfaceValidation() throws {
-        let decoded = try BrokerCommand.decode(command: "stats", arguments: [:])
+        let decoded = try BrokerCommand.decode(command: "corpus_search", arguments: [
+            "query": .string("hello"),
+        ])
         guard case .passthrough(let command, let arguments) = decoded else {
             Issue.record("expected passthrough")
             return
         }
-        #expect(command == "stats")
-        #expect(arguments.isEmpty)
+        #expect(command == "corpus_search")
+        #expect(arguments["query"] == .string("hello"))
     }
 
     @Test
