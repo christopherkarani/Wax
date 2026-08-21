@@ -221,11 +221,15 @@ package actor AgentBrokerService {
             case .factsQuery(let command):
                 payload = try await factsQuery(command)
                 shouldExit = false
-            case .passthrough(let command, let arguments):
-                (payload, shouldExit) = try await handlePassthrough(
-                    command: command,
-                    arguments: arguments
-                )
+            case .memoryPromote(let command), .promote(let command):
+                payload = try await memoryPromote(command)
+                shouldExit = false
+            case .factAssert(let command):
+                payload = try await factAssert(command)
+                shouldExit = false
+            case .corpusSearch(let command):
+                payload = try await corpusSearch(command)
+                shouldExit = false
             }
 
             return AgentBrokerResponse(
@@ -284,24 +288,6 @@ extension AgentBrokerService {
         var dailyNotePaths: [String]
         var dreamsPath: String?
         var handoffSummaryPath: String?
-    }
-
-    func handlePassthrough(
-        command: String,
-        arguments: [String: AgentBrokerValue]
-    ) async throws -> (AgentBrokerValue, Bool) {
-        switch command {
-        case "memory_promote":
-            return (try await memoryPromote(arguments: arguments), false)
-        case "promote":
-            return (try await promote(arguments: arguments), false)
-        case "fact_assert":
-            return (try await factAssert(arguments: arguments), false)
-        case "corpus_search":
-            return (try await corpusSearch(arguments: arguments), false)
-        default:
-            throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
-        }
     }
 
     func remember(_ command: BrokerCommand.Remember) async throws -> AgentBrokerValue {
@@ -729,16 +715,19 @@ extension AgentBrokerService {
         ])
     }
 
-    func memoryPromote(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let sessionID = try parseOptionalSessionID(args)
+    func memoryPromote(_ command: BrokerCommand.MemoryPromote) async throws -> AgentBrokerValue {
+        let sessionID = command.sessionID
         try await validateActiveSession(sessionID)
-        let approve = try args.optionalBool("approve") ?? false
-        let requestedSourceFrameId = try args.optionalUInt64("frame_id")
-        let explicitContent = try args.optionalStringPreservingWhitespace("content")
-        let writeSemantics = try parseWriteSemantics(args)
+        let approve = command.approve
+        let requestedSourceFrameId = command.frameID
+        let explicitContent = command.content
+        let writeSemantics = command.writeSemantics
         let longTermDocuments = try await longTermMemory.corpusSourceDocuments()
-        let settings = try parsePromotionSettings(args)
+        let settings = BrokerPromotionSettings(
+            minimumConfidence: command.minimumConfidence ?? promotionSettings.minimumConfidence,
+            minimumRecallCount: command.minimumRecallCount ?? promotionSettings.minimumRecallCount,
+            maxCandidates: command.maxCandidates ?? promotionSettings.maxCandidates
+        )
 
         let content: String
         var sourceMetadata: [String: String] = [:]
@@ -768,12 +757,12 @@ extension AgentBrokerService {
             sourceFrameId = sourceDocument.frameId
         }
 
-        let baseMetadata = try coerceMetadata(try args.optionalObject("metadata")).merging(sourceMetadata) { current, _ in current }
+        let baseMetadata = command.metadata.merging(sourceMetadata) { current, _ in current }
         var normalizedMetadata = MemorySemantics.normalizeWriteMetadata(
             metadata: baseMetadata,
             semantics: writeSemantics,
             sessionID: nil,
-            inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: try args.optionalString("cwd"))
+            inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd)
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
@@ -833,14 +822,6 @@ extension AgentBrokerService {
             "metadata": .object(normalizedMetadata.mapValues(AgentBrokerValue.string)),
             "display_text": .string(proposal.summary),
         ])
-    }
-
-    func promote(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        var normalized = arguments
-        if normalized["approve"] == nil {
-            normalized["approve"] = .bool(true)
-        }
-        return try await memoryPromote(arguments: normalized)
     }
 
     func memoryHealth() async throws -> AgentBrokerValue {
@@ -1450,20 +1431,15 @@ extension AgentBrokerService {
         ])
     }
 
-    func factAssert(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let subject = try args.requiredString("subject", maxBytes: Self.maxGraphIdentifierBytes)
-        let predicate = try args.requiredString("predicate", maxBytes: Self.maxGraphIdentifierBytes)
-        let objectValue = try args.requiredValue("object")
-        let relation = try parseVersionRelation(try args.optionalString("relation") ?? "sets")
-        let evidence = try parseStructuredEvidence(args.optionalValue("evidence"))
+    func factAssert(_ command: BrokerCommand.FactAssert) async throws -> AgentBrokerValue {
+        let evidence = try parseStructuredEvidence(command.evidence)
         let factID = try await longTermMemory.assertFact(
-            subject: EntityKey(subject),
-            predicate: PredicateKey(predicate),
-            object: try parseFactValue(objectValue),
-            relation: relation,
-            validFromMs: try args.optionalInt64("valid_from"),
-            validToMs: try args.optionalInt64("valid_to"),
+            subject: EntityKey(command.subject),
+            predicate: PredicateKey(command.predicate),
+            object: try parseFactValue(command.object),
+            relation: try parseVersionRelation(command.relation),
+            validFromMs: command.validFromMs,
+            validToMs: command.validToMs,
             evidence: evidence,
             commit: true
         )
@@ -1551,17 +1527,12 @@ extension AgentBrokerService {
         ])
     }
 
-    func corpusSearch(arguments: [String: AgentBrokerValue]) async throws -> AgentBrokerValue {
-        let args = BrokerArguments(arguments)
-        let query = try requireNonEmptyQuery(args)
-        let recursive = try args.optionalBool("recursive") ?? true
-        let rebuild = try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild
-        let modeRaw = try args.optionalString("mode")?.lowercased()
-        let mode = try parseSearchMode(modeRaw: modeRaw, alpha: try args.optionalDouble("alpha"))
-        let topK = try args.optionalInt("topK") ?? 10
-        guard (1...Self.maxTopK).contains(topK) else {
-            throw BrokerValidationError.invalid("topK must be between 1 and \(Self.maxTopK)")
-        }
+    func corpusSearch(_ command: BrokerCommand.CorpusSearch) async throws -> AgentBrokerValue {
+        let query = command.query
+        let recursive = command.recursive
+        let rebuild = command.rebuild
+        let mode = command.mode
+        let topK = command.topK
         let corpusNoEmbedder: Bool = switch mode {
         case .textOnly: true
         case .vectorOnly: false
