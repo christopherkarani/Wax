@@ -2,9 +2,8 @@ import Foundation
 
 /// Typed broker command decoded from the wire (`command` + `arguments`).
 ///
-/// Migrated tools decode to associated payloads. Remaining commands decode as
-/// ``passthrough`` after surface allowlist validation so handlers can migrate
-/// incrementally without changing JSON wire shape.
+/// Decode is the single validation + parse boundary. Handlers take typed
+/// payloads and do not re-parse argument bags.
 package enum BrokerCommand: Sendable, Equatable {
     case remember(Remember)
     case memoryAppend(Remember)
@@ -33,8 +32,10 @@ package enum BrokerCommand: Sendable, Equatable {
     case compactContext(CompactContext)
     case markdownExport(MarkdownExport)
     case factsQuery(FactsQuery)
-    /// Known command not yet migrated to a typed payload.
-    case passthrough(command: String, arguments: [String: AgentBrokerValue])
+    case memoryPromote(MemoryPromote)
+    case promote(MemoryPromote)
+    case factAssert(FactAssert)
+    case corpusSearch(CorpusSearch)
 
     package enum RememberWriteScope: String, Sendable, Equatable {
         case session
@@ -206,7 +207,38 @@ package enum BrokerCommand: Sendable, Equatable {
         package var limit: Int
     }
 
-    /// Validates the argument surface and decodes a typed command (or passthrough).
+    package struct MemoryPromote: Sendable, Equatable {
+        package var sessionID: UUID?
+        package var approve: Bool
+        package var frameID: UInt64?
+        package var content: String?
+        package var metadata: [String: String]
+        package var writeSemantics: MemoryWriteSemantics
+        package var cwd: String?
+        package var minimumConfidence: Float?
+        package var minimumRecallCount: Int?
+        package var maxCandidates: Int?
+    }
+
+    package struct FactAssert: Sendable, Equatable {
+        package var subject: String
+        package var predicate: String
+        package var object: AgentBrokerValue
+        package var relation: String
+        package var validFromMs: Int64?
+        package var validToMs: Int64?
+        package var evidence: AgentBrokerValue?
+    }
+
+    package struct CorpusSearch: Sendable, Equatable {
+        package var query: String
+        package var recursive: Bool
+        package var rebuild: Bool
+        package var mode: RetrievalMode
+        package var topK: Int
+    }
+
+    /// Validates the argument surface and decodes a typed command.
     package static func decode(
         command rawCommand: String,
         arguments: [String: AgentBrokerValue]
@@ -270,8 +302,16 @@ package enum BrokerCommand: Sendable, Equatable {
             return .markdownExport(try MarkdownExport.decode(args))
         case "facts_query":
             return .factsQuery(try FactsQuery.decode(args))
+        case "memory_promote":
+            return .memoryPromote(try MemoryPromote.decode(args, defaultApprove: false))
+        case "promote":
+            return .promote(try MemoryPromote.decode(args, defaultApprove: true))
+        case "fact_assert":
+            return .factAssert(try FactAssert.decode(args))
+        case "corpus_search":
+            return .corpusSearch(try CorpusSearch.decode(args))
         default:
-            return .passthrough(command: command, arguments: arguments)
+            throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
         }
     }
 }
@@ -612,6 +652,61 @@ extension BrokerCommand.FactsQuery {
             systemAsOfMs: try args.optionalInt64("system_as_of"),
             validAsOfMs: try args.optionalInt64("valid_as_of"),
             limit: limit
+        )
+    }
+}
+
+
+extension BrokerCommand.MemoryPromote {
+    package static func decode(_ args: BrokerArguments, defaultApprove: Bool) throws -> Self {
+        let maxCandidates = try args.optionalInt("max_candidates").map {
+            min(max(1, $0), BrokerPromotionSettings.maxCandidateLimit)
+        }
+        return Self(
+            sessionID: try BrokerCommand.parseOptionalSessionID(args),
+            approve: try args.optionalBool("approve") ?? defaultApprove,
+            frameID: try args.optionalUInt64("frame_id"),
+            content: try args.optionalStringPreservingWhitespace("content"),
+            metadata: try BrokerCommand.coerceMetadata(try args.optionalObject("metadata")),
+            writeSemantics: try BrokerCommand.parseWriteSemantics(args),
+            cwd: try args.optionalString("cwd"),
+            minimumConfidence: try args.optionalFloat("minimum_confidence").map { min(max($0, 0), 1) },
+            minimumRecallCount: try args.optionalInt("minimum_recall_count").map { max(0, $0) },
+            maxCandidates: maxCandidates
+        )
+    }
+}
+
+extension BrokerCommand.FactAssert {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        Self(
+            subject: try args.requiredString("subject", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
+            predicate: try args.requiredString("predicate", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
+            object: try args.requiredValue("object"),
+            relation: try args.optionalString("relation") ?? "sets",
+            validFromMs: try args.optionalInt64("valid_from"),
+            validToMs: try args.optionalInt64("valid_to"),
+            evidence: try args.optionalValue("evidence")
+        )
+    }
+}
+
+extension BrokerCommand.CorpusSearch {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let topK = try args.optionalInt("topK") ?? 10
+        guard (1...BrokerLimits.maxTopK).contains(topK) else {
+            throw BrokerValidationError.invalid("topK must be between 1 and \(BrokerLimits.maxTopK)")
+        }
+        let modeRaw = try args.optionalString("mode")?.lowercased()
+        return Self(
+            query: try BrokerCommand.requireNonEmptyQuery(args),
+            recursive: try args.optionalBool("recursive") ?? true,
+            rebuild: try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild,
+            mode: try BrokerCommand.parseSearchMode(
+                modeRaw: modeRaw,
+                alpha: try args.optionalDouble("alpha")
+            ),
+            topK: topK
         )
     }
 }
