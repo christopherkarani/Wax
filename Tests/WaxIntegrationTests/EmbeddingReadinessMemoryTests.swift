@@ -242,39 +242,48 @@ func memoryAutomaticWaitTimeoutThenLiveAttaches() async throws {
         var config = OrchestratorConfig.default
         config.requireOnDeviceProviders = false
         let options = BuiltInEmbeddingProviderOptions(timeoutSeconds: 0.04)
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
         let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
             request: .automatic(.miniLM, options),
-            readiness: readiness
-        ) {
-            await gate.wait()
-            return DeterministicTextEmbedder()
-        }
+            readiness: readiness,
+            factoryOverride: factory
+        )
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        var sawUnavailable = false
-        while ContinuousClock.now < deadline {
-            if case .unavailable = await orchestrator.runtimeStats().embeddingStatus {
-                sawUnavailable = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
+        let timedOut = await readinessSession.waitUntilSettled()
+        guard case .unavailable = timedOut else {
+            try await orchestrator.close()
+            Issue.record("expected automatic readiness timeout, got \(timedOut)")
+            return
         }
-        #expect(sawUnavailable)
 
         await gate.open()
-        let attachDeadline = ContinuousClock.now + .seconds(1)
-        while ContinuousClock.now < attachDeadline {
-            switch await orchestrator.runtimeStats().embeddingStatus {
-            case .active, .degraded:
-                try await orchestrator.close()
-                return
-            default:
-                try await Task.sleep(for: .milliseconds(10))
-            }
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await orchestrator.close()
+            Issue.record("expected automatic compile to succeed after timeout, got \(compileResult)")
+            return
         }
-        Issue.record("expected live-attach after automatic wait timeout")
+
+        try await orchestrator.waitUntilReadyForRemember()
+        let attached = await orchestrator.runtimeStats().embeddingStatus
+        guard case .active = attached else {
+            try await orchestrator.close()
+            Issue.record("expected live-attach after automatic wait timeout, got \(attached)")
+            return
+        }
         try await orchestrator.close()
     }
 }
