@@ -91,13 +91,12 @@ package struct FastRAGContextBuilder: Sendable {
         //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
         //    recency for stores where all frames are old relative to wall clock.
         // Both values derive from store state, so tier selection and access-recency
-        // explanations stay deterministic. The zero fallback is reachable only for
-        // direct callers that set neither deterministicNowMs nor prefetchable frame
-        // metas (production always sets deterministicNowMs via ragConfigForRecall);
-        // accessReasons clamps negative ages to zero in that case.
+        // explanations stay deterministic. When neither source exists, nowMs stays nil:
+        // unknown-now produces no access-recency signal (access-reason enrichment is
+        // skipped) instead of a maximal "recently used" signal from a zero sentinel,
+        // and surrogate tiers keep full fidelity rather than a fabricated zero age.
         let nowMs = clamped.deterministicNowMs
             ?? sourceFrameMetasTask.values.map(\.timestamp).max()
-            ?? 0
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
@@ -213,15 +212,20 @@ package struct FastRAGContextBuilder: Sendable {
                     group.addTask {
                         guard let data = surrogateContents[item.surrogateFrameId] else { return (index, nil) }
 
-                        let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
-                        let context = TierSelectionContext(
-                            frameTimestamp: frameTimestamp,
-                            accessStats: accessStatsMap[item.result.frameId],
-                            querySignals: querySignals,
-                            nowMs: nowMs
-                        )
-
-                        let selectedTier = tierSelector.selectTier(context: context)
+                        let selectedTier: SurrogateTier
+                        if let nowMs {
+                            let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
+                            let context = TierSelectionContext(
+                                frameTimestamp: frameTimestamp,
+                                accessStats: accessStatsMap[item.result.frameId],
+                                querySignals: querySignals,
+                                nowMs: nowMs
+                            )
+                            selectedTier = tierSelector.selectTier(context: context)
+                        } else {
+                            // Unknown "now": no age/recency basis for compression.
+                            selectedTier = .full
+                        }
                         guard let text = SurrogateTierSelector.extractTier(from: data, tier: selectedTier),
                               !text.isEmpty else { return (index, nil) }
 
@@ -390,9 +394,13 @@ package struct FastRAGContextBuilder: Sendable {
         _ existing: [String],
         frameId: UInt64,
         accessStatsMap: [UInt64: FrameAccessStats],
-        nowMs: Int64
+        nowMs: Int64?
     ) -> [String] {
-        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: nowMs).reasons
+        // Unknown "now" skips access-reason enrichment: a zero sentinel would mark
+        // every frame with access stats as "recently used".
+        let accessReasons = nowMs.map {
+            MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: $0).reasons
+        } ?? []
         var seen = Set<String>()
         var combined: [String] = []
         for reason in existing + accessReasons {
