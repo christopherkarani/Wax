@@ -19,6 +19,11 @@ private struct TestingError: Error, CustomStringConvertible {
     var description: String { message }
 }
 
+private struct MiniLMModelMetadata: Decodable {
+    let storagePrecision: String
+    let computePrecision: String
+}
+
 private enum BaselineFixtureLoader {
     static func url() throws -> URL {
         guard let url = Bundle.module.url(forResource: "minilm_baseline_embeddings", withExtension: "json") else {
@@ -49,6 +54,15 @@ private enum MiniLMAssetLoader {
             encoding: .utf8
         )
     }
+
+    static func metadata() throws -> MiniLMModelMetadata {
+        let data = try Data(contentsOf: modelDirectory().appendingPathComponent("metadata.json"))
+        let entries = try JSONDecoder().decode([MiniLMModelMetadata].self, from: data)
+        guard let metadata = entries.first else {
+            throw TestingError("Missing MiniLM model metadata")
+        }
+        return metadata
+    }
 }
 
 private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
@@ -70,6 +84,11 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
 
 @Test func minilmBundledModelDoesNotUseKnownBadW8A8Quantization() throws {
     let mil = try MiniLMAssetLoader.modelMIL()
+    let metadata = try MiniLMAssetLoader.metadata()
+
+    #expect(metadata.storagePrecision.contains("Float32"))
+    #expect(metadata.computePrecision.contains("Float32"))
+    #expect(!metadata.computePrecision.contains("Float16"))
 
     #expect(
         !mil.contains("constexpr_blockwise_shift_scale"),
