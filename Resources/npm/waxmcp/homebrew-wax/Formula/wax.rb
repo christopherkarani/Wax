@@ -14,11 +14,6 @@ class Wax < Formula
     # validation succeeds.
     mkdir_p "Tests/WaxTests"
 
-    # CoreML on-device ANE compilation can hang in CLI contexts; default to CPU-only for reliability.
-    inreplace "Sources/WaxVectorSearchMiniLM/MiniLMEmbedder.swift",
-      "computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]",
-      "computeUnitsOrder: [MLComputeUnits] = [.cpuOnly]"
-
     system "swift", "build", "--disable-sandbox", "-c", "release",
            "--product", "wax-cli", "--traits", "default,MCPServer"
     system "swift", "build", "--disable-sandbox", "-c", "release",
