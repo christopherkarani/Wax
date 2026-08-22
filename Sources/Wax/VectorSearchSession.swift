@@ -136,26 +136,45 @@ package actor WaxVectorSearchSession {
     }
 
     package func stageForCommit() async throws {
-        let snapshot = await wax.pendingEmbeddingMutations(since: lastPendingEmbeddingSequence)
+        lastPendingEmbeddingSequence = try await Self.syncPendingEmbeddings(
+            wax: wax,
+            into: concreteEngine,
+            watermark: lastPendingEmbeddingSequence,
+            removedFrameIds: pendingRemovedFrameIds
+        )
+        try await stageEngineForCommit()
+        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
+    }
+
+    /// Single owner of vector-index watermark advance + ghost-frame removal bookkeeping,
+    /// shared by ``WaxVectorSearchSession`` and ``WaxSession``.
+    ///
+    /// Syncs pending embeddings into `engine` since `watermark` (replaying the full log when
+    /// the store rolled back), then re-applies `removedFrameIds` so pending putEmbedding cannot
+    /// resurrect deleted frames. Returns the advanced watermark; on throw no caller state moves.
+    /// Callers re-stage the engine themselves and clear their ghost set only after success.
+    static func syncPendingEmbeddings(
+        wax: Wax,
+        into engine: LoadedVectorSearchEngine,
+        watermark: UInt64?,
+        removedFrameIds: Set<UInt64> = []
+    ) async throws -> UInt64? {
+        var snapshot = await wax.pendingEmbeddingMutations(since: watermark)
         if let latest = snapshot.latestSequence,
-           let last = lastPendingEmbeddingSequence,
+           let last = watermark,
            latest < last {
-            lastPendingEmbeddingSequence = nil
+            snapshot = await wax.pendingEmbeddingMutations(since: nil)
         }
         if !snapshot.embeddings.isEmpty {
-            try await addBatchToEngine(
+            try await engine.addBatch(
                 frameIds: snapshot.embeddings.map(\.frameId),
                 vectors: snapshot.embeddings.map(\.vector)
             )
         }
-        if !pendingRemovedFrameIds.isEmpty {
-            for frameId in pendingRemovedFrameIds {
-                try await removeFromEngine(frameId: frameId)
-            }
+        for frameId in removedFrameIds {
+            try await engine.remove(frameId: frameId)
         }
-        lastPendingEmbeddingSequence = snapshot.latestSequence
-        try await stageEngineForCommit()
-        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
+        return snapshot.latestSequence
     }
 
     private func addToEngine(frameId: UInt64, vector: [Float]) async throws {

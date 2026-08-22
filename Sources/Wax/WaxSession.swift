@@ -53,7 +53,6 @@ package actor WaxSession {
     private var concreteVectorEngine: ConcreteVectorEngine?
     private var lastPendingEmbeddingSequence: UInt64?
     /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
-    /// Mirrors ``WaxVectorSearchSession`` so pending putEmbedding + remove does not re-stage ghosts.
     private var pendingRemovedFrameIds: Set<UInt64> = []
     private var writerLeaseId: UUID?
     private var isClosed = false
@@ -511,15 +510,12 @@ package actor WaxSession {
     }
 
     private func stageVectorForCommit(using engine: ConcreteVectorEngine) async throws {
-        try await syncPendingEmbeddings(into: engine)
-        // Re-apply removes after sync so pending embeddings cannot resurrect deleted frameIds.
-        // Clear only after a successful stage so a failed stage can re-apply on the next attempt
-        // (mirrors ``WaxVectorSearchSession.stageForCommit``).
-        if !pendingRemovedFrameIds.isEmpty {
-            for frameId in pendingRemovedFrameIds {
-                try await engine.remove(frameId: frameId)
-            }
-        }
+        lastPendingEmbeddingSequence = try await WaxVectorSearchSession.syncPendingEmbeddings(
+            wax: wax,
+            into: engine,
+            watermark: lastPendingEmbeddingSequence,
+            removedFrameIds: pendingRemovedFrameIds
+        )
         try await engine.stageForCommit(into: wax)
         pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
@@ -540,31 +536,12 @@ package actor WaxSession {
             return vectorEngine
         }
 
-        try await syncPendingEmbeddings(into: concreteVectorEngine)
+        lastPendingEmbeddingSequence = try await WaxVectorSearchSession.syncPendingEmbeddings(
+            wax: wax,
+            into: concreteVectorEngine,
+            watermark: lastPendingEmbeddingSequence
+        )
         return concreteVectorEngine.erased
-    }
-
-    private func syncPendingEmbeddings(into engine: ConcreteVectorEngine) async throws {
-        var sinceSequence = lastPendingEmbeddingSequence
-        var snapshot = await wax.pendingEmbeddingMutations(since: sinceSequence)
-        if let latest = snapshot.latestSequence,
-           let last = sinceSequence,
-           latest < last {
-            sinceSequence = nil
-            snapshot = await wax.pendingEmbeddingMutations(since: nil)
-        }
-        if !snapshot.embeddings.isEmpty {
-            var frameIds: [UInt64] = []
-            var vectors: [[Float]] = []
-            frameIds.reserveCapacity(snapshot.embeddings.count)
-            vectors.reserveCapacity(snapshot.embeddings.count)
-            for embedding in snapshot.embeddings {
-                frameIds.append(embedding.frameId)
-                vectors.append(embedding.vector)
-            }
-            try await engine.addBatch(frameIds: frameIds, vectors: vectors)
-        }
-        lastPendingEmbeddingSequence = snapshot.latestSequence
     }
 
     private static func resolveVectorDimensions(for wax: Wax, config: Config) async throws -> Int? {
