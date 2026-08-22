@@ -27,6 +27,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select release Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
       - name: Run Production Gate
         run: |
           bash Resources/scripts/quality/production_readiness_gates.sh ${{ matrix.mode }}
