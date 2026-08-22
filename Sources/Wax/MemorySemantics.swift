@@ -165,7 +165,7 @@ package enum MemorySemantics {
         semantics: MemoryWriteSemantics,
         sessionID: UUID?,
         inferredScope: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> [String: String] {
         var normalized = metadata
         let resolvedType = semantics.type ?? defaultMemoryType(sessionID: sessionID, existing: metadata)
@@ -222,7 +222,7 @@ package enum MemorySemantics {
         return approved
     }
 
-    package static func parse(metadata: [String: String], nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) -> MemorySemanticInfo {
+    package static func parse(metadata: [String: String], nowMs: Int64) -> MemorySemanticInfo {
         let type = MemoryType(rawValue: metadata[MemoryMetadataKeys.type] ?? "") ?? .note
         let durability = MemoryDurability(rawValue: metadata[MemoryMetadataKeys.durability] ?? "") ?? defaultDurability(for: type)
         let createdAtMs = metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init)
@@ -245,7 +245,7 @@ package enum MemorySemantics {
     package static func rankingReasons(
         metadata: [String: String],
         scope: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> (adjustment: Float, reasons: [String]) {
         let info = parse(metadata: metadata, nowMs: nowMs)
         if info.isExpired {
@@ -348,7 +348,7 @@ package enum MemorySemantics {
 
     package static func accessReasons(
         stats: FrameAccessStats?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> (adjustment: Float, reasons: [String]) {
         guard let stats else { return (0, []) }
         var adjustment: Float = 0

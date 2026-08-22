@@ -18,7 +18,7 @@ package struct TierSelectionContext: Sendable {
         frameTimestamp: Int64,
         accessStats: FrameAccessStats? = nil,
         querySignals: QuerySignals? = nil,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) {
         self.frameTimestamp = frameTimestamp
         self.accessStats = accessStats

@@ -14,14 +14,14 @@ package struct FrameAccessStats: Sendable, Equatable, Codable {
     /// First access timestamp (milliseconds since epoch)
     package var firstAccessMs: Int64
     
-    package init(frameId: UInt64, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+    package init(frameId: UInt64, nowMs: Int64) {
         self.frameId = frameId
         self.accessCount = 1
         self.lastAccessMs = nowMs
         self.firstAccessMs = nowMs
     }
-    
-    package mutating func recordAccess(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+
+    package mutating func recordAccess(nowMs: Int64) {
         // Use saturating addition to prevent overflow
         accessCount = accessCount.addingReportingOverflow(1).partialValue
         lastAccessMs = nowMs
@@ -32,12 +32,11 @@ package struct FrameAccessStats: Sendable, Equatable, Codable {
 package actor AccessStatsManager {
     private var stats: [UInt64: FrameAccessStats] = [:]
     private var dirty = false
-    
+
     package init() {}
-    
+
     /// Record a single frame access.
-    package func recordAccess(frameId: UInt64) {
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    package func recordAccess(frameId: UInt64, nowMs: Int64) {
         if var existing = stats[frameId] {
             existing.recordAccess(nowMs: nowMs)
             stats[frameId] = existing
@@ -46,11 +45,10 @@ package actor AccessStatsManager {
         }
         dirty = true
     }
-    
+
     /// Record accesses for multiple frames at once.
-    package func recordAccesses(frameIds: [UInt64]) {
+    package func recordAccesses(frameIds: [UInt64], nowMs: Int64) {
         guard !frameIds.isEmpty else { return }
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         for frameId in frameIds {
             if var existing = stats[frameId] {
                 existing.recordAccess(nowMs: nowMs)

@@ -15,7 +15,7 @@ import Testing
 
 @Test func accessStatsManagerRecordAndGetSingle() async {
     let manager = AccessStatsManager()
-    await manager.recordAccess(frameId: 42)
+    await manager.recordAccess(frameId: 42, nowMs: 1000)
 
     let stats = await manager.getStats(frameId: 42)
     #expect(stats != nil)
@@ -25,7 +25,7 @@ import Testing
 
 @Test func accessStatsManagerRecordMultiple() async {
     let manager = AccessStatsManager()
-    await manager.recordAccesses(frameIds: [1, 2, 3])
+    await manager.recordAccesses(frameIds: [1, 2, 3], nowMs: 1000)
 
     let batch = await manager.getStats(frameIds: [1, 2, 3, 99])
     #expect(batch.count == 3)
@@ -35,7 +35,7 @@ import Testing
 
 @Test func accessStatsManagerRecordAccessesSameFrameTwice() async {
     let manager = AccessStatsManager()
-    await manager.recordAccesses(frameIds: [1, 1, 1])
+    await manager.recordAccesses(frameIds: [1, 1, 1], nowMs: 1000)
 
     let stats = await manager.getStats(frameId: 1)
     #expect(stats?.accessCount == 3)
@@ -43,7 +43,7 @@ import Testing
 
 @Test func accessStatsManagerPruneStats() async {
     let manager = AccessStatsManager()
-    await manager.recordAccesses(frameIds: [1, 2, 3, 4])
+    await manager.recordAccesses(frameIds: [1, 2, 3, 4], nowMs: 1000)
 
     await manager.pruneStats(keepingOnly: [2, 4])
     #expect(await manager.count == 2)
@@ -53,7 +53,7 @@ import Testing
 
 @Test func accessStatsManagerExportImport() async {
     let manager = AccessStatsManager()
-    await manager.recordAccesses(frameIds: [10, 20])
+    await manager.recordAccesses(frameIds: [10, 20], nowMs: 1000)
 
     let exported = await manager.exportStats()
     #expect(exported.count == 2)
@@ -72,7 +72,7 @@ import Testing
 
 @Test func accessStatsManagerExportIfDirtyReturnsStatsWhenDirty() async {
     let manager = AccessStatsManager()
-    await manager.recordAccess(frameId: 1)
+    await manager.recordAccess(frameId: 1, nowMs: 1000)
     let result = await manager.exportStatsIfDirty()
     #expect(result != nil)
     #expect(result?.count == 1)
@@ -80,7 +80,7 @@ import Testing
 
 @Test func accessStatsManagerMarkPersistedClearsDirty() async {
     let manager = AccessStatsManager()
-    await manager.recordAccess(frameId: 1)
+    await manager.recordAccess(frameId: 1, nowMs: 1000)
     await manager.markPersisted()
     let result = await manager.exportStatsIfDirty()
     #expect(result == nil) // not dirty after markPersisted
@@ -88,6 +88,6 @@ import Testing
 
 @Test func accessStatsManagerRecordAccessesEmptyIsNoOp() async {
     let manager = AccessStatsManager()
-    await manager.recordAccesses(frameIds: [])
+    await manager.recordAccesses(frameIds: [], nowMs: 1000)
     #expect(await manager.count == 0)
 }
