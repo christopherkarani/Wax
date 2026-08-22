@@ -42,6 +42,16 @@ import Testing
     #expect(!source.contains("envKey: \"WAX_BROKER_START_TIMEOUT_SECS\",\n        defaultValue: 5.0"))
 }
 
+@Test func brokerAutostartUsesIndependentNullDeviceDescriptors() throws {
+    let source = try PackageSource.load("Sources/Wax/Broker/AgentBrokerClient.swift")
+
+    #expect(source.contains("FileHandle(forReadingAtPath: \"/dev/null\")"))
+    #expect(source.contains("FileHandle(forWritingAtPath: \"/dev/null\")"))
+    #expect(source.contains("process.standardInput = nullInput"))
+    #expect(source.contains("process.standardOutput = nullOutput"))
+    #expect(!source.contains("let nullDevice = FileHandle(forWritingAtPath: \"/dev/null\")"))
+}
+
 @Test func brokerCorpusStoreBuildDoesNotDeleteExistingCorpusBeforeReplacement() throws {
     let source = try PackageSource.load("Sources/Wax/Broker/BrokerCorpusStore.swift")
 

@@ -133,10 +133,15 @@ package enum AgentBrokerClient {
         }
         process.environment = ProcessInfo.processInfo.environment
 
-        let nullDevice = FileHandle(forWritingAtPath: "/dev/null")
+        // Keep stdin and stdout on separate descriptors. Foundation may close a
+        // shared descriptor while it configures the child process stdio actions.
+        guard let nullInput = FileHandle(forReadingAtPath: "/dev/null"),
+              let nullOutput = FileHandle(forWritingAtPath: "/dev/null") else {
+            throw BrokerClientError("Unable to open /dev/null for broker stdio")
+        }
         let stderrPipe = Pipe()
-        process.standardInput = nullDevice
-        process.standardOutput = nullDevice
+        process.standardInput = nullInput
+        process.standardOutput = nullOutput
         process.standardError = stderrPipe
 
         do {
