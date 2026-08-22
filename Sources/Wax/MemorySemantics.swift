@@ -278,8 +278,22 @@ package enum MemorySemantics {
             adjustment += 0.45
             reasons.append("constraint memory")
         case .handoff:
-            adjustment += 0.20
-            reasons.append("handoff")
+            if let createdAtMs = info.createdAtMs {
+                let ageDays = max(0, nowMs - createdAtMs) / (1000 * 60 * 60 * 24)
+                if ageDays <= 3 {
+                    adjustment += 0.80
+                    reasons.append("recent handoff")
+                } else if ageDays <= 14 {
+                    adjustment += 0.20
+                    reasons.append("handoff")
+                } else {
+                    adjustment -= 0.40
+                    reasons.append("stale handoff")
+                }
+            } else {
+                adjustment += 0.10
+                reasons.append("handoff without timestamp")
+            }
         case .taskState:
             if let createdAtMs = info.createdAtMs {
                 let ageHours = max(0, nowMs - createdAtMs) / (1000 * 60 * 60)

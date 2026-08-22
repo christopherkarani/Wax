@@ -178,8 +178,8 @@ enum ToolSchemas {
             ],
             "verbosity": [
                 "type": "string",
-                "description": "Optional response verbosity. compact returns a single JSON text block.",
-                "enum": ["compact"],
+                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+                "enum": ["compact", "verbose"],
             ],
             "metadata": [
                 "type": "object",
@@ -283,8 +283,8 @@ enum ToolSchemas {
             ],
             "verbosity": [
                 "type": "string",
-                "description": "Optional response verbosity. compact returns a single JSON text block.",
-                "enum": ["compact"],
+                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+                "enum": ["compact", "verbose"],
             ],
             "filters": searchFilters,
         ],
@@ -352,6 +352,7 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional session UUID. When omitted, stdio/HTTP inject the calling client session if this connection started one.",
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -493,6 +494,7 @@ enum ToolSchemas {
             "project": ["type": "string", "description": "Optional project stamped onto the new session manifest (overrides cwd inference)."],
             "repo": ["type": "string", "description": "Optional repo stamped onto the new session manifest (overrides cwd inference)."],
             "cwd": ["type": "string", "description": "Optional client working directory used to infer project/repo when not explicit."],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -501,6 +503,7 @@ enum ToolSchemas {
             "session_id": ["type": "string", "description": "Session UUID to reopen."],
             "agent_id": ["type": "string", "description": "Optional agent selector when session_id is omitted."],
             "run_id": ["type": "string", "description": "Optional run selector when session_id is omitted."],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -510,6 +513,7 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional session UUID to end explicitly. Required when more than one MCP session is active.",
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -522,7 +526,7 @@ enum ToolSchemas {
             ],
             "content": [
                 "type": "string",
-                "description": "Handoff text stored before ending the session.",
+                "description": "Concise handoff state summary stored before ending the session. Put unfinished work in pending_tasks; do not include transcripts or repeat the task list here.",
             ],
             "project": [
                 "type": "string",
@@ -533,6 +537,7 @@ enum ToolSchemas {
                 "description": "Optional list of pending tasks.",
                 "items": ["type": "string"],
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: ["session_id", "content"]
     )
@@ -563,6 +568,7 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional client working directory used to infer project/repo when not explicit.",
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -571,7 +577,7 @@ enum ToolSchemas {
         properties: [
             "content": [
                 "type": "string",
-                "description": "Handoff text for the next session.",
+                "description": "Concise state summary for the next session. Put unfinished work in pending_tasks; do not include transcripts or repeat the task list here.",
             ],
             "session_id": [
                 "type": "string",
@@ -586,6 +592,7 @@ enum ToolSchemas {
                 "description": "Optional list of pending tasks.",
                 "items": ["type": "string"],
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: ["content"]
     )
@@ -683,7 +690,8 @@ enum ToolSchemas {
                 ],
             ],
         ],
-        required: []
+        required: [],
+        includeResponseVerbosity: false
     )
 
     static let waxHandoffLatest: Value = objectSchema(
@@ -692,6 +700,7 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Optional project scope for lookup.",
             ],
+            "verbosity": responseVerbositySchema,
         ],
         required: []
     )
@@ -933,8 +942,16 @@ enum ToolSchemas {
 
     private static let maxContentBytes = AgentBrokerService.maxContentBytes
 
-    private static func objectSchema(properties: [String: Value], required: [String]) -> Value {
-        [
+    private static func objectSchema(
+        properties: [String: Value],
+        required: [String],
+        includeResponseVerbosity: Bool = true
+    ) -> Value {
+        var properties = properties
+        if includeResponseVerbosity {
+            properties["verbosity"] = responseVerbositySchema
+        }
+        return [
             "type": "object",
             "properties": .object(properties),
             "required": .array(required.map(Value.string)),
@@ -949,6 +966,12 @@ enum ToolSchemas {
             ["type": "number"],
             ["type": "boolean"],
         ],
+    ]
+
+    private static let responseVerbositySchema: Value = [
+        "type": "string",
+        "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+        "enum": ["compact", "verbose"],
     ]
 
     private static func emptyObjectSchema() -> Value {

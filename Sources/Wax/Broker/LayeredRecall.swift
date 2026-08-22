@@ -563,12 +563,6 @@ package enum LayeredRecall {
             inferred: inferred
         )
 
-        var mode = request.mode
-        let durableStats = await stores.longTermMemory.runtimeStats()
-        if mode == nil, case .degraded = durableStats.embeddingStatus {
-            mode = .textOnly
-        }
-
         let retrievalTopK = Self.retrievalTopK(requested: request.searchTopK, scope: request.scope)
         let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
             base: request.frameFilter,
@@ -581,7 +575,7 @@ package enum LayeredRecall {
         if let working {
             let execution = try await working.memory.recallExecution(
                 query: request.query,
-                mode: mode,
+                mode: request.mode,
                 frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
                 topK: retrievalTopK
@@ -634,7 +628,7 @@ package enum LayeredRecall {
         if request.scope != .session {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
-                mode: mode,
+                mode: request.mode,
                 frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
                 topK: retrievalTopK
