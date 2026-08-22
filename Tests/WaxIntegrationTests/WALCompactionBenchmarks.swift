@@ -168,26 +168,62 @@ final class WALCompactionBenchmarks: XCTestCase {
 
         // Exclude first-open compilation and filesystem cache warm-up from the
         // comparison; the guardrail is about steady-state reopen cost.
-        _ = try await measureReopenLatency(
-            at: disabledURL,
-            iterations: 2,
-            options: WaxOptions(walReplayStateSnapshotEnabled: false)
+        // Warm and measure the two modes in the same time window. Shared CI
+        // runners can otherwise make the second mode look slower when host
+        // load changes between the two measurement batches.
+        for _ in 0..<2 {
+            _ = try await measureReopenLatency(
+                at: disabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: false)
+            )
+            _ = try await measureReopenLatency(
+                at: enabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: true)
+            )
+        }
+
+        var disabledSamples: [Double] = []
+        var enabledSamples: [Double] = []
+        var enabledSnapshotHits = 0
+        disabledSamples.reserveCapacity(8)
+        enabledSamples.reserveCapacity(8)
+        for _ in 0..<8 {
+            let disabledSample = try await measureReopenLatency(
+                at: disabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: false)
+            )
+            disabledSamples.append(disabledSample.summary.meanMs)
+
+            let enabledSample = try await measureReopenLatency(
+                at: enabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: true)
+            )
+            enabledSamples.append(enabledSample.summary.meanMs)
+            enabledSnapshotHits += enabledSample.snapshotHits
+        }
+
+        let disabled = (
+            summary: WALCompactionLatencySummary.from(samples: disabledSamples),
+            snapshotHits: 0
         )
-        _ = try await measureReopenLatency(
-            at: enabledURL,
-            iterations: 2,
-            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        let enabled = (
+            summary: WALCompactionLatencySummary.from(samples: enabledSamples),
+            snapshotHits: enabledSnapshotHits
         )
 
-        let disabled = try await measureReopenLatency(
-            at: disabledURL,
-            iterations: 8,
-            options: WaxOptions(walReplayStateSnapshotEnabled: false)
-        )
-        let enabled = try await measureReopenLatency(
-            at: enabledURL,
-            iterations: 8,
-            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        print(
+            "🧪 WAL replay snapshot guardrail: "
+                + "disabled p50=\(disabled.summary.p50Ms.formatMs) "
+                + "disabled p95=\(disabled.summary.p95Ms.formatMs) "
+                + "disabled p99=\(disabled.summary.p99Ms.formatMs) "
+                + "enabled p50=\(enabled.summary.p50Ms.formatMs) "
+                + "enabled p95=\(enabled.summary.p95Ms.formatMs) "
+                + "enabled p99=\(enabled.summary.p99Ms.formatMs) "
+                + "snapshot_hits=\(enabled.snapshotHits)"
         )
 
         XCTAssertGreaterThanOrEqual(enabled.snapshotHits, 1)
