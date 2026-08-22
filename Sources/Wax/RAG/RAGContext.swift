@@ -103,27 +103,6 @@ public struct RAGContext: Sendable, Equatable {
     }
 }
 
-package extension RAGContext.QueryEmbeddingState {
-    init(_ state: MemoryOrchestrator.QueryEmbeddingState) {
-        switch state {
-        case .notRequested:
-            self = .notRequested
-        case .available:
-            self = .available
-        case .timeout:
-            self = .timeout
-        case .circuitOpen:
-            self = .circuitOpen
-        case .noEmbedder:
-            self = .noEmbedder
-        case .vectorDisabled:
-            self = .vectorDisabled
-        case .failed:
-            self = .failed
-        }
-    }
-}
-
 public extension RAGContext.Source {
     var rawValue: String {
         switch self {

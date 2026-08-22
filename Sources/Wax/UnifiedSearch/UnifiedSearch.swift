@@ -25,6 +25,10 @@ extension Wax {
             return SearchResponse(results: [])
         }
 
+        // Single wall-clock stamp for this request; ranking/explanation passes share it
+        // so repeated semantic adjustments agree within one search.
+        let semanticNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
         let trimmedQuery = request.query?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let queryType: QueryType
@@ -579,7 +583,8 @@ extension Wax {
                     sources: item.sources,
                     rankingDiagnostics: rankingDiagnostics,
                     metadata: item.metadata,
-                    scopeContext: request.scopeContext
+                    scopeContext: request.scopeContext,
+                    nowMs: semanticNowMs
                 )
             )
         }
@@ -594,6 +599,7 @@ extension Wax {
         filtered = Self.semanticMemoryRerank(
             results: filtered,
             scopeContext: request.scopeContext,
+            nowMs: semanticNowMs,
             maxWindow: min(max(request.topK * 3, 12), 48)
         )
         if let identifierWindow, let trimmedQuery {
@@ -608,13 +614,13 @@ extension Wax {
         }
 
         if filtered.isEmpty, request.allowTimelineFallback {
-            filtered = await timelineFallbackResults(request: request, filter: filter)
+            filtered = await timelineFallbackResults(request: request, filter: filter, nowMs: semanticNowMs)
         }
 
         return SearchResponse(results: filtered)
     }
 
-    private func timelineFallbackResults(request: SearchRequest, filter: FrameFilter) async -> [SearchResponse.Result] {
+    private func timelineFallbackResults(request: SearchRequest, filter: FrameFilter, nowMs: Int64) async -> [SearchResponse.Result] {
         if request.timelineFallbackLimit <= 0 { return [] }
         let query = TimelineQuery(
             limit: request.timelineFallbackLimit,
@@ -668,7 +674,8 @@ extension Wax {
                         sources: [.timeline],
                         rankingDiagnostics: nil,
                         metadata: meta.metadata?.entries ?? [:],
-                        scopeContext: request.scopeContext
+                        scopeContext: request.scopeContext,
+                        nowMs: nowMs
                     )
                 )
             )
@@ -684,7 +691,7 @@ extension Wax {
     private static func semanticMemoryRerank(
         results: [SearchResponse.Result],
         scopeContext: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        nowMs: Int64,
         maxWindow: Int
     ) -> [SearchResponse.Result] {
         let cappedWindow = min(max(0, maxWindow), results.count)
@@ -799,7 +806,7 @@ extension Wax {
         rankingDiagnostics: SearchResponse.RankingDiagnostics?,
         metadata: [String: String],
         scopeContext: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> [String] {
         var reasons: [String] = []
         if sources.contains(.vector) {
