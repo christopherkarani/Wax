@@ -1314,6 +1314,9 @@ struct WaxCLIMemoryTests {
 
         let cli = try builtProductPath(named: "wax-cli")
         let server = try builtProductPath(named: "wax-mcp")
+        let fakeClaude = tempRoot.appendingPathComponent("claude")
+        try makeExecutableStub(at: fakeClaude)
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
         let output = try runProcess(
             executableURL: URL(fileURLWithPath: cli),
             arguments: [
@@ -1322,6 +1325,7 @@ struct WaxCLIMemoryTests {
                 "--store-path", storeURL.path,
                 "--no-embedder",
             ],
+            environment: ["PATH": "\(tempRoot.path):\(inheritedPath)"],
             timeout: 60
         )
 
