@@ -93,7 +93,7 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 ## Errors
 
-- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
+- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `vectorIndexNotStaged` (a commit was attempted with pending embeddings but no staged vector index), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
 
 ## Foundation Models Tools (iOS 26/macOS 26+)
 

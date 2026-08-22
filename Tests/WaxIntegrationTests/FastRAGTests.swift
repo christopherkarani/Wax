@@ -7,12 +7,12 @@ import WaxCore
 func fastRAGProducesSnippetsAndSingleExpansionWhenAvailable() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(Data("Swift is safe and fast.".utf8))
-        try await text.index(frameId: id0, text: "Swift is safe and fast.")
+        try await text.indexText(frameId: id0, text: "Swift is safe and fast.")
         let id1 = try await wax.put(Data("Rust is fearless.".utf8))
-        try await text.index(frameId: id1, text: "Rust is fearless.")
+        try await text.indexText(frameId: id1, text: "Rust is fearless.")
 
         try await text.commit()
 
@@ -32,19 +32,19 @@ func fastRAGProducesSnippetsAndSingleExpansionWhenAvailable() async throws {
 func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let long = String(repeating: "Swift concurrency uses actors and tasks. ", count: 80)
         let id0 = try await wax.put(Data(long.utf8), options: FrameMetaSubset(searchText: long))
-        try await text.index(frameId: id0, text: long)
+        try await text.indexText(frameId: id0, text: long)
 
         let snippet1 = "Rust uses ownership and borrowing to prevent data races."
         let id1 = try await wax.put(Data(snippet1.utf8), options: FrameMetaSubset(searchText: snippet1))
-        try await text.index(frameId: id1, text: snippet1)
+        try await text.indexText(frameId: id1, text: snippet1)
 
         let snippet2 = "Swift uses ARC and structured concurrency."
         let id2 = try await wax.put(Data(snippet2.utf8), options: FrameMetaSubset(searchText: snippet2))
-        try await text.index(frameId: id2, text: snippet2)
+        try await text.indexText(frameId: id2, text: snippet2)
 
         try await text.commit()
 
@@ -89,12 +89,12 @@ func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
 func fastRAGUsingSessionMatchesWaxSearchDeterministically() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(Data("Swift concurrency uses actors.".utf8))
-        try await text.index(frameId: id0, text: "Swift concurrency uses actors.")
+        try await text.indexText(frameId: id0, text: "Swift concurrency uses actors.")
         let id1 = try await wax.put(Data("Swift task groups enable parallel work.".utf8))
-        try await text.index(frameId: id1, text: "Swift task groups enable parallel work.")
+        try await text.indexText(frameId: id1, text: "Swift task groups enable parallel work.")
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
@@ -140,15 +140,15 @@ func fastRAGUsingSessionMatchesWaxSearchDeterministically() async throws {
 func fastRAGSkipsNonUTF8ExpansionCandidates() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let invalid = Data([0xFF, 0xFE, 0xFD, 0xFC])
         let invalidId = try await wax.put(invalid, options: FrameMetaSubset(searchText: "Swift Swift Swift"))
-        try await text.index(frameId: invalidId, text: "Swift Swift Swift")
+        try await text.indexText(frameId: invalidId, text: "Swift Swift Swift")
 
         let valid = "Swift is safe and fast."
         let validId = try await wax.put(Data(valid.utf8), options: FrameMetaSubset(searchText: valid))
-        try await text.index(frameId: validId, text: valid)
+        try await text.indexText(frameId: validId, text: valid)
 
         try await text.commit()
 
@@ -168,11 +168,11 @@ func fastRAGSkipsNonUTF8ExpansionCandidates() async throws {
 func fastRAGSkipsExpansionWhenBytesExceedCap() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let large = String(repeating: "Swift ", count: 2000)
         let largeId = try await wax.put(Data(large.utf8), options: FrameMetaSubset(searchText: large))
-        try await text.index(frameId: largeId, text: large)
+        try await text.indexText(frameId: largeId, text: large)
 
         try await text.commit()
 
@@ -218,11 +218,11 @@ func fastRAGExpansionLengthMismatchThrows() throws {
 func denseCachedSkipsInvalidSurrogateAndFallsBackToSnippet() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let body = "Swift concurrency uses actors and tasks."
         let sourceId = try await wax.put(Data(body.utf8), options: FrameMetaSubset(searchText: body))
-        try await text.index(frameId: sourceId, text: body)
+        try await text.indexText(frameId: sourceId, text: body)
         try await text.commit()
 
         var meta = Metadata()
@@ -264,11 +264,11 @@ func denseCachedSkipsInvalidSurrogateAndFallsBackToSnippet() async throws {
 func denseCachedSkipsSurrogateWhenFrameContentThrowsAndStillReturnsSnippets() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let body = "Swift concurrency uses actors and tasks."
         let sourceId = try await wax.put(Data(body.utf8), options: FrameMetaSubset(searchText: body))
-        try await text.index(frameId: sourceId, text: body)
+        try await text.indexText(frameId: sourceId, text: body)
         try await text.commit()
 
         var meta = Metadata()
@@ -322,7 +322,7 @@ func denseCachedSkipsSurrogateWhenFrameContentThrowsAndStillReturnsSnippets() as
 func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let chunks = [
             "Swift uses actors for isolation.",
@@ -333,7 +333,7 @@ func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
         var sourceIds: [UInt64] = []
         for chunk in chunks {
             let frameId = try await wax.put(Data(chunk.utf8), options: FrameMetaSubset(searchText: chunk))
-            try await text.index(frameId: frameId, text: chunk)
+            try await text.indexText(frameId: frameId, text: chunk)
             sourceIds.append(frameId)
         }
         try await text.commit()

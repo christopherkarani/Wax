@@ -338,7 +338,7 @@ func fastRAGPreviewMaxBytesZeroStillBuildsContext() async throws {
 
 private func makeSimpleRAGStore(at url: URL) async throws -> Wax {
     let wax = try await Wax.create(at: url)
-    let text = try await wax.enableTextSearch()
+    let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
     let first = "Swift actors isolate state and structured concurrency coordinates tasks."
     let second = "Rust ownership and borrowing prevent data races."
@@ -348,9 +348,9 @@ private func makeSimpleRAGStore(at url: URL) async throws -> Wax {
     let secondId = try await wax.put(Data(second.utf8), options: FrameMetaSubset(searchText: second))
     let thirdId = try await wax.put(Data(third.utf8), options: FrameMetaSubset(searchText: third))
 
-    try await text.index(frameId: firstId, text: first)
-    try await text.index(frameId: secondId, text: second)
-    try await text.index(frameId: thirdId, text: third)
+    try await text.indexText(frameId: firstId, text: first)
+    try await text.indexText(frameId: secondId, text: second)
+    try await text.indexText(frameId: thirdId, text: third)
     try await text.commit()
 
     return wax

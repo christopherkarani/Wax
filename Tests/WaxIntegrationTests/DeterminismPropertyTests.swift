@@ -44,7 +44,7 @@ func fastRAGDeterministicAcrossRepeatedBuildsWithMixedCorpus() async throws {
 
 private func makeDeterminismWax(at url: URL) async throws -> Wax {
     let wax = try await Wax.create(at: url)
-    let text = try await wax.enableTextSearch()
+    let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
     let docs = [
         "Swift actors isolate mutable state for data-race safety.",
         "Task groups enable structured concurrent workloads.",
@@ -55,7 +55,7 @@ private func makeDeterminismWax(at url: URL) async throws -> Wax {
 
     for doc in docs {
         let frameId = try await wax.put(Data(doc.utf8), options: FrameMetaSubset(searchText: doc))
-        try await text.index(frameId: frameId, text: doc)
+        try await text.indexText(frameId: frameId, text: doc)
     }
     try await text.commit()
     return wax
