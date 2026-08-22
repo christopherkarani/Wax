@@ -23,7 +23,7 @@ run_and_capture() {
 # explicit env var or package trait is set. These are not silent product gaps.
 expected_optional_skip_pattern() {
   printf '%s' \
-    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_"
+    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_|Requires macOS 26.0"
 }
 
 assert_no_skips() {

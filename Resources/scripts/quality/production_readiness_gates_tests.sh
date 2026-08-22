@@ -108,6 +108,10 @@ assert_accepts_expected_skip \
   "mcp-trait-gated" \
   'Test mcpDoctorRecognizesRenamedToolSurface() skipped: "Build with --traits default,MCPServer to run wax-mcp smoke tests"'
 
+assert_accepts_expected_skip \
+  "platform-gated-docs" \
+  'Test docsPasteFoundationModelsSessionCompilesAndCloses() skipped: "Requires macOS 26.0"'
+
 skip_regex="$(full_gate_skip_regex)"
 while IFS= read -r class_name; do
   [[ -n "$class_name" ]] || continue
