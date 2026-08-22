@@ -109,10 +109,12 @@ func embeddingReadinessTimedOutWaiterDoesNotCancelCompile() async throws {
     }
 
     await gate.open()
-    let session = try await readiness.open(
-        .builtIn(key: key, waitTimeout: .seconds(2), factory: factory)
+    let provider = try await readiness.compile(
+        key: key,
+        timeout: nil,
+        factory: factory
     )
-    #expect(await session.status == .active(RecordingEmbedder(model: "Kept").identity))
+    #expect(provider.identity == RecordingEmbedder(model: "Kept").identity)
     #expect(await calls.value() == 1)
 }
 
