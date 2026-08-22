@@ -24,4 +24,8 @@ if [[ "$swift_tools_version" == "6.1" && "$xcode_version" != "16.3" ]]; then
   fail "Homebrew formula Xcode dependency $xcode_version does not satisfy Swift tools $swift_tools_version"
 fi
 
+if grep -q 'inreplace "Sources/WaxVectorSearchMiniLM/MiniLMEmbedder.swift"' "$FORMULA"; then
+  fail "Homebrew formula must build the shipped MiniLM defaults without source mutation"
+fi
+
 echo "homebrew_formula_tests: ok"
