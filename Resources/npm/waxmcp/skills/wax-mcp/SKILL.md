@@ -30,6 +30,7 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
    - Never put `session_id` inside `metadata`.
 3. **End**
    - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
+   - Keep `content` to a concise state summary. Put unfinished work only in `pending_tasks`; do not copy pending tasks into content or store transcripts.
    - Call `session_end` (pass `session_id` when multiple sessions may be active).
    - `session_end` `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
 
@@ -46,6 +47,11 @@ Search mode guidance:
 
 - Prefer `mode: "hybrid"` when semantic recall helps.
 - Use `mode: "text"` for fast or deterministic lexical lookup.
+
+Response guidance:
+
+- Responses default to one compact JSON content block.
+- Pass `verbosity: "verbose"` only when narrative text plus standard MCP `structuredContent` is useful.
 
 ## Write Path
 

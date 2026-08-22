@@ -2010,6 +2010,59 @@ package actor Wax {
         }
     }
 
+    package func latestActiveHandoffMeta(
+        project: String,
+        matchingSessionId sessionId: String
+    ) async -> FrameMeta? {
+        await withReadLock {
+            var visibleFrames = toc.frames
+            for mutation in orderedPendingMutationsLocked() {
+                switch mutation.entry {
+                case .putFrame(let put):
+                    if let meta = try? FrameMeta.fromPut(put) {
+                        visibleFrames.append(meta)
+                    }
+                case .deleteFrame(let delete):
+                    if delete.frameId < UInt64(visibleFrames.count) {
+                        visibleFrames[Int(delete.frameId)].status = .deleted
+                    }
+                case .supersedeFrame(let supersede):
+                    if supersede.supersededId < UInt64(visibleFrames.count) {
+                        visibleFrames[Int(supersede.supersededId)].supersededBy = supersede.supersedingId
+                    }
+                    if supersede.supersedingId < UInt64(visibleFrames.count) {
+                        visibleFrames[Int(supersede.supersedingId)].supersedes = supersede.supersededId
+                    }
+                case .putEmbedding:
+                    continue
+                }
+            }
+
+            var latest: FrameMeta?
+
+            for frame in visibleFrames {
+                guard frame.status == .active, frame.supersededBy == nil else { continue }
+
+                let hasHandoffKind = frame.kind == "handoff" || frame.metadata?.entries["kind"] == "handoff"
+                let hasHandoffLabel = frame.labels.contains("handoff")
+                guard hasHandoffKind || hasHandoffLabel else { continue }
+                guard frame.metadata?.entries["project"] == project else { continue }
+                guard frame.metadata?.entries["session_id"] == sessionId else { continue }
+
+                guard let current = latest else {
+                    latest = frame
+                    continue
+                }
+                if frame.timestamp > current.timestamp
+                    || (frame.timestamp == current.timestamp && frame.id > current.id) {
+                    latest = frame
+                }
+            }
+
+            return latest
+        }
+    }
+
     package func committedPayloadLivenessBytes() async -> (
         totalPayloadBytes: UInt64,
         deadPayloadBytes: UInt64
@@ -2171,7 +2224,11 @@ package actor Wax {
                 guard meta.role == .document else { return nil }
                 guard let entries = meta.metadata?.entries else { return nil }
                 guard entries["wax.content.hash"] == contentHash else { return nil }
-                guard entries == metadata else { return nil }
+                var storedIdentity = entries
+                var requestedIdentity = metadata
+                storedIdentity.removeValue(forKey: "wax.created_at_ms")
+                requestedIdentity.removeValue(forKey: "wax.created_at_ms")
+                guard storedIdentity == requestedIdentity else { return nil }
 
                 let coverage = chunkCoverageByDocument[meta.id] ?? ChunkCoverage()
                 return RememberDedupProbe(

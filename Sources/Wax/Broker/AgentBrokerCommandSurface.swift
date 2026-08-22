@@ -26,7 +26,9 @@ package enum AgentBrokerCommandSurface {
         ) {
             self.canonicalName = canonicalName
             self.aliases = aliases
-            self.acceptedArgumentKeys = acceptedArgumentKeys
+            self.acceptedArgumentKeys = exposure == .publicCommand
+                ? acceptedArgumentKeys.union(["verbosity"])
+                : acceptedArgumentKeys
             self.exposure = exposure
             self.requiresStructuredMemory = requiresStructuredMemory
         }
@@ -76,14 +78,14 @@ package enum AgentBrokerCommandSurface {
             "locked", "subject", "kind", "aliases", "predicate", "object", "cwd",
         ], requiresStructuredMemory: true),
         Entry(canonicalName: "corpus_search", acceptedArgumentKeys: ["query", "rebuild", "recursive", "mode", "alpha", "topK"]),
-        Entry(canonicalName: "stats", acceptedArgumentKeys: ["session_id"]),
-        Entry(canonicalName: "session_start", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "cwd", "project", "repo"]),
-        Entry(canonicalName: "session_resume", acceptedArgumentKeys: ["session_id", "agent_id", "run_id"]),
-        Entry(canonicalName: "session_end", acceptedArgumentKeys: ["session_id"]),
-        Entry(canonicalName: "session_close", acceptedArgumentKeys: ["session_id", "content", "project", "pending_tasks"]),
-        Entry(canonicalName: "session_open", acceptedArgumentKeys: ["project", "repo", "agent_id", "run_id", "recall_query", "cwd"]),
-        Entry(canonicalName: "handoff", acceptedArgumentKeys: ["content", "session_id", "project", "pending_tasks"]),
-        Entry(canonicalName: "handoff_latest", acceptedArgumentKeys: ["project"]),
+        Entry(canonicalName: "stats", acceptedArgumentKeys: ["session_id", "verbosity"]),
+        Entry(canonicalName: "session_start", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "cwd", "project", "repo", "verbosity"]),
+        Entry(canonicalName: "session_resume", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "verbosity"]),
+        Entry(canonicalName: "session_end", acceptedArgumentKeys: ["session_id", "verbosity"]),
+        Entry(canonicalName: "session_close", acceptedArgumentKeys: ["session_id", "content", "project", "pending_tasks", "verbosity"]),
+        Entry(canonicalName: "session_open", acceptedArgumentKeys: ["project", "repo", "agent_id", "run_id", "recall_query", "cwd", "verbosity"]),
+        Entry(canonicalName: "handoff", acceptedArgumentKeys: ["content", "session_id", "project", "pending_tasks", "verbosity"]),
+        Entry(canonicalName: "handoff_latest", acceptedArgumentKeys: ["project", "verbosity"]),
         Entry(canonicalName: "compact_context", acceptedArgumentKeys: ["query", "session_id", "token_budget", "max_items", "mode", "alpha"]),
         Entry(canonicalName: "markdown_export", acceptedArgumentKeys: ["output_dir", "session_id", "project", "all_projects", "cwd"]),
         Entry(canonicalName: "markdown_sync", acceptedArgumentKeys: ["root_dir", "dry_run"]),
@@ -170,7 +172,10 @@ package enum AgentBrokerCommandSurface {
 
         let unknown = providedKeys.subtracting(entry.acceptedArgumentKeys)
         guard unknown.isEmpty else {
-            throw BrokerValidationError.invalid("unsupported argument(s): \(unknown.sorted().joined(separator: ", "))")
+            let valid = entry.acceptedArgumentKeys.sorted().joined(separator: ", ")
+            throw BrokerValidationError.invalid(
+                "unsupported argument(s): \(unknown.sorted().joined(separator: ", ")); valid argument(s): \(valid)"
+            )
         }
         return entry
     }
