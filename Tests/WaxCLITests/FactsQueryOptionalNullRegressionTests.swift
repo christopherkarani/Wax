@@ -26,14 +26,25 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
         FileManager.default.isExecutableFile(atPath: $0.path)
     })
 
-    let store = FileManager.default.temporaryDirectory
-        .appendingPathComponent("facts-null-\(UUID().uuidString).wax")
-    defer { try? FileManager.default.removeItem(at: store) }
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("facts-null-\(UUID().uuidString)", isDirectory: true)
+    let store = root.appendingPathComponent("store.wax")
+    let brokerDir = root.appendingPathComponent("broker", isDirectory: true)
+    let sessionRoot = root.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: brokerDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
 
     func run(_ args: [String]) throws -> (Int32, String) {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_DIR"] = brokerDir.path
+        environment["WAX_SESSION_ROOT"] = sessionRoot.path
+        environment["WAX_BROKER_START_TIMEOUT_SECS"] = "30"
+        environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "60"
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -80,9 +91,6 @@ func brokerStartTimeoutTerminatesLaunchedProcess() async throws {
     try scriptBody.write(to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
-    setenv("WAX_BROKER_START_TIMEOUT_SECS", "0.4", 1)
-    defer { unsetenv("WAX_BROKER_START_TIMEOUT_SECS") }
-
     let configuration = AgentBrokerConfiguration(
         brokerExecutablePath: script.path,
         storePath: temp.appendingPathComponent("store.wax").path,
@@ -95,7 +103,10 @@ func brokerStartTimeoutTerminatesLaunchedProcess() async throws {
     )
 
     await #expect(throws: Error.self) {
-        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: configuration,
+            startTimeoutSecondsOverride: 0.4
+        )
     }
 
     let pidText = (try? String(contentsOf: pidFile, encoding: .utf8))?

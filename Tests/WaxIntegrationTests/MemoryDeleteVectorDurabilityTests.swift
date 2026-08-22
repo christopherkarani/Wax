@@ -24,11 +24,13 @@ private func decodeCommittedVecFrameIds(from bytes: Data) throws -> (frameIds: [
     return (frameIds, info.vectorCount)
 }
 
-private func firstChunkFrameId(from wax: Wax) async throws -> UInt64 {
-    let chunk = try #require(
-        await wax.frameMetasIncludingPending().first(where: { $0.role == .chunk })
+private func firstSearchableFrameId(from wax: Wax) async throws -> UInt64 {
+    let metas = await wax.frameMetasIncludingPending()
+    let frame = try #require(
+        metas.first(where: { $0.role == .chunk })
+            ?? metas.first(where: { $0.role == .document })
     )
-    return chunk.id
+    return frame.id
 }
 
 // MARK: - AC1 / AC1b / AC2 / AC5 / AC6
@@ -43,11 +45,13 @@ func memoryDeleteRemovesFlushedChunkFromCommittedVecBytesBeforeClose() async thr
             embedder: embedder
         )
 
-        try await orchestrator.remember("Unique durability phrase AlphaVectorChunk.")
+        try await orchestrator.remember(
+            "Unique durability phrase AlphaVectorChunk with enough additional words to force multiple persisted chunks."
+        )
         try await orchestrator.flush()
 
         let wax = await orchestrator.wax
-        let chunkFrameId = try await firstChunkFrameId(from: wax)
+        let chunkFrameId = try await firstSearchableFrameId(from: wax)
 
         let beforeBytes = try await wax.readCommittedVecIndexBytes()
         #expect(beforeBytes != nil, "setup: committed vec must exist after flush")
@@ -86,7 +90,7 @@ func memoryDeleteLastVectorStagesEmptyCommittedVecBytes() async throws {
         try await orchestrator.flush()
 
         let wax = await orchestrator.wax
-        let chunkFrameId = try await firstChunkFrameId(from: wax)
+        let chunkFrameId = try await firstSearchableFrameId(from: wax)
 
         let beforeBytes = try await wax.readCommittedVecIndexBytes()
         #expect(beforeBytes != nil)
@@ -117,10 +121,12 @@ func memoryDeletePendingEmbeddingDoesNotRestageGhostInCommittedVec() async throw
         )
 
         // No flush: embedding stays pending (putEmbedding), not in live engine.
-        try await orchestrator.remember("Pending re-inject phrase BetaPendingVec.")
+        try await orchestrator.remember(
+            "Pending re-inject phrase BetaPendingVec with enough additional words to force multiple persisted chunks."
+        )
 
         let wax = await orchestrator.wax
-        let chunkFrameId = try await firstChunkFrameId(from: wax)
+        let chunkFrameId = try await firstSearchableFrameId(from: wax)
 
         // Commit inside delete must succeed (no "vector index must be staged" durability error).
         try await orchestrator.delete(frameId: chunkFrameId)
@@ -147,11 +153,13 @@ func memoryDeleteSameIdTwiceDoesNotThrowAndKeepsVecClean() async throws {
             embedder: embedder
         )
 
-        try await orchestrator.remember("Double delete phrase GammaTwiceVec.")
+        try await orchestrator.remember(
+            "Double delete phrase GammaTwiceVec with enough additional words to force multiple persisted chunks."
+        )
         try await orchestrator.flush()
 
         let wax = await orchestrator.wax
-        let chunkFrameId = try await firstChunkFrameId(from: wax)
+        let chunkFrameId = try await firstSearchableFrameId(from: wax)
         let beforeBytes = try await wax.readCommittedVecIndexBytes()
         #expect(beforeBytes != nil)
         let before = try decodeCommittedVecFrameIds(from: beforeBytes!)
@@ -180,11 +188,13 @@ func memoryDeleteThenCloseReopenOmitsIdFromRawEngine() async throws {
             embedder: embedder
         )
 
-        try await orchestrator.remember("Reopen regression phrase DeltaReopenVec.")
+        try await orchestrator.remember(
+            "Reopen regression phrase DeltaReopenVec with enough additional words to force multiple persisted chunks."
+        )
         try await orchestrator.flush()
 
         let wax = await orchestrator.wax
-        let chunkFrameId = try await firstChunkFrameId(from: wax)
+        let chunkFrameId = try await firstSearchableFrameId(from: wax)
         try await orchestrator.delete(frameId: chunkFrameId)
         try await orchestrator.close()
 

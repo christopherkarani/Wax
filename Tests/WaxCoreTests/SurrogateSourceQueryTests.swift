@@ -79,8 +79,10 @@ func activeSurrogateSourceFramesReturnsOnlyCommittedEligibleChunks() async throw
 
     let sources = await wax.activeSurrogateSourceFrames()
 
-    #expect(sources.map(\.id) == [activeChunk, replacement])
-    #expect(sources.map(\.searchText) == ["active chunk", "replacement chunk"])
+    // Single-chunk remembers are stored as searchable documents, and those
+    // documents are eligible surrogate sources just like multi-chunk frames.
+    #expect(sources.map(\.id) == [0, activeChunk, replacement])
+    #expect(sources.map(\.searchText) == ["document", "active chunk", "replacement chunk"])
     #expect(sources.contains(where: { $0.id == superseded }) == false)
     #expect(sources.contains(where: { $0.id == deleted }) == false)
     #expect(sources.contains(where: { $0.id == pending }) == false)

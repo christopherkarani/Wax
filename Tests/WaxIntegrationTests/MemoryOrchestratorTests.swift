@@ -366,6 +366,9 @@ func memoryOrchestratorRespectsIngestBatchingAndOrder() async throws {
         config.enableVectorSearch = true
         config.enableTextSearch = true
         config.chunking = .tokenCount(targetTokens: 5, overlapTokens: 0)
+        // This test measures ingest batch boundaries; cache hits would turn a
+        // full ingest batch into a smaller embedding request.
+        config.embeddingCacheCapacity = 0
 
         let embedder = RecordingBatchEmbedder(dimensions: 8)
 

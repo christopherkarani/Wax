@@ -14,9 +14,21 @@ import NIOHTTP1
 @testable import Wax
 import XCTest
 
+private let waxMCPTestSignalSetup: Void = {
+    // Process and broker peers can close while another parallel test is
+    // finishing its request. Keep a broken pipe as EPIPE instead of killing
+    // the shared Swift test runner with SIGPIPE.
+    signal(SIGPIPE, SIG_IGN)
+}()
+
+private func prepareWaxMCPTestProcessIO() {
+    _ = waxMCPTestSignalSetup
+}
+
 private func withAgentBrokerService<T>(
     _ body: (AgentBrokerService, URL) async throws -> T
 ) async throws -> T {
+    prepareWaxMCPTestProcessIO()
     let rootURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-broker-test-\(UUID().uuidString)", isDirectory: true)
     let storeURL = rootURL.appendingPathComponent("memory.wax")
@@ -307,6 +319,7 @@ private struct TestUnixSocketError: Error, CustomStringConvertible {
 private final class UnixStatsResponder: @unchecked Sendable {
     private let listener: Int32
     private let lock = NSLock()
+    private let ready = DispatchSemaphore(value: 0)
     private var stopped = false
     private var heldFDs: [Int32] = []
     private var holdFirstRequest = false
@@ -321,9 +334,11 @@ private final class UnixStatsResponder: @unchecked Sendable {
         self.holdFirstRequest = holdFirstRequest
         lock.unlock()
 
-        DispatchQueue.global().async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.ready.signal()
             while true {
-                guard let self, !self.isStopped else { return }
+                guard !self.isStopped else { return }
                 var descriptor = pollfd(fd: self.listener, events: Int16(POLLIN), revents: 0)
                 let pollResult = poll(&descriptor, 1, 50)
                 if pollResult == 0 { continue }
@@ -339,6 +354,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
                 self.handle(client: client)
             }
         }
+        ready.wait()
     }
 
     func stop() {
@@ -6321,6 +6337,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         isolateSessionRootEnv: Bool = true,
         currentDirectory: URL? = nil
     ) throws {
+        prepareWaxMCPTestProcessIO()
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

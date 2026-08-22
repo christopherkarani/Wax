@@ -51,7 +51,7 @@ func embeddingReadinessBuiltInWaitsAndThrowsOnFailure() async {
     let key = EmbeddingLoadKey(provider: "test", configuration: "boom")
     await #expect(throws: TestEmbedderError.boom) {
         _ = try await EmbeddingReadiness().open(
-            .builtIn(key: key, waitTimeout: .seconds(2), factory: {
+            .builtIn(key: key, waitTimeout: nil, factory: {
                 throw TestEmbedderError.boom
             })
         )
@@ -123,22 +123,22 @@ func embeddingReadinessAutomaticWaitTimeoutMarksUnavailableThenBecomesActive() a
     )
 
     #expect(await session.status == .loading)
-    try await Task.sleep(for: .milliseconds(80))
-    guard case .unavailable = await session.status else {
-        Issue.record("expected unavailable after wait timeout, got \(await session.status)")
+    let settled = await session.waitUntilSettled()
+    guard case .unavailable = settled else {
+        Issue.record("expected unavailable after wait timeout, got \(settled)")
         return
     }
 
     await gate.open()
-    let deadline = ContinuousClock.now + .seconds(1)
-    while ContinuousClock.now < deadline {
-        if case .active = await session.status {
-            #expect(await session.currentProvider()?.identity?.model == "Late")
-            return
-        }
-        try await Task.sleep(for: .milliseconds(10))
+    let compileResult = await session.waitUntilCompileFinished()
+    switch compileResult {
+    case .success(let provider):
+        #expect(provider.identity?.model == "Late")
+        #expect(await session.currentProvider()?.identity?.model == "Late")
+        #expect(await session.status == .active(provider.identity))
+    case .failure(let error):
+        Issue.record("expected live-attach after timed-out compile finished, got \(error)")
     }
-    Issue.record("expected live-attach after timed-out compile finished")
 }
 
 @Test
