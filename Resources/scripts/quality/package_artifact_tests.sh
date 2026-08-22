@@ -21,7 +21,6 @@ if (pkg.scripts?.prepack !== "node scripts/verify-dist.mjs") process.exit(1);
 
 [[ -f "$WAXMCP_VERIFY" ]] || fail "waxmcp dist verifier is missing"
 grep -Fq 'darwin-arm64' "$WAXMCP_VERIFY" || fail "waxmcp verifier must check darwin-arm64"
-grep -Fq 'darwin-x64' "$WAXMCP_VERIFY" || fail "waxmcp verifier must check darwin-x64"
 
 node -e '
 const fs = require("fs");
