@@ -1,6 +1,6 @@
 {
   "name": "waxmcp",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "npx launcher for the Wax MCP server",
   "repository": {
     "type": "git",

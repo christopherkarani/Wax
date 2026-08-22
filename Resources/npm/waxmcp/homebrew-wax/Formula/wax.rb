@@ -1,8 +1,8 @@
 class Wax < Formula
   desc "On-device memory and RAG framework with MCP server for Claude Code"
   homepage "https://github.com/christopherkarani/Wax"
-  url "https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v0.1.31.tar.gz"
-  sha256 "ceaaa1231dea39168a6dbfffc73851e2b6f5fad95f43bc4870419b72a04c9157"
+  url "https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v0.1.32.tar.gz"
+  sha256 "27b7352865520a29aba5af01b0b4dc37dd2e9a0fd57de923b30314f509a80470"
   license "MIT"
 
   depends_on xcode: ["16.3", :build]
@@ -13,11 +13,6 @@ class Wax < Formula
     # archives. Ensure the directory exists so SwiftPM's package graph
     # validation succeeds.
     mkdir_p "Tests/WaxTests"
-
-    # CoreML on-device ANE compilation can hang in CLI contexts; default to CPU-only for reliability.
-    inreplace "Sources/WaxVectorSearchMiniLM/MiniLMEmbedder.swift",
-      "computeUnitsOrder: [MLComputeUnits] = [.cpuAndNeuralEngine, .all, .cpuOnly]",
-      "computeUnitsOrder: [MLComputeUnits] = [.cpuOnly]"
 
     system "swift", "build", "--disable-sandbox", "-c", "release",
            "--product", "wax-cli", "--traits", "default,MCPServer"

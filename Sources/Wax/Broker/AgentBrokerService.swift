@@ -21,6 +21,9 @@ package actor AgentBrokerService {
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
     private let commandMutex = AsyncMutex()
+    // A remember may wait for deferred embedding readiness. Keep that wait
+    // from blocking unrelated reads while still serializing concurrent writes.
+    private let rememberMutex = AsyncMutex()
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -130,16 +133,32 @@ package actor AgentBrokerService {
 
     package func close() async throws {
         try await commandMutex.withLock { [self] in
-            await virtualSessions.closeAll()
-            try await longTermMemory.flush()
-            try await longTermMemory.close()
+            try await rememberMutex.withLock { [self] in
+                await virtualSessions.closeAll()
+                try await longTermMemory.flush()
+                try await longTermMemory.close()
+            }
         }
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
-        await commandMutex.withLock { [self] in
+        let mutex = Self.isRememberRequest(request) ? rememberMutex : commandMutex
+        return await mutex.withLock { [self] in
             await handleSerialized(request)
         }
+    }
+
+    private static func isRememberRequest(_ request: AgentBrokerRequest) -> Bool {
+        guard let command = try? BrokerCommand.decode(
+            command: request.command,
+            arguments: request.arguments
+        ) else {
+            return false
+        }
+        if case .remember = command {
+            return true
+        }
+        return false
     }
 
     private func handleSerialized(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
