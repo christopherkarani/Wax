@@ -476,6 +476,22 @@ func toolsListHonorsStructuredMemoryFlag() {
 }
 
 @Test
+func toolSchemasStayWithinCommandCatalogSurface() {
+    let tools = ToolSchemas.allTools
+    let toolNames = Set(tools.map(\.name))
+    #expect(toolNames == AgentBrokerCommandSurface.publicCommandNames)
+
+    for tool in tools {
+        guard let entry = AgentBrokerCommandSurface.entry(for: tool.name) else {
+            Issue.record("Tool '\(tool.name)' is missing from the command catalog")
+            continue
+        }
+        #expect(entry.exposure == .publicCommand)
+        #expect(schemaPropertyNames(tool.inputSchema).isSubset(of: entry.acceptedArgumentKeys))
+    }
+}
+
+@Test
 func toolSchemaRegression() {
     let tools = ToolSchemas.allTools
 
@@ -5401,6 +5417,15 @@ private func schemaMaximum(_ schema: Value, property: String) -> Double? {
     default:
         return nil
     }
+}
+
+private func schemaPropertyNames(_ schema: Value) -> Set<String> {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"]
+    else {
+        return []
+    }
+    return Set(properties.keys)
 }
 
 private func schemaEnum(_ schema: Value, property: String) -> [String]? {

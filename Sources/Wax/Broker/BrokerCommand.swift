@@ -6,7 +6,6 @@ import Foundation
 /// payloads and do not re-parse argument bags.
 package enum BrokerCommand: Sendable, Equatable {
     case remember(Remember)
-    case memoryAppend(Remember)
     case recall(Recall)
     case search(Search)
     case memorySearch(MemorySearch)
@@ -243,17 +242,15 @@ package enum BrokerCommand: Sendable, Equatable {
         command rawCommand: String,
         arguments: [String: AgentBrokerValue]
     ) throws -> BrokerCommand {
-        let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        try AgentBrokerCommandSurface.validateArgumentSurface(
-            command: command,
+        let entry = try AgentBrokerCommandSurface.validateArgumentSurface(
+            command: rawCommand,
             providedKeys: Set(arguments.keys)
         )
+        let command = entry.canonicalName
         let args = BrokerArguments(arguments)
         switch command {
         case "remember":
             return .remember(try Remember.decode(args))
-        case "memory_append":
-            return .memoryAppend(try Remember.decode(args))
         case "recall":
             return .recall(try Recall.decode(args))
         case "search":
@@ -286,7 +283,7 @@ package enum BrokerCommand: Sendable, Equatable {
             return .entityResolve(try EntityResolve.decode(args))
         case "fact_retract":
             return .factRetract(try FactRetract.decode(args))
-        case "shutdown", "exit", "quit":
+        case "shutdown":
             return .shutdown
         case "session_synthesize":
             return .sessionSynthesize(try SessionSynthesize.decode(args))

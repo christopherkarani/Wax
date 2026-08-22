@@ -121,40 +121,41 @@ enum ToolSchemas {
         ),
         ]
 
-        if structuredMemoryEnabled {
-            tools.append(contentsOf: [
-                Tool(
-                    name: "knowledge_capture",
-                    description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
-                    inputSchema: waxKnowledgeCapture
-                ),
-                Tool(
-                    name: "entity_upsert",
-                    description: "Upsert a stable structured-memory entity by key. Use for durable graph nodes, not transient debug notes.",
-                    inputSchema: waxEntityUpsert
-                ),
-                Tool(
-                    name: "fact_assert",
-                    description: "Assert a structured-memory fact that can later be retracted. Prefer over free-text remember for stable true/false relations.",
-                    inputSchema: waxFactAssert
-                ),
-                Tool(
-                    name: "fact_retract",
-                    description: "Retract (soft-delete) a structured-memory fact by id when corrected or obsolete.",
-                    inputSchema: waxFactRetract
-                ),
-                Tool(
-                    name: "facts_query",
-                    description: "Query structured-memory facts for stable knowledge-graph answers.",
-                    inputSchema: waxFactsQuery
-                ),
-                Tool(
-                    name: "entity_resolve",
-                    description: "Resolve structured-memory entities by alias before asserting related facts.",
-                    inputSchema: waxEntityResolve
-                ),
-            ])
-        }
+        let structuredTools: [Tool] = [
+            Tool(
+                name: "knowledge_capture",
+                description: "Capture durable knowledge from a natural statement and optionally upsert related entity/fact records.",
+                inputSchema: waxKnowledgeCapture
+            ),
+            Tool(
+                name: "entity_upsert",
+                description: "Upsert a stable structured-memory entity by key. Use for durable graph nodes, not transient debug notes.",
+                inputSchema: waxEntityUpsert
+            ),
+            Tool(
+                name: "fact_assert",
+                description: "Assert a structured-memory fact that can later be retracted. Prefer over free-text remember for stable true/false relations.",
+                inputSchema: waxFactAssert
+            ),
+            Tool(
+                name: "fact_retract",
+                description: "Retract (soft-delete) a structured-memory fact by id when corrected or obsolete.",
+                inputSchema: waxFactRetract
+            ),
+            Tool(
+                name: "facts_query",
+                description: "Query structured-memory facts for stable knowledge-graph answers.",
+                inputSchema: waxFactsQuery
+            ),
+            Tool(
+                name: "entity_resolve",
+                description: "Resolve structured-memory entities by alias before asserting related facts.",
+                inputSchema: waxEntityResolve
+            ),
+        ]
+        tools.append(contentsOf: structuredTools.filter { tool in
+            structuredMemoryEnabled || !AgentBrokerCommandSurface.requiresStructuredMemory(tool.name)
+        })
 
         return tools
     }
