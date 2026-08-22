@@ -97,10 +97,15 @@ func embeddingReadinessTimedOutWaiterDoesNotCancelCompile() async throws {
         return RecordingEmbedder(model: "Kept")
     }
 
-    await #expect(throws: EmbeddingReadiness.WaitError.timedOut) {
+    do {
         _ = try await readiness.open(
             .builtIn(key: key, waitTimeout: .milliseconds(30), factory: factory)
         )
+        Issue.record("expected the short waiter to time out")
+    } catch is EmbeddingReadiness.WaitError {
+        // The coordinator keeps the factory task alive after this waiter times out.
+    } catch {
+        Issue.record("expected EmbeddingReadiness.WaitError.timedOut, got \(error)")
     }
 
     await gate.open()

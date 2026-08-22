@@ -157,6 +157,19 @@ final class WALCompactionBenchmarks: XCTestCase {
         try FileManager.default.copyItem(at: baseURL, to: disabledURL)
         try FileManager.default.copyItem(at: baseURL, to: enabledURL)
 
+        // Exclude first-open compilation and filesystem cache warm-up from the
+        // comparison; the guardrail is about steady-state reopen cost.
+        _ = try await measureReopenLatency(
+            at: disabledURL,
+            iterations: 2,
+            options: WaxOptions(walReplayStateSnapshotEnabled: false)
+        )
+        _ = try await measureReopenLatency(
+            at: enabledURL,
+            iterations: 2,
+            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        )
+
         let disabled = try await measureReopenLatency(
             at: disabledURL,
             iterations: 8,
