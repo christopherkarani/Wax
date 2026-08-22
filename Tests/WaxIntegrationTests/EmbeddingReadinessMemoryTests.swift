@@ -164,18 +164,36 @@ func memorySaveDuringLoadingBecomesDegradedAfterAttach() async throws {
     try await TempFiles.withTempFile { url in
         let gate = Gate()
         let readiness = EmbeddingReadiness()
+        let options = BuiltInEmbeddingProviderOptions.default
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
         let memory = try await Memory(
             at: url,
             config: .init(requireOnDeviceProviders: false, embedding: .automatic),
             readiness: readiness
         ) {
-            await gate.wait()
-            return DeterministicTextEmbedder()
+            try await factory()
         }
 
         try await memory.save("saved before the provider attached")
         await gate.open()
-        try await waitForEmbeddingReady(memory, allowDegraded: true)
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await memory.close()
+            Issue.record("expected automatic compile to succeed after save, got \(compileResult)")
+            return
+        }
+        try await waitForEmbeddingReady(memory, allowDegraded: true, timeout: .seconds(10))
 
         let stats = await memory.stats()
         guard case .degraded = stats.embeddingStatus else {
