@@ -23,6 +23,8 @@ public enum WaxError: Error, LocalizedError, Sendable {
     case invalidEmbedding(reason: String)
     /// Vector search is enabled but no embedding provider is configured.
     case missingEmbedder
+    /// A commit was attempted with pending embeddings but no staged vector index.
+    case vectorIndexNotStaged
 
     public var errorDescription: String? {
         switch self {
@@ -58,6 +60,8 @@ public enum WaxError: Error, LocalizedError, Sendable {
             return "Invalid embedding: \(reason)"
         case .missingEmbedder:
             return "Vector search requires an embedding provider; set Memory.Config.embedding or disable vector search."
+        case .vectorIndexNotStaged:
+            return "vector index must be staged before committing embeddings"
         }
     }
 }

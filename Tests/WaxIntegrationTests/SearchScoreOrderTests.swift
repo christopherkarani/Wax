@@ -76,9 +76,9 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
 @Test func hybridSearchReportedScoresDescendAfterFusion() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let canary = try await wax.put(Data("unique lexical canary 7f3a91".utf8))
-        try await text.index(frameId: canary, text: "unique lexical canary 7f3a91")
+        try await text.indexText(frameId: canary, text: "unique lexical canary 7f3a91")
         let neighbor = try await wax.put(Data("unrelated vector neighbor filler".utf8))
         try await text.commit()
 

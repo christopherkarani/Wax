@@ -160,7 +160,7 @@ actor DeterministicEmbedder: EmbeddingProvider {
 struct BenchmarkFixture {
     let url: URL
     let wax: Wax
-    let text: WaxTextSearchSession
+    let text: WaxSession
     let vector: WaxVectorSearchSession?
     let embedder: DeterministicEmbedder?
     let queryText: String
@@ -173,7 +173,7 @@ struct BenchmarkFixture {
         includeVectors: Bool
     ) async throws -> BenchmarkFixture {
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         var vector: WaxVectorSearchSession?
         var embedder: DeterministicEmbedder?
         if includeVectors {
@@ -199,14 +199,14 @@ struct BenchmarkFixture {
                     options: options,
                     identity: embedder.identity
                 )
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             } else {
                 let frameId = try await wax.put(data, options: options)
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             }
         }
 
-        try await text.stageForCommit()
+        try await text.stage()
         if let vector {
             try await vector.stageForCommit()
         }
