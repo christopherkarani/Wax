@@ -15,7 +15,10 @@ jobs:
         run: bash Resources/scripts/quality/hermes_plugin_tests.sh
 
   gates:
-    runs-on: macos-latest
+    # Keep the verification runner aligned with the release build. macos-latest
+    # currently resolves to macOS 26, whose CoreML MiniLM runtime emits
+    # non-finite vectors for this model on every compute-unit configuration.
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
