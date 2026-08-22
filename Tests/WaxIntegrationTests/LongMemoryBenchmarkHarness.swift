@@ -240,7 +240,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let embedder: DeterministicEmbedder?
         let vector: WaxVectorSearchSession?
@@ -285,10 +285,10 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             }
 
             docIDByFrameID[frameID] = document.id
-            try await text.index(frameId: frameID, text: document.text)
+            try await text.indexText(frameId: frameID, text: document.text)
         }
 
-        try await text.stageForCommit()
+        try await text.stage()
         if let vector {
             try await vector.stageForCommit()
         }

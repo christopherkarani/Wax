@@ -534,7 +534,7 @@ private enum SQLiteBlobInspector {
     try FileManager.default.removeItem(at: tempDir)
 }
 
-@Test func enableTextSearchSessionCommitsPersistedIndex() async throws {
+@Test func openSessionCommitsPersistedTextIndex() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -544,47 +544,47 @@ private enum SQLiteBlobInspector {
     let payload = Data("payload".utf8)
     let frameId = try await wax.put(payload, options: FrameMetaSubset(searchText: "hello from wax"))
 
-    let session = try await wax.enableTextSearch()
-    try await session.index(frameId: frameId, text: "hello from wax")
+    let session = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+    try await session.indexText(frameId: frameId, text: "hello from wax")
     try await session.commit()
     try await wax.close()
 
     let reopened = try await Wax.open(at: fileURL)
-    let session2 = try await reopened.enableTextSearch()
-    let results = try await session2.search(query: "hello", topK: 10)
+    let session2 = try await reopened.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+    let results = try await session2.searchText(query: "hello", topK: 10)
     #expect(results.map(\.frameId) == [frameId])
     try await reopened.close()
 
     try FileManager.default.removeItem(at: tempDir)
 }
 
-@Test func textSearchSessionCommitRemovesDeletedAndSupersededFramesFromFTSIndex() async throws {
+@Test func openSessionCommitRemovesDeletedAndSupersededFramesFromFTSIndex() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
     let fileURL = tempDir.appendingPathComponent("sample.wax")
     let wax = try await Wax.create(at: fileURL)
-    let session = try await wax.enableTextSearch()
+    let session = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
     let deletedId = try await wax.put(Data("delete payload".utf8))
     let supersededId = try await wax.put(Data("old payload".utf8))
-    try await session.index(frameId: deletedId, text: "obsolete delete marker")
-    try await session.index(frameId: supersededId, text: "obsolete supersede marker")
+    try await session.indexText(frameId: deletedId, text: "obsolete delete marker")
+    try await session.indexText(frameId: supersededId, text: "obsolete supersede marker")
     try await session.commit()
 
     let replacementId = try await wax.put(Data("new payload".utf8))
-    try await session.index(frameId: replacementId, text: "fresh replacement marker")
+    try await session.indexText(frameId: replacementId, text: "fresh replacement marker")
     try await wax.delete(frameId: deletedId)
     try await wax.supersede(supersededId: supersededId, supersedingId: replacementId)
     try await session.commit()
     try await wax.close()
 
     let reopened = try await Wax.open(at: fileURL)
-    let reopenedSession = try await reopened.enableTextSearch()
-    let deleteResults = try await reopenedSession.search(query: "obsolete delete", topK: 10)
-    let supersedeResults = try await reopenedSession.search(query: "obsolete supersede", topK: 10)
-    let replacementResults = try await reopenedSession.search(query: "fresh replacement", topK: 10)
+    let reopenedSession = try await reopened.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+    let deleteResults = try await reopenedSession.searchText(query: "obsolete delete", topK: 10)
+    let supersedeResults = try await reopenedSession.searchText(query: "obsolete supersede", topK: 10)
+    let replacementResults = try await reopenedSession.searchText(query: "fresh replacement", topK: 10)
 
     #expect(!deleteResults.contains(where: { $0.frameId == deletedId }))
     #expect(!supersedeResults.contains(where: { $0.frameId == supersededId }))

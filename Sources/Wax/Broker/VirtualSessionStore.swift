@@ -112,13 +112,30 @@ package final class VirtualSessionStore: @unchecked Sendable {
     private let nowMs: @Sendable () -> Int64
     private let waxOptions: WaxOptions
     private let openExisting: @Sendable (URL) async throws -> MemoryOrchestrator
+    private let endMutex = AsyncMutex()
     private let lock = NSLock()
     private var _live: [UUID: SessionState] = [:]
+    private var endingSessions: Set<UUID> = []
+    private var endHoldForTesting: Duration?
+    private var endCloseFailuresForTesting = 0
+    private var endEventFailuresForTesting = 0
     private var creatingPairs: Set<SessionPairKey> = []
     private var pairWaiters: [SessionPairKey: [CheckedContinuation<LifecycleResult?, Error>]] = [:]
 
     package var live: [UUID: SessionState] {
-        locked { _live }
+        locked { _live.filter { !endingSessions.contains($0.key) } }
+    }
+
+    package func setEndHoldForTesting(_ duration: Duration?) {
+        locked { endHoldForTesting = duration }
+    }
+
+    package func setEndCloseFailuresForTesting(_ count: Int) {
+        locked { endCloseFailuresForTesting = max(0, count) }
+    }
+
+    package func setEndEventFailuresForTesting(_ count: Int) {
+        locked { endEventFailuresForTesting = max(0, count) }
     }
 
     package init(
@@ -167,6 +184,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
         runID: String?,
         inferredScope: MemoryScopeContext
     ) async throws -> LifecycleResult {
+        if let agentID, let runID, locked({ endingSessionMatchesLocked(agentID: agentID, runID: runID) }) {
+            throw BrokerValidationError.invalid("agent_id and run_id session is ending; start a new run after it closes")
+        }
         if let agentID, let runID, let existing = try findActive(agentID: agentID, runID: runID) {
             if let explicitSessionID, explicitSessionID != existing.sessionID {
                 throw BrokerValidationError.invalid(
@@ -226,17 +246,28 @@ package final class VirtualSessionStore: @unchecked Sendable {
             throw BrokerValidationError.invalid("session_id has already been ended and cannot be resumed")
         }
 
-        if let existing = locked({ _live[manifest.sessionID] }) {
+        if let existing = locked({
+            endingSessions.contains(manifest.sessionID) ? nil : _live[manifest.sessionID]
+        }) {
             return .resumed(existing, recoveredLease: false)
+        }
+        if locked({ endingSessions.contains(manifest.sessionID) }) {
+            throw Self.notActiveError(for: manifest.sessionID)
         }
 
         let timestamp = nowMs()
         let recoveredLease = manifest.brokerLeaseOwnerID != nil && manifest.brokerLeaseOwnerID != brokerInstanceID
         let memory = try await openExistingSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
         do {
-            if let existing = locked({ _live[manifest.sessionID] }) {
+            if let existing = locked({
+                endingSessions.contains(manifest.sessionID) ? nil : _live[manifest.sessionID]
+            }) {
                 try? await memory.close()
                 return .resumed(existing, recoveredLease: false)
+            }
+            if locked({ endingSessions.contains(manifest.sessionID) }) {
+                try? await memory.close()
+                throw Self.notActiveError(for: manifest.sessionID)
             }
 
             var refreshed = manifest
@@ -293,7 +324,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
     }
 
     package func end(sessionID: UUID?) async throws -> EndResult {
-        let evicted: (id: UUID, state: SessionState, remaining: Int)? = try locked {
+        try await endMutex.withLock { [self] in
+            try await endSerialized(sessionID: sessionID)
+        }
+    }
+
+    private func endSerialized(sessionID: UUID?) async throws -> EndResult {
+        let target: (id: UUID, state: SessionState)? = try locked {
             switch endTarget(sessionID) {
             case .idle:
                 return nil
@@ -301,41 +338,91 @@ package final class VirtualSessionStore: @unchecked Sendable {
                 throw Self.notActiveError(for: missingID)
             case .requireSessionID:
                 throw Self.requireSessionIDError
-            case .session(let id, var state):
-                let timestamp = nowMs()
-                state.manifest.status = .ended
-                state.manifest.updatedAtMs = timestamp
-                state.manifest.brokerLeaseOwnerID = nil
-                state.manifest.leaseExpiresAtMs = nil
-                try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-                try BrokerSessionPersistence.appendEvent(
-                    BrokerSessionEvent(
-                        sessionID: state.id,
-                        agentID: state.manifest.agentID,
-                        runID: state.manifest.runID,
-                        timestampMs: timestamp,
-                        kind: .ended
-                    ),
-                    to: state.eventLogURL
-                )
-                _live.removeValue(forKey: id)
-                return (id, state, _live.count)
+            case .session(let id, let state):
+                endingSessions.insert(id)
+                return (id, state)
             }
         }
 
-        guard let evicted else {
+        guard let target else {
             return .idle
         }
-        try await evicted.state.memory.flush()
-        try await evicted.state.memory.close()
-        return .ended(sessionID: evicted.id, remainingActive: evicted.remaining)
+
+        if let hold = locked({ endHoldForTesting }) {
+            do {
+                try await Task.sleep(for: hold)
+            } catch {
+                if target.state.manifest.status != .ended {
+                    _ = locked { endingSessions.remove(target.id) }
+                }
+                throw error
+            }
+        }
+
+        // `_live` retains the state for retry, while `endingSessions` removes it
+        // from every routable view before the first suspension point.
+        if target.state.manifest.status != .ended {
+            do {
+                try await target.state.memory.flush()
+                _ = try locked {
+                    guard var state = _live[target.id] else {
+                        throw Self.notActiveError(for: target.id)
+                    }
+                    let timestamp = nowMs()
+                    state.manifest.status = .ended
+                    state.manifest.updatedAtMs = timestamp
+                    state.manifest.brokerLeaseOwnerID = nil
+                    state.manifest.leaseExpiresAtMs = nil
+                    if endEventFailuresForTesting > 0 {
+                        endEventFailuresForTesting -= 1
+                        throw BrokerValidationError.invalid("injected session end event failure")
+                    }
+                    try BrokerSessionPersistence.appendEvent(
+                        BrokerSessionEvent(
+                            sessionID: state.id,
+                            agentID: state.manifest.agentID,
+                            runID: state.manifest.runID,
+                            timestampMs: timestamp,
+                            kind: .ended
+                        ),
+                        to: state.eventLogURL
+                    )
+                    try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
+                    _live[target.id] = state
+                    return state
+                }
+            } catch {
+                _ = locked { endingSessions.remove(target.id) }
+                throw error
+            }
+        }
+
+        // A close failure deliberately leaves the session reserved (not routable)
+        // so a later explicit end can retry without admitting new writes.
+        let injectCloseFailure = locked { () -> Bool in
+            guard endCloseFailuresForTesting > 0 else { return false }
+            endCloseFailuresForTesting -= 1
+            return true
+        }
+        if injectCloseFailure {
+            throw BrokerValidationError.invalid("injected session close failure")
+        }
+        try await target.state.memory.close()
+        let remaining = locked {
+            _live.removeValue(forKey: target.id)
+            endingSessions.remove(target.id)
+            return _live.count - endingSessions.count
+        }
+        return .ended(sessionID: target.id, remainingActive: remaining)
     }
 
     /// Lookup never infers or mints. Omitted `session_id` is no virtual session.
     /// Unknown or not live here fails closed (no auto-rebind).
     package func lookup(_ sessionID: UUID?) throws -> Lookup {
         guard let sessionID else { return .none }
-        guard let state = locked({ _live[sessionID] }) else {
+        guard let state = locked({
+            endingSessions.contains(sessionID) ? nil : _live[sessionID]
+        }) else {
             throw Self.notActiveError(for: sessionID)
         }
         return .live(state.memory)
@@ -351,8 +438,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
     /// - Throws: ``BrokerSessionInactiveError`` when the UUID is unknown, ended, or unreadable.
     package func ensureLive(_ sessionID: UUID?) async throws -> Lookup {
         guard let sessionID else { return .none }
-        if let state = locked({ _live[sessionID] }) {
+        if let state = locked({
+            endingSessions.contains(sessionID) ? nil : _live[sessionID]
+        }) {
             return .live(state.memory)
+        }
+        if locked({ endingSessions.contains(sessionID) }) {
+            throw Self.notActiveError(for: sessionID)
         }
 
         let manifest: BrokerSessionManifest
@@ -445,7 +537,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package func refreshManifest(_ sessionID: UUID) throws {
         try locked {
-            guard var state = _live[sessionID] else {
+            guard !endingSessions.contains(sessionID), var state = _live[sessionID] else {
                 throw Self.notActiveError(for: sessionID)
             }
             state.manifest.updatedAtMs = nowMs()
@@ -462,7 +554,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
         payload: [String: String] = [:]
     ) throws {
         let snapshot = try locked { () -> (agentID: String, runID: String, eventLogURL: URL) in
-            guard let state = _live[sessionID] else {
+            guard !endingSessions.contains(sessionID), let state = _live[sessionID] else {
                 throw Self.notActiveError(for: sessionID)
             }
             return (state.manifest.agentID, state.manifest.runID, state.eventLogURL)
@@ -482,7 +574,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package func updateLive(_ sessionID: UUID, _ body: (inout SessionState) throws -> Void) throws {
         try locked {
-            guard var state = _live[sessionID] else {
+            guard !endingSessions.contains(sessionID), var state = _live[sessionID] else {
                 throw Self.notActiveError(for: sessionID)
             }
             try body(&state)
@@ -495,6 +587,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
         let sessions = locked { () -> [SessionState] in
             let values = Array(_live.values)
             _live.removeAll()
+            endingSessions.removeAll()
             return values
         }
         for session in sessions {
@@ -510,8 +603,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
         inferredScope: MemoryScopeContext
     ) async throws -> LifecycleResult {
         let sessionID = explicitSessionID ?? UUID()
-        if let active = locked({ _live[sessionID] }) {
+        if let active = locked({
+            endingSessions.contains(sessionID) ? nil : _live[sessionID]
+        }) {
             return .resumed(active, recoveredLease: false)
+        }
+        if locked({ endingSessions.contains(sessionID) }) {
+            throw Self.notActiveError(for: sessionID)
         }
 
         let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
@@ -536,9 +634,15 @@ package final class VirtualSessionStore: @unchecked Sendable {
                     runID: nil
                 )
             }
-            if let active = locked({ _live[sessionID] }) {
+            if let active = locked({
+                endingSessions.contains(sessionID) ? nil : _live[sessionID]
+            }) {
                 try? await memory.close()
                 return .resumed(active, recoveredLease: false)
+            }
+            if locked({ endingSessions.contains(sessionID) }) {
+                try? await memory.close()
+                throw Self.notActiveError(for: sessionID)
             }
 
             let timestamp = nowMs()
@@ -662,9 +766,19 @@ package final class VirtualSessionStore: @unchecked Sendable {
     }
 
     private func liveMatchLocked(agentID: String, runID: String) -> SessionState? {
-        _live.values.first(where: {
-            $0.manifest.agentID == agentID && $0.manifest.runID == runID
-        })
+        _live.first(where: {
+            !endingSessions.contains($0.key)
+                && $0.value.manifest.agentID == agentID
+                && $0.value.manifest.runID == runID
+        })?.value
+    }
+
+    private func endingSessionMatchesLocked(agentID: String, runID: String) -> Bool {
+        _live.contains { entry in
+            endingSessions.contains(entry.key)
+                && entry.value.manifest.agentID == agentID
+                && entry.value.manifest.runID == runID
+        }
     }
 
     private func abandonUnusedSessionFile(

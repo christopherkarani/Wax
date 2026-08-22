@@ -4,6 +4,25 @@ import WaxVectorSearch
 
 /// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
 package actor MemoryOrchestrator {
+    package struct RememberResult: Sendable, Equatable {
+        package var frameId: UInt64
+        package var framesAdded: UInt64
+        package var deduplicated: Bool
+        package var searchable: Bool
+
+        package init(
+            frameId: UInt64,
+            framesAdded: UInt64,
+            deduplicated: Bool,
+            searchable: Bool
+        ) {
+            self.frameId = frameId
+            self.framesAdded = framesAdded
+            self.deduplicated = deduplicated
+            self.searchable = searchable
+        }
+    }
+
     /// Policy controlling when to compute query embeddings for vector search.
     private enum QueryEmbeddingPolicy: Sendable, Equatable {
         case never
@@ -188,6 +207,7 @@ package actor MemoryOrchestrator {
     let wax: Wax
     let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
+    private let handoffWriteMutex = AsyncMutex()
 
     let session: WaxSession
     private var embedder: (any EmbeddingProvider)?
@@ -413,7 +433,8 @@ package actor MemoryOrchestrator {
     ///   (WAL guarantees crash safety), but the ingested content may be incomplete.
     ///   Callers requiring all-or-nothing semantics should validate post-ingest or
     ///   implement their own rollback by superseding the document frame on failure.
-    package func remember(_ content: String, metadata: [String: String] = [:]) async throws {
+    @discardableResult
+    package func remember(_ content: String, metadata: [String: String] = [:]) async throws -> RememberResult {
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
@@ -433,7 +454,14 @@ package actor MemoryOrchestrator {
             embeddingIdentity: Self.rememberDedupEmbeddingIdentity(from: localEmbedder?.identity)
         ) {
             if existingProbe.isComplete {
-                return
+                return RememberResult(
+                    frameId: existingProbe.documentId,
+                    framesAdded: 0,
+                    deduplicated: true,
+                    searchable: !chunks.isEmpty && (
+                        config.enableTextSearch || (config.enableVectorSearch && localEmbedder != nil)
+                    )
+                )
             }
             // Single-chunk remember writes only the document. A matching
             // document is not complete unless it is actually searchable.
@@ -442,7 +470,12 @@ package actor MemoryOrchestrator {
                     documentId: existingProbe.documentId,
                     text: chunks[0]
                 )
-                return
+                return RememberResult(
+                    frameId: existingProbe.documentId,
+                    framesAdded: 0,
+                    deduplicated: true,
+                    searchable: true
+                )
             }
         }
 
@@ -459,14 +492,19 @@ package actor MemoryOrchestrator {
         }
 
         guard !chunks.isEmpty else {
-            _ = try await localSession.put(
+            let frameId = try await localSession.put(
                 contentData,
                 options: FrameMetaSubset(
                     role: .document,
                     metadata: docMeta
                 )
             )
-            return
+            return RememberResult(
+                frameId: frameId,
+                framesAdded: 1,
+                deduplicated: false,
+                searchable: false
+            )
         }
 
         if useVectorSearch, localEmbedder == nil {
@@ -513,7 +551,12 @@ package actor MemoryOrchestrator {
                     EnrichmentTask(frameId: frameId, text: chunk)
                 )
             }
-            return
+            return RememberResult(
+                frameId: frameId,
+                framesAdded: 1,
+                deduplicated: false,
+                searchable: config.enableTextSearch || chunkEmbedding != nil
+            )
         }
 
         struct IngestBatchResult {
@@ -663,6 +706,12 @@ package actor MemoryOrchestrator {
                 }
             }
         }
+        return RememberResult(
+            frameId: docId,
+            framesAdded: UInt64(chunkCount + 1),
+            deduplicated: false,
+            searchable: config.enableTextSearch || writeVectors
+        )
     }
 
     private static func rememberDedupEmbeddingIdentity(
@@ -1369,51 +1418,72 @@ package actor MemoryOrchestrator {
         sessionId: UUID? = nil,
         commit: Bool = true
     ) async throws -> UInt64 {
+        try await handoffWriteMutex.withLock { [self] in
+            try await rememberHandoffSerialized(
+                content: content,
+                project: project,
+                pendingTasks: pendingTasks,
+                sessionId: sessionId,
+                commit: commit
+            )
+        }
+    }
+
+    private func rememberHandoffSerialized(
+        content: String,
+        project: String?,
+        pendingTasks: [String],
+        sessionId: UUID?,
+        commit: Bool
+    ) async throws -> UInt64 {
         let pending = pendingTasks
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-
-        let text: String
-        if pending.isEmpty {
-            text = content
+        let normalizedProject = project?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveSessionId = sessionId ?? currentSessionId
+        let previous: FrameMeta? = if let normalizedProject,
+                                      !normalizedProject.isEmpty,
+                                      let effectiveSessionId {
+            await wax.latestActiveHandoffMeta(
+                project: normalizedProject,
+                matchingSessionId: effectiveSessionId.uuidString
+            )
         } else {
-            let items = pending.map { "- \($0)" }.joined(separator: "\n")
-            text = """
-            \(content)
-
-            Pending tasks:
-            \(items)
-            """
+            nil
         }
+        let searchText = ([content] + pending).joined(separator: "\n")
 
         var metadata = Metadata()
         metadata.entries["kind"] = "handoff"
         metadata.entries[MemoryMetadataKeys.type] = MemoryType.handoff.rawValue
         metadata.entries[MemoryMetadataKeys.durability] = MemoryDurability.ephemeral.rawValue
         metadata.entries[MemoryMetadataKeys.createdAtMs] = String(Int64(Date().timeIntervalSince1970 * 1000))
-        if let project, !project.isEmpty {
-            metadata.entries["project"] = project
-            metadata.entries[MemoryMetadataKeys.project] = project
+        if let normalizedProject, !normalizedProject.isEmpty {
+            metadata.entries["project"] = normalizedProject
+            metadata.entries[MemoryMetadataKeys.project] = normalizedProject
         }
         if !pending.isEmpty {
             metadata.entries["pending_tasks"] = pending.joined(separator: "\n")
         }
-        if let effectiveSessionId = sessionId ?? currentSessionId {
+        if let effectiveSessionId {
             metadata.entries["session_id"] = effectiveSessionId.uuidString
         }
 
         let frameId = try await session.put(
-            Data(text.utf8),
+            Data(content.utf8),
             options: FrameMetaSubset(
                 kind: "handoff",
                 labels: ["handoff"],
                 role: .document,
-                searchText: text,
+                searchText: searchText,
                 metadata: metadata
             )
         )
         if config.enableTextSearch {
-            try await session.indexText(frameId: frameId, text: text)
+            try await session.indexText(frameId: frameId, text: searchText)
+        }
+        if let previous, previous.id != frameId {
+            try await wax.supersede(supersededId: previous.id, supersedingId: frameId)
         }
         // Ensure latestHandoff() can observe this frame immediately when commit=true.
         if commit {

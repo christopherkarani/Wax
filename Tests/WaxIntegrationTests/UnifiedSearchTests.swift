@@ -44,12 +44,12 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func textOnlySearch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(Data("Swift programming language".utf8))
-        try await text.index(frameId: id0, text: "Swift programming language")
+        try await text.indexText(frameId: id0, text: "Swift programming language")
         let id1 = try await wax.put(Data("Python programming language".utf8))
-        try await text.index(frameId: id1, text: "Python programming language")
+        try await text.indexText(frameId: id1, text: "Python programming language")
 
         try await text.commit()
 
@@ -67,12 +67,12 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func textOnlyMinScoreUsesNormalizedTextScores() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let exact = try await wax.put(Data("Swift Swift Swift concurrency actors".utf8))
-        try await text.index(frameId: exact, text: "Swift Swift Swift concurrency actors")
+        try await text.indexText(frameId: exact, text: "Swift Swift Swift concurrency actors")
         let weaker = try await wax.put(Data("Swift concurrency".utf8))
-        try await text.index(frameId: weaker, text: "Swift concurrency")
+        try await text.indexText(frameId: weaker, text: "Swift concurrency")
 
         try await text.commit()
 
@@ -110,17 +110,17 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func hybridSearchOverlapRanksHighest() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let vec = try await wax.enableVectorSearch(dimensions: 4)
 
         let id0 = try await vec.putWithEmbedding(Data("Swift programming".utf8), embedding: [0.0, 0.0, 0.0, 1.0])
-        try await text.index(frameId: id0, text: "Swift programming")
+        try await text.indexText(frameId: id0, text: "Swift programming")
 
         let id1 = try await vec.putWithEmbedding(Data("Swift is fast".utf8), embedding: [1.0, 0.0, 0.0, 0.0])
-        try await text.index(frameId: id1, text: "Swift is fast")
+        try await text.indexText(frameId: id1, text: "Swift is fast")
 
-        try await text.commit()
         try await vec.commit()
+        try await text.commit()
 
         let request = SearchRequest(
             query: "Swift",
@@ -140,10 +140,10 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func topKZeroReturnsEmpty() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(Data("Swift".utf8))
-        try await text.index(frameId: id0, text: "Swift")
+        try await text.indexText(frameId: id0, text: "Swift")
         try await text.commit()
 
         let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 0)
@@ -323,19 +323,19 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func frameFilterMatchesMetadataEntries() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(
             Data("Project alpha roadmap".utf8),
             options: FrameMetaSubset(metadata: Metadata(["source": "email", "topic": "alpha"]))
         )
-        try await text.index(frameId: id0, text: "Project alpha roadmap")
+        try await text.indexText(frameId: id0, text: "Project alpha roadmap")
 
         let id1 = try await wax.put(
             Data("Project alpha backlog".utf8),
             options: FrameMetaSubset(metadata: Metadata(["source": "notes", "topic": "alpha"]))
         )
-        try await text.index(frameId: id1, text: "Project alpha backlog")
+        try await text.indexText(frameId: id1, text: "Project alpha backlog")
 
         try await text.commit()
 
@@ -359,7 +359,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func metadataFilterOverfetchesPastInitialTextCandidateWindow() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let query = "f030starvation"
 
         for index in 0..<12 {
@@ -369,14 +369,14 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 Data(payload.utf8),
                 options: FrameMetaSubset(metadata: Metadata(["scope": "blocked"]))
             )
-            try await text.index(frameId: frameID, text: payload)
+            try await text.indexText(frameId: frameID, text: payload)
         }
 
         let allowedFrame = try await wax.put(
             Data("allowed \(query)".utf8),
             options: FrameMetaSubset(metadata: Metadata(["scope": "allowed"]))
         )
-        try await text.index(frameId: allowedFrame, text: "allowed \(query)")
+        try await text.indexText(frameId: allowedFrame, text: "allowed \(query)")
         try await text.commit()
 
         let response = try await wax.search(
@@ -515,7 +515,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func frameFilterMatchesTagsAndLabels() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let id0 = try await wax.put(
             Data("Quarterly finance summary".utf8),
@@ -524,7 +524,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 labels: ["public", "summary"]
             )
         )
-        try await text.index(frameId: id0, text: "Quarterly finance summary")
+        try await text.indexText(frameId: id0, text: "Quarterly finance summary")
 
         let id1 = try await wax.put(
             Data("Quarterly engineering summary".utf8),
@@ -533,7 +533,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 labels: ["internal", "summary"]
             )
         )
-        try await text.index(frameId: id1, text: "Quarterly engineering summary")
+        try await text.indexText(frameId: id1, text: "Quarterly engineering summary")
 
         try await text.commit()
 
@@ -560,13 +560,13 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 @Test func timelineFallbackHonorsMetadataFilter() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let includedID = try await wax.put(
             Data("On-call runbook for release".utf8),
             options: FrameMetaSubset(metadata: Metadata(["source": "email"]))
         )
-        try await text.index(frameId: includedID, text: "On-call runbook for release")
+        try await text.indexText(frameId: includedID, text: "On-call runbook for release")
 
         _ = try await wax.put(
             Data("On-call retrospective notes".utf8),
@@ -654,10 +654,11 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             try await wax.close()
             Issue.record("Expected close to propagate auto-commit failure for pending embeddings")
         } catch let error as WaxError {
-            guard case .io(let message) = error else {
-                Issue.record("Expected WaxError.io, got \(error)")
+            guard case .vectorIndexNotStaged = error else {
+                Issue.record("Expected WaxError.vectorIndexNotStaged, got \(error)")
                 return
             }
+            let message = error.errorDescription ?? ""
             #expect(message.contains("vector index must be staged before committing embeddings"))
         }
     }
@@ -685,22 +686,22 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func locationQueryPrefersProfileOverHealthDistractor() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let profileID = try await wax.put(
             Data("Person18 moved to Seattle in 2021 and works on the platform team.".utf8)
         )
-        try await text.index(frameId: profileID, text: "Person18 moved to Seattle in 2021 and works on the platform team.")
+        try await text.indexText(frameId: profileID, text: "Person18 moved to Seattle in 2021 and works on the platform team.")
 
         let healthID = try await wax.put(
             Data("Person18 is allergic to peanuts and avoids foods with peanuts.".utf8)
         )
-        try await text.index(frameId: healthID, text: "Person18 is allergic to peanuts and avoids foods with peanuts.")
+        try await text.indexText(frameId: healthID, text: "Person18 is allergic to peanuts and avoids foods with peanuts.")
 
         let prefID = try await wax.put(
             Data("Person18 prefers pair programming and async design docs.".utf8)
         )
-        try await text.index(frameId: prefID, text: "Person18 prefers pair programming and async design docs.")
+        try await text.indexText(frameId: prefID, text: "Person18 prefers pair programming and async design docs.")
 
         try await text.commit()
 
@@ -723,17 +724,17 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func launchQueryPrefersExactEntityTimelineOverOtherEntityTie() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let otherID = try await wax.put(
             Data("For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026.".utf8)
         )
-        try await text.index(frameId: otherID, text: "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026.")
+        try await text.indexText(frameId: otherID, text: "For project Atlas-07, beta starts in April 2026 and public launch is September 10, 2026.")
 
         let targetID = try await wax.put(
             Data("For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026.".utf8)
         )
-        try await text.index(frameId: targetID, text: "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026.")
+        try await text.indexText(frameId: targetID, text: "For project Atlas-10, beta starts in April 2026 and public launch is August 13, 2026.")
 
         try await text.commit()
 
@@ -755,17 +756,17 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func punctuationHeavyQueryWithQuotesAndSymbolsDoesNotBreakFTS() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let atlas10 = try await wax.put(
             Data("For project Atlas-10, public launch is August 13, 2026.".utf8)
         )
-        try await text.index(frameId: atlas10, text: "For project Atlas-10, public launch is August 13, 2026.")
+        try await text.indexText(frameId: atlas10, text: "For project Atlas-10, public launch is August 13, 2026.")
 
         let atlas11 = try await wax.put(
             Data("For project Atlas-11, public launch is September 14, 2026.".utf8)
         )
-        try await text.index(frameId: atlas11, text: "For project Atlas-11, public launch is September 14, 2026.")
+        try await text.indexText(frameId: atlas11, text: "For project Atlas-11, public launch is September 14, 2026.")
 
         try await text.commit()
 
@@ -787,17 +788,17 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func nameOnlyEntityLocationQueryPrefersMatchingPerson() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let noah = try await wax.put(
             Data("Noah moved to Austin in 2021. City move city move city move city move.".utf8)
         )
-        try await text.index(frameId: noah, text: "Noah moved to Austin in 2021. City move city move city move city move.")
+        try await text.indexText(frameId: noah, text: "Noah moved to Austin in 2021. City move city move city move city move.")
 
         let priya = try await wax.put(
             Data("Priya moved to Seattle in 2021 and works on release readiness.".utf8)
         )
-        try await text.index(frameId: priya, text: "Priya moved to Seattle in 2021 and works on release readiness.")
+        try await text.indexText(frameId: priya, text: "Priya moved to Seattle in 2021 and works on release readiness.")
 
         try await text.commit()
 
@@ -819,12 +820,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func lowercaseNameOnlyEntityWithoutCueWordsPrefersMoveSentence() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let distractorID = try await wax.put(
             Data("Noah city move retrospective: city move city move noah city move checklist without a destination.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: distractorID,
             text: "Noah city move retrospective: city move city move noah city move checklist without a destination."
         )
@@ -832,7 +833,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let targetID = try await wax.put(
             Data("Noah moved to Boise in 2021 and joined release engineering.".utf8)
         )
-        try await text.index(frameId: targetID, text: "Noah moved to Boise in 2021 and joined release engineering.")
+        try await text.indexText(frameId: targetID, text: "Noah moved to Boise in 2021 and joined release engineering.")
 
         try await text.commit()
 
@@ -854,12 +855,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func sameNameCollisionUsesProjectAndTimelineCues() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let olderTimelineID = try await wax.put(
             Data("In the 2025 Atlas-10 timeline, Noah owns deployment readiness and public launch is July 9, 2025. Atlas-10 launch date Atlas-10 launch date Atlas-10 launch date.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: olderTimelineID,
             text: "In the 2025 Atlas-10 timeline, Noah owns deployment readiness and public launch is July 9, 2025. Atlas-10 launch date Atlas-10 launch date Atlas-10 launch date."
         )
@@ -867,7 +868,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let currentTimelineID = try await wax.put(
             Data("In the 2026 Atlas-10 timeline, Noah owns deployment readiness and public launch is August 13, 2026.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: currentTimelineID,
             text: "In the 2026 Atlas-10 timeline, Noah owns deployment readiness and public launch is August 13, 2026."
         )
@@ -892,12 +893,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func quotedPhraseIntentPrefersExactHyphenatedPhraseMatch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let distractorID = try await wax.put(
             Data("Atlas 10 launch date planning notes cover launch date rehearsal and launch date checklist for August 30, 2026.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: distractorID,
             text: "Atlas 10 launch date planning notes cover launch date rehearsal and launch date checklist for August 30, 2026."
         )
@@ -905,7 +906,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let phraseMatchID = try await wax.put(
             Data(#"The release ledger states "Atlas-10 launch date" is August 13, 2026."#.utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: phraseMatchID,
             text: #"The release ledger states "Atlas-10 launch date" is August 13, 2026."#
         )
@@ -930,12 +931,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func singleQuotedPhraseIntentPrefersExactHyphenatedPhraseMatch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let distractorID = try await wax.put(
             Data("Atlas 10 launch date planning notes: atlas 10 launch date rehearsal, atlas 10 launch date checklist, atlas 10 launch date draft for August 30, 2026.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: distractorID,
             text: "Atlas 10 launch date planning notes: atlas 10 launch date rehearsal, atlas 10 launch date checklist, atlas 10 launch date draft for August 30, 2026."
         )
@@ -943,7 +944,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let phraseMatchID = try await wax.put(
             Data("Release ledger canonical phrase Atlas-10 launch date is August 13, 2026.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: phraseMatchID,
             text: "Release ledger canonical phrase Atlas-10 launch date is August 13, 2026."
         )
@@ -968,12 +969,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func launchDateQueryRejectsTentativeDistractorForSameEntity() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let distractorID = try await wax.put(
             Data("Draft memo: for project Atlas-10, public launch date is August 21, 2026 and remains tentative pending approval.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: distractorID,
             text: "Draft memo: for project Atlas-10, public launch date is August 21, 2026 and remains tentative pending approval."
         )
@@ -981,7 +982,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let authoritativeID = try await wax.put(
             Data("For project Atlas-10, public launch is August 13, 2026.".utf8)
         )
-        try await text.index(
+        try await text.indexText(
             frameId: authoritativeID,
             text: "For project Atlas-10, public launch is August 13, 2026."
         )
@@ -1006,29 +1007,29 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func hybridSearchRankingDiagnosticsTopKIsScopedAndStable() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let vec = try await wax.enableVectorSearch(dimensions: 4, preference: .cpuOnly)
 
         let id0 = try await vec.putWithEmbedding(
             Data("Swift concurrency guide".utf8),
             embedding: [1.0, 0.0, 0.0, 0.0]
         )
-        try await text.index(frameId: id0, text: "Swift concurrency guide")
+        try await text.indexText(frameId: id0, text: "Swift concurrency guide")
 
         let id1 = try await vec.putWithEmbedding(
             Data("Swift actors and tasks".utf8),
             embedding: [0.9, 0.1, 0.0, 0.0]
         )
-        try await text.index(frameId: id1, text: "Swift actors and tasks")
+        try await text.indexText(frameId: id1, text: "Swift actors and tasks")
 
         let id2 = try await vec.putWithEmbedding(
             Data("Rust ownership".utf8),
             embedding: [0.0, 1.0, 0.0, 0.0]
         )
-        try await text.index(frameId: id2, text: "Rust ownership")
+        try await text.indexText(frameId: id2, text: "Rust ownership")
 
-        try await text.commit()
         try await vec.commit()
+        try await text.commit()
 
         let request = SearchRequest(
             query: "Swift concurrency",
@@ -1067,11 +1068,11 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func hybridRrfTieBreakUsesFrameIDWhenScoreAndBestRankTie() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let query = "what is rrfuniquetoken123"
 
         let textOnlyID = try await wax.put(Data("text lane candidate".utf8))
-        try await text.index(frameId: textOnlyID, text: query)
+        try await text.indexText(frameId: textOnlyID, text: query)
 
         let vectorOnlyID = try await wax.put(Data("vector lane candidate".utf8))
 
@@ -1115,7 +1116,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func semanticScopeRerankPrefersRepoDecisionMemory() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let globalID = try await wax.put(
             Data("Auth rollout decision uses refresh tokens.".utf8),
@@ -1126,7 +1127,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "other-repo",
             ]))
         )
-        try await text.index(frameId: globalID, text: "Auth rollout decision uses refresh tokens.")
+        try await text.indexText(frameId: globalID, text: "Auth rollout decision uses refresh tokens.")
 
         let repoID = try await wax.put(
             Data("Auth rollout decision uses refresh tokens.".utf8),
@@ -1137,7 +1138,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "Wax",
             ]))
         )
-        try await text.index(frameId: repoID, text: "Auth rollout decision uses refresh tokens.")
+        try await text.indexText(frameId: repoID, text: "Auth rollout decision uses refresh tokens.")
         try await text.commit()
 
         let response = try await wax.search(
@@ -1160,7 +1161,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func expiredMemoriesAreExcludedFromUnifiedSearch() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
         let expiredID = try await wax.put(
@@ -1172,7 +1173,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.expires_at_ms": String(nowMs - 1_000),
             ]))
         )
-        try await text.index(frameId: expiredID, text: "Legacy rollout note")
+        try await text.indexText(frameId: expiredID, text: "Legacy rollout note")
 
         let activeID = try await wax.put(
             Data("Current rollout note".utf8),
@@ -1182,7 +1183,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.created_at_ms": String(nowMs),
             ]))
         )
-        try await text.index(frameId: activeID, text: "Current rollout note")
+        try await text.indexText(frameId: activeID, text: "Current rollout note")
         try await text.commit()
 
         let response = try await wax.search(
@@ -1199,7 +1200,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func unifiedSearchExplainsSemanticReasons() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let frameID = try await wax.put(
             Data("Chris prefers concise release notes.".utf8),
@@ -1210,7 +1211,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "Wax",
             ]))
         )
-        try await text.index(frameId: frameID, text: "Chris prefers concise release notes.")
+        try await text.indexText(frameId: frameID, text: "Chris prefers concise release notes.")
         try await text.commit()
 
         let response = try await wax.search(
@@ -1238,7 +1239,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func hyphenatedIdentifierQueryRanksExactTokenFrameFirstInTextAndHybrid() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let token = "WAXSTRESS-DURABLE-CANARY-ALPHA-8821"
         let exactBody = "Durable canary frame records unique token \(token) for retrieval."
         let neighborBody =
@@ -1253,7 +1254,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "Wax",
             ]))
         )
-        try await text.index(frameId: neighborID, text: neighborBody)
+        try await text.indexText(frameId: neighborID, text: neighborBody)
 
         let exactID = try await wax.put(
             Data(exactBody.utf8),
@@ -1264,7 +1265,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "other-project",
             ]))
         )
-        try await text.index(frameId: exactID, text: exactBody)
+        try await text.indexText(frameId: exactID, text: exactBody)
         try await text.commit()
 
         let textResponse = try await wax.search(
@@ -1307,7 +1308,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func hyphenatedIdentifierQueryBeatsMultipleSameRepoHybridNeighbors() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let token = "WAXSTRESS-DURABLE-CANARY-ALPHA-8821"
         let neighborMeta = FrameMetaSubset(metadata: Metadata([
             "wax.memory_type": "decision",
@@ -1322,7 +1323,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             let body =
                 "Grok Wax MCP stress canary neighbor \(index) records durable canary alpha stress notes without the unique hyphenated identifier."
             let neighborID = try await wax.put(Data(body.utf8), options: neighborMeta)
-            try await text.index(frameId: neighborID, text: body)
+            try await text.indexText(frameId: neighborID, text: body)
             neighborIDs.append(neighborID)
         }
 
@@ -1336,7 +1337,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 "wax.project": "other-project",
             ]))
         )
-        try await text.index(frameId: exactID, text: exactBody)
+        try await text.indexText(frameId: exactID, text: exactBody)
         try await text.commit()
 
         let vectorHits = neighborIDs.enumerated().map { index, frameId in
@@ -1439,12 +1440,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func unpunctuatedBooleanWordsAreLiteralsNotFTSOperators() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let catsOnly = try await wax.put(Data("only cats live here".utf8))
-        try await text.index(frameId: catsOnly, text: "only cats live here")
+        try await text.indexText(frameId: catsOnly, text: "only cats live here")
         let dogsOnly = try await wax.put(Data("only dogs live here".utf8))
-        try await text.index(frameId: dogsOnly, text: "only dogs live here")
+        try await text.indexText(frameId: dogsOnly, text: "only dogs live here")
         try await text.commit()
 
         let response = try await wax.search(
@@ -1462,10 +1463,10 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 @Test func textOnlySearchSkipsMatchWhenPlanIsEmpty() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         let indexed = try await wax.put(Data("the and or not near filler".utf8))
-        try await text.index(frameId: indexed, text: "the and or not near filler")
+        try await text.indexText(frameId: indexed, text: "the and or not near filler")
         try await text.commit()
 
         let stopwordOnly = try await wax.search(

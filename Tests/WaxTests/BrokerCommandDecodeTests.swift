@@ -4,7 +4,7 @@ import Testing
 
 struct BrokerCommandDecodeTests {
     @Test
-    func rememberAliasSharesPayloadShape() throws {
+    func rememberAliasCanonicalizesToOneTypedCommand() throws {
         let args: [String: AgentBrokerValue] = [
             "content": .string("  keep spaces  "),
             "session_id": .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
@@ -14,7 +14,7 @@ struct BrokerCommandDecodeTests {
         ]
         let remember = try BrokerCommand.decode(command: "remember", arguments: args)
         let append = try BrokerCommand.decode(command: "memory_append", arguments: args)
-        guard case .remember(let a) = remember, case .memoryAppend(let b) = append else {
+        guard case .remember(let a) = remember, case .remember(let b) = append else {
             Issue.record("alias mismatch")
             return
         }
@@ -23,6 +23,21 @@ struct BrokerCommandDecodeTests {
         #expect(a.sessionID == UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
         #expect(a.writeScope == .session)
         #expect(a.writeSemantics.type == .decision)
+    }
+
+    @Test
+    func commandCatalogNormalizesAliasesAndStaticFacts() throws {
+        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "  MEMORY_APPEND ") == "remember")
+        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "QUIT") == "shutdown")
+        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "wax_recall") == nil)
+        #expect(AgentBrokerCommandSurface.isPublicCommand("memory_append"))
+        #expect(!AgentBrokerCommandSurface.isPublicCommand("flush"))
+        #expect(AgentBrokerCommandSurface.requiresStructuredMemory("facts_query"))
+        #expect(!AgentBrokerCommandSurface.requiresStructuredMemory("recall"))
+
+        let rememberKeys = try #require(AgentBrokerCommandSurface.allowedArguments(for: "remember"))
+        let appendKeys = try #require(AgentBrokerCommandSurface.allowedArguments(for: "memory_append"))
+        #expect(rememberKeys == appendKeys)
     }
 
     @Test
