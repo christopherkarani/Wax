@@ -170,6 +170,83 @@ struct VirtualSessionStoreTests {
     }
 
     @Test
+    func endingSessionIsNotRoutableAcrossSuspension() async throws {
+        try await withVirtualSessionStore { store, _ in
+            let started = try await startSession(store, agentID: "ending-agent", runID: "ending-run")
+            await store.setEndHoldForTesting(.milliseconds(200))
+
+            let ending = Task { try await store.end(sessionID: started.state.id) }
+            while !store.live.isEmpty {
+                await Task.yield()
+            }
+
+            #expect(throws: (any Error).self) {
+                _ = try store.lookup(started.state.id)
+            }
+            await #expect(throws: (any Error).self) {
+                _ = try await store.ensureLive(started.state.id)
+            }
+            await #expect(throws: (any Error).self) {
+                _ = try await store.resume(
+                    explicitSessionID: started.state.id,
+                    agentID: nil,
+                    runID: nil
+                )
+            }
+            await #expect(throws: (any Error).self) {
+                _ = try await startSession(store, agentID: "ending-agent", runID: "ending-run")
+            }
+            #expect(try await ending.value.ended == true)
+        }
+    }
+
+    @Test
+    func closeFailureKeepsSessionReservedAndExplicitEndCanRetry() async throws {
+        try await withVirtualSessionStore { store, _ in
+            let started = try await startSession(store, agentID: "retry-end-agent", runID: "retry-end-run")
+            await store.setEndCloseFailuresForTesting(1)
+
+            await #expect(throws: (any Error).self) {
+                _ = try await store.end(sessionID: started.state.id)
+            }
+            #expect(store.live.isEmpty)
+            #expect(throws: (any Error).self) {
+                _ = try store.lookup(started.state.id)
+            }
+
+            let retried = try await store.end(sessionID: started.state.id)
+            #expect(retried.ended == true)
+            #expect(retried.sessionID == started.state.id)
+        }
+    }
+
+    @Test
+    func endEventFailureLeavesManifestActiveAndSessionRetryable() async throws {
+        try await withVirtualSessionStore { store, root in
+            let started = try await startSession(store, agentID: "retry-event-agent", runID: "retry-event-run")
+            await store.setEndEventFailuresForTesting(1)
+
+            await #expect(throws: (any Error).self) {
+                _ = try await store.end(sessionID: started.state.id)
+            }
+            let manifest = try BrokerSessionPersistence.loadManifest(
+                rootURL: root,
+                sessionID: started.state.id
+            )
+            #expect(manifest.status == .active)
+            switch try store.lookup(started.state.id) {
+            case .live:
+                break
+            case .none:
+                Issue.record("event failure made the session unroutable")
+            }
+
+            let retried = try await store.end(sessionID: started.state.id)
+            #expect(retried.ended == true)
+        }
+    }
+
+    @Test
     func resumeStealsAForeignLeaseAndReportsRecoveredLease() async throws {
         try await withVirtualSessionStore(brokerInstanceID: "owner-a") { firstStore, root in
             let started = try await startSession(firstStore, agentID: "lease-agent", runID: "lease-run")
