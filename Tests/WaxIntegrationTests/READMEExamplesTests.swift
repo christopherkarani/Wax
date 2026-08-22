@@ -173,18 +173,18 @@ func readmeExampleQuickstartOrchestrator() async throws {
 func readmeExampleUnifiedSearchAPI() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let vec = try await wax.enableVectorSearch(dimensions: 384)
 
         let frameId = try await wax.put(
             Data("Hello from Wax".utf8),
             options: FrameMetaSubset(searchText: "Hello from Wax")
         )
-        try await text.index(frameId: frameId, text: "Hello from Wax")
+        try await text.indexText(frameId: frameId, text: "Hello from Wax")
         try await vec.add(frameId: frameId, vector: [Float](repeating: 0.01, count: 384))
 
-        try await text.commit()
         try await vec.commit()
+        try await text.commit()
 
         let request = SearchRequest(query: "Hello", mode: .hybrid(alpha: 0.5), topK: 10)
         let response = try await wax.search(request)
@@ -200,14 +200,14 @@ func readmeExampleUnifiedSearchAPI() async throws {
 func readmeExampleFastRAG() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
-        let text = try await wax.enableTextSearch()
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
         // Add some content first
         let frameId = try await wax.put(
             Data("Swift concurrency is powerful".utf8),
             options: FrameMetaSubset(searchText: "Swift concurrency is powerful")
         )
-        try await text.index(frameId: frameId, text: "Swift concurrency is powerful")
+        try await text.indexText(frameId: frameId, text: "Swift concurrency is powerful")
         try await text.commit()
 
         let builder = FastRAGContextBuilder()

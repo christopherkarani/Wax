@@ -141,12 +141,12 @@ public actor Memory {
 
     /// Persist text into memory.
     public func save(_ text: String, metadata: [String: String] = [:]) async throws {
-        try await orchestrator.remember(text, metadata: metadata)
+        _ = try await orchestrator.remember(text, metadata: metadata)
     }
 
     /// Persist multiple texts in a single call.
     public func save<each S: StringProtocol>(_ texts: repeat each S) async throws {
-        repeat try await orchestrator.remember(String(each texts))
+        repeat _ = try await orchestrator.remember(String(each texts))
     }
 
     /// Search memory and return ranked context.

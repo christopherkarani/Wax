@@ -42,6 +42,79 @@ private func withAgentBrokerService<T>(
 }
 
 @Test
+func agentBrokerResponseWireFormatMatchesLegacyShape() throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+
+    let success = AgentBrokerResponse.success(
+        id: "req-1",
+        payload: .object(["status": .string("ok")])
+    )
+    #expect(
+        String(data: try encoder.encode(success), encoding: .utf8)
+            == #"{"id":"req-1","ok":true,"payload":{"status":"ok"},"shouldExit":false}"#
+    )
+
+    let successNoID = AgentBrokerResponse.success(payload: .object([:]), shouldExit: true)
+    #expect(
+        String(data: try encoder.encode(successNoID), encoding: .utf8)
+            == #"{"ok":true,"payload":{},"shouldExit":true}"#
+    )
+
+    let failure = AgentBrokerResponse.failure(
+        id: "req-2",
+        payload: .object(["code": .string("bad_request")]),
+        message: "unsupported argument"
+    )
+    #expect(
+        String(data: try encoder.encode(failure), encoding: .utf8)
+            == #"{"error":"unsupported argument","id":"req-2","ok":false,"payload":{"code":"bad_request"},"shouldExit":false}"#
+    )
+
+    let failureNoPayload = AgentBrokerResponse.failure(id: "req-3", message: "boom")
+    #expect(
+        String(data: try encoder.encode(failureNoPayload), encoding: .utf8)
+            == #"{"error":"boom","id":"req-3","ok":false,"shouldExit":false}"#
+    )
+
+    let decoder = JSONDecoder()
+    let decodedSuccess = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-1","ok":true,"payload":{"status":"ok"},"shouldExit":false}"#.utf8)
+    )
+    #expect(decodedSuccess == success)
+
+    let successNullPayload = AgentBrokerResponse.success(payload: .null)
+    #expect(
+        String(data: try encoder.encode(successNullPayload), encoding: .utf8)
+            == #"{"ok":true,"payload":null,"shouldExit":false}"#
+    )
+
+    let decodedLegacyEmptyPayload = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-4","ok":true,"shouldExit":false}"#.utf8)
+    )
+    #expect(decodedLegacyEmptyPayload.ok)
+    #expect(decodedLegacyEmptyPayload.payload == nil)
+
+    let decodedLegacyFailureWithoutError = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(#"{"id":"req-5","ok":false,"shouldExit":false}"#.utf8)
+    )
+    #expect(!decodedLegacyFailureWithoutError.ok)
+    #expect(decodedLegacyFailureWithoutError.error == "Broker execution failed")
+    #expect(decodedLegacyFailureWithoutError.payload == nil)
+
+    let decodedFailure = try decoder.decode(
+        AgentBrokerResponse.self,
+        from: Data(
+            #"{"id":"req-2","ok":false,"payload":{"code":"bad_request"},"error":"unsupported argument","shouldExit":false}"#.utf8
+        )
+    )
+    #expect(decodedFailure == failure)
+}
+
+@Test
 func brokerRejectsInvalidEmbedderChoice() async throws {
     let rootURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-broker-invalid-embedder-\(UUID().uuidString)", isDirectory: true)
@@ -314,7 +387,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
             return
         }
 
-        let response = AgentBrokerResponse(id: "__ping__", ok: true, payload: .object([:]))
+        let response = AgentBrokerResponse.success(id: "__ping__", payload: .object([:]))
         guard let payload = try? JSONEncoder().encode(response) else {
             close(client)
             return
@@ -400,6 +473,22 @@ func toolsListHonorsStructuredMemoryFlag() {
     #expect(!withoutStructuredMemory.contains("entity_upsert"))
     #expect(!withoutStructuredMemory.contains("fact_assert"))
     #expect(!withoutStructuredMemory.contains("knowledge_capture"))
+}
+
+@Test
+func toolSchemasStayWithinCommandCatalogSurface() {
+    let tools = ToolSchemas.allTools
+    let toolNames = Set(tools.map(\.name))
+    #expect(toolNames == AgentBrokerCommandSurface.publicCommandNames)
+
+    for tool in tools {
+        guard let entry = AgentBrokerCommandSurface.entry(for: tool.name) else {
+            Issue.record("Tool '\(tool.name)' is missing from the command catalog")
+            continue
+        }
+        #expect(entry.exposure == .publicCommand)
+        #expect(schemaPropertyNames(tool.inputSchema).isSubset(of: entry.acceptedArgumentKeys))
+    }
 }
 
 @Test
@@ -1714,7 +1803,9 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
             broker: service
         )
         #expect(recallResult.isError != true)
-        #expect(firstText(in: recallResult).contains("Query: actors"))
+        let recallJSON = try parseJSONText(in: recallResult)
+        #expect((recallJSON["query"] as? String) == "actors")
+        #expect((recallJSON["result_count"] as? Int) == 1)
 
         let searchResult = await WaxMCPTools.handleCall(
             params: .init(
@@ -3396,8 +3487,9 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
             broker: service
         )
         #expect(recall.isError != true)
-        let recallText = firstText(in: recall)
-        #expect(recallText.contains("Results:"))
+        let recallJSON = try parseJSONText(in: recall)
+        #expect((recallJSON["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
+        #expect((recallJSON["result_count"] as? Int) == 1)
 
         let search = await WaxMCPTools.handleCall(
             params: .init(name: "search", arguments: [
@@ -4308,9 +4400,9 @@ func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/VirtualSessionStore.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "package func start("))
-    let resume = try #require(source[start.upperBound...].range(of: "package func resume("))
-    let body = source[start.lowerBound..<resume.lowerBound]
+    let start = try #require(source.range(of: "private func mintNewSession("))
+    let end = try #require(source[start.upperBound...].range(of: "private func abandonUnusedSessionFile("))
+    let body = source[start.lowerBound..<end.lowerBound]
 
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
     let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)"))
@@ -4348,19 +4440,19 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/VirtualSessionStore.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "package func end("))
+    let start = try #require(source.range(of: "private func endSerialized("))
     let end = try #require(source[start.upperBound...].range(of: "package func lookup("))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: state.manifestURL)"))
+    let flush = try #require(body.range(of: "try await target.state.memory.flush()"))
+    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)"))
     let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
-    let flush = try #require(body.range(of: "try await state.memory.flush()"))
-    let close = try #require(body.range(of: "try await state.memory.close()"))
-    let remove = try #require(body.range(of: "live.removeValue(forKey: target)"))
+    let close = try #require(body.range(of: "try await target.state.memory.close()"))
+    let remove = try #require(body.range(of: "_live.removeValue(forKey: target.id)"))
 
+    #expect(flush.lowerBound < remove.lowerBound)
     #expect(saveManifest.lowerBound < remove.lowerBound)
     #expect(appendEvent.lowerBound < remove.lowerBound)
-    #expect(flush.lowerBound < remove.lowerBound)
     #expect(close.lowerBound < remove.lowerBound)
 }
 
@@ -5207,6 +5299,523 @@ func knowledgeCaptureAndMemoryHealthWork() async throws {
 }
 
 @Test
+func mcpSuccessResultsUseOneDefaultRepresentation() async throws {
+    try await withAgentBrokerService { service, _ in
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("DEFAULT_COMPACT_RECALL_MARKER")]
+        ))).ok == true)
+        for result in [
+            await WaxMCPTools.handleCall(
+                params: .init(name: "stats", arguments: [:]),
+                broker: service
+            ),
+            await WaxMCPTools.handleCall(
+                params: .init(name: "handoff_latest", arguments: [:]),
+                broker: service
+            ),
+            await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "recall",
+                    arguments: [
+                        "query": .string("DEFAULT_COMPACT_RECALL_MARKER"),
+                        "scope": .string("global"),
+                    ]
+                ),
+                broker: service
+            ),
+        ] {
+            #expect(result.isError != true)
+            #expect(result.content.count == 1)
+            #expect(result.structuredContent == nil)
+            _ = try parseJSONText(in: result)
+        }
+    }
+}
+
+@Test
+func compactLifecycleResponsesOmitHostPaths() async throws {
+    try await withAgentBrokerService { service, _ in
+        for result in [
+            await WaxMCPTools.handleCall(
+                params: .init(name: "stats", arguments: [:]),
+                broker: service
+            ),
+            await WaxMCPTools.handleCall(
+                params: .init(name: "session_start", arguments: [:]),
+                broker: service
+            ),
+        ] {
+            let payload = try parseJSONText(in: result)
+            #expect(!containsKeyRecursively("storePath", in: payload))
+            #expect(!containsKeyRecursively("store_path", in: payload))
+            #expect(!containsKeyRecursively("event_log_path", in: payload))
+        }
+    }
+}
+
+@Test
+func verboseResultsUseStructuredContentWithoutResourceEcho() async throws {
+    try await withAgentBrokerService { service, _ in
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("VERBOSE_SEARCH_MARKER")]
+        ))).ok == true)
+        let verboseStats = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "stats",
+                arguments: ["verbosity": .string("verbose")]
+            ),
+            broker: service
+        )
+        for result in [
+            verboseStats,
+            await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "search",
+                    arguments: [
+                        "query": .string("VERBOSE_SEARCH_MARKER"),
+                        "mode": .string("text"),
+                        "verbosity": .string("verbose"),
+                    ]
+                ),
+                broker: service
+            ),
+        ] {
+            #expect(result.isError != true)
+            #expect(result.content.count == 1)
+            #expect(result.structuredContent != nil)
+            #expect(result.content.allSatisfy { content in
+                if case .resource = content { return false }
+                return true
+            })
+        }
+        guard case .object(let statsPayload) = try #require(verboseStats.structuredContent) else {
+            Issue.record("Expected verbose stats structured content")
+            return
+        }
+        #expect(statsPayload["storePath"] != nil)
+    }
+}
+
+@Test
+func compactRecallPreservesUserDisplayTextMetadata() async throws {
+    try await withAgentBrokerService { service, _ in
+        let marker = "USER_DISPLAY_TEXT_MARKER_\(UUID().uuidString)"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(marker),
+                "metadata": .object(["display_text": .string("user-authored value")]),
+            ]
+        ))).ok == true)
+
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(marker),
+                    "scope": .string("global"),
+                ]
+            ),
+            broker: service
+        )
+        let payload = try parseJSONText(in: result)
+        let results = try #require(payload["results"] as? [[String: Any]])
+        let metadata = try #require(results.first?["metadata"] as? [String: Any])
+        #expect(metadata["display_text"] as? String == "user-authored value")
+    }
+}
+
+@Test
+func sessionOpenCompactRecursivelyRemovesDisplayText() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "compact-open-\(UUID().uuidString)"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("COMPACT_OPEN_RECALL_MARKER"),
+                "project": .string(project),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("Compact open handoff summary."),
+                "project": .string(project),
+                "pending_tasks": .array([.string("finish compact regression")]),
+            ]
+        ))).ok == true)
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("compact-open-agent"),
+                    "run_id": .string(UUID().uuidString),
+                    "recall_query": .string("COMPACT_OPEN_RECALL_MARKER"),
+                    "verbosity": .string("compact"),
+                ]
+            ),
+            broker: service
+        )
+
+        #expect(opened.isError != true)
+        #expect(opened.content.count == 1)
+        let payload = try parseJSONText(in: opened)
+        #expect(payload["handoff"] != nil)
+        #expect(payload["recall"] != nil)
+        #expect(!containsKeyRecursively("display_text", in: payload))
+    }
+}
+
+@Test
+func invalidArgumentErrorListsAcceptedArguments() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "handoff_latest",
+                arguments: ["filePath": .string("handoff.json")]
+            ),
+            broker: service
+        )
+
+        #expect(result.isError == true)
+        let message = firstText(in: result)
+        #expect(message.contains("unsupported argument(s): filePath"))
+        #expect(message.contains("valid argument(s): project, verbosity"))
+
+        let malformedVerbosity = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "stats",
+                arguments: ["verbosity": .int(42)]
+            ),
+            broker: service
+        )
+        #expect(malformedVerbosity.isError == true)
+        #expect(firstText(in: malformedVerbosity).contains("verbosity must be a string"))
+    }
+}
+
+@Test
+func rememberReceiptIdentifiesStoredMemoryAndDeduplication() async throws {
+    try await withAgentBrokerService { service, _ in
+        let content = "RECEIPT_MARKER-\(UUID().uuidString)"
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "project": .string("Wax"),
+                    "memory_type": .string("decision"),
+                    "durability": .string("durable"),
+                ]
+            ),
+            broker: service
+        )
+        let firstJSON = try parseJSONText(in: first)
+        #expect((firstJSON["frame_id"] as? Int ?? -1) >= 0)
+        #expect((firstJSON["memory_id"] as? String)?.hasPrefix("durable:") == true)
+        #expect(firstJSON["scope"] as? String == "durable")
+        #expect(firstJSON["memory_type"] as? String == "decision")
+        #expect(firstJSON["durability"] as? String == "durable")
+        #expect(firstJSON["deduplicated"] as? Bool == false)
+        #expect(firstJSON["searchable"] as? Bool == true)
+
+        let repeated = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "project": .string("Wax"),
+                    "memory_type": .string("decision"),
+                    "durability": .string("durable"),
+                ]
+            ),
+            broker: service
+        )
+        let repeatedJSON = try parseJSONText(in: repeated)
+        #expect(repeatedJSON["memory_id"] as? String == firstJSON["memory_id"] as? String)
+        #expect(repeatedJSON["deduplicated"] as? Bool == true)
+        #expect(repeatedJSON["framesAdded"] as? Int == 0)
+    }
+}
+
+@Test
+func handoffStoresPendingTasksOnceAndSupersedesPriorProjectHandoff() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "handoff-supersede-\(UUID().uuidString)"
+        let sessionID = UUID()
+        let firstMarker = "OLD_HANDOFF_\(UUID().uuidString)"
+        let secondMarker = "NEW_HANDOFF_\(UUID().uuidString)"
+
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "session_id": .string(sessionID.uuidString),
+                "project": .string(project),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("\(firstMarker) old summary"),
+                "session_id": .string(sessionID.uuidString),
+                "project": .string(project),
+                "pending_tasks": .array([.string("old task")]),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string("\(secondMarker) current summary"),
+                "session_id": .string(sessionID.uuidString),
+                "project": .string("  \(project)  "),
+                "pending_tasks": .array([.string("current task")]),
+            ]
+        ))).ok == true)
+
+        let latest = await service.handle(.init(
+            command: "handoff_latest",
+            arguments: ["project": .string(project)]
+        ))
+        let latestPayload = try #require(latest.payload?.objectValue)
+        #expect(latestPayload["content"]?.stringValue == "\(secondMarker) current summary")
+        #expect(latestPayload["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) == ["current task"])
+        #expect(latestPayload["content"]?.stringValue?.contains("Pending tasks:") == false)
+
+        let oldRecall = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(firstMarker),
+                "project": .string(project),
+                "mode": .string("text"),
+                "limit": .int(5),
+            ]
+        ))
+        let oldPayload = try #require(oldRecall.payload?.objectValue)
+        #expect(oldPayload["results"]?.arrayValue?.isEmpty == true)
+    }
+}
+
+@Test
+func handoffSupersessionKeepsOtherSessionLineagesVisible() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "handoff-lineage-\(UUID().uuidString)"
+        let sessionA = UUID()
+        let sessionB = UUID()
+        for sessionID in [sessionA, sessionB] {
+            #expect((await service.handle(.init(
+                command: "session_start",
+                arguments: [
+                    "session_id": .string(sessionID.uuidString),
+                    "project": .string(project),
+                ]
+            ))).ok == true)
+        }
+
+        let oldA = "OLD_A_\(UUID().uuidString)"
+        let currentA = "CURRENT_A_\(UUID().uuidString)"
+        let currentB = "CURRENT_B_\(UUID().uuidString)"
+        for (sessionID, content) in [(sessionA, oldA), (sessionB, currentB), (sessionA, currentA)] {
+            #expect((await service.handle(.init(
+                command: "handoff",
+                arguments: [
+                    "session_id": .string(sessionID.uuidString),
+                    "project": .string(project),
+                    "content": .string(content),
+                ]
+            ))).ok == true)
+        }
+
+        for marker in [currentA, currentB] {
+            let recall = try #require((await service.handle(.init(
+                command: "recall",
+                arguments: [
+                    "query": .string(marker),
+                    "project": .string(project),
+                    "mode": .string("text"),
+                ]
+            ))).payload?.objectValue)
+            #expect(recall["results"]?.arrayValue?.isEmpty == false)
+        }
+        let oldRecall = try #require((await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(oldA),
+                "project": .string(project),
+                "mode": .string("text"),
+            ]
+        ))).payload?.objectValue)
+        #expect(oldRecall["results"]?.arrayValue?.isEmpty == true)
+    }
+}
+
+@Test
+func concurrentHandoffsForOneLineageCommitWithoutConflictingSupersedes() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "handoff-concurrency-\(UUID().uuidString)"
+        let sessionID = UUID()
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "session_id": .string(sessionID.uuidString),
+                "project": .string(project),
+            ]
+        ))).ok == true)
+
+        let responses = await withTaskGroup(of: AgentBrokerResponse.self, returning: [AgentBrokerResponse].self) { group in
+            for index in 0..<12 {
+                group.addTask {
+                    await service.handle(.init(
+                        command: "handoff",
+                        arguments: [
+                            "session_id": .string(sessionID.uuidString),
+                            "project": .string(project),
+                            "content": .string("CONCURRENT_HANDOFF_\(index)"),
+                        ]
+                    ))
+                }
+            }
+            var collected: [AgentBrokerResponse] = []
+            for await response in group { collected.append(response) }
+            return collected
+        }
+        #expect(responses.count == 12)
+        #expect(responses.allSatisfy { $0.ok })
+
+        let recall = try #require((await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string("CONCURRENT_HANDOFF"),
+                "project": .string(project),
+                "mode": .string("text"),
+                "limit": .int(20),
+            ]
+        ))).payload?.objectValue)
+        #expect(recall["results"]?.arrayValue?.count == 1)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func sessionEndWaitsForInFlightRememberToFinish() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-end-drain-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let embedder = ControlledRememberEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions", isDirectory: true).path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: embedder
+    )
+
+    do {
+        let started = try #require((await service.handle(.init(
+            command: "session_start",
+            arguments: [:]
+        ))).payload?.objectValue)
+        let sessionID = try #require(started["session_id"]?.stringValue)
+
+        async let remembering = service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("IN_FLIGHT_END_DRAIN_MARKER"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        await embedder.waitUntilEmbeddingStarts()
+        async let ending = service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+
+        await embedder.release()
+        let remembered = await remembering
+        let ended = await ending
+        #expect(remembered.ok == true)
+        #expect(ended.ok == true)
+        #expect(ended.payload?.objectValue?["ended"]?.boolValue == true)
+        try await service.close()
+    } catch {
+        await embedder.release()
+        try? await service.close()
+        throw error
+    }
+}
+
+@Test
+func defaultRecallUsesHybridWhenVectorCoverageIsPartial() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-mcp-partial-vectors-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    var textOnlyConfig = OrchestratorConfig.default
+    textOnlyConfig.enableVectorSearch = false
+    let textOnly = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false,
+        orchestratorConfig: textOnlyConfig
+    )
+    #expect((await textOnly.handle(.init(
+        command: "remember",
+        arguments: ["content": .string("LEGACY_TEXT_ONLY_PARTIAL_VECTOR_MARKER")]
+    ))).ok == true)
+    try await textOnly.close()
+
+    var hybridConfig = OrchestratorConfig.default
+    hybridConfig.enableVectorSearch = true
+    hybridConfig.rag.searchMode = .hybrid(alpha: 0.5)
+    let hybrid = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: MCPTestDeterministicEmbedder(),
+        orchestratorConfig: hybridConfig
+    )
+    do {
+        #expect((await hybrid.handle(.init(
+            command: "remember",
+            arguments: ["content": .string("HYBRID_DEFAULT_QUERY_MARKER")]
+        ))).ok == true)
+
+        let stats = try #require((await hybrid.handle(.init(command: "stats"))).payload?.objectValue)
+        #expect(stats["embeddingStatus"]?.stringValue == "degraded")
+        #expect(stats["queryEmbeddingAvailable"]?.boolValue == true)
+
+        let recalled = await hybrid.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string("HYBRID_DEFAULT_QUERY_MARKER"),
+                "scope": .string("global"),
+                "limit": .int(5),
+            ]
+        ))
+        let payload = try #require(recalled.payload?.objectValue)
+        #expect(payload["requested_mode"]?.stringValue == "hybrid(alpha=0.500)")
+        #expect(payload["effective_mode"]?.stringValue == "hybrid(alpha=0.500)")
+        #expect(payload["query_embedding_state"]?.stringValue == "available")
+        try await hybrid.close()
+    } catch {
+        try? await hybrid.close()
+        throw error
+    }
+}
+
+@Test
 func factRetractMissingIdDoesNotReportCommitted() async throws {
     try await withAgentBrokerService { service, _ in
         let retract = await WaxMCPTools.handleCall(
@@ -5285,6 +5894,17 @@ private func firstText(in result: CallTool.Result) -> String {
     return ""
 }
 
+private func containsKeyRecursively(_ key: String, in value: Any) -> Bool {
+    if let object = value as? [String: Any] {
+        if object[key] != nil { return true }
+        return object.values.contains { containsKeyRecursively(key, in: $0) }
+    }
+    if let array = value as? [Any] {
+        return array.contains { containsKeyRecursively(key, in: $0) }
+    }
+    return false
+}
+
 private func parseJSONText(in result: CallTool.Result) throws -> [String: Any] {
     let text = firstText(in: result)
     guard let data = text.data(using: .utf8) else {
@@ -5298,6 +5918,9 @@ private func parseJSONText(in result: CallTool.Result) throws -> [String: Any] {
 }
 
 private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) throws -> [String: Any] {
+    if let textPayload = try? parseJSONText(in: result) {
+        return textPayload
+    }
     for content in result.content {
         if case .resource(let resource, _, _) = content,
            resource.uri.hasSuffix(uriSuffix),
@@ -5328,6 +5951,15 @@ private func schemaMaximum(_ schema: Value, property: String) -> Double? {
     default:
         return nil
     }
+}
+
+private func schemaPropertyNames(_ schema: Value) -> Set<String> {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"]
+    else {
+        return []
+    }
+    return Set(properties.keys)
 }
 
 private func schemaEnum(_ schema: Value, property: String) -> [String]? {
@@ -5489,6 +6121,9 @@ private func parseToolTextJSON(fromResponseLine line: String) throws -> [String:
 }
 
 private func parseToolResourceJSON(fromResponseLine line: String, uriSuffix: String) throws -> [String: Any] {
+    if let textPayload = try? parseToolTextJSON(fromResponseLine: line) {
+        return textPayload
+    }
     guard let data = line.data(using: .utf8) else {
         throw NSError(domain: "WaxMCPServerTests", code: 24, userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 response line"])
     }
@@ -5578,6 +6213,45 @@ private actor HangingCountingEmbedder: EmbeddingProvider {
         _ = text
         try await Task.sleep(for: .seconds(60))
         return [1.0, 0.0]
+    }
+}
+
+private actor ControlledRememberEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "Test",
+        model: "ControlledRemember",
+        dimensions: 2,
+        normalized: true
+    )
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        if !released {
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        }
+        return [1.0, 0.0]
+    }
+
+    func waitUntilEmbeddingStarts() async {
+        if started { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 }
 
@@ -6136,13 +6810,42 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func compactToolResponseUsesOneWireContentBlock() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        _ = try await harness.bootstrap(clientName: "wax-mcp-compact-wire-response")
+        let response = try await harness.callTool(
+            id: 2,
+            name: "stats",
+            arguments: [:],
+            timeout: 20
+        )
+        let data = try #require(response.data(using: .utf8))
+        let envelope = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let result = try #require(envelope["result"] as? [String: Any])
+        let content = try #require(result["content"] as? [[String: Any]])
+
+        #expect(content.count == 1)
+        #expect(content[0]["type"] as? String == "text")
+        #expect(result["structuredContent"] == nil)
+        _ = try parseToolTextJSON(fromResponseLine: response)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func brokerBackedSessionsUseHarnessIsolatedSessionRoot() async throws {
         let harness = try MCPServerProcessHarness()
         try harness.start()
         defer { harness.terminateIfNeeded() }
 
         _ = try await harness.bootstrap(clientName: "wax-mcp-session-root-isolation-test", includeToolsList: true)
-        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let started = try await harness.callTool(
+            id: 3,
+            name: "session_start",
+            arguments: ["verbosity": "verbose"],
+            timeout: 20
+        )
         #expect(started.contains("store_path"))
         #expect(started.contains(harness.brokerSessionRootURL.path))
     }
@@ -7460,7 +8163,12 @@ struct WaxMCPProcessTests {
         defer { harness.terminateIfNeeded() }
 
         _ = try await harness.bootstrap(clientName: "wax-mcp-session-root-flag", includeToolsList: true)
-        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let started = try await harness.callTool(
+            id: 3,
+            name: "session_start",
+            arguments: ["verbosity": "verbose"],
+            timeout: 20
+        )
         #expect(started.contains("store_path"))
         #expect(started.contains(sessionRoot.path))
 
@@ -7483,7 +8191,12 @@ struct WaxMCPProcessTests {
         defer { harness.terminateIfNeeded() }
 
         _ = try await harness.bootstrap(clientName: "wax-mcp-isolated-store-no-product-sessions")
-        let started = try await harness.callTool(id: 3, name: "session_start", arguments: [:], timeout: 20)
+        let started = try await harness.callTool(
+            id: 3,
+            name: "session_start",
+            arguments: ["verbosity": "verbose"],
+            timeout: 20
+        )
         #expect(started.contains("store_path"))
         #expect(started.contains("/.local/share/waxmcp/sessions") == false)
 

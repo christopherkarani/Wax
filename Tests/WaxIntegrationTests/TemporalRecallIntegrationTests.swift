@@ -9,7 +9,7 @@ private func makeTemporalRecallStore(
     recentTimestampMs: Int64
 ) async throws -> (olderFrameId: UInt64, recentFrameId: UInt64) {
     let wax = try await Wax.create(at: url)
-    let textSearch = try await wax.enableTextSearch()
+    let textSearch = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
     let olderText = "project recap timeline details from two weeks ago"
     let recentText = "project recap timeline details from earlier this week"
@@ -25,8 +25,8 @@ private func makeTemporalRecallStore(
         timestampMs: recentTimestampMs
     )
 
-    try await textSearch.index(frameId: olderFrameId, text: olderText)
-    try await textSearch.index(frameId: recentFrameId, text: recentText)
+    try await textSearch.indexText(frameId: olderFrameId, text: olderText)
+    try await textSearch.indexText(frameId: recentFrameId, text: recentText)
     try await textSearch.commit()
 
     try await wax.commit()

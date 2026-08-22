@@ -20,6 +20,7 @@ package actor AgentBrokerService {
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
+    private let commandMutex = AsyncMutex()
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -128,12 +129,20 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
-        await virtualSessions.closeAll()
-        try await longTermMemory.flush()
-        try await longTermMemory.close()
+        try await commandMutex.withLock { [self] in
+            await virtualSessions.closeAll()
+            try await longTermMemory.flush()
+            try await longTermMemory.close()
+        }
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
+        await commandMutex.withLock { [self] in
+            await handleSerialized(request)
+        }
+    }
+
+    private func handleSerialized(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
         do {
             let decoded = try BrokerCommand.decode(
                 command: request.command,
@@ -144,9 +153,6 @@ package actor AgentBrokerService {
 
             switch decoded {
             case .remember(let command):
-                payload = try await remember(command)
-                shouldExit = false
-            case .memoryAppend(let command):
                 payload = try await remember(command)
                 shouldExit = false
             case .recall(let command):
@@ -232,28 +238,21 @@ package actor AgentBrokerService {
                 shouldExit = false
             }
 
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.success(
                 id: request.id,
-                ok: true,
                 payload: payload,
-                error: nil,
                 shouldExit: shouldExit
             )
         } catch let error as BrokerSessionInactiveError {
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.failure(
                 id: request.id,
-                ok: false,
                 payload: error.brokerPayload(),
-                error: error.localizedDescription,
-                shouldExit: false
+                message: error.localizedDescription
             )
         } catch {
-            return AgentBrokerResponse(
+            return AgentBrokerResponse.failure(
                 id: request.id,
-                ok: false,
-                payload: nil,
-                error: error.localizedDescription,
-                shouldExit: false
+                message: error.localizedDescription
             )
         }
     }
@@ -318,8 +317,7 @@ extension AgentBrokerService {
             memory: memory,
             content: command.content,
             metadata: metadata,
-            sessionID: sessionID,
-            before: before
+            sessionID: sessionID
         )
     }
 
@@ -349,16 +347,9 @@ extension AgentBrokerService {
         memory: MemoryOrchestrator,
         content: String,
         metadata: [String: String],
-        sessionID: UUID?,
-        before: MemoryOrchestrator.RuntimeStats? = nil
+        sessionID: UUID?
     ) async throws -> AgentBrokerValue {
-        let beforeStats: MemoryOrchestrator.RuntimeStats
-        if let before {
-            beforeStats = before
-        } else {
-            beforeStats = await memory.runtimeStats()
-        }
-        try await memory.remember(content, metadata: metadata)
+        let rememberResult = try await memory.remember(content, metadata: metadata)
         if let sessionID {
             try await refreshSessionManifest(sessionID)
             try await appendSessionEvent(
@@ -373,16 +364,25 @@ extension AgentBrokerService {
         }
         try await memory.flush()
         let after = await memory.runtimeStats()
-        let totalBefore = beforeStats.frameCount + beforeStats.pendingFrames
-        let totalAfter = after.frameCount + after.pendingFrames
-        let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
 
+        let scope = sessionID == nil ? "durable" : "session"
+        let memoryID = sessionID.map {
+            "working:\($0.uuidString):\(rememberResult.frameId)"
+        } ?? "durable:\(rememberResult.frameId)"
         return .object([
             "status": .string("ok"),
-            "framesAdded": .from(added),
+            "frame_id": .from(rememberResult.frameId),
+            "memory_id": .string(memoryID),
+            "framesAdded": .from(rememberResult.framesAdded),
             "frameCount": .from(after.frameCount),
             "pendingFrames": .from(after.pendingFrames),
-            "display_text": .string("Remembered. \(added) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."),
+            "scope": .string(scope),
+            "session_id": .from(sessionID?.uuidString),
+            "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
+            "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
+            "deduplicated": .bool(rememberResult.deduplicated),
+            "searchable": .bool(rememberResult.searchable),
+            "display_text": .string("Remembered. \(rememberResult.framesAdded) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."),
         ])
     }
 

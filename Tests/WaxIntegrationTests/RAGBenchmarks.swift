@@ -34,16 +34,16 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
             for index in 0..<scale.documentCount {
                 let content = factory.makeDocument(index: index)
                 let data = Data(content.utf8)
                 let frameId = try await wax.put(data, options: FrameMetaSubset(searchText: content))
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await wax.commit()
             try await wax.close()
         }
@@ -59,7 +59,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
             let vector = try await wax.enableVectorSearch(dimensions: scale.vectorDimensions)
 
             for index in 0..<scale.documentCount {
@@ -72,10 +72,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                     options: FrameMetaSubset(searchText: content),
                     identity: embedder.identity
                 )
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await vector.stageForCommit()
             try await wax.commit()
             try await wax.close()
@@ -93,7 +93,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
             let vector = try await wax.enableVectorSearch(dimensions: scale.vectorDimensions)
 
             // Process in batches
@@ -124,10 +124,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 )
 
                 // Batch text index
-                try await text.indexBatch(frameIds: frameIds, texts: texts)
+                try await text.indexTextBatch(frameIds: frameIds, texts: texts)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await vector.stageForCommit()
             try await wax.commit()
             try await wax.close()
@@ -153,16 +153,16 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
             for index in 0..<documentCount {
                 let content = factory.makeDocument(index: index)
                 let data = Data(content.utf8)
                 let frameId = try await wax.put(data, options: FrameMetaSubset(searchText: content))
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await wax.commit()
             try await wax.close()
         }
@@ -191,7 +191,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
             let vector = try await wax.enableVectorSearch(dimensions: vectorDimensions)
 
             for index in 0..<documentCount {
@@ -204,10 +204,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                     options: FrameMetaSubset(searchText: content),
                     identity: embedder.identity
                 )
-                try await text.index(frameId: frameId, text: content)
+                try await text.indexText(frameId: frameId, text: content)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await vector.stageForCommit()
             try await wax.commit()
             try await wax.close()
@@ -238,7 +238,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             defer { try? FileManager.default.removeItem(at: url) }
 
             let wax = try await Wax.create(at: url)
-            let text = try await wax.enableTextSearch()
+            let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
             let vector = try await wax.enableVectorSearch(dimensions: vectorDimensions)
 
             for batchStart in stride(from: 0, to: documentCount, by: batchSize) {
@@ -264,10 +264,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                     options: options,
                     identity: embedder.identity
                 )
-                try await text.indexBatch(frameIds: frameIds, texts: texts)
+                try await text.indexTextBatch(frameIds: frameIds, texts: texts)
             }
 
-            try await text.stageForCommit()
+            try await text.stage()
             try await vector.stageForCommit()
             try await wax.commit()
             try await wax.close()
@@ -278,10 +278,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         let scale = self.scale
         try await withFixture(includeVectors: false) { fixture in
             let query = fixture.queryText
-            _ = try await fixture.text.search(query: query, topK: scale.searchTopK)
+            _ = try await fixture.text.searchText(query: query, topK: scale.searchTopK)
 
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
-                _ = try await fixture.text.search(query: query, topK: scale.searchTopK)
+                _ = try await fixture.text.searchText(query: query, topK: scale.searchTopK)
             }
         }
     }

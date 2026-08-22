@@ -85,7 +85,7 @@ enum WaxMCPTools {
             }
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
-            let verbosity = compactVerbosity(from: forwarded)
+            let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
 
             let response = try await perform(
                 AgentBrokerRequest(
@@ -94,27 +94,24 @@ enum WaxMCPTools {
                 )
             )
 
-            guard response.ok else {
-                if let payload = response.payload?.objectValue,
-                   let code = payload["code"]?.stringValue {
-                    let message = response.error
-                        ?? payload["reason"]?.stringValue
-                        ?? "Broker execution failed"
+            switch response.outcome {
+            case .failure(let payload, let message):
+                if let fields = payload?.objectValue,
+                   let code = fields["code"]?.stringValue {
                     return structuredErrorResult(
                         message: message,
                         code: code,
-                        fields: payload
+                        fields: fields
                     )
                 }
-                let message = response.error ?? "Broker execution failed"
                 return errorResult(message: message, code: errorCode(for: message))
+            case .success:
+                guard let payload = response.payload else {
+                    return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
+                }
+                sessionHint?.remember(name: params.name, payload: payload)
+                return renderResult(name: params.name, payload: payload, verbosity: verbosity)
             }
-
-            guard let payload = response.payload else {
-                return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
-            }
-            sessionHint?.remember(name: params.name, payload: payload)
-            return renderResult(name: params.name, payload: payload, verbosity: verbosity)
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
         } catch {
@@ -157,8 +154,9 @@ final class MCPClientSessionHint: @unchecked Sendable {
 }
 
 private extension WaxMCPTools {
-    static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
-    static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
+    static let compactPresentationKeys: Set<String> = [
+        "display_text", "storePath", "store_path", "event_log_path",
+    ]
     static let clientCWDCommands: Set<String> = [
         "session_start", "session_open", "remember", "memory_append", "knowledge_capture",
         "markdown_export", "recall",
@@ -174,10 +172,16 @@ private extension WaxMCPTools {
         )
     }
 
-    static func compactVerbosity(from arguments: [String: Value]) -> String? {
-        guard case .string(let raw)? = arguments["verbosity"] else { return nil }
+    static func responseVerbosity(from arguments: [String: Value]) throws -> String? {
+        guard let value = arguments["verbosity"] else { return nil }
+        guard case .string(let raw) = value else {
+            throw ToolValidationError.invalid("verbosity must be a string: compact or verbose")
+        }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return trimmed.isEmpty ? nil : trimmed
+        guard trimmed == "compact" || trimmed == "verbose" else {
+            throw ToolValidationError.invalid("verbosity must be one of: compact, verbose")
+        }
+        return trimmed
     }
 
     static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {
@@ -197,11 +201,11 @@ private extension WaxMCPTools {
     }
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
-        if structuredCommands.contains(name), !structuredMemoryEnabled {
-            throw ToolValidationError.invalid("tool '\(name)' requires structured memory to be enabled")
-        }
-        guard AgentBrokerCommandSurface.allowedPublicArguments(for: name) != nil else {
+        guard let entry = AgentBrokerCommandSurface.entry(for: name), entry.exposure == .publicCommand else {
             throw ToolValidationError.invalid("Unknown tool '\(name)'.")
+        }
+        if entry.requiresStructuredMemory, !structuredMemoryEnabled {
+            throw ToolValidationError.invalid("tool '\(name)' requires structured memory to be enabled")
         }
     }
 
@@ -262,9 +266,12 @@ private extension WaxMCPTools {
         payload: AgentBrokerValue,
         verbosity: String? = nil
     ) -> CallTool.Result {
-        let mcpPayload = mcpValue(from: removingDisplayText(from: payload))
+        let compactPayload = mcpValue(from: removingPresentationFields(
+            from: payload,
+            removing: compactPresentationKeys
+        ))
         if verbosity == "compact" {
-            let json = encodeJSON(mcpPayload) ?? "{}"
+            let json = encodeJSON(compactPayload) ?? "{}"
             return CallTool.Result(
                 content: [
                     .text(text: json, annotations: nil, _meta: nil),
@@ -275,41 +282,57 @@ private extension WaxMCPTools {
 
         let text = payload.objectValue?["display_text"]?.stringValue
 
-        if readOnlyTextCommands.contains(name) {
-            let uri = switch name {
-            case "recall": "wax://tool/recall-summary"
-            case "search": "wax://tool/search-summary"
-            case "memory_search": "wax://tool/memory-search-summary"
-            case "memory_get": "wax://tool/memory-get-summary"
-            case "compact_context": "wax://tool/compact-context-summary"
-            case "corpus_search": "wax://tool/corpus-search-summary"
-            case "session_synthesize": "wax://tool/session-synthesize-summary"
-            case "memory_health": "wax://tool/memory-health-summary"
-            default: "wax://tool/result"
-            }
-            return textWithJSONResourceResult(text: text ?? "", payload: mcpPayload, uri: uri)
+        if verbosity == "verbose" {
+            let structuredPayload = mcpValue(from: removingPresentationFields(
+                from: payload,
+                removing: ["display_text"]
+            ))
+            return textWithStructuredResult(
+                text: text ?? "Wax \(name) completed.",
+                payload: structuredPayload
+            )
         }
 
-        return jsonResult(mcpPayload)
+        return jsonResult(compactPayload)
     }
 
-    static func removingDisplayText(from payload: AgentBrokerValue) -> AgentBrokerValue {
-        guard case .object(var object) = payload else { return payload }
-        object.removeValue(forKey: "display_text")
-        return .object(object)
+    static func removingPresentationFields(
+        from payload: AgentBrokerValue,
+        removing keys: Set<String>,
+        preservingUserFields: Bool = false
+    ) -> AgentBrokerValue {
+        switch payload {
+        case .object(let object):
+            return .object(object.reduce(into: [:]) { result, entry in
+                guard preservingUserFields || !keys.contains(entry.key) else { return }
+                result[entry.key] = removingPresentationFields(
+                    from: entry.value,
+                    removing: keys,
+                    preservingUserFields: preservingUserFields || entry.key == "metadata"
+                )
+            })
+        case .array(let values):
+            return .array(values.map {
+                removingPresentationFields(
+                    from: $0,
+                    removing: keys,
+                    preservingUserFields: preservingUserFields
+                )
+            })
+        case .null, .bool, .int, .double, .string:
+            return payload
+        }
     }
 
-    static func textWithJSONResourceResult(
+    static func textWithStructuredResult(
         text: String,
-        payload: Value,
-        uri: String = "wax://tool/result"
+        payload: Value
     ) -> CallTool.Result {
-        let json = encodeJSON(payload) ?? "{}"
         return CallTool.Result(
             content: [
                 .text(text: text, annotations: nil, _meta: nil),
-                .resource(resource: .text(json, uri: uri, mimeType: "application/json")),
             ],
+            structuredContent: Optional.some(payload),
             isError: false
         )
     }
@@ -319,7 +342,6 @@ private extension WaxMCPTools {
         return CallTool.Result(
             content: [
                 .text(text: json, annotations: nil, _meta: nil),
-                .resource(resource: .text(json, uri: "wax://tool/result", mimeType: "application/json")),
             ],
             isError: false
         )
