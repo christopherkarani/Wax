@@ -523,8 +523,7 @@ private enum ProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
-        // nil inherits the parent process environment; pass an explicit dict to isolate.
-        process.environment = environment
+        process.environment = environment ?? ProcessInfo.processInfo.environment
 
         if passthrough {
             process.standardInput = FileHandle.standardInput
@@ -551,7 +550,7 @@ private enum ProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
-        process.environment = environment
+        process.environment = environment ?? ProcessInfo.processInfo.environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
