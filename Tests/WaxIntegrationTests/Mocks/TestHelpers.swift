@@ -12,3 +12,21 @@ enum TestHelpers {
         return config
     }
 }
+
+/// Injectable orchestrator clock so tests advance time without sleeping.
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64
+
+    init(_ start: Int64) {
+        value = start
+    }
+
+    var nowMs: Int64 {
+        get { lock.withLock { value } }
+    }
+
+    func advance(ms: Int64) {
+        lock.withLock { value += ms }
+    }
+}

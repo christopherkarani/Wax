@@ -40,24 +40,6 @@ private actor HangingVectorEngine: VectorSearchEngine {
     }
 }
 
-/// Injectable orchestrator clock so breaker tests advance time without sleeping.
-private final class MutableClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Int64
-
-    init(_ start: Int64) {
-        value = start
-    }
-
-    var nowMs: Int64 {
-        get { lock.withLock { value } }
-    }
-
-    func advance(ms: Int64) {
-        lock.withLock { value += ms }
-    }
-}
-
 @Suite
 struct TimeoutFallbackTests {
     @Test
