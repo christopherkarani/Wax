@@ -450,7 +450,8 @@ func validateEvidenceRejectsBadConfidence(_ confidence: Double) {
 
 @Test func asyncTimeoutReturnsWhenOperationCompletesFirst() async throws {
     let value = try await AsyncTimeout.run(
-        timeout: .seconds(5),
+        // The full parallel gate can delay a trivial task while blocking tests run.
+        timeout: .seconds(30),
         operation: "adversarial-fast-success"
     ) {
         42
