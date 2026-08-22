@@ -130,7 +130,7 @@ assert_mcp_trait_test_inventory() {
   assert_default_mcp_trait_tests_omitted "$default_list_log"
 
   run_and_capture "$mcp_list_log" \
-    swift test --traits MCPServer --disable-automatic-resolution list
+    swift test --traits MCPServer list
   assert_mcp_trait_tests_listed "$mcp_list_log"
 }
 

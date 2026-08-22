@@ -144,6 +144,15 @@ EOF
 
 assert_mcp_trait_tests_listed "$MCP_TEST_LIST"
 
+if grep -F 'swift test --traits MCPServer --disable-automatic-resolution list' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCP trait inventory must allow first-time trait dependency resolution" >&2
+  exit 1
+fi
+if ! grep -F 'swift test --traits MCPServer list' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCP trait inventory command is missing" >&2
+  exit 1
+fi
+
 CAPTURED_COMMANDS="$TMP_DIR/captured-gate-commands.txt"
 
 run_and_capture() {
