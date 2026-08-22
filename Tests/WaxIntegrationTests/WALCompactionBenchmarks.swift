@@ -117,15 +117,24 @@ final class WALCompactionBenchmarks: XCTestCase {
         XCTAssertGreaterThan(disabled.autoCommitPutLatencyMs.samples, 0)
         XCTAssertGreaterThan(enabled.autoCommitPutLatencyMs.samples, 0)
 
+        print(
+            "🧪 WAL proactive guardrail: "
+                + "disabled put p95=\(disabled.putLatencyMs.p95Ms.formatMs) "
+                + "enabled put p95=\(enabled.putLatencyMs.p95Ms.formatMs) "
+                + "disabled auto-commit put p95=\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
+                + "enabled auto-commit put p95=\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
+                + "disabled pending p95=\(disabled.pressure.pendingBytesP95) "
+                + "enabled pending p95=\(enabled.pressure.pendingBytesP95)"
+        )
+
         // Percentile guardrails: avoid large tail regressions while pressure improves.
         XCTAssertLessThanOrEqual(
             enabled.putLatencyMs.p95Ms,
             disabled.putLatencyMs.p95Ms * 1.20 + 2.0
         )
-        XCTAssertLessThanOrEqual(
-            enabled.commitLatencyMs.p95Ms,
-            disabled.commitLatencyMs.p95Ms * 1.20 + 5.0
-        )
+        // This workload has no explicit commit schedule, so commitLatencyMs only
+        // measures the single final commit and is not a proactive-compaction metric.
+        // Explicit commit latency is covered by testWALCompactionWorkloadMatrix().
         XCTAssertLessThanOrEqual(
             enabled.autoCommitPutLatencyMs.p95Ms,
             disabled.autoCommitPutLatencyMs.p95Ms * 1.15 + 10.0
@@ -157,15 +166,64 @@ final class WALCompactionBenchmarks: XCTestCase {
         try FileManager.default.copyItem(at: baseURL, to: disabledURL)
         try FileManager.default.copyItem(at: baseURL, to: enabledURL)
 
-        let disabled = try await measureReopenLatency(
-            at: disabledURL,
-            iterations: 8,
-            options: WaxOptions(walReplayStateSnapshotEnabled: false)
+        // Exclude first-open compilation and filesystem cache warm-up from the
+        // comparison; the guardrail is about steady-state reopen cost.
+        // Warm and measure the two modes in the same time window. Shared CI
+        // runners can otherwise make the second mode look slower when host
+        // load changes between the two measurement batches.
+        for _ in 0..<2 {
+            _ = try await measureReopenLatency(
+                at: disabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: false)
+            )
+            _ = try await measureReopenLatency(
+                at: enabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: true)
+            )
+        }
+
+        var disabledSamples: [Double] = []
+        var enabledSamples: [Double] = []
+        var enabledSnapshotHits = 0
+        disabledSamples.reserveCapacity(8)
+        enabledSamples.reserveCapacity(8)
+        for _ in 0..<8 {
+            let disabledSample = try await measureReopenLatency(
+                at: disabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: false)
+            )
+            disabledSamples.append(disabledSample.summary.meanMs)
+
+            let enabledSample = try await measureReopenLatency(
+                at: enabledURL,
+                iterations: 1,
+                options: WaxOptions(walReplayStateSnapshotEnabled: true)
+            )
+            enabledSamples.append(enabledSample.summary.meanMs)
+            enabledSnapshotHits += enabledSample.snapshotHits
+        }
+
+        let disabled = (
+            summary: WALCompactionLatencySummary.from(samples: disabledSamples),
+            snapshotHits: 0
         )
-        let enabled = try await measureReopenLatency(
-            at: enabledURL,
-            iterations: 8,
-            options: WaxOptions(walReplayStateSnapshotEnabled: true)
+        let enabled = (
+            summary: WALCompactionLatencySummary.from(samples: enabledSamples),
+            snapshotHits: enabledSnapshotHits
+        )
+
+        print(
+            "🧪 WAL replay snapshot guardrail: "
+                + "disabled p50=\(disabled.summary.p50Ms.formatMs) "
+                + "disabled p95=\(disabled.summary.p95Ms.formatMs) "
+                + "disabled p99=\(disabled.summary.p99Ms.formatMs) "
+                + "enabled p50=\(enabled.summary.p50Ms.formatMs) "
+                + "enabled p95=\(enabled.summary.p95Ms.formatMs) "
+                + "enabled p99=\(enabled.summary.p99Ms.formatMs) "
+                + "snapshot_hits=\(enabled.snapshotHits)"
         )
 
         XCTAssertGreaterThanOrEqual(enabled.snapshotHits, 1)

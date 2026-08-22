@@ -1,5 +1,5 @@
 import Testing
-import Wax
+@testable import Wax
 
 // MARK: - Action parsing
 
@@ -443,11 +443,26 @@ func waxMemoryToolExecutorRecallMaxItemsZeroReturnsNoItemsMessage() async throws
 @Test
 func waxMemoryToolExecutorVectorAlwaysFallsBackToTextWhenConfigured() async throws {
     try await TempFiles.withTempFile { url in
-        // Vector enabled but no embedder — primary search can fail; tool should soft-fallback.
-        let memory = try await Memory(at: url) { config in
-            config.enableVectorSearch = true
+        // Keep the provider unavailable deterministically. The public default now
+        // auto-wires MiniLM, so relying on Memory(at:) would make this fallback
+        // test depend on host CoreML availability and parallel test timing.
+        let gate = ToolEmbeddingGate()
+        let readiness = EmbeddingReadiness()
+        let memory = try await Memory(
+            at: url,
+            config: .init(
+                enableVectorSearch: true,
+                requireOnDeviceProviders: false,
+                embedding: .automatic
+            ),
+            readiness: readiness
+        ) {
+            await gate.wait()
+            throw ToolEmbeddingError.unavailable
         }
         try await memory.save("User likes Vim keybindings.")
+        await gate.open()
+        try await memory.flush()
 
         let config = WaxMemoryToolConfig(
             embeddingPolicy: .always,
@@ -468,6 +483,30 @@ func waxMemoryToolExecutorVectorAlwaysFallsBackToTextWhenConfigured() async thro
         }
 
         try await memory.close()
+    }
+}
+
+private enum ToolEmbeddingError: Error {
+    case unavailable
+}
+
+private actor ToolEmbeddingGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        guard !opened else { return }
+        opened = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }
 

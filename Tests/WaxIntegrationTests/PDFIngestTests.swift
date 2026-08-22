@@ -100,7 +100,9 @@ func pdfIngestMetadataPropagatesToDocumentAndChunks() async throws {
     #expect(FileManager.default.fileExists(atPath: PDFFixtures.textPDF.path))
 
     try await TempFiles.withTempFile { url in
-        let orchestrator = try await MemoryOrchestrator(at: url, config: makeTextOnlyConfig())
+        var config = makeTextOnlyConfig()
+        config.chunking = .tokenCount(targetTokens: 3, overlapTokens: 0)
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config)
         try await orchestrator.remember(
             pdfAt: PDFFixtures.textPDF,
             metadata: ["source": "fixture", "tag": "pdf"]

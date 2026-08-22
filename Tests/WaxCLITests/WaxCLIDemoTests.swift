@@ -18,6 +18,12 @@ struct WaxCLIDemoTests {
         report.textOnly = true
         report.platform = "linux"
         report.passed = true
+        report.scenarios = report.scenarios.map { scenario in
+            var scenario = scenario
+            scenario.status = .passed
+            scenario.detail = "passed"
+            return scenario
+        }
         report.frameCount = 12
         report.retrievalLastMs = 1.8
         report.recallP50Ms = 1.5

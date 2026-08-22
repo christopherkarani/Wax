@@ -76,7 +76,10 @@ package enum AgentBrokerClient {
         try shutdownStartedBroker(configuration: configuration)
     }
 
-    package static func ensureAvailable(configuration: AgentBrokerConfiguration) async throws -> Bool {
+    package static func ensureAvailable(
+        configuration: AgentBrokerConfiguration,
+        startTimeoutSecondsOverride: TimeInterval? = nil
+    ) async throws -> Bool {
         if let response = try sendIfAvailable(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath,
@@ -99,10 +102,16 @@ package enum AgentBrokerClient {
             )
         }
 
-        return try startBrokerIfNeeded(configuration: configuration)
+        return try startBrokerIfNeeded(
+            configuration: configuration,
+            timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+        )
     }
 
-    private static func startBrokerIfNeeded(configuration: AgentBrokerConfiguration) throws -> Bool {
+    private static func startBrokerIfNeeded(
+        configuration: AgentBrokerConfiguration,
+        timeoutSeconds: TimeInterval
+    ) throws -> Bool {
         #if os(iOS) || os(tvOS) || os(watchOS)
         throw BrokerClientError("Starting a broker process is not supported on this platform.")
         #else
@@ -150,7 +159,7 @@ package enum AgentBrokerClient {
             throw BrokerClientError("Failed to start broker: \(error.localizedDescription)")
         }
 
-        let deadline = Date().addingTimeInterval(startTimeoutSeconds)
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
         var observedExitStatus: Int32?
         var observedStderr: String?
         while Date() < deadline {
@@ -306,6 +315,7 @@ package enum AgentBrokerClient {
             return nil
         }
         defer { close(fd) }
+        configureNoSIGPIPE(fd)
 
         var address = sockaddr_un()
         #if canImport(Darwin)
@@ -357,7 +367,11 @@ package enum AgentBrokerClient {
             var sent = 0
             let total = rawBuffer.count
             while sent < total {
+                #if canImport(Darwin)
                 let count = write(fd, base + sent, total - sent)
+                #else
+                let count = send(fd, base + sent, total - sent, Int32(MSG_NOSIGNAL))
+                #endif
                 if count < 0 {
                     if errno == EINTR { continue }
                     if errno == EPIPE {
@@ -371,6 +385,19 @@ package enum AgentBrokerClient {
                 sent += count
             }
         }
+    }
+
+    private static func configureNoSIGPIPE(_ fd: Int32) {
+        #if canImport(Darwin)
+        var enabled: Int32 = 1
+        _ = setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &enabled,
+            socklen_t(MemoryLayout<Int32>.size)
+        )
+        #endif
     }
 
     private static func readSocketResponseLine(

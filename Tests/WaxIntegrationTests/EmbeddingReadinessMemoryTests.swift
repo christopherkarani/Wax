@@ -38,13 +38,25 @@ func memoryAutomaticOpensWhileLoadingThenLiveAttaches() async throws {
     try await TempFiles.withTempFile { url in
         let gate = Gate()
         let readiness = EmbeddingReadiness()
+        let options = BuiltInEmbeddingProviderOptions.default
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
         let memory = try await Memory(
             at: url,
             config: .init(requireOnDeviceProviders: false, embedding: .automatic),
             readiness: readiness
         ) {
-            await gate.wait()
-            return DeterministicTextEmbedder()
+            try await factory()
         }
 
         let loading = await memory.stats()
@@ -53,7 +65,13 @@ func memoryAutomaticOpensWhileLoadingThenLiveAttaches() async throws {
         #expect(loading.vectorSearchEnabled)
 
         await gate.open()
-        try await waitForEmbeddingReady(memory)
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await memory.close()
+            Issue.record("expected automatic compile to succeed after gate open, got \(compileResult)")
+            return
+        }
+        try await waitForEmbeddingReady(memory, timeout: .seconds(10))
 
         try await memory.save("live attach should embed this needle")
         try await memory.flush()
@@ -164,18 +182,36 @@ func memorySaveDuringLoadingBecomesDegradedAfterAttach() async throws {
     try await TempFiles.withTempFile { url in
         let gate = Gate()
         let readiness = EmbeddingReadiness()
+        let options = BuiltInEmbeddingProviderOptions.default
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
         let memory = try await Memory(
             at: url,
             config: .init(requireOnDeviceProviders: false, embedding: .automatic),
             readiness: readiness
         ) {
-            await gate.wait()
-            return DeterministicTextEmbedder()
+            try await factory()
         }
 
         try await memory.save("saved before the provider attached")
         await gate.open()
-        try await waitForEmbeddingReady(memory, allowDegraded: true)
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await memory.close()
+            Issue.record("expected automatic compile to succeed after save, got \(compileResult)")
+            return
+        }
+        try await waitForEmbeddingReady(memory, allowDegraded: true, timeout: .seconds(10))
 
         let stats = await memory.stats()
         guard case .degraded = stats.embeddingStatus else {
@@ -242,39 +278,48 @@ func memoryAutomaticWaitTimeoutThenLiveAttaches() async throws {
         var config = OrchestratorConfig.default
         config.requireOnDeviceProviders = false
         let options = BuiltInEmbeddingProviderOptions(timeoutSeconds: 0.04)
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
         let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: config,
             request: .automatic(.miniLM, options),
-            readiness: readiness
-        ) {
-            await gate.wait()
-            return DeterministicTextEmbedder()
-        }
+            readiness: readiness,
+            factoryOverride: factory
+        )
 
-        let deadline = ContinuousClock.now + .seconds(1)
-        var sawUnavailable = false
-        while ContinuousClock.now < deadline {
-            if case .unavailable = await orchestrator.runtimeStats().embeddingStatus {
-                sawUnavailable = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
+        let timedOut = await readinessSession.waitUntilSettled()
+        guard case .unavailable = timedOut else {
+            try await orchestrator.close()
+            Issue.record("expected automatic readiness timeout, got \(timedOut)")
+            return
         }
-        #expect(sawUnavailable)
 
         await gate.open()
-        let attachDeadline = ContinuousClock.now + .seconds(1)
-        while ContinuousClock.now < attachDeadline {
-            switch await orchestrator.runtimeStats().embeddingStatus {
-            case .active, .degraded:
-                try await orchestrator.close()
-                return
-            default:
-                try await Task.sleep(for: .milliseconds(10))
-            }
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await orchestrator.close()
+            Issue.record("expected automatic compile to succeed after timeout, got \(compileResult)")
+            return
         }
-        Issue.record("expected live-attach after automatic wait timeout")
+
+        try await orchestrator.waitUntilReadyForRemember()
+        let attached = await orchestrator.runtimeStats().embeddingStatus
+        guard case .active = attached else {
+            try await orchestrator.close()
+            Issue.record("expected live-attach after automatic wait timeout, got \(attached)")
+            return
+        }
         try await orchestrator.close()
     }
 }
@@ -287,15 +332,26 @@ func memoryAutomaticAllowsMultiChunkSaveWhileLoading() async throws {
         var config = OrchestratorConfig.default
         config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 0)
         config.requireOnDeviceProviders = false
-        let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
-            at: url,
-            config: config,
-            request: .automatic(.miniLM, .default),
-            readiness: readiness
-        ) {
+        let options = BuiltInEmbeddingProviderOptions.default
+        let key = BuiltInEmbeddingCompiler.loadKey(.miniLM, options: options)
+        let factory: @Sendable () async throws -> any EmbeddingProvider = {
             await gate.wait()
             return DeterministicTextEmbedder()
         }
+        let readinessSession = try await readiness.open(
+            .automatic(
+                key: key,
+                waitTimeout: options.tuning.timeoutDuration,
+                factory: factory
+            )
+        )
+        let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
+            at: url,
+            config: config,
+            request: .automatic(.miniLM, options),
+            readiness: readiness,
+            factoryOverride: factory
+        )
 
         let longText = Array(
             repeating: "Swift concurrency uses actors and structured tasks.",
@@ -309,7 +365,14 @@ func memoryAutomaticAllowsMultiChunkSaveWhileLoading() async throws {
         #expect(mid.frameCount > 2)
 
         await gate.open()
-        let deadline = ContinuousClock.now + .seconds(2)
+        let compileResult = await readinessSession.waitUntilCompileFinished()
+        guard case .success = compileResult else {
+            try await orchestrator.close()
+            Issue.record("expected automatic compile to succeed after gate open, got \(compileResult)")
+            return
+        }
+
+        let deadline = ContinuousClock.now + .seconds(10)
         while ContinuousClock.now < deadline {
             if case .degraded = await orchestrator.runtimeStats().embeddingStatus {
                 try await orchestrator.close()
