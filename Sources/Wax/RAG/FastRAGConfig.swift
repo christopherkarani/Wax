@@ -117,7 +117,9 @@ package struct FastRAGConfig: Sendable, Equatable {
     package var enableQueryAwareTierSelection: Bool = true
     
     /// Optional fixed "now" timestamp used for deterministic tier selection.
-    /// When nil, Wax uses wall clock time.
+    /// When nil, the builder resolves "now" as the max candidate frame timestamp;
+    /// if that is also unavailable, "now" is unknown and no access-recency signals
+    /// are produced (never wall clock time).
     package var deterministicNowMs: Int64? = nil
 
     package init(

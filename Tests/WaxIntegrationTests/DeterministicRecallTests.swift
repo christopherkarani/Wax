@@ -3,25 +3,6 @@ import Testing
 @testable import Wax
 import WaxCore
 
-/// Injectable orchestrator clock for proving recall decisions depend only on
-/// `(store state, query, nowMs)`.
-private final class RecallClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Int64
-
-    init(_ start: Int64) {
-        value = start
-    }
-
-    var nowMs: Int64 {
-        get { lock.withLock { value } }
-    }
-
-    func advance(ms: Int64) {
-        lock.withLock { value += ms }
-    }
-}
-
 @Suite
 struct DeterministicRecallTests {
     private static let fixedNowMs: Int64 = 1_700_000_000_000
@@ -144,7 +125,7 @@ struct DeterministicRecallTests {
                 try await ingest.close()
             }
 
-            let clock = RecallClock(Self.fixedNowMs)
+            let clock = MutableClock(Self.fixedNowMs)
             var config = TestHelpers.defaultMemoryConfig()
             config.enableAccessStatsScoring = true
             let orchestrator = try await MemoryOrchestrator(

@@ -281,11 +281,12 @@ package actor MemoryOrchestrator {
     /// another timeout re-opens it for a fresh cooldown window.
     private var queryEmbeddingCircuitOpen: Bool {
         guard let openedAtMs = queryEmbeddingCircuitOpenedAtMs else { return false }
-        return nowProvider() - openedAtMs < Self.circuitCooldownMs(config.queryEmbeddingCircuitCooldown)
+        return max(0, nowProvider() - openedAtMs) < Self.circuitCooldownMs(config.queryEmbeddingCircuitCooldown)
     }
 
-    /// Mirrors the previous `ContinuousClock` comparison: open while elapsed < cooldown,
-    /// closed once elapsed >= cooldown (boundary inclusive half-close).
+    /// Circuit uses wall-clock epoch ms with the same open/half-open thresholds;
+    /// sub-ms `Duration` components truncate. A backward system-clock step can
+    /// extend an open window until wall time catches up (self-heals on next probe).
     private static func circuitCooldownMs(_ duration: Duration) -> Int64 {
         duration.components.seconds * 1000
             + duration.components.attoseconds / 1_000_000_000_000_000
