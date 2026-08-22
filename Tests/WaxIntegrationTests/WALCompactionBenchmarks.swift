@@ -117,16 +117,24 @@ final class WALCompactionBenchmarks: XCTestCase {
         XCTAssertGreaterThan(disabled.autoCommitPutLatencyMs.samples, 0)
         XCTAssertGreaterThan(enabled.autoCommitPutLatencyMs.samples, 0)
 
+        print(
+            "🧪 WAL proactive guardrail: "
+                + "disabled put p95=\(disabled.putLatencyMs.p95Ms.formatMs) "
+                + "enabled put p95=\(enabled.putLatencyMs.p95Ms.formatMs) "
+                + "disabled auto-commit put p95=\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
+                + "enabled auto-commit put p95=\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
+                + "disabled pending p95=\(disabled.pressure.pendingBytesP95) "
+                + "enabled pending p95=\(enabled.pressure.pendingBytesP95)"
+        )
+
         // Percentile guardrails: avoid large tail regressions while pressure improves.
         XCTAssertLessThanOrEqual(
             enabled.putLatencyMs.p95Ms,
             disabled.putLatencyMs.p95Ms * 1.20 + 2.0
         )
-        // Shared macOS runners add small timing jitter to percentile samples.
-        XCTAssertLessThanOrEqual(
-            enabled.commitLatencyMs.p95Ms,
-            disabled.commitLatencyMs.p95Ms * 1.20 + 6.0
-        )
+        // This workload has no explicit commit schedule, so commitLatencyMs only
+        // measures the single final commit and is not a proactive-compaction metric.
+        // Explicit commit latency is covered by testWALCompactionWorkloadMatrix().
         XCTAssertLessThanOrEqual(
             enabled.autoCommitPutLatencyMs.p95Ms,
             disabled.autoCommitPutLatencyMs.p95Ms * 1.15 + 10.0
