@@ -155,7 +155,6 @@ final class MCPClientSessionHint: @unchecked Sendable {
 
 private extension WaxMCPTools {
     static let readOnlyTextCommands: Set<String> = ["recall", "search", "memory_search", "memory_get", "compact_context", "corpus_search", "session_synthesize", "memory_health"]
-    static let structuredCommands: Set<String> = ["knowledge_capture", "entity_upsert", "fact_assert", "fact_retract", "facts_query", "entity_resolve"]
     static let clientCWDCommands: Set<String> = [
         "session_start", "session_open", "remember", "memory_append", "knowledge_capture",
         "markdown_export", "recall",
@@ -194,11 +193,11 @@ private extension WaxMCPTools {
     }
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
-        if structuredCommands.contains(name), !structuredMemoryEnabled {
-            throw ToolValidationError.invalid("tool '\(name)' requires structured memory to be enabled")
-        }
-        guard AgentBrokerCommandSurface.allowedPublicArguments(for: name) != nil else {
+        guard let entry = AgentBrokerCommandSurface.entry(for: name), entry.exposure == .publicCommand else {
             throw ToolValidationError.invalid("Unknown tool '\(name)'.")
+        }
+        if entry.requiresStructuredMemory, !structuredMemoryEnabled {
+            throw ToolValidationError.invalid("tool '\(name)' requires structured memory to be enabled")
         }
     }
 

@@ -146,9 +146,6 @@ package actor AgentBrokerService {
             case .remember(let command):
                 payload = try await remember(command)
                 shouldExit = false
-            case .memoryAppend(let command):
-                payload = try await remember(command)
-                shouldExit = false
             case .recall(let command):
                 payload = try await recall(command)
                 shouldExit = false
