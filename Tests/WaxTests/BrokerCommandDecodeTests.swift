@@ -133,6 +133,36 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func hybridWithoutAlphaUsesCanonicalDefault() throws {
+        let recall = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "mode": .string("hybrid"),
+            ]
+        )
+        guard case .recall(let recallPayload) = recall else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(recallPayload.mode == .hybrid(alpha: 0.5))
+
+        let search = try BrokerCommand.decode(
+            command: "search",
+            arguments: [
+                "query": .string("q"),
+                "mode": .string("HYBRID"),
+            ]
+        )
+        guard case .search(let searchPayload) = search else {
+            Issue.record("expected search")
+            return
+        }
+        #expect(searchPayload.mode == .hybrid(alpha: 0.5))
+        #expect(searchPayload.mode.diagnosticsSummary == "hybrid(alpha=0.500)")
+    }
+
+    @Test
     func memorySearchIsDistinctFromSearch() throws {
         let decoded = try BrokerCommand.decode(
             command: "memory_search",

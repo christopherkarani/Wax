@@ -188,12 +188,12 @@ func hostEmbeddingReadinessMapsExistingFlags() throws {
 }
 
 @Test
-func memoryRetrievalModeAliasesModuleScopeRetrievalMode() {
+func memoryRetrievalModeAliasesCanonicalSearchMode() {
     let nested: Memory.RetrievalMode = .hybrid(alpha: 0.4)
-    let root: RetrievalMode = nested
+    let root: SearchMode = nested
     #expect(root == .hybrid(alpha: 0.4))
-    #expect(Memory.RetrievalMode.textOnly == RetrievalMode.textOnly)
-    #expect(Memory.RetrievalMode.vectorOnly == RetrievalMode.vectorOnly)
+    #expect(Memory.RetrievalMode.textOnly == SearchMode.textOnly)
+    #expect(Memory.RetrievalMode.vectorOnly == SearchMode.vectorOnly)
 }
 
 private struct RecordingEmbedder: EmbeddingProvider {

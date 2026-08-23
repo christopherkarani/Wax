@@ -21,25 +21,12 @@ struct SearchCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         let modeLower = mode.lowercased()
-        guard modeLower == "text" || modeLower == "vector" || modeLower == "hybrid" else {
-            throw CLIError("mode must be one of: text, vector, hybrid")
-        }
         guard topK >= 1, topK <= 200 else {
             throw CLIError("top-k must be between 1 and 200")
         }
 
-        let searchMode: Memory.RetrievalMode
-        let requireVector = store.requireVector || modeLower == "vector" || modeLower == "hybrid"
-        switch modeLower {
-        case "text":
-            searchMode = .textOnly
-        case "vector":
-            searchMode = .vectorOnly
-        case "hybrid":
-            searchMode = .hybrid(alpha: 0.5)
-        default:
-            throw CLIError("mode must be one of: text, vector, hybrid")
-        }
+        let searchMode = try BrokerCommand.parseSearchMode(modeRaw: modeLower, alpha: nil)
+        let requireVector = store.requireVector || searchMode != .textOnly
 
         if AgentBrokerPolicy.shouldUseBroker(store: store) {
             let response = try await AgentBrokerCLI.perform(

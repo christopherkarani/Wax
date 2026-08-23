@@ -62,7 +62,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var limit: Int
         package var searchTopK: Int
         package var scope: LayeredRecall.Scope
-        package var mode: RetrievalMode?
+        package var mode: SearchMode?
         package var filters: ParsedSearchFilters
         package var explicitProject: String?
         package var explicitRepo: String?
@@ -71,14 +71,14 @@ package enum BrokerCommand: Sendable, Equatable {
 
     package struct Search: Sendable, Equatable {
         package var query: String
-        package var mode: RetrievalMode
+        package var mode: SearchMode
         package var topK: Int
         package var filters: ParsedSearchFilters
     }
 
     package struct MemorySearch: Sendable, Equatable {
         package var query: String
-        package var mode: RetrievalMode
+        package var mode: SearchMode
         package var topK: Int
         package var sessionID: UUID?
         package var includeWorking: Bool
@@ -186,7 +186,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var sessionID: UUID?
         package var tokenBudget: Int
         package var maxItems: Int
-        package var mode: RetrievalMode
+        package var mode: SearchMode
     }
 
     package struct MarkdownExport: Sendable, Equatable {
@@ -233,7 +233,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var query: String
         package var recursive: Bool
         package var rebuild: Bool
-        package var mode: RetrievalMode
+        package var mode: SearchMode
         package var topK: Int
     }
 
@@ -755,7 +755,7 @@ extension BrokerCommand {
         return scope
     }
 
-    package static func parseRecallMode(_ args: BrokerArguments) throws -> RetrievalMode? {
+    package static func parseRecallMode(_ args: BrokerArguments) throws -> SearchMode? {
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let alpha = try args.optionalDouble("alpha")
 
@@ -775,7 +775,8 @@ extension BrokerCommand {
         case "vector":
             return .vectorOnly
         case "hybrid":
-            return .hybrid(alpha: try validatedHybridAlpha(alpha ?? 0.5))
+            guard let alpha else { return .hybrid() }
+            return .hybrid(alpha: try validatedHybridAlpha(alpha))
         default:
             throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
         }
@@ -784,19 +785,19 @@ extension BrokerCommand {
     package static func parseSearchMode(
         modeRaw: String?,
         alpha: Double?
-    ) throws -> RetrievalMode {
+    ) throws -> SearchMode {
         let resolvedMode = modeRaw ?? "text"
         if alpha != nil, resolvedMode != "hybrid" {
             throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
         }
-        let validatedAlpha = try validatedHybridAlpha(alpha ?? 0.5)
         switch resolvedMode {
         case "text":
             return .textOnly
         case "vector":
             return .vectorOnly
         case "hybrid":
-            return .hybrid(alpha: validatedAlpha)
+            guard let alpha else { return .hybrid() }
+            return .hybrid(alpha: try validatedHybridAlpha(alpha))
         default:
             throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
         }
