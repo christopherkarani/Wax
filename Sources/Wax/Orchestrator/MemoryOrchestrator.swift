@@ -11,16 +11,6 @@ package actor MemoryOrchestrator {
         case always
     }
 
-    package enum QueryEmbeddingState: String, Sendable, Equatable {
-        case notRequested = "not_requested"
-        case available = "available"
-        case timeout = "timeout"
-        case circuitOpen = "circuit_open"
-        case noEmbedder = "no_embedder"
-        case vectorDisabled = "vector_disabled"
-        case failed = "failed"
-    }
-
     /// Stable search hit DTO for MCP and other raw-search callers.
     package struct MemorySearchHit: Sendable, Equatable {
         package var frameId: UInt64
@@ -51,13 +41,13 @@ package actor MemoryOrchestrator {
         package var hits: [MemorySearchHit]
         package var requestedMode: SearchMode
         package var effectiveMode: SearchMode
-        package var queryEmbeddingState: QueryEmbeddingState
+        package var queryEmbeddingState: RAGContext.QueryEmbeddingState
 
         package init(
             hits: [MemorySearchHit],
             requestedMode: SearchMode,
             effectiveMode: SearchMode,
-            queryEmbeddingState: QueryEmbeddingState
+            queryEmbeddingState: RAGContext.QueryEmbeddingState
         ) {
             self.hits = hits
             self.requestedMode = requestedMode
@@ -70,13 +60,13 @@ package actor MemoryOrchestrator {
         package var context: RAGContext
         package var requestedMode: SearchMode
         package var effectiveMode: SearchMode
-        package var queryEmbeddingState: QueryEmbeddingState
+        package var queryEmbeddingState: RAGContext.QueryEmbeddingState
 
         package init(
             context: RAGContext,
             requestedMode: SearchMode,
             effectiveMode: SearchMode,
-            queryEmbeddingState: QueryEmbeddingState
+            queryEmbeddingState: RAGContext.QueryEmbeddingState
         ) {
             self.context = context
             self.requestedMode = requestedMode
@@ -1549,7 +1539,7 @@ package actor MemoryOrchestrator {
 
     private struct QueryEmbeddingResult {
         let embedding: [Float]?
-        let state: QueryEmbeddingState
+        let state: RAGContext.QueryEmbeddingState
     }
 
     private static func queryEmbeddingPolicy(for mode: SearchMode) -> QueryEmbeddingPolicy {

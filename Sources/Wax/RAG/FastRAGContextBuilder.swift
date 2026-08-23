@@ -103,7 +103,7 @@ package struct FastRAGContextBuilder: Sendable {
                             kind: .expanded,
                             frameId: result.frameId,
                             score: result.score,
-                            sources: RAGContext.Source.fromSearchSources(result.sources),
+                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
                             text: expanded,
                             metadata: result.metadata,
                             explanations: enrichedExplanations(
@@ -246,7 +246,7 @@ package struct FastRAGContextBuilder: Sendable {
                             kind: .surrogate,
                             frameId: surrogateFrameId,
                             score: result.score,
-                            sources: RAGContext.Source.fromSearchSources(result.sources),
+                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
                             text: capped,
                             metadata: result.metadata,
                             explanations: enrichedExplanations(
@@ -339,7 +339,7 @@ package struct FastRAGContextBuilder: Sendable {
                             kind: .snippet,
                             frameId: result.frameId,
                             score: result.score,
-                            sources: RAGContext.Source.fromSearchSources(result.sources),
+                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
                             text: capped,
                             metadata: result.metadata,
                             explanations: enrichedExplanations(

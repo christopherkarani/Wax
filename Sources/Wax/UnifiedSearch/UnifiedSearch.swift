@@ -301,7 +301,7 @@ extension Wax {
                 let fused = Self.rrfFusionResults(
                     lists: [
                         (source: .text, weight: weights.bm25, frameIds: textIds),
-                        (source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds),
+                        (source: .structured, weight: structuredWeight, frameIds: structuredIds),
                     ],
                     k: request.rrfK,
                     includeDiagnostics: diagnosticsEnabled,
@@ -310,7 +310,7 @@ extension Wax {
 
                 baseResults = fused.map { entry in
                     let sources = entry.sources.isEmpty
-                        ? (textSet.contains(entry.frameId) ? [.text] : [.structuredMemory])
+                        ? (textSet.contains(entry.frameId) ? [.text] : [.structured])
                         : entry.sources
                     return BaseResult(
                         frameId: entry.frameId,
@@ -352,7 +352,7 @@ extension Wax {
                 let fused = Self.rrfFusionResults(
                     lists: [
                         (source: .vector, weight: weights.vector, frameIds: vectorIds),
-                        (source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds),
+                        (source: .structured, weight: structuredWeight, frameIds: structuredIds),
                     ],
                     k: request.rrfK,
                     includeDiagnostics: diagnosticsEnabled,
@@ -361,7 +361,7 @@ extension Wax {
 
                 baseResults = fused.map { entry in
                     let sources = entry.sources.isEmpty
-                        ? (vectorSet.contains(entry.frameId) ? [.vector] : [.structuredMemory])
+                        ? (vectorSet.contains(entry.frameId) ? [.vector] : [.structured])
                         : entry.sources
                     return BaseResult(
                         frameId: entry.frameId,
@@ -384,7 +384,7 @@ extension Wax {
             if textWeight > 0, !textIds.isEmpty { lists.append((source: .text, weight: textWeight, frameIds: textIds)) }
             if vectorWeight > 0, !vectorIds.isEmpty { lists.append((source: .vector, weight: vectorWeight, frameIds: vectorIds)) }
             if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
-            if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structuredMemory, weight: structuredWeight, frameIds: structuredIds)) }
+            if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structured, weight: structuredWeight, frameIds: structuredIds)) }
 
             var fused = Self.rrfFusionResults(
                 lists: lists,
@@ -426,7 +426,7 @@ extension Wax {
                     if textSet.contains(entry.frameId) { sources.append(.text) }
                     if vectorSet.contains(entry.frameId) { sources.append(.vector) }
                     if timelineSet.contains(entry.frameId) { sources.append(.timeline) }
-                    if structuredSet.contains(entry.frameId) { sources.append(.structuredMemory) }
+                    if structuredSet.contains(entry.frameId) { sources.append(.structured) }
                 }
                 return BaseResult(
                     frameId: entry.frameId,
@@ -808,7 +808,7 @@ extension Wax {
         if sources.contains(.text) {
             reasons.append("keyword match")
         }
-        if sources.contains(.structuredMemory) {
+        if sources.contains(.structured) {
             reasons.append("linked entity or fact evidence")
         }
         if sources.contains(.timeline) {
