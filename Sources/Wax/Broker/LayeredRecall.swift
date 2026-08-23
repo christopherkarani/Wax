@@ -439,8 +439,18 @@ package enum LayeredRecall {
     }
 
     package static func hit(from item: RAGContext.Item, horizon: Horizon, sessionID: UUID?) -> Hit {
-        Hit(
-            reference: MemoryReference(horizon: horizon, sessionID: sessionID, frameID: item.frameId)!,
+        // Total per wire grammar: durable never carries a session, working/episodic may.
+        let reference: MemoryReference
+        switch horizon {
+        case .durable:
+            reference = .durable(frameID: item.frameId)
+        case .working:
+            reference = .working(sessionID: sessionID, frameID: item.frameId)
+        case .episodic:
+            reference = .episodic(sessionID: sessionID, frameID: item.frameId)
+        }
+        return Hit(
+            reference: reference,
             horizon: horizon,
             sessionID: sessionID,
             frameID: item.frameId,
