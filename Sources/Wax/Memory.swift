@@ -71,7 +71,10 @@ public actor Memory {
         }
     }
 
-    public typealias RetrievalMode = Wax.RetrievalMode
+    /// Retrieval mode for `Memory.search` — text-only, vector-only, or hybrid.
+    ///
+    /// Aliases the package-wide canonical lane type `SearchMode`.
+    public typealias RetrievalMode = SearchMode
 
     public struct SearchOptions: Sendable, Equatable {
         public var topK: Int
