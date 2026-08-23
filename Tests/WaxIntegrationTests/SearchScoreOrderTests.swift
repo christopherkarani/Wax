@@ -138,7 +138,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
                 topK: 2,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(

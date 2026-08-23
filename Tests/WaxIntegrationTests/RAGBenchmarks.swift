@@ -587,7 +587,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 512
             )
             let requestNoPreviews = SearchRequest(
@@ -595,7 +595,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 
@@ -634,7 +634,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 
@@ -663,7 +663,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 

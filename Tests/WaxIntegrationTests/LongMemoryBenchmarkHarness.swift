@@ -320,7 +320,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 vectorEnginePreference: .cpuOnly,
                 mode: config.includeVectors ? .hybrid(alpha: config.searchAlpha) : .textOnly,
                 topK: config.topK,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: config.enableDiagnostics,
                 rankingDiagnosticsTopK: 10
             )

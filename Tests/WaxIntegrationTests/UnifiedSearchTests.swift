@@ -593,7 +593,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             frameFilter: FrameFilter(
                 metadataFilter: .init(requiredEntries: ["source": "email"])
             ),
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000),
             allowTimelineFallback: true,
             timelineFallbackLimit: 10
         )
@@ -1058,7 +1058,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             vectorEnginePreference: .cpuOnly,
             mode: .hybrid(alpha: 0.5),
             topK: 3,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000),
             enableRankingDiagnostics: true,
             rankingDiagnosticsTopK: 1
         )
@@ -1112,7 +1112,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.3),
                 topK: 2,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 2
             ),
@@ -1169,7 +1169,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 query: "auth rollout decision",
                 mode: .textOnly,
                 topK: 2,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1243,7 +1243,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 query: "concise release notes",
                 mode: .textOnly,
                 topK: 3,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1298,7 +1298,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 query: token,
                 mode: .textOnly,
                 topK: 5,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1311,7 +1311,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 5,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1378,7 +1378,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 5,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1442,7 +1442,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .vectorOnly,
                 topK: 5,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1578,7 +1578,7 @@ nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 10,
-nowMs: Int64(Date().timeIntervalSince1970 * 1000),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 10
             ),
