@@ -24,7 +24,7 @@ private enum SurrogateMetadataKeys {
 }
 
 private enum SurrogateDefaults {
-    static let kind = "surrogate"
+    static let kind = FrameKind.surrogate.storageValue
     static let version: UInt32 = 1
     static let hierarchicalFormat = "hierarchical_v1"
 }
@@ -525,7 +525,7 @@ package extension MemoryOrchestrator {
         surrogateMaxTokens: Int
     ) async throws -> Bool {
         let surrogate = try await wax.frameMeta(frameId: surrogateFrameId)
-        guard surrogate.kind == SurrogateDefaults.kind else { return false }
+        guard FrameKind(rawKind: surrogate.kind) == .surrogate else { return false }
         guard surrogate.status == .active else { return false }
         guard surrogate.supersededBy == nil else { return false }
         guard let entries = surrogate.metadata?.entries else { return false }

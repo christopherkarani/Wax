@@ -20,16 +20,6 @@ import CoreLocation
 /// multimodal embeddings, indexes everything in Wax, and serves hybrid retrieval to assemble
 /// RAG-ready context with text surrogates and optional pixel payloads (thumbnails/crops).
 package actor PhotoRAGOrchestrator {
-    private enum FrameKind {
-        static let root = PhotoFrameKind.root.rawValue
-        static let ocrBlock = PhotoFrameKind.ocrBlock.rawValue
-        static let ocrSummary = PhotoFrameKind.ocrSummary.rawValue
-        static let captionShort = PhotoFrameKind.captionShort.rawValue
-        static let tags = PhotoFrameKind.tags.rawValue
-        static let region = PhotoFrameKind.region.rawValue
-        static let syncState = PhotoFrameKind.syncState.rawValue
-    }
-
     private enum MetaKey {
         static let assetID = PhotoMetadataKey.assetID.rawValue
         static let source = PhotoMetadataKey.source.rawValue
@@ -341,7 +331,7 @@ package actor PhotoRAGOrchestrator {
                 guard let meta = metaById[result.frameId] else { continue }
                 let rootId = meta.parentId ?? meta.id
                 guard let rootMeta = rootMetaById[rootId] else { continue }
-                guard rootMeta.kind == FrameKind.root else { continue }
+                guard FrameKind(rawKind: rootMeta.kind) == .photo(.root) else { continue }
                 if rootMeta.status == .deleted { continue }
                 if rootMeta.supersededBy != nil { continue }
 
@@ -361,7 +351,7 @@ package actor PhotoRAGOrchestrator {
                 if let rect = Self.regionRect(from: meta) {
                     entry.matchedRegions.append(rect)
                 }
-                if entry.textSnippet == nil, (result.sources.contains(.text) || meta.kind == FrameKind.ocrSummary) {
+                if entry.textSnippet == nil, (result.sources.contains(.text) || FrameKind(rawKind: meta.kind) == .photo(.ocrSummary)) {
                     entry.textSnippet = result.previewText
                 }
                 candidates[rootId] = entry
@@ -550,7 +540,7 @@ package actor PhotoRAGOrchestrator {
 
         _ = try await session.put(
             Data(),
-            options: FrameMetaSubset(kind: FrameKind.syncState, metadata: metadata),
+            options: FrameMetaSubset(kind: PhotoFrameKind.syncState.rawValue, metadata: metadata),
             compression: .plain,
             timestampMs: completedAtMs
         )
@@ -595,7 +585,7 @@ package actor PhotoRAGOrchestrator {
         if !isLocal {
             // Metadata-only ingest
             let options = FrameMetaSubset(
-                kind: FrameKind.root,
+                kind: PhotoFrameKind.root.rawValue,
                 metadata: baseMeta
             )
             let rootId = try await session.put(Data(), options: options, compression: .plain, timestampMs: frameTimestampMs)
@@ -611,7 +601,7 @@ package actor PhotoRAGOrchestrator {
             var degradedMeta = baseMeta
             degradedMeta.entries[MetaKey.isLocal] = "false"
             let options = FrameMetaSubset(
-                kind: FrameKind.root,
+                kind: PhotoFrameKind.root.rawValue,
                 metadata: degradedMeta
             )
             let rootId = try await session.put(
@@ -642,7 +632,7 @@ package actor PhotoRAGOrchestrator {
 
         // Root frame
         let rootOptions = FrameMetaSubset(
-            kind: FrameKind.root,
+            kind: PhotoFrameKind.root.rawValue,
             metadata: baseMeta
         )
 
@@ -697,11 +687,11 @@ package actor PhotoRAGOrchestrator {
         }
 
         if let captionText, !captionText.isEmpty {
-            addDerived(kind: FrameKind.captionShort, text: captionText, searchable: true)
+            addDerived(kind: PhotoFrameKind.captionShort.rawValue, text: captionText, searchable: true)
         }
 
         if let derivedTagsText {
-            addDerived(kind: FrameKind.tags, text: derivedTagsText, searchable: true)
+            addDerived(kind: PhotoFrameKind.tags.rawValue, text: derivedTagsText, searchable: true)
         }
 
         // OCR summary + per-block frames; both are text-indexed.
@@ -709,7 +699,7 @@ package actor PhotoRAGOrchestrator {
             // Summary
             let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
             if !summary.isEmpty {
-                addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
+                addDerived(kind: PhotoFrameKind.ocrSummary.rawValue, text: summary, searchable: true)
             }
 
             // Blocks — also text-indexed so serials and short OCR tokens stay findable
@@ -724,7 +714,7 @@ package actor PhotoRAGOrchestrator {
                 let text = block.text
                 let idx = derivedContents.count
                 derivedContents.append(Data(text.utf8))
-                var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
+                var subset = FrameMetaSubset(kind: PhotoFrameKind.ocrBlock.rawValue, parentId: rootId, metadata: meta)
                 subset.role = FrameRole.blob
                 derivedOptions.append(subset)
                 if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -827,7 +817,7 @@ package actor PhotoRAGOrchestrator {
                             var meta = baseMeta
                             Self.writeBBox(into: &meta, rect: region.bbox)
                             meta.entries[MetaKey.regionType] = region.type
-                            let subset = FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta)
+                            let subset = FrameMetaSubset(kind: PhotoFrameKind.region.rawValue, role: .blob, parentId: rootId, metadata: meta)
                             regionOptions.append(subset)
                         }
                     }
@@ -923,7 +913,7 @@ package actor PhotoRAGOrchestrator {
             Data(),
             embedding: globalEmbedding,
             identity: embedder.identity,
-            options: FrameMetaSubset(kind: FrameKind.root, metadata: baseMeta),
+            options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: baseMeta),
             compression: .plain,
             timestampMs: frameTimestampMs
         )
@@ -966,15 +956,15 @@ package actor PhotoRAGOrchestrator {
         }
 
         if let captionText, !captionText.isEmpty {
-            addDerived(kind: FrameKind.captionShort, text: captionText, searchable: true)
+            addDerived(kind: PhotoFrameKind.captionShort.rawValue, text: captionText, searchable: true)
         }
         if let derivedTagsText {
-            addDerived(kind: FrameKind.tags, text: derivedTagsText, searchable: true)
+            addDerived(kind: PhotoFrameKind.tags.rawValue, text: derivedTagsText, searchable: true)
         }
         if !ocrBlocks.isEmpty {
             let summary = Self.buildOCRSummary(ocrBlocks, maxLines: config.maxOCRSummaryLines)
             if !summary.isEmpty {
-                addDerived(kind: FrameKind.ocrSummary, text: summary, searchable: true)
+                addDerived(kind: PhotoFrameKind.ocrSummary.rawValue, text: summary, searchable: true)
             }
             for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
                 var meta = baseMeta
@@ -985,7 +975,7 @@ package actor PhotoRAGOrchestrator {
                 }
                 let idx = derivedContents.count
                 derivedContents.append(Data(block.text.utf8))
-                var subset = FrameMetaSubset(kind: FrameKind.ocrBlock, parentId: rootId, metadata: meta)
+                var subset = FrameMetaSubset(kind: PhotoFrameKind.ocrBlock.rawValue, parentId: rootId, metadata: meta)
                 subset.role = FrameRole.blob
                 derivedOptions.append(subset)
                 if !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1104,7 +1094,7 @@ package actor PhotoRAGOrchestrator {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: region.bbox)
                 meta.entries[MetaKey.regionType] = region.type
-                regionOptions.append(FrameMetaSubset(kind: FrameKind.region, role: .blob, parentId: rootId, metadata: meta))
+                regionOptions.append(FrameMetaSubset(kind: PhotoFrameKind.region.rawValue, role: .blob, parentId: rootId, metadata: meta))
             }
         }
 
@@ -1125,7 +1115,7 @@ package actor PhotoRAGOrchestrator {
 
         var supersededRoots: Set<UInt64> = []
         supersededRoots.reserveCapacity(64)
-        for meta in metas where meta.kind == FrameKind.root {
+        for meta in metas where FrameKind(rawKind: meta.kind) == .photo(.root) {
             if meta.supersededBy != nil {
                 supersededRoots.insert(meta.id)
             }
@@ -1140,12 +1130,12 @@ package actor PhotoRAGOrchestrator {
                 continue
             }
             guard let kind = meta.kind else { continue }
-            if !kind.hasPrefix("photo.") && kind != FrameKind.syncState { continue }
+            if !kind.hasPrefix("photo.") && FrameKind(rawKind: kind) != .photo(.syncState) { continue }
             guard let entries = meta.metadata?.entries,
                   let assetID = entries[MetaKey.assetID]
             else { continue }
 
-            if kind == FrameKind.root {
+            if FrameKind(rawKind: kind) == .photo(.root) {
                 guard meta.supersededBy == nil else {
                     retiredVectorIds.insert(meta.id)
                     continue
@@ -1160,16 +1150,16 @@ package actor PhotoRAGOrchestrator {
                     continue
                 }
                 var refs = next.derivedByRoot[parentId] ?? DerivedRefs()
-                switch kind {
-                case FrameKind.ocrSummary:
+                switch FrameKind(rawKind: kind) {
+                case .photo(.ocrSummary):
                     refs.ocrSummary = meta.id
-                case FrameKind.captionShort:
+                case .photo(.captionShort):
                     refs.caption = meta.id
-                case FrameKind.tags:
+                case .photo(.tags):
                     refs.tags = meta.id
-                case FrameKind.region:
+                case .photo(.region):
                     refs.regions.append(meta.id)
-                case FrameKind.ocrBlock:
+                case .photo(.ocrBlock):
                     refs.ocrBlocks.append(meta.id)
                 default:
                     break
@@ -1216,8 +1206,8 @@ package actor PhotoRAGOrchestrator {
     }
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {
-        switch kind {
-        case FrameKind.root, FrameKind.ocrSummary, FrameKind.captionShort, FrameKind.tags, FrameKind.region:
+        switch FrameKind(rawKind: kind) {
+        case .photo(.root), .photo(.ocrSummary), .photo(.captionShort), .photo(.tags), .photo(.region):
             return true
         default:
             return false
@@ -1526,7 +1516,7 @@ package actor PhotoRAGOrchestrator {
     ) async -> (rootMetaById: [UInt64: FrameMeta], candidates: [RootCandidate]) {
         var roots: [FrameMeta] = []
         for meta in await wax.frameMetas() {
-            guard meta.kind == FrameKind.root else { continue }
+            guard FrameKind(rawKind: meta.kind) == .photo(.root) else { continue }
             if meta.status == .deleted { continue }
             if meta.supersededBy != nil { continue }
             if let timeRange, !timeRange.contains(meta.timestamp) { continue }
@@ -1687,7 +1677,7 @@ package actor PhotoRAGOrchestrator {
         if result.sources.contains(.timeline) {
             return .timeline
         }
-        if meta.kind == FrameKind.region {
+        if FrameKind(rawKind: meta.kind) == .photo(.region) {
             if let rect = regionRect(from: meta) {
                 return .region(bbox: rect)
             }

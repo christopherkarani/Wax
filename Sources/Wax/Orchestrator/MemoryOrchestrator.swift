@@ -787,7 +787,7 @@ package actor MemoryOrchestrator {
         _ = try await session.put(
             Data(renderEnrichmentResult(result).utf8),
             options: FrameMetaSubset(
-                kind: "enrichment",
+                kind: FrameKind.other("enrichment").storageValue,
                 role: .system,
                 parentId: result.frameId,
                 searchText: result.keywords.joined(separator: " "),
@@ -1385,7 +1385,7 @@ package actor MemoryOrchestrator {
         let frameId = try await session.put(
             Data(text.utf8),
             options: FrameMetaSubset(
-                kind: "handoff",
+                kind: FrameKind.handoff.storageValue,
                 labels: ["handoff"],
                 role: .document,
                 searchText: text,

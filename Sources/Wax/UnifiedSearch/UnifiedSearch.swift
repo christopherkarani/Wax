@@ -246,7 +246,7 @@ extension Wax {
                 includeSuperseded: filter.includeSuperseded
             )
             timelineFrameIds = await timeline(timelineQuery)
-                .filter { filter.includeSurrogates || $0.kind != "surrogate" }
+                .filter { filter.includeSurrogates || FrameKind(rawKind: $0.kind) != .surrogate }
                 .map(\.id)
         }
 
@@ -1424,7 +1424,7 @@ extension Wax {
         if let allowlist = filter.frameIds, !allowlist.contains(frameId) { return false }
         if !filter.includeDeleted, meta.status == .deleted { return false }
         if !filter.includeSuperseded, meta.supersededBy != nil { return false }
-        if !filter.includeSurrogates, meta.kind == "surrogate" { return false }
+        if !filter.includeSurrogates, FrameKind(rawKind: meta.kind) == .surrogate { return false }
         if let metadataFilter = filter.metadataFilter, !matches(metadataFilter: metadataFilter, meta: meta) {
             return false
         }
