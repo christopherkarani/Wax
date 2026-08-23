@@ -951,7 +951,11 @@ package actor MemoryOrchestrator {
     }
 
     package func recall(query: String, embedding: [Float]) async throws -> RAGContext {
-        return try await buildRecallContext(query: query, embedding: embedding)
+        return try await buildRecallContext(
+            query: query,
+            embedding: embedding,
+            anchorMs: resolveOperationAnchorMs()
+        )
     }
 
     package func recall(
@@ -992,13 +996,14 @@ package actor MemoryOrchestrator {
     private func buildRecallContext(
         query: String,
         embedding: [Float]?,
+        anchorMs: Int64,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         searchTopK: Int? = nil,
         searchMode: SearchMode? = nil
     ) async throws -> RAGContext {
         let preference = config.vectorEnginePreference
-        var recallConfig = ragConfigForRecall()
+        var recallConfig = ragConfigForRecall(nowMs: anchorMs)
         if let searchTopK {
             recallConfig.searchTopK = max(1, searchTopK)
         }
@@ -1025,13 +1030,13 @@ package actor MemoryOrchestrator {
         }
         let enrichedItems = context.items.map { item in
             var item = item
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId]).reasons
+            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[item.frameId], nowMs: anchorMs).reasons
             if !accessReasons.isEmpty {
                 item.explanations = dedupedExplanations(item.explanations + accessReasons)
             }
             return item
         }
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId))
+        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId), nowMs: anchorMs)
         return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
@@ -1086,6 +1091,7 @@ package actor MemoryOrchestrator {
         }
 
         let preference = config.vectorEnginePreference
+        let operationAnchorMs = resolveOperationAnchorMs()
 
         let snapshotEmbedder = embedderForCurrentSearch()
         if let hold = searchSnapshotHoldForTesting {
@@ -1110,6 +1116,7 @@ package actor MemoryOrchestrator {
             topK: topK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            nowMs: operationAnchorMs,
             scopeContext: config.defaultScopeContext,
             previewMaxBytes: config.rag.previewMaxBytes
         )
@@ -1121,7 +1128,7 @@ package actor MemoryOrchestrator {
             [:]
         }
         let hits = response.results.map { result in
-            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[result.frameId]).reasons
+            let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[result.frameId], nowMs: operationAnchorMs).reasons
             return MemorySearchHit(
                 frameId: result.frameId,
                 score: result.score,
@@ -1131,7 +1138,7 @@ package actor MemoryOrchestrator {
                 explanations: dedupedExplanations(result.explanations + accessReasons)
             )
         }
-        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId))
+        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId), nowMs: operationAnchorMs)
         return SearchExecution(
             hits: hits,
             requestedMode: mode,
@@ -1301,10 +1308,17 @@ package actor MemoryOrchestrator {
         )
     }
 
-    private func ragConfigForRecall() -> FastRAGConfig {
+    /// Shell-side clock resolution: one anchor per search/recall operation. A config-level
+    /// deterministic override wins; otherwise the orchestrator reads the wall clock exactly
+    /// once and threads the value down so decision code never self-resolves time.
+    private func resolveOperationAnchorMs() -> Int64 {
+        config.rag.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func ragConfigForRecall(nowMs: Int64) -> FastRAGConfig {
         var recallConfig = config.rag
         if recallConfig.deterministicNowMs == nil {
-            recallConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            recallConfig.deterministicNowMs = nowMs
         }
         return recallConfig
     }
@@ -1493,7 +1507,8 @@ package actor MemoryOrchestrator {
         topK: Int?,
         requestedMode: SearchMode?
     ) async throws -> RecallExecution {
-        let recallConfig = ragConfigForRecall()
+        let operationAnchorMs = resolveOperationAnchorMs()
+        let recallConfig = ragConfigForRecall(nowMs: operationAnchorMs)
         let resolvedRequestedMode = requestedMode ?? recallConfig.searchMode
         let embeddingPolicy = requestedMode.map(Self.queryEmbeddingPolicy(for:)) ?? .ifAvailable
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1523,6 +1538,7 @@ package actor MemoryOrchestrator {
         let context = try await buildRecallContext(
             query: trimmedQuery,
             embedding: queryEmbedding.embedding,
+            anchorMs: operationAnchorMs,
             frameFilter: frameFilter,
             timeRange: timeRange,
             searchTopK: topK,
@@ -2231,9 +2247,9 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func recordAccessesIfEnabled(frameIds: [UInt64]) async {
+    private func recordAccessesIfEnabled(frameIds: [UInt64], nowMs: Int64) async {
         guard config.enableAccessStatsScoring, !frameIds.isEmpty else { return }
-        await accessStatsManager.recordAccesses(frameIds: frameIds)
+        await accessStatsManager.recordAccesses(frameIds: frameIds, nowMs: nowMs)
     }
 
     private func loadPersistedAccessStatsIfNeeded() async throws {

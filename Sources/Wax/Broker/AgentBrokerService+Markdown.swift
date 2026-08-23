@@ -72,7 +72,7 @@ extension AgentBrokerService {
         kind: MarkdownProjectionKind,
         dateKey: String? = nil
     ) -> MarkdownProjectionMarker {
-        let info = MemorySemantics.parse(metadata: document.metadata)
+        let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
         return MarkdownProjectionMarker(
             managed: document.metadata[MemoryMetadataKeys.sourceManaged] != "false",
             sourceKind: kind.rawValue,
@@ -262,7 +262,8 @@ extension AgentBrokerService {
             metadata: metadata,
             semantics: semantics,
             sessionID: nil,
-            inferredScope: scopeContext
+            inferredScope: scopeContext,
+            nowMs: Self.nowMs()
         )
         return MemorySemantics.approvedPromotionMetadata(
             metadata: normalized,
@@ -284,6 +285,7 @@ extension AgentBrokerService {
     ) async throws -> MarkdownSyncCounts {
         var counts = MarkdownSyncCounts()
         var matchedFrameIDs = Set<UInt64>()
+        let syncAnchorMs = Self.nowMs()
 
         for entry in entries {
             let existingByMarker = trustedExistingDocument(
@@ -302,7 +304,7 @@ extension AgentBrokerService {
             let semantics = semanticsForEntry(entry, existing)
 
             if let existing {
-                let existingInfo = MemorySemantics.parse(metadata: existing.metadata)
+                let existingInfo = MemorySemantics.parse(metadata: existing.metadata, nowMs: syncAnchorMs)
                 if existing.text == entry.text,
                    existing.metadata[MemoryMetadataKeys.sourceLine] == String(entry.lineNumber),
                    existingInfo.type == (semantics.type ?? existingInfo.type),
@@ -370,7 +372,7 @@ extension AgentBrokerService {
     }
 
     private func isLockedMemory(_ document: MemoryOrchestrator.CorpusSourceDocument) -> Bool {
-        MemorySemantics.parse(metadata: document.metadata).durability == .locked
+        MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs()).durability == .locked
     }
 
     private func trustedExistingDocument(
@@ -524,7 +526,8 @@ extension AgentBrokerService {
             metadata: baseMetadata,
             semantics: semantics,
             sessionID: nil,
-            inferredScope: scopeContext
+            inferredScope: scopeContext,
+            nowMs: Self.nowMs()
         )
     }
 

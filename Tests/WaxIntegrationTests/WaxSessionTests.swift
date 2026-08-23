@@ -127,7 +127,8 @@ import WaxCore
             SearchRequest(
                 embedding: [1.0, 0.0],
                 mode: .vectorOnly,
-                topK: 2
+                topK: 2,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
         #expect(beforeCommit.results.first?.frameId == frameA)
@@ -142,7 +143,8 @@ import WaxCore
             SearchRequest(
                 embedding: [1.0, 0.0],
                 mode: .vectorOnly,
-                topK: 2
+                topK: 2,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
         #expect(afterCommit.results.first?.frameId == frameA)
@@ -218,7 +220,8 @@ import WaxCore
             SearchRequest(
                 embedding: [1.0, 0.0],
                 mode: .vectorOnly,
-                topK: 2
+                topK: 2,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
         #expect(response.results.first?.frameId == frameIds[0])
@@ -254,7 +257,8 @@ struct WaxSessionCacheIsolationTests {
                 SearchRequest(
                     embedding: [1.0, 0.0],
                     mode: .vectorOnly,
-                    topK: 1
+                    topK: 1,
+                    nowMs: Int64(Date().timeIntervalSince1970 * 1000)
                 )
             )
 

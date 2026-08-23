@@ -48,7 +48,8 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
-                topK: 2
+                topK: 2,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,
@@ -88,7 +89,8 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,
@@ -136,6 +138,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
                 topK: 2,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(

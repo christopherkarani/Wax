@@ -292,7 +292,7 @@ package enum BrokerMemoryInsights {
         documents: [MemoryOrchestrator.CorpusSourceDocument],
         accessStats: [UInt64: FrameAccessStats],
         facts: StructuredFactsResult?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> BrokerMemoryHealth {
         var typedCounts: [String: Int] = [:]
         var expired: [UInt64] = []

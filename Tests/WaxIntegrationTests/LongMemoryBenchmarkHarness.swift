@@ -320,6 +320,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 vectorEnginePreference: .cpuOnly,
                 mode: config.includeVectors ? .hybrid(alpha: config.searchAlpha) : .textOnly,
                 topK: config.topK,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: config.enableDiagnostics,
                 rankingDiagnosticsTopK: 10
             )
@@ -744,7 +745,8 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 embedding: embedding,
                 vectorEnginePreference: .cpuOnly,
                 mode: includeVectors ? .hybrid(alpha: alpha) : .textOnly,
-                topK: topK
+                topK: topK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             _ = try await wax.search(request)
         }

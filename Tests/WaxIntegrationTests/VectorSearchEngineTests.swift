@@ -329,7 +329,8 @@ import WaxVectorSearch
         embedding: [1.0, 0.0],
         vectorEnginePreference: .auto,
         mode: .vectorOnly,
-        topK: 5
+        topK: 5,
+        nowMs: Int64(Date().timeIntervalSince1970 * 1000)
     )
     let response = try await wax.search(request)
     #expect(response.results.contains(where: { $0.frameId == 0 }))

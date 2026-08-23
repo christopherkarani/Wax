@@ -27,6 +27,11 @@ package struct FastRAGContextBuilder: Sendable {
         let clamped = clamp(config)
         let counter = try await TokenCounter.shared()
 
+        // One clock anchor per build operation for search-side semantic decisions
+        // (rerank explanations, expiry filtering). Config override wins; direct callers
+        // without a deterministic anchor keep wall-clock behavior.
+        let searchAnchorMs = clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000)
+
         // 1) Run unified search
         let request = SearchRequest(
             query: query,
@@ -36,6 +41,7 @@ package struct FastRAGContextBuilder: Sendable {
             topK: clamped.searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            nowMs: searchAnchorMs,
             scopeContext: scopeContext,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
@@ -109,7 +115,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: searchAnchorMs
                             )
                         )
                     )
@@ -252,7 +259,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: searchAnchorMs
                             )
                         )
                     )
@@ -345,7 +353,8 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
-                                accessStatsMap: accessStatsMap
+                                accessStatsMap: accessStatsMap,
+                                nowMs: searchAnchorMs
                             )
                         )
                     )
@@ -381,9 +390,10 @@ package struct FastRAGContextBuilder: Sendable {
     private func enrichedExplanations(
         _ existing: [String],
         frameId: UInt64,
-        accessStatsMap: [UInt64: FrameAccessStats]
+        accessStatsMap: [UInt64: FrameAccessStats],
+        nowMs: Int64
     ) -> [String] {
-        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId]).reasons
+        let accessReasons = MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: nowMs).reasons
         var seen = Set<String>()
         var combined: [String] = []
         for reason in existing + accessReasons {

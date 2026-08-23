@@ -153,7 +153,8 @@ final class ProductionReadinessStabilityTests: XCTestCase {
                         embedding: searchMode.usesVector ? Self.deterministicEmbedding(for: step.payload) : nil,
                         vectorEnginePreference: .cpuOnly,
                         mode: searchMode.searchMode,
-                        topK: 8
+                        topK: 8,
+                        nowMs: Int64(Date().timeIntervalSince1970 * 1000)
                     )
                 )
                 vectorSourceHits += response.results.filter { $0.sources.contains(.vector) }.count

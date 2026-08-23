@@ -61,7 +61,8 @@ func unifiedSearchVectorTimeoutFallsBackToTextLane() async throws {
             embedding: [1.0, 0.0],
             vectorSearchTimeout: .milliseconds(25),
             mode: .hybrid(alpha: 0.5),
-            topK: 10
+            topK: 10,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
 
         let response = try await wax.search(request, engineOverrides: overrides)
@@ -88,7 +89,8 @@ func unifiedSearchVectorTimeoutThrowsForVectorOnly() async throws {
             embedding: [1.0, 0.0],
             vectorSearchTimeout: .milliseconds(25),
             mode: .vectorOnly,
-            topK: 10
+            topK: 10,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
 
         do {

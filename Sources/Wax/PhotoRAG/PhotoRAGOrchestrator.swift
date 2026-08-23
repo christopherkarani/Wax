@@ -311,6 +311,7 @@ package actor PhotoRAGOrchestrator {
                 topK: max(query.resultLimit, config.searchTopK),
                 timeRange: timeRange,
                 frameFilter: frameFilter,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 1024,
                 allowTimelineFallback: false,
                 timelineFallbackLimit: max(query.resultLimit, config.searchTopK)

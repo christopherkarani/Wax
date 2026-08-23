@@ -255,6 +255,7 @@ package actor VideoRAGOrchestrator {
             topK: topK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000),
             previewMaxBytes: 1024,
             allowTimelineFallback: isConstraintOnly,
             timelineFallbackLimit: timelineFallbackLimit

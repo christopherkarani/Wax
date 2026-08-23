@@ -312,7 +312,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 query: fixture.queryText,
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
-                topK: scale.searchTopK
+                topK: scale.searchTopK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             _ = try await fixture.wax.search(request)
 
@@ -334,7 +335,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 query: fixture.queryText,
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
-                topK: scale.searchTopK
+                topK: scale.searchTopK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             _ = try await fixture.wax.search(request)
 
@@ -534,7 +536,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 query: fixture.queryText,
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
-                topK: scale.searchTopK
+                topK: scale.searchTopK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             await fixture.close()
 
@@ -584,6 +587,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 512
             )
             let requestNoPreviews = SearchRequest(
@@ -591,6 +595,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 
@@ -629,6 +634,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 
@@ -657,6 +663,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.7),
                 topK: scale.searchTopK,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 previewMaxBytes: 0
             )
 
@@ -870,7 +877,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 query: fixture.queryText,
                 embedding: embedding,
                 mode: .hybrid(alpha: 0.7),
-                topK: scale.searchTopK
+                topK: scale.searchTopK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             _ = try await fixture.wax.search(request)
 
@@ -903,7 +911,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 embedding: embedding,
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.7),
-                topK: scale.searchTopK
+                topK: scale.searchTopK,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
             _ = try await fixture.wax.search(request)
 

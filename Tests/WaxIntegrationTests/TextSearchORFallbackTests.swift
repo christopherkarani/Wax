@@ -27,7 +27,8 @@ import WaxVectorSearch
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
                 mode: .textOnly,
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -64,7 +65,8 @@ import WaxVectorSearch
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
                 mode: .textOnly,
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -97,7 +99,8 @@ import WaxVectorSearch
             SearchRequest(
                 query: "alpha drop",
                 mode: .textOnly,
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -128,7 +131,8 @@ import WaxVectorSearch
             SearchRequest(
                 query: "alpha beta drop",
                 mode: .textOnly,
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -159,7 +163,8 @@ import WaxVectorSearch
             SearchRequest(
                 query: "7f3a91",
                 mode: .textOnly,
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -195,7 +200,8 @@ import WaxVectorSearch
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
-                topK: 10
+                topK: 10,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,

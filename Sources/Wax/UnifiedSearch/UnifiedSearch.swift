@@ -579,7 +579,8 @@ extension Wax {
                     sources: item.sources,
                     rankingDiagnostics: rankingDiagnostics,
                     metadata: item.metadata,
-                    scopeContext: request.scopeContext
+                    scopeContext: request.scopeContext,
+                    nowMs: request.nowMs
                 )
             )
         }
@@ -594,6 +595,7 @@ extension Wax {
         filtered = Self.semanticMemoryRerank(
             results: filtered,
             scopeContext: request.scopeContext,
+            nowMs: request.nowMs,
             maxWindow: min(max(request.topK * 3, 12), 48)
         )
         if let identifierWindow, let trimmedQuery {
@@ -668,7 +670,8 @@ extension Wax {
                         sources: [.timeline],
                         rankingDiagnostics: nil,
                         metadata: meta.metadata?.entries ?? [:],
-                        scopeContext: request.scopeContext
+                        scopeContext: request.scopeContext,
+                        nowMs: request.nowMs
                     )
                 )
             )
@@ -684,7 +687,7 @@ extension Wax {
     private static func semanticMemoryRerank(
         results: [SearchResponse.Result],
         scopeContext: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        nowMs: Int64,
         maxWindow: Int
     ) -> [SearchResponse.Result] {
         let cappedWindow = min(max(0, maxWindow), results.count)
@@ -799,7 +802,7 @@ extension Wax {
         rankingDiagnostics: SearchResponse.RankingDiagnostics?,
         metadata: [String: String],
         scopeContext: MemoryScopeContext?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> [String] {
         var reasons: [String] = []
         if sources.contains(.vector) {

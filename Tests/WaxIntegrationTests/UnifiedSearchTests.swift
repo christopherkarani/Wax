@@ -53,7 +53,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10)
+        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         let response = try await wax.search(request)
 
         #expect(response.results.count == 1)
@@ -76,7 +76,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9)
+        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         let response = try await wax.search(request)
 
         #expect(response.results.map(\.frameId) == [exact])
@@ -97,7 +97,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await vec.commit()
 
         let queryEmbedding = VectorMath.normalizeL2([0.9, 0.1, 0.0, 0.0])
-        let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10)
+        let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         let response = try await wax.search(request)
 
         #expect(response.results.first?.frameId == id0)
@@ -126,7 +126,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             query: "Swift",
             embedding: [1.0, 0.0, 0.0, 0.0],
             mode: .hybrid(alpha: 0.5),
-            topK: 10
+            topK: 10,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
         let response = try await wax.search(request)
 
@@ -146,7 +147,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.index(frameId: id0, text: "Swift")
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 0)
+        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 0, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         let response = try await wax.search(request)
 
         #expect(response.results.isEmpty)
@@ -202,7 +203,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 mode: .textOnly,
                 topK: 5,
                 timeRange: SearchTimeRange(before: 200),
-                asOfMs: .max
+                asOfMs: .max,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -215,7 +217,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 mode: .textOnly,
                 topK: 5,
                 timeRange: SearchTimeRange(before: 50),
-                asOfMs: .max
+                asOfMs: .max,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -226,7 +229,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 query: "F027 Alice",
                 mode: .textOnly,
                 topK: 5,
-                asOfMs: 200
+                asOfMs: 200,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -282,7 +286,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await session.commit()
 
         let response = try await session.search(
-            SearchRequest(query: "F025ObjectParis", mode: .textOnly, topK: 5, asOfMs: .max)
+            SearchRequest(query: "F025ObjectParis", mode: .textOnly, topK: 5, asOfMs: .max, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
 
         #expect(response.results.map(\.frameId) == [evidenceFrame])
@@ -309,7 +313,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             embedding: [1.0, 0.0],
             mode: .vectorOnly,
             topK: 2,
-            frameFilter: allowlist
+            frameFilter: allowlist,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
         let response = try await wax.search(request)
 
@@ -346,7 +351,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             query: "alpha",
             mode: .textOnly,
             topK: 10,
-            frameFilter: filter
+            frameFilter: filter,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
         let response = try await wax.search(request)
 
@@ -386,7 +392,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
-                )
+                ),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -423,7 +430,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
-                )
+                ),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,
@@ -460,7 +468,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 topK: 1_100,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
-                )
+                ),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,
@@ -496,7 +505,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "pending"])
-                )
+                ),
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
                 textEngine: nil,
@@ -547,7 +557,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             query: "Quarterly summary",
             mode: .textOnly,
             topK: 10,
-            frameFilter: filter
+            frameFilter: filter,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
         let response = try await wax.search(request)
 
@@ -582,6 +593,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             frameFilter: FrameFilter(
                 metadataFilter: .init(requiredEntries: ["source": "email"])
             ),
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
             allowTimelineFallback: true,
             timelineFallbackLimit: 10
         )
@@ -644,7 +656,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let request = SearchRequest(
             embedding: [0.0, 1.0],
             mode: .vectorOnly,
-            topK: 5
+            topK: 5,
+            nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
         let response = try await wax.search(request)
 
@@ -668,7 +681,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let wax = try await Wax.create(at: url)
 
         do {
-            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5))
+            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5, nowMs: Int64(Date().timeIntervalSince1970 * 1000)))
             Issue.record("Expected WaxError for vectorOnly search without embedding")
         } catch let error as WaxError {
             guard case .io(let message) = error else {
@@ -708,7 +721,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "Which city did Person18 move to",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -741,7 +755,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "What is the public launch date for Atlas 10",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -773,7 +788,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: #"What is the public launch date for "Atlas-10"? -- !!!"#,
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -805,7 +821,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "Which city did Priya move to",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -840,7 +857,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "which city noah moved to",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -878,7 +896,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "for noah on atlas-10 in 2026 what is the public launch date",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -916,7 +935,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: #"what is "Atlas-10 launch date" ???"#,
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -954,7 +974,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "what is 'Atlas-10 launch date' ???",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -992,7 +1013,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             SearchRequest(
                 query: "What is the public launch date for Atlas-10?",
                 mode: .textOnly,
-                topK: 5
+                topK: 5,
+                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
 
@@ -1036,6 +1058,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             vectorEnginePreference: .cpuOnly,
             mode: .hybrid(alpha: 0.5),
             topK: 3,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
             enableRankingDiagnostics: true,
             rankingDiagnosticsTopK: 1
         )
@@ -1089,6 +1112,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.3),
                 topK: 2,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 2
             ),
@@ -1145,6 +1169,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 query: "auth rollout decision",
                 mode: .textOnly,
                 topK: 2,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1186,7 +1211,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let response = try await wax.search(
-            SearchRequest(query: "rollout note", mode: .textOnly, topK: 5)
+            SearchRequest(query: "rollout note", mode: .textOnly, topK: 5, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
 
         #expect(response.results.map(\.frameId).contains(activeID))
@@ -1218,6 +1243,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 query: "concise release notes",
                 mode: .textOnly,
                 topK: 3,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1272,6 +1298,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 query: token,
                 mode: .textOnly,
                 topK: 5,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
         )
@@ -1284,6 +1311,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 5,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1350,6 +1378,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 5,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1413,6 +1442,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 vectorEnginePreference: .cpuOnly,
                 mode: .vectorOnly,
                 topK: 5,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
             engineOverrides: UnifiedSearchEngineOverrides(
@@ -1448,7 +1478,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let response = try await wax.search(
-            SearchRequest(query: "cats OR dogs", mode: .textOnly, topK: 10)
+            SearchRequest(query: "cats OR dogs", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         let catsHit = try #require(response.results.first { $0.frameId == catsOnly })
         let dogsHit = try #require(response.results.first { $0.frameId == dogsOnly })
@@ -1469,12 +1499,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let stopwordOnly = try await wax.search(
-            SearchRequest(query: "the and or", mode: .textOnly, topK: 10)
+            SearchRequest(query: "the and or", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         #expect(stopwordOnly.results.isEmpty)
 
         let operatorOnly = try await wax.search(
-            SearchRequest(query: "NOT NEAR", mode: .textOnly, topK: 10)
+            SearchRequest(query: "NOT NEAR", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         #expect(operatorOnly.results.isEmpty)
 
@@ -1548,6 +1578,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 vectorEnginePreference: .cpuOnly,
                 mode: .hybrid(alpha: 0.5),
                 topK: 10,
+nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 10
             ),
@@ -1583,6 +1614,123 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         for (previous, next) in zip(response.results, response.results.dropFirst()) {
             #expect(previous.score >= next.score)
         }
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
+// MARK: - T3 clock-anchor determinism (AC-003)
+
+@Test func memorySemanticsClassificationChangesWithAnchorAndIsStablePerAnchor() {
+    let baseMs: Int64 = 1_700_000_000_000
+    let dayMs: Int64 = 24 * 60 * 60 * 1000
+    var metadata: [String: String] = [
+        MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+        MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+    ]
+    metadata[MemoryMetadataKeys.createdAtMs] = String(baseMs)
+    metadata[MemoryMetadataKeys.expiresAtMs] = String(baseMs + 10 * dayMs)
+
+    // Different anchors must classify the same content differently, predictably.
+    let freshInfo = MemorySemantics.parse(metadata: metadata, nowMs: baseMs + dayMs)
+    #expect(freshInfo.isExpired == false)
+    let staleInfo = MemorySemantics.parse(metadata: metadata, nowMs: baseMs + 20 * dayMs)
+    #expect(staleInfo.isExpired == true)
+
+    let freshReasons = MemorySemantics.rankingReasons(metadata: metadata, scope: nil, nowMs: baseMs + dayMs)
+    #expect(freshReasons.reasons.contains("recent task state"))
+    #expect(!freshReasons.reasons.contains("expired memory"))
+    let staleReasons = MemorySemantics.rankingReasons(metadata: metadata, scope: nil, nowMs: baseMs + 20 * dayMs)
+    #expect(staleReasons.reasons.contains("expired memory"))
+
+    // The same anchor must produce identical results on repeated calls.
+    for _ in 0..<3 {
+        let repeatFresh = MemorySemantics.rankingReasons(metadata: metadata, scope: nil, nowMs: baseMs + dayMs)
+        #expect(repeatFresh.adjustment == freshReasons.adjustment)
+        #expect(repeatFresh.reasons == freshReasons.reasons)
+        let repeatStale = MemorySemantics.rankingReasons(metadata: metadata, scope: nil, nowMs: baseMs + 20 * dayMs)
+        #expect(repeatStale.adjustment == staleReasons.adjustment)
+        #expect(repeatStale.reasons == staleReasons.reasons)
+    }
+}
+
+@Test func unifiedSearchRankingIsByteIdenticalUnderFixedAnchorAndShiftsWithNewAnchor() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let baseMs: Int64 = 1_700_000_000_000
+        let dayMs: Int64 = 24 * 60 * 60 * 1000
+
+        // Durable decision: strong positive semantic adjustment at both anchors.
+        let decisionFrame = try await session.put(
+            Data("anchor determinism alpha release decision".utf8),
+            options: FrameMetaSubset(
+                searchText: "anchor determinism alpha release decision",
+                metadata: Metadata([
+                    MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ])
+            ),
+            timestampMs: baseMs
+        )
+        try await session.indexText(frameId: decisionFrame, text: "anchor determinism alpha release decision")
+
+        // Short-lived ephemeral note: alive at anchor A, expired by anchor B.
+        let ephemeralFrame = try await session.put(
+            Data("anchor determinism beta scratch note".utf8),
+            options: FrameMetaSubset(
+                searchText: "anchor determinism beta scratch note",
+                metadata: Metadata([
+                    MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.ephemeral.rawValue,
+                    MemoryMetadataKeys.createdAtMs: String(baseMs),
+                    MemoryMetadataKeys.expiresAtMs: String(baseMs + 10 * dayMs),
+                ])
+            ),
+            timestampMs: baseMs
+        )
+        try await session.indexText(frameId: ephemeralFrame, text: "anchor determinism beta scratch note")
+        try await session.commit()
+
+        let anchorA = baseMs + dayMs
+        let anchorB = baseMs + 30 * dayMs
+
+        func request(nowMs: Int64) -> SearchRequest {
+            SearchRequest(query: "anchor determinism", mode: .textOnly, topK: 10, nowMs: nowMs)
+        }
+
+        let firstA = try await session.search(request(nowMs: anchorA))
+        let secondA = try await session.search(request(nowMs: anchorA))
+        // Byte-identical ranking under a repeated fixed anchor.
+        #expect(firstA.results.map(\.frameId) == secondA.results.map(\.frameId))
+        #expect(firstA.results.map(\.score) == secondA.results.map(\.score))
+        #expect(firstA.results.map(\.explanations) == secondA.results.map(\.explanations))
+
+        // At anchor A both documents are live; the durable decision outranks the ephemeral note.
+        #expect(firstA.results.map(\.frameId).prefix(2).contains(decisionFrame))
+        #expect(firstA.results.map(\.frameId).prefix(2).contains(ephemeralFrame))
+        if let decisionIndex = firstA.results.firstIndex(where: { $0.frameId == decisionFrame }),
+           let ephemeralIndex = firstA.results.firstIndex(where: { $0.frameId == ephemeralFrame }) {
+            #expect(decisionIndex < ephemeralIndex)
+            #expect(firstA.results[decisionIndex].explanations.contains("decision memory"))
+            #expect(firstA.results[decisionIndex].explanations.contains("durable"))
+        } else {
+            Issue.record("expected both frames to be returned at anchor A")
+        }
+
+        // At anchor B the ephemeral note has expired and must drop out entirely,
+        // while the decision frame remains.
+        let firstB = try await session.search(request(nowMs: anchorB))
+        let secondB = try await session.search(request(nowMs: anchorB))
+        #expect(firstB.results.map(\.frameId) == secondB.results.map(\.frameId))
+        #expect(firstB.results.map(\.score) == secondB.results.map(\.score))
+        #expect(firstB.results.map(\.explanations) == secondB.results.map(\.explanations))
+        #expect(firstB.results.map(\.frameId) == [decisionFrame])
+        #expect(firstB.results.first?.explanations.contains("expired memory") != true)
 
         await session.close()
         try await wax.close()
