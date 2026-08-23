@@ -315,10 +315,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 topK: scale.searchTopK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await fixture.wax.search(request)
+            _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
 
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
-                _ = try await fixture.wax.search(request)
+                _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
             }
         }
     }
@@ -338,7 +338,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 topK: scale.searchTopK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await fixture.wax.search(request)
+            _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
 
             let metrics: [XCTMetric] = [
                 XCTClockMetric(),
@@ -347,7 +347,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             ]
             let iterations = max(1, min(3, scale.iterations))
             measureAsync(metrics: metrics, timeout: scale.timeout, iterations: iterations) {
-                _ = try await fixture.wax.search(request)
+                _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
             }
         }
     }
@@ -543,7 +543,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
 
             _ = try await timedSamples(label: "cold_open_hybrid", iterations: iterations, warmup: 0) {
                 let wax = try await Wax.open(at: url)
-                _ = try await wax.search(request)
+                _ = try await wax.searchWithEngineStore(request)
                 try await wax.close()
             }
         }
@@ -600,11 +600,11 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             )
 
             // Warm up caches / any lazy engine state.
-            _ = try await fixture.wax.search(requestWithPreviews)
-            _ = try await fixture.wax.search(requestNoPreviews)
+            _ = try await fixture.wax.searchWithEngineStore(requestWithPreviews, engineStore: fixture.engineStore)
+            _ = try await fixture.wax.searchWithEngineStore(requestNoPreviews, engineStore: fixture.engineStore)
 
             let previewStats = try await timedSamples(label: "unified_search_hybrid_warm_previews", iterations: 30, warmup: 5) {
-                _ = try await fixture.wax.search(requestWithPreviews)
+                _ = try await fixture.wax.searchWithEngineStore(requestWithPreviews, engineStore: fixture.engineStore)
             }
             BenchmarkRegressionGuard.assertTailBudget(
                 label: "unified_search_hybrid_warm_previews",
@@ -613,7 +613,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 p99Budget: 0.0073
             )
             _ = try await timedSamples(label: "unified_search_hybrid_warm_no_previews", iterations: 30, warmup: 5) {
-                _ = try await fixture.wax.search(requestNoPreviews)
+                _ = try await fixture.wax.searchWithEngineStore(requestNoPreviews, engineStore: fixture.engineStore)
             }
         }
     }
@@ -639,10 +639,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
             )
 
             // Warm up caches / any lazy engine state.
-            _ = try await fixture.wax.search(requestNoPreviews)
+            _ = try await fixture.wax.searchWithEngineStore(requestNoPreviews, engineStore: fixture.engineStore)
 
             _ = try await timedSamples(label: "unified_search_hybrid_warm_cpu_only", iterations: 30, warmup: 5) {
-                _ = try await fixture.wax.search(requestNoPreviews)
+                _ = try await fixture.wax.searchWithEngineStore(requestNoPreviews, engineStore: fixture.engineStore)
             }
         }
     }
@@ -667,7 +667,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 previewMaxBytes: 0
             )
 
-            let response = try await fixture.wax.search(request)
+            let response = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
             let frameIds = response.results.map(\.frameId)
 
             // Warm the file cache and any payload decode paths.
@@ -880,10 +880,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 topK: scale.searchTopK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await fixture.wax.search(request)
+            _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
 
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
-                _ = try await fixture.wax.search(request)
+                _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
             }
 
             await fixture.close()
@@ -914,10 +914,10 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 topK: scale.searchTopK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await fixture.wax.search(request)
+            _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
 
             measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
-                _ = try await fixture.wax.search(request)
+                _ = try await fixture.wax.searchWithEngineStore(request, engineStore: fixture.engineStore)
             }
 
             await fixture.close()

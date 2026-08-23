@@ -54,7 +54,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.commit()
 
         let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.count == 1)
         #expect(response.results[0].frameId == id0)
@@ -77,7 +77,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.commit()
 
         let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.map(\.frameId) == [exact])
         #expect(response.results.first?.score ?? 0 > 0.9)
@@ -98,7 +98,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         let queryEmbedding = VectorMath.normalizeL2([0.9, 0.1, 0.0, 0.0])
         let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.first?.frameId == id0)
         #expect(response.results.first?.previewText == "First")
@@ -129,7 +129,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             topK: 10,
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.first?.frameId == id1)
         #expect(response.results.first?.previewText != nil)
@@ -148,7 +148,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.commit()
 
         let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 0, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.isEmpty)
 
@@ -316,7 +316,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             frameFilter: allowlist,
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         let ids = Set(response.results.map(\.frameId))
         #expect(ids == Set([id2, id3]))
@@ -354,7 +354,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             frameFilter: filter,
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.map(\.frameId) == [id0])
 
@@ -385,7 +385,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.index(frameId: allowedFrame, text: "allowed \(query)")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: query,
                 mode: .textOnly,
@@ -423,7 +423,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         vectorResults.append((frameId: allowedFrame, score: 1))
 
         let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
@@ -433,7 +433,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 ),
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: vectorEngine,
                 structuredEngine: nil
@@ -461,7 +461,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             )
         }
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
@@ -471,7 +471,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 ),
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: vectorEngine,
                 structuredEngine: nil
@@ -498,7 +498,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             results: [(frameId: frameID, score: 1)]
         )
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
@@ -508,7 +508,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 ),
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: vectorEngine,
                 structuredEngine: nil
@@ -560,7 +560,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             frameFilter: filter,
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.map(\.frameId) == [id0])
 
@@ -597,7 +597,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
             allowTimelineFallback: true,
             timelineFallbackLimit: 10
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.map(\.frameId) == [includedID])
         #expect(response.results.allSatisfy { $0.sources == [.timeline] })
@@ -659,7 +659,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             topK: 5,
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
 
         #expect(response.results.first?.frameId == id0)
 
@@ -681,7 +681,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let wax = try await Wax.create(at: url)
 
         do {
-            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5, nowMs: Int64(Date().timeIntervalSince1970 * 1000)))
+            _ = try await wax.searchWithEngineStore(SearchRequest(mode: .vectorOnly, topK: 5, nowMs: Int64(Date().timeIntervalSince1970 * 1000)))
             Issue.record("Expected WaxError for vectorOnly search without embedding")
         } catch let error as WaxError {
             guard case .io(let message) = error else {
@@ -717,7 +717,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "Which city did Person18 move to",
                 mode: .textOnly,
@@ -751,7 +751,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "What is the public launch date for Atlas 10",
                 mode: .textOnly,
@@ -784,7 +784,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: #"What is the public launch date for "Atlas-10"? -- !!!"#,
                 mode: .textOnly,
@@ -817,7 +817,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "Which city did Priya move to",
                 mode: .textOnly,
@@ -853,7 +853,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "which city noah moved to",
                 mode: .textOnly,
@@ -892,7 +892,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "for noah on atlas-10 in 2026 what is the public launch date",
                 mode: .textOnly,
@@ -931,7 +931,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: #"what is "Atlas-10 launch date" ???"#,
                 mode: .textOnly,
@@ -970,7 +970,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "what is 'Atlas-10 launch date' ???",
                 mode: .textOnly,
@@ -1009,7 +1009,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "What is the public launch date for Atlas-10?",
                 mode: .textOnly,
@@ -1063,8 +1063,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             rankingDiagnosticsTopK: 1
         )
 
-        let responseA = try await wax.search(request)
-        let responseB = try await wax.search(request)
+        let responseA = try await wax.searchWithEngineStore(request)
+        let responseB = try await wax.searchWithEngineStore(request)
 
         #expect(responseA == responseB)
         #expect(responseA.results.count == 3)
@@ -1105,7 +1105,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             results: [(frameId: vectorOnlyID, score: 1.0)]
         )
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: query,
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -1116,7 +1116,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 2
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: vectorEngine,
                 structuredEngine: nil
@@ -1164,7 +1164,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: repoID, text: "Auth rollout decision uses refresh tokens.")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "auth rollout decision",
                 mode: .textOnly,
@@ -1210,7 +1210,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: activeID, text: "Current rollout note")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(query: "rollout note", mode: .textOnly, topK: 5, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
 
@@ -1238,7 +1238,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: frameID, text: "Chris prefers concise release notes.")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "concise release notes",
                 mode: .textOnly,
@@ -1293,7 +1293,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: exactID, text: exactBody)
         try await text.commit()
 
-        let textResponse = try await wax.search(
+        let textResponse = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: token,
                 mode: .textOnly,
@@ -1304,7 +1304,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         )
         #expect(textResponse.results.first?.frameId == exactID)
 
-        let hybridResponse = try await wax.search(
+        let hybridResponse = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: token,
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -1314,7 +1314,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: DeterministicVectorResultsEngine(
                     dimensions: 4,
@@ -1371,7 +1371,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
             (frameId: frameId, score: Float(0.99) - Float(index) * 0.01)
         }
 
-        let hybridResponse = try await wax.search(
+        let hybridResponse = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: token,
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -1381,7 +1381,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: DeterministicVectorResultsEngine(
                     dimensions: 4,
@@ -1435,7 +1435,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         }
         vectorHits.append((frameId: exactID, score: 0.01))
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: token,
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -1445,7 +1445,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: DeterministicVectorResultsEngine(
                     dimensions: 4,
@@ -1477,7 +1477,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: dogsOnly, text: "only dogs live here")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(query: "cats OR dogs", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         let catsHit = try #require(response.results.first { $0.frameId == catsOnly })
@@ -1498,12 +1498,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.index(frameId: indexed, text: "the and or not near filler")
         try await text.commit()
 
-        let stopwordOnly = try await wax.search(
+        let stopwordOnly = try await wax.searchWithEngineStore(
             SearchRequest(query: "the and or", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         #expect(stopwordOnly.results.isEmpty)
 
-        let operatorOnly = try await wax.search(
+        let operatorOnly = try await wax.searchWithEngineStore(
             SearchRequest(query: "NOT NEAR", mode: .textOnly, topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         )
         #expect(operatorOnly.results.isEmpty)
@@ -1571,7 +1571,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         )
         try await session.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "when was F027Alice last seen",
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -1582,7 +1582,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 10
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: DeterministicVectorResultsEngine(
                     dimensions: 4,

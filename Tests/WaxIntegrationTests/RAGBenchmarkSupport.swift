@@ -166,6 +166,9 @@ struct BenchmarkFixture {
     let queryText: String
     let queryEmbedding: [Float]?
     let scale: BenchmarkScale
+    /// Owner-scoped engine store so benchmark searches stay warm across
+    /// iterations (replaces the retired process-global engine cache).
+    let engineStore = UnifiedSearchEngineStore()
 
     static func build(
         at url: URL,

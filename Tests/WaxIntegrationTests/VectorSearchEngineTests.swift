@@ -332,7 +332,7 @@ import WaxVectorSearch
         topK: 5,
         nowMs: Int64(Date().timeIntervalSince1970 * 1000)
     )
-    let response = try await wax.search(request)
+    let response = try await wax.searchWithEngineStore(request)
     #expect(response.results.contains(where: { $0.frameId == 0 }))
 
     try await wax.close()

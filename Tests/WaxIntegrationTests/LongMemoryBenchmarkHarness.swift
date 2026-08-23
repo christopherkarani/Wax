@@ -324,7 +324,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 enableRankingDiagnostics: config.enableDiagnostics,
                 rankingDiagnosticsTopK: 10
             )
-            let response = try await wax.search(request)
+            let response = try await wax.searchWithEngineStore(request)
             let rankedDocIDs = try await resolveDocIDs(
                 from: response.results,
                 wax: wax,
@@ -334,7 +334,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             if config.enableDiagnostics, config.topK < 10 {
                 var diagnosticRequest = request
                 diagnosticRequest.topK = 10
-                rankingResultsForDiagnostics = try await wax.search(diagnosticRequest).results
+                rankingResultsForDiagnostics = try await wax.searchWithEngineStore(diagnosticRequest).results
             } else {
                 rankingResultsForDiagnostics = response.results
             }
@@ -748,7 +748,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 topK: topK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await wax.search(request)
+            _ = try await wax.searchWithEngineStore(request)
         }
 
         return LongMemoryLatencySummary(

@@ -154,12 +154,12 @@ package actor WaxSession {
 
     package func search(_ request: SearchRequest) async throws -> SearchResponse {
         let searchVectorEngine = try await vectorEngineForSearch(request)
-        let overrides = UnifiedSearchEngineOverrides(
+        let engines = UnifiedSearchEngines(
             textEngine: textEngine,
             vectorEngine: searchVectorEngine,
             structuredEngine: textEngine
         )
-        return try await wax.search(request, engineOverrides: overrides)
+        return try await wax.search(request, engines: engines)
     }
 
     package func searchText(query: String, topK: Int) async throws -> [TextSearchResult] {

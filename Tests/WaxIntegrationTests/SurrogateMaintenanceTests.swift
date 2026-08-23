@@ -46,7 +46,7 @@ func optimizeSurrogatesCreatesSurrogateFramesAndExcludesFromDefaultSearch() asyn
         #expect(surrogates.allSatisfy { $0.metadata?.entries["source_content_hash"] != nil })
         #expect(surrogates.allSatisfy { $0.metadata?.entries["surrogate_max_tokens"] != nil })
 
-        let search = try await wax.search(.init(query: "actors", mode: .textOnly, topK: 50, nowMs: Int64(Date().timeIntervalSince1970 * 1000)))
+        let search = try await wax.searchWithEngineStore(.init(query: "actors", mode: .textOnly, topK: 50, nowMs: Int64(Date().timeIntervalSince1970 * 1000)))
         for result in search.results {
             let meta = try await wax.frameMeta(frameId: result.frameId)
             #expect(meta.kind != "surrogate")

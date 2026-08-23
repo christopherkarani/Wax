@@ -50,10 +50,8 @@ func unifiedSearchVectorTimeoutFallsBackToTextLane() async throws {
         try await text.index(frameId: id0, text: "Swift programming language")
         try await text.commit()
 
-        let overrides = UnifiedSearchEngineOverrides(
-            textEngine: nil,
-            vectorEngine: HangingVectorEngine(dimensions: 2),
-            structuredEngine: nil
+        let overrides = UnifiedSearchEngines(
+            vectorEngine: HangingVectorEngine(dimensions: 2)
         )
 
         let request = SearchRequest(
@@ -65,7 +63,11 @@ func unifiedSearchVectorTimeoutFallsBackToTextLane() async throws {
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
 
-        let response = try await wax.search(request, engineOverrides: overrides)
+        let response = try await wax.search(
+            request,
+            engines: overrides,
+            engineStore: UnifiedSearchEngineStore()
+        )
 
         #expect(response.results.first?.frameId == id0)
         #expect(response.results.first?.sources.contains(.text) == true)
@@ -79,10 +81,8 @@ func unifiedSearchVectorTimeoutThrowsForVectorOnly() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
 
-        let overrides = UnifiedSearchEngineOverrides(
-            textEngine: nil,
-            vectorEngine: HangingVectorEngine(dimensions: 2),
-            structuredEngine: nil
+        let overrides = UnifiedSearchEngines(
+            vectorEngine: HangingVectorEngine(dimensions: 2)
         )
 
         let request = SearchRequest(
@@ -94,7 +94,11 @@ func unifiedSearchVectorTimeoutThrowsForVectorOnly() async throws {
         )
 
         do {
-            _ = try await wax.search(request, engineOverrides: overrides)
+            _ = try await wax.search(
+                request,
+                engines: overrides,
+                engineStore: UnifiedSearchEngineStore()
+            )
             #expect(Bool(false))
         } catch {
             #expect(Bool(true))

@@ -44,14 +44,14 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
         let weaker = try await wax.put(Data("weaker session vector neighbor".utf8))
         let stronger = try await wax.put(Data("stronger session vector neighbor".utf8))
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
                 topK: 2,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: InjectedVectorScoreEngine(
                     dimensions: 4,
@@ -83,7 +83,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
         let neighbor = try await wax.put(Data("unrelated vector neighbor filler".utf8))
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "7f3a91",
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -92,7 +92,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
                 topK: 5,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: InjectedVectorScoreEngine(
                     dimensions: 4,
@@ -133,7 +133,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
             ]))
         )
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 embedding: [1.0, 0.0, 0.0, 0.0],
                 mode: .vectorOnly,
@@ -141,7 +141,7 @@ private actor InjectedVectorScoreEngine: VectorSearchEngine {
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000),
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: InjectedVectorScoreEngine(
                     dimensions: 4,

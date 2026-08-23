@@ -3,9 +3,16 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-actor UnifiedSearchEngineCache {
-    static let shared = UnifiedSearchEngineCache()
-
+/// Evictable search-engine cache owned by a single store owner (``MemoryOrchestrator``
+/// creates and holds one; session-less readers may create their own).
+///
+/// Engines are keyed by source state only (empty / committed checksum / staged stamp) —
+/// never by facade identity. When the underlying index changes, the key changes and the
+/// engine is reloaded; ``releaseEngines()`` drops all cached engines when the owner
+/// closes or invalidates the store. Test seams are constructor-injected factories that
+/// replace the load step, so injected fakes flow through the same cache lifecycle as
+/// production engines.
+package actor UnifiedSearchEngineStore {
     enum TextSourceKey: Hashable, Sendable {
         case empty
         case committed(checksum: Data)
@@ -35,6 +42,15 @@ actor UnifiedSearchEngineCache {
         var vectorDeserializations: Int = 0
     }
 
+    /// Replaces the real text-engine load step (deserialize / in-memory construction).
+    package typealias TextEngineFactory = @Sendable () async throws -> FTS5SearchEngine
+
+    /// Replaces the real vector-engine load step (`LoadedVectorSearchEngine.load`).
+    package typealias VectorEngineFactory = @Sendable (
+        _ metric: VectorMetric,
+        _ dimensions: Int
+    ) async throws -> any VectorSearchEngine
+
     private struct CachedText {
         var key: TextSourceKey
         var engine: FTS5SearchEngine
@@ -45,63 +61,73 @@ actor UnifiedSearchEngineCache {
         var engine: any VectorSearchEngine
     }
 
-    private var textByWax: [ObjectIdentifier: CachedText] = [:]
-    private var vectorByWax: [ObjectIdentifier: CachedVector] = [:]
+    private var cachedText: CachedText?
+    private var cachedVector: CachedVector?
     private var stats = Stats()
-    private var statsByWax: [ObjectIdentifier: Stats] = [:]
+    private let textEngineFactory: TextEngineFactory?
+    private let vectorEngineFactory: VectorEngineFactory?
+
+    package init(
+        textEngineFactory: TextEngineFactory? = nil,
+        vectorEngineFactory: VectorEngineFactory? = nil
+    ) {
+        self.textEngineFactory = textEngineFactory
+        self.vectorEngineFactory = vectorEngineFactory
+    }
 
     func snapshotStats() -> Stats { stats }
-
-    func snapshotStats(for wax: Wax) -> Stats {
-        statsByWax[ObjectIdentifier(wax)] ?? Stats()
-    }
 
     func resetStats() {
         stats = Stats()
     }
 
-    func resetStats(for wax: Wax) {
-        statsByWax[ObjectIdentifier(wax)] = Stats()
+    /// Drops all cached engines. Called by the owning orchestrator on close and
+    /// available for explicit invalidation; stats counters are preserved.
+    func releaseEngines() {
+        cachedText = nil
+        cachedVector = nil
+    }
+
+    var cachedEngineCount: Int {
+        (cachedText == nil ? 0 : 1) + (cachedVector == nil ? 0 : 1)
     }
 
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
-        let waxId = ObjectIdentifier(wax)
-
         if let stamp = await wax.stagedLexIndexStamp() {
             let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
-            if let cached = textByWax[waxId], cached.key == key {
+            if let cached = cachedText, cached.key == key {
                 return cached.engine
             }
             guard let bytes = stagedBytes else {
-                let engine = try FTS5SearchEngine.inMemory()
-                textByWax[waxId] = CachedText(key: .empty, engine: engine)
+                let engine = try await loadTextEngine(inMemory: true)
+                cachedText = CachedText(key: .empty, engine: engine)
                 return engine
             }
-            let engine = try FTS5SearchEngine.deserialize(from: bytes)
-            incrementTextDeserializations(for: waxId)
-            textByWax[waxId] = CachedText(key: key, engine: engine)
+            let engine = try await loadTextEngine(from: bytes)
+            incrementTextDeserializations()
+            cachedText = CachedText(key: key, engine: engine)
             return engine
         }
 
         if let manifest = await wax.committedLexIndexManifest() {
             let key: TextSourceKey = .committed(checksum: manifest.checksum)
-            if let cached = textByWax[waxId], cached.key == key {
+            if let cached = cachedText, cached.key == key {
                 return cached.engine
             }
             if let bytes = try await wax.readCommittedLexIndexBytes() {
-                let engine = try FTS5SearchEngine.deserialize(from: bytes)
-                incrementTextDeserializations(for: waxId)
-                textByWax[waxId] = CachedText(key: key, engine: engine)
+                let engine = try await loadTextEngine(from: bytes)
+                incrementTextDeserializations()
+                cachedText = CachedText(key: key, engine: engine)
                 return engine
             }
         }
 
-        if let cached = textByWax[waxId], cached.key == .empty {
+        if let cached = cachedText, cached.key == .empty {
             return cached.engine
         }
-        let engine = try FTS5SearchEngine.inMemory()
-        textByWax[waxId] = CachedText(key: .empty, engine: engine)
+        let engine = try await loadTextEngine(inMemory: true)
+        cachedText = CachedText(key: .empty, engine: engine)
         return engine
     }
 
@@ -121,34 +147,47 @@ actor UnifiedSearchEngineCache {
             return nil
         }
 
-        let waxId = ObjectIdentifier(wax)
-        if let cached = vectorByWax[waxId], cached.key == descriptor.key {
+        if let cached = cachedVector, cached.key == descriptor.key {
             return cached.engine
         }
 
-        let loaded = try await LoadedVectorSearchEngine.load(
-            from: wax,
-            metric: descriptor.metric,
-            dimensions: descriptor.dimensions,
-            preference: preference
-        )
-        incrementVectorDeserializations(for: waxId)
-        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded.erased)
-        return loaded.erased
+        let engine: any VectorSearchEngine
+        if let vectorEngineFactory {
+            engine = try await vectorEngineFactory(descriptor.metric, descriptor.dimensions)
+        } else {
+            let loaded = try await LoadedVectorSearchEngine.load(
+                from: wax,
+                metric: descriptor.metric,
+                dimensions: descriptor.dimensions,
+                preference: preference
+            )
+            engine = loaded.erased
+        }
+        incrementVectorDeserializations()
+        cachedVector = CachedVector(key: descriptor.key, engine: engine)
+        return engine
     }
 
-    private func incrementTextDeserializations(for waxId: ObjectIdentifier) {
+    private func loadTextEngine(from bytes: Data) async throws -> FTS5SearchEngine {
+        if let textEngineFactory {
+            return try await textEngineFactory()
+        }
+        return try FTS5SearchEngine.deserialize(from: bytes)
+    }
+
+    private func loadTextEngine(inMemory: Bool) async throws -> FTS5SearchEngine {
+        if let textEngineFactory {
+            return try await textEngineFactory()
+        }
+        return try FTS5SearchEngine.inMemory()
+    }
+
+    private func incrementTextDeserializations() {
         stats.textDeserializations += 1
-        var waxStats = statsByWax[waxId] ?? Stats()
-        waxStats.textDeserializations += 1
-        statsByWax[waxId] = waxStats
     }
 
-    private func incrementVectorDeserializations(for waxId: ObjectIdentifier) {
+    private func incrementVectorDeserializations() {
         stats.vectorDeserializations += 1
-        var waxStats = statsByWax[waxId] ?? Stats()
-        waxStats.vectorDeserializations += 1
-        statsByWax[waxId] = waxStats
     }
 
     private func vectorLoadDescriptor(

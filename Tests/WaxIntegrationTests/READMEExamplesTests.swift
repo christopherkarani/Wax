@@ -187,7 +187,7 @@ func readmeExampleUnifiedSearchAPI() async throws {
         try await vec.commit()
 
         let request = SearchRequest(query: "Hello", mode: .hybrid(alpha: 0.5), topK: 10, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
-        let response = try await wax.search(request)
+        let response = try await wax.searchWithEngineStore(request)
         #expect(response.results.count >= 0)
 
         try await wax.close()

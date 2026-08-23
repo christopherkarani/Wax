@@ -180,6 +180,9 @@ package actor MemoryOrchestrator {
     private let ragBuilder: FastRAGContextBuilder
 
     let session: WaxSession
+    /// Owner-scoped search-engine cache for session-less reads over this store.
+    /// Released when this orchestrator closes.
+    let unifiedEngineStore = UnifiedSearchEngineStore()
     private var embedder: (any EmbeddingProvider)?
     private var embeddingCache: EmbeddingMemoizer?
     private var embeddingStatus: EmbeddingStatus
@@ -1017,6 +1020,7 @@ package actor MemoryOrchestrator {
             vectorEnginePreference: preference,
             wax: wax,
             session: session,
+            engineStore: unifiedEngineStore,
             frameFilter: frameFilter,
             timeRange: resolvedTimeRange,
             scopeContext: config.defaultScopeContext,
@@ -1701,6 +1705,7 @@ package actor MemoryOrchestrator {
         }
         let sourceURL = await wax.fileURL()
         let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
+        await unifiedEngineStore.releaseEngines()
         await session.close()
         try await wax.close()
         if let maintenanceReport {

@@ -18,6 +18,7 @@ package struct FastRAGContextBuilder: Sendable {
         vectorEnginePreference: VectorEnginePreference = .auto,
         wax: Wax,
         session: WaxSession? = nil,
+        engineStore: UnifiedSearchEngineStore? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         scopeContext: MemoryScopeContext? = nil,
@@ -49,7 +50,12 @@ package struct FastRAGContextBuilder: Sendable {
         let response = if let session {
             try await session.search(request)
         } else {
-            try await wax.search(request)
+            // Session-less readers resolve engines through an owner-scoped store;
+            // without one, an ephemeral store scopes engine lifetime to this build.
+            try await wax.search(
+                request,
+                engineStore: engineStore ?? UnifiedSearchEngineStore()
+            )
         }
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking

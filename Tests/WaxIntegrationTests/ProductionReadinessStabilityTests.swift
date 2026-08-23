@@ -147,7 +147,7 @@ final class ProductionReadinessStabilityTests: XCTestCase {
             case .recall:
                 guard ingestCount > 0 else { continue }
                 let start = clock.now
-                let response = try await wax.search(
+                let response = try await wax.searchWithEngineStore(
                     SearchRequest(
                         query: searchMode.usesText ? step.payload : nil,
                         embedding: searchMode.usesVector ? Self.deterministicEmbedding(for: step.payload) : nil,

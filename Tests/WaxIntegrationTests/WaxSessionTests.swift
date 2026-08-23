@@ -251,19 +251,36 @@ struct WaxSessionCacheIsolationTests {
             )
             try await session.commit()
 
-            await UnifiedSearchEngineCache.shared.resetStats(for: wax)
-
-            _ = try await session.search(
+            // Session-less searches resolve engines through an owner-scoped store.
+            let engineStore = UnifiedSearchEngineStore()
+            await engineStore.resetStats()
+            func vectorOnlyRequest() -> SearchRequest {
                 SearchRequest(
                     embedding: [1.0, 0.0],
                     mode: .vectorOnly,
                     topK: 1,
                     nowMs: Int64(Date().timeIntervalSince1970 * 1000)
                 )
-            )
+            }
 
-            let stats = await UnifiedSearchEngineCache.shared.snapshotStats(for: wax)
-            #expect(stats.vectorDeserializations == 0)
+            _ = try await wax.search(vectorOnlyRequest(), engineStore: engineStore)
+            var stats = await engineStore.snapshotStats()
+            #expect(stats.vectorDeserializations == 1)
+
+            // Warm repeat search reuses the loaded engine: no new deserialization.
+            _ = try await wax.search(vectorOnlyRequest(), engineStore: engineStore)
+            stats = await engineStore.snapshotStats()
+            #expect(stats.vectorDeserializations == 1)
+
+            // Session-backed searches use the session's own engines and never
+            // touch the store's deserialization counters.
+            _ = try await session.search(vectorOnlyRequest())
+            stats = await engineStore.snapshotStats()
+            #expect(stats.vectorDeserializations == 1)
+
+            await engineStore.releaseEngines()
+            let cachedCount = await engineStore.cachedEngineCount
+            #expect(cachedCount == 0)
 
             await session.close()
             do {

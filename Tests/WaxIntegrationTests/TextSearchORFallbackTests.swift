@@ -23,7 +23,7 @@ import WaxVectorSearch
         try await text.index(frameId: dropOnly, text: "please drop unused temporary files")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
                 mode: .textOnly,
@@ -61,7 +61,7 @@ import WaxVectorSearch
         try await text.index(frameId: dropOnly, text: "please drop unused temporary files")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
                 mode: .textOnly,
@@ -95,7 +95,7 @@ import WaxVectorSearch
         try await text.index(frameId: dropOnly, text: "please drop unused temporary files")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "alpha drop",
                 mode: .textOnly,
@@ -127,7 +127,7 @@ import WaxVectorSearch
         try await text.index(frameId: dropOnly, text: "please drop unused temporary files")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "alpha beta drop",
                 mode: .textOnly,
@@ -159,7 +159,7 @@ import WaxVectorSearch
         try await text.index(frameId: canary, text: "unique lexical canary 7f3a91")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "7f3a91",
                 mode: .textOnly,
@@ -194,7 +194,7 @@ import WaxVectorSearch
         try await text.index(frameId: dropOnly, text: "please drop unused temporary files")
         try await text.commit()
 
-        let response = try await wax.search(
+        let response = try await wax.searchWithEngineStore(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
                 embedding: [1.0, 0.0, 0.0, 0.0],
@@ -203,7 +203,7 @@ import WaxVectorSearch
                 topK: 10,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             ),
-            engineOverrides: UnifiedSearchEngineOverrides(
+            engines: UnifiedSearchEngines(
                 textEngine: nil,
                 vectorEngine: InjectedHybridVectorEngine(
                     dimensions: 4,

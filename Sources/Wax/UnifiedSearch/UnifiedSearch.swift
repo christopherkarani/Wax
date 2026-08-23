@@ -3,23 +3,54 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-struct UnifiedSearchEngineOverrides {
+/// Explicitly supplied search engines. Callers that already own warm engines
+/// (e.g. ``WaxSession`` write-coherent engines, or test fakes) pass these directly;
+/// the pipeline never consults any process-global state for them.
+struct UnifiedSearchEngines {
     var textEngine: FTS5SearchEngine?
     var vectorEngine: (any VectorSearchEngine)?
     var structuredEngine: FTS5SearchEngine?
+
+    init(
+        textEngine: FTS5SearchEngine? = nil,
+        vectorEngine: (any VectorSearchEngine)? = nil,
+        structuredEngine: FTS5SearchEngine? = nil
+    ) {
+        self.textEngine = textEngine
+        self.vectorEngine = vectorEngine
+        self.structuredEngine = structuredEngine
+    }
 }
 
 package extension Wax {
-    func search(_ request: SearchRequest) async throws -> SearchResponse {
-        try await search(request, engineOverrides: nil)
+    /// Search using engines resolved through `engineStore` (warm, evictable,
+    /// owned by whoever created it — ``MemoryOrchestrator`` or the caller).
+    func search(
+        _ request: SearchRequest,
+        engineStore: UnifiedSearchEngineStore
+    ) async throws -> SearchResponse {
+        try await search(request, engines: nil, engineStore: engineStore)
     }
 }
 
 extension Wax {
+    /// Search using caller-owned explicit engines (no store involvement).
     func search(
         _ request: SearchRequest,
-        engineOverrides: UnifiedSearchEngineOverrides?
+        engines: UnifiedSearchEngines
     ) async throws -> SearchResponse {
+        try await search(request, engines: engines, engineStore: nil)
+    }
+
+    func search(
+        _ request: SearchRequest,
+        engines: UnifiedSearchEngines?,
+        engineStore: UnifiedSearchEngineStore?
+    ) async throws -> SearchResponse {
+        precondition(
+            engines != nil || engineStore != nil,
+            "provide engines, engineStore, or both"
+        )
         let requestedTopK = max(0, request.topK)
         if requestedTopK == 0 {
             return SearchResponse(results: [])
@@ -62,22 +93,22 @@ extension Wax {
         ) ? min(max(requestedTopK * 3, 12), 48) : nil
 
         let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
-        let cache = UnifiedSearchEngineCache.shared
+        let explicitEngines = engines
         let textEngine: FTS5SearchEngine? = if includeText {
-            if let override = engineOverrides?.textEngine {
-                override
+            if let explicitText = explicitEngines?.textEngine {
+                explicitText
             } else {
-                try await cache.textEngine(for: self)
+                try await engineStore?.textEngine(for: self)
             }
         } else {
             nil
         }
 
         let vectorEngine: (any VectorSearchEngine)? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
-            if let override = engineOverrides?.vectorEngine {
-                override
+            if let explicitVector = explicitEngines?.vectorEngine {
+                explicitVector
             } else {
-                try await cache.vectorEngine(
+                try await engineStore?.vectorEngine(
                     for: self,
                     queryEmbeddingDimensions: embedding.count,
                     preference: request.vectorEnginePreference
@@ -89,12 +120,12 @@ extension Wax {
 
         let structuredEngine: FTS5SearchEngine?
         if let trimmedQuery, !trimmedQuery.isEmpty {
-            if let override = engineOverrides?.structuredEngine {
-                structuredEngine = override
+            if let explicitStructured = explicitEngines?.structuredEngine {
+                structuredEngine = explicitStructured
             } else if let textEngine {
                 structuredEngine = textEngine
             } else {
-                structuredEngine = try await cache.textEngine(for: self)
+                structuredEngine = try await engineStore?.textEngine(for: self)
             }
         } else {
             structuredEngine = nil
