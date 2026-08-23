@@ -7,12 +7,14 @@
  *   npx waxmcp                    # Start MCP server (stdio, default store)
  *   npx waxmcp --transport http   # Start HTTP MCP server on :3000
  *   npx waxmcp --no-embedder      # Text-only search (no vector search)
- *   npx waxmcp --embedder arctic  # Use Arctic embeddings (default: minilm)
+ *   npx waxmcp --embedder arctic  # Use Arctic embeddings (default: arctic)
+ *   npx waxmcp mcp doctor         # Validate setup (routes to wax-cli)
  *
  * Environment:
- *   WAX_MCP_BIN        — Override path to wax-mcp binary
- *   WAX_STORE_PATH     — Override default ~/.wax/memory.wax
- *   WAX_MCP_HTTP_PORT  — Override default HTTP port (3000)
+ *   WAX_MCP_BIN            Path to the wax-mcp server binary
+ *   WAX_CLI_BIN            Path to the wax-cli binary
+ *   WAX_MCP_HTTP_PORT      HTTP port assumed by vector-health (default 3000)
+ *   WAX_MCP_HTTP_ENDPOINT  Full endpoint URL assumed by vector-health
  */
 
 const { spawnSync, spawn } = require("node:child_process");
@@ -308,7 +310,7 @@ if (forwardedArgs[0] === "install-all-plugins") {
 }
 
 // --- Default: run MCP server ---
-// Translate 'mcp serve' to native wax-mcp flags
+// Translate the legacy 'mcp' prefix to native wax-mcp flags
 const mcpFlags = [];
 let i = 0;
 while (i < forwardedArgs.length) {
@@ -321,9 +323,11 @@ while (i < forwardedArgs.length) {
       i++;
       continue;
     }
-    // 'mcp' without 'serve' — pass through
-    mcpFlags.push(arg);
-    i++;
+    if (i < forwardedArgs.length) {
+      // Management subcommands (doctor/install/uninstall) belong to wax-cli.
+      runBinary("wax-cli", forwardedArgs.slice(i - 1));
+    }
+    // Trailing bare 'mcp': nothing to forward, start a plain server.
     continue;
   }
 

@@ -1,7 +1,17 @@
 {
   "name": "waxmcp",
   "version": "0.1.32",
-  "description": "npx launcher for the Wax MCP server",
+  "description": "Shared memory runtime for AI agents. One local .wax store shared by your whole agent team over MCP.",
+  "keywords": [
+    "agent-memory",
+    "ai-agents",
+    "shared-memory",
+    "mcp",
+    "claude-code",
+    "codex",
+    "cursor",
+    "grok"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/christopherkarani/Wax.git"
