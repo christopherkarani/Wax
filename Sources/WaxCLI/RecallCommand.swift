@@ -22,51 +22,19 @@ struct RecallCommand: AsyncParsableCommand {
         }
 
         if AgentBrokerPolicy.shouldUseBroker(store: store) {
-            let response = try await AgentBrokerCLI.perform(
-                command: "recall",
-                arguments: [
-                    "query": .string(query),
-                    "limit": .from(limit),
-                ],
+            let configuration = try AgentBrokerCLI.configuration(
                 storePath: store.storePath,
                 embedderChoice: store.embedder.rawValue,
                 noEmbedder: store.noEmbedder,
                 requireVector: store.requireVector,
                 embedderTuning: store.embedderTuning
             )
-            let payload = try brokerPayloadObject(response)
-            let daemonQuery = brokerString(payload, "query") ?? query
-            let totalTokens = brokerInt(payload, "total_tokens") ?? 0
-            let items = brokerArray(payload, "results")
-
-            switch store.format {
-            case .json:
-                let encodedItems: [[String: Any]] = items.compactMap { item in
-                    guard let object = item.objectValue else { return nil }
-                    return [
-                        "rank": brokerInt(object, "rank") ?? 0,
-                        "kind": brokerString(object, "kind") ?? "",
-                        "frameId": brokerInt64(object, "frameId") ?? 0,
-                        "score": object["score"]?.doubleValue ?? 0,
-                        "text": brokerString(object, "text") ?? "",
-                    ]
-                }
-                printJSON([
-                    "query": daemonQuery,
-                    "totalTokens": totalTokens,
-                    "count": encodedItems.count,
-                    "items": encodedItems,
-                ])
-            case .text:
-                print("Query: \(daemonQuery)")
-                print("Total tokens: \(totalTokens)")
-                for item in items {
-                    guard let object = item.objectValue else { continue }
-                    print(
-                        "\(brokerInt(object, "rank") ?? 0). [\(brokerString(object, "kind") ?? "unknown")] frame=\(brokerInt64(object, "frameId") ?? 0) score=\(String(format: "%.4f", object["score"]?.doubleValue ?? 0)) \(brokerString(object, "text") ?? "")"
-                    )
-                }
-            }
+            let result = try await AgentBrokerClient.performRecall(
+                query: query,
+                limit: limit,
+                configuration: configuration
+            )
+            render(format: store.format, query: result.query, totalTokens: result.totalTokens, rows: result.items)
             return
         }
 
@@ -79,33 +47,43 @@ struct RecallCommand: AsyncParsableCommand {
             requireVector: store.requireVector
         ) { memory in
             let context = try await memory.recall(query: query, frameFilter: nil)
-            let selected = context.items.prefix(limit)
+            let rows = context.items.prefix(limit).enumerated().map { index, item in
+                BrokerRecallRow(
+                    rank: index + 1,
+                    kind: "\(item.kind)",
+                    frameId: item.frameId,
+                    score: Double(item.score),
+                    text: item.text
+                )
+            }
+            render(format: store.format, query: context.query, totalTokens: context.totalTokens, rows: rows)
+        }
+    }
 
-            switch store.format {
-            case .json:
-                let items: [[String: Any]] = selected.enumerated().map { index, item in
+    private func render(format: OutputFormat, query: String, totalTokens: Int, rows: [BrokerRecallRow]) {
+        switch format {
+        case .json:
+            printJSON([
+                "query": query,
+                "totalTokens": totalTokens,
+                "count": rows.count,
+                "items": rows.map { row in
                     [
-                        "rank": index + 1,
-                        "kind": "\(item.kind)",
-                        "frameId": item.frameId,
-                        "score": Double(item.score),
-                        "text": item.text,
-                    ]
-                }
-                printJSON([
-                    "query": context.query,
-                    "totalTokens": context.totalTokens,
-                    "count": items.count,
-                    "items": items,
-                ])
-            case .text:
-                print("Query: \(context.query)")
-                print("Total tokens: \(context.totalTokens)")
-                for (index, item) in selected.enumerated() {
-                    print(
-                        "\(index + 1). [\(item.kind)] frame=\(item.frameId) score=\(String(format: "%.4f", item.score)) \(item.text)"
-                    )
-                }
+                        "rank": row.rank,
+                        "kind": row.kind ?? "",
+                        "frameId": row.frameId,
+                        "score": row.score,
+                        "text": row.text,
+                    ] as [String: Any]
+                },
+            ])
+        case .text:
+            print("Query: \(query)")
+            print("Total tokens: \(totalTokens)")
+            for row in rows {
+                print(
+                    "\(row.rank). [\(row.kind ?? "unknown")] frame=\(row.frameId) score=\(String(format: "%.4f", row.score)) \(row.text)"
+                )
             }
         }
     }

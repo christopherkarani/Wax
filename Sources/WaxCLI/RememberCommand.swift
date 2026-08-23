@@ -42,33 +42,19 @@ struct RememberCommand: AsyncParsableCommand {
         }
 
         if AgentBrokerPolicy.shouldUseBroker(store: store) {
-            let response = try await AgentBrokerCLI.perform(
-                command: "remember",
-                arguments: [
-                    "content": .string(trimmed),
-                    "metadata": .object(meta.mapValues(AgentBrokerValue.string)),
-                ],
+            let configuration = try AgentBrokerCLI.configuration(
                 storePath: store.storePath,
                 embedderChoice: store.embedder.rawValue,
                 noEmbedder: store.noEmbedder,
                 requireVector: store.requireVector,
                 embedderTuning: store.embedderTuning
             )
-            let payload = try brokerPayloadObject(response)
-            let frameCount = brokerInt(payload, "frameCount") ?? 0
-            let pendingFrames = brokerInt(payload, "pendingFrames") ?? 0
-            let framesAdded = brokerInt(payload, "framesAdded") ?? 0
-            switch store.format {
-            case .json:
-                printJSON([
-                    "status": "ok",
-                    "framesAdded": framesAdded,
-                    "frameCount": frameCount,
-                    "pendingFrames": pendingFrames,
-                ])
-            case .text:
-                print("Remembered. \(framesAdded) frame(s) added (\(frameCount) total, \(pendingFrames) pending).")
-            }
+            let result = try await AgentBrokerClient.performRemember(
+                content: trimmed,
+                metadata: meta,
+                configuration: configuration
+            )
+            render(format: store.format, result: result)
             return
         }
 
@@ -93,17 +79,28 @@ struct RememberCommand: AsyncParsableCommand {
             let totalAfter = after.frameCount + after.pendingFrames
             let added = totalAfter >= totalBefore ? (totalAfter - totalBefore) : 0
 
-            switch store.format {
-            case .json:
-                printJSON([
-                    "status": "ok",
-                    "framesAdded": added,
-                    "frameCount": after.frameCount,
-                    "pendingFrames": after.pendingFrames,
-                ])
-            case .text:
-                print("Remembered. \(added) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending).")
-            }
+            render(
+                format: store.format,
+                result: BrokerRememberResult(
+                    framesAdded: Int(added),
+                    frameCount: Int(after.frameCount),
+                    pendingFrames: Int(after.pendingFrames)
+                )
+            )
+        }
+    }
+
+    private func render(format: OutputFormat, result: BrokerRememberResult) {
+        switch format {
+        case .json:
+            printJSON([
+                "status": "ok",
+                "framesAdded": result.framesAdded,
+                "frameCount": result.frameCount,
+                "pendingFrames": result.pendingFrames,
+            ])
+        case .text:
+            print("Remembered. \(result.framesAdded) frame(s) added (\(result.frameCount) total, \(result.pendingFrames) pending).")
         }
     }
 }

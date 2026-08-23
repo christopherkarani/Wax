@@ -42,51 +42,20 @@ struct SearchCommand: AsyncParsableCommand {
         }
 
         if AgentBrokerPolicy.shouldUseBroker(store: store) {
-            let response = try await AgentBrokerCLI.perform(
-                command: "search",
-                arguments: [
-                    "query": .string(query),
-                    "mode": .string(modeLower),
-                    "topK": .from(topK),
-                ],
+            let configuration = try AgentBrokerCLI.configuration(
                 storePath: store.storePath,
                 embedderChoice: store.embedder.rawValue,
                 noEmbedder: store.noEmbedder,
                 requireVector: requireVector,
                 embedderTuning: store.embedderTuning
             )
-            let payload = try brokerPayloadObject(response)
-            let items = brokerArray(payload, "results")
-            let count = items.count
-
-            switch store.format {
-            case .json:
-                let encodedItems: [[String: Any]] = items.compactMap { item in
-                    guard let object = item.objectValue else { return nil }
-                    return [
-                        "rank": brokerInt(object, "rank") ?? 0,
-                        "frameId": brokerInt64(object, "frameId") ?? 0,
-                        "score": object["score"]?.doubleValue ?? 0,
-                        "sources": brokerArray(object, "sources").compactMap(\.stringValue),
-                        "preview": brokerString(object, "preview") ?? "",
-                    ]
-                }
-                printJSON([
-                    "count": count,
-                    "items": encodedItems,
-                ])
-            case .text:
-                if items.isEmpty {
-                    print("No results.")
-                } else {
-                    for item in items {
-                        guard let object = item.objectValue else { continue }
-                        print(
-                            "\(brokerInt(object, "rank") ?? 0). frame=\(brokerInt64(object, "frameId") ?? 0) score=\(String(format: "%.4f", object["score"]?.doubleValue ?? 0)) sources=[\(brokerArray(object, "sources").compactMap(\.stringValue).joined(separator: ","))] \(brokerString(object, "preview") ?? "")"
-                        )
-                    }
-                }
-            }
+            let result = try await AgentBrokerClient.performSearch(
+                query: query,
+                mode: modeLower,
+                topK: topK,
+                configuration: configuration
+            )
+            render(format: store.format, rows: result.items)
             return
         }
 
@@ -99,33 +68,42 @@ struct SearchCommand: AsyncParsableCommand {
             requireVector: requireVector
         ) { memory in
             let hits = try await memory.search(query: query, mode: searchMode, topK: topK, frameFilter: nil)
+            let rows = hits.enumerated().map { index, hit in
+                BrokerSearchRow(
+                    rank: index + 1,
+                    frameId: hit.frameId,
+                    score: Double(hit.score),
+                    sources: hit.sources.map(\.rawValue),
+                    preview: hit.previewText ?? ""
+                )
+            }
+            render(format: store.format, rows: rows)
+        }
+    }
 
-            switch store.format {
-            case .json:
-                let items: [[String: Any]] = hits.enumerated().map { index, hit in
+    private func render(format: OutputFormat, rows: [BrokerSearchRow]) {
+        switch format {
+        case .json:
+            printJSON([
+                "count": rows.count,
+                "items": rows.map { row in
                     [
-                        "rank": index + 1,
-                        "frameId": hit.frameId,
-                        "score": Double(hit.score),
-                        "sources": hit.sources.map { $0.rawValue },
-                        "preview": hit.previewText ?? "",
-                    ]
-                }
-                printJSON([
-                    "count": items.count,
-                    "items": items,
-                ])
-            case .text:
-                if hits.isEmpty {
-                    print("No results.")
-                } else {
-                    for (index, hit) in hits.enumerated() {
-                        let sources = hit.sources.map { $0.rawValue }.joined(separator: ",")
-                        let preview = hit.previewText ?? ""
-                        print(
-                            "\(index + 1). frame=\(hit.frameId) score=\(String(format: "%.4f", hit.score)) sources=[\(sources)] \(preview)"
-                        )
-                    }
+                        "rank": row.rank,
+                        "frameId": row.frameId,
+                        "score": row.score,
+                        "sources": row.sources,
+                        "preview": row.preview,
+                    ] as [String: Any]
+                },
+            ])
+        case .text:
+            if rows.isEmpty {
+                print("No results.")
+            } else {
+                for row in rows {
+                    print(
+                        "\(row.rank). frame=\(row.frameId) score=\(String(format: "%.4f", row.score)) sources=[\(row.sources.joined(separator: ","))] \(row.preview)"
+                    )
                 }
             }
         }

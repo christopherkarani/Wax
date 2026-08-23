@@ -12,29 +12,19 @@ struct StatsCommand: AsyncParsableCommand {
 
     func runAsync() async throws {
         if AgentBrokerPolicy.shouldUseBroker(store: store) {
-            let response = try await AgentBrokerCLI.perform(
-                command: "stats",
-                arguments: [:],
+            let configuration = try AgentBrokerCLI.configuration(
                 storePath: store.storePath,
                 embedderChoice: store.embedder.rawValue,
                 noEmbedder: store.noEmbedder,
                 requireVector: store.requireVector,
                 embedderTuning: store.embedderTuning
             )
-            let payload = try brokerPayloadObject(response)
+            let response = try await AgentBrokerClient.performStats(configuration: configuration)
             switch store.format {
             case .json:
-                printJSON(payload.toJSONObject())
+                printJSON(response.payload.toJSONObject())
             case .text:
-                print("Store: \(brokerString(payload, "storePath") ?? store.storePath)")
-                print("Frames: \(brokerInt(payload, "frameCount") ?? 0) (\(brokerInt(payload, "pendingFrames") ?? 0) pending)")
-                print("Generation: \(brokerInt(payload, "generation") ?? 0)")
-                let diskBytes = Int64(brokerInt64(payload, "diskBytes") ?? 0)
-                print("Disk: \(ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))")
-                print("Vector search: \((brokerBool(payload, "vectorSearchEnabled") ?? false) ? "enabled" : "disabled")")
-                if let status = brokerString(payload, "embeddingStatus") {
-                    print("Embedding status: \(status)")
-                }
+                renderBrokerSummary(response.summary, fallbackStorePath: store.storePath)
             }
             return
         }
@@ -118,6 +108,16 @@ struct StatsCommand: AsyncParsableCommand {
                 }
                 print("WAL: \(stats.wal.pendingBytes) bytes pending, seq \(stats.wal.committedSeq)-\(stats.wal.lastSeq)")
             }
+        }
+    }
+    private func renderBrokerSummary(_ summary: BrokerStatsSummary, fallbackStorePath: String) {
+        print("Store: \(summary.storePath ?? fallbackStorePath)")
+        print("Frames: \(summary.frameCount) (\(summary.pendingFrames) pending)")
+        print("Generation: \(summary.generation)")
+        print("Disk: \(ByteCountFormatter.string(fromByteCount: summary.diskBytes, countStyle: .file))")
+        print("Vector search: \(summary.vectorSearchEnabled ? "enabled" : "disabled")")
+        if let status = summary.embeddingStatus {
+            print("Embedding status: \(status)")
         }
     }
 }
