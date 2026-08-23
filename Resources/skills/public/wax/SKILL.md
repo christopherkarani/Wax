@@ -32,7 +32,7 @@ If you need the agent memory operator playbook for MCP tools (`remember`, `recal
 ## Safety & Constraints
 - Keep Wax offline-only; no network calls are made. See `references/constraints.md`.
 - Treat the `.wax` file as the single source of truth (data + indexes + WAL).
-- `RetrievalMode.hybrid` (the default) degrades to the text lane when no embedder is available; `RetrievalMode.vectorOnly` throws instead. Always check `results.diagnostics` (requested vs. effective mode) or `memory.stats()` when the mode matters.
+- `Memory.RetrievalMode.hybrid` (the default; alias of the canonical `SearchMode`) degrades to the text lane when no embedder is available; `vectorOnly` throws instead. Always check `results.diagnostics` (requested vs. effective mode) or `memory.stats()` when the mode matters.
 - On iOS 17/macOS 14 there is no built-in embedder: provide a custom `EmbeddingProvider` or use text-only search.
 - Video RAG does not transcribe by itself. Use `VideoMemory`; the host supplies transcripts. The store keeps text and metadata, not media bytes.
 
@@ -61,7 +61,7 @@ func demoDefault() async throws {
 
     // Verify which retrieval mode actually ran.
     if let diagnostics = results.diagnostics {
-        print(diagnostics.effectiveMode)  // RetrievalMode; prints "hybrid(alpha=0.500)" or "text"
+        print(diagnostics.effectiveMode)  // Memory.RetrievalMode (alias of SearchMode); prints "hybrid(alpha=0.500)" or "text"
     }
 
     try await memory.close()
