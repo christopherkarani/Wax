@@ -45,6 +45,19 @@ import Wax
         #expect(row.kind == nil)
     }
 
+    @Test func recallRowNullKindDecodesAsNilKind() throws {
+        let row = try BrokerRecallRow(recallRowPayload(kind: .null))
+        #expect(row.kind == nil)
+    }
+
+    @Test func recallRowNonStringKindThrowsNamedError() {
+        let payload = recallRowPayload(kind: .from(7))
+
+        #expect(throws: BrokerPayloadDecodeError(reason: .invalidValue(key: "kind", expected: "a string"))) {
+            try BrokerRecallRow(payload)
+        }
+    }
+
     @Test func recallRowWrongTypedScoreThrowsNamedError() throws {
         let payload = recallRowPayload(score: .string("fast"))
 
