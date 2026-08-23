@@ -254,9 +254,7 @@ extension AgentBrokerService {
     package static let maxContentBytes = BrokerLimits.maxContentBytes
     static let maxGraphLimit = BrokerLimits.maxGraphLimit
 
-    typealias MemoryHorizon = LayeredRecall.Horizon
     typealias LayeredMemoryHit = LayeredRecall.Hit
-    typealias MemoryReference = LayeredRecall.MemoryReference
 
     struct CompactContextAssembly {
         var short: [LayeredMemoryHit]
@@ -621,10 +619,14 @@ extension AgentBrokerService {
     }
 
     func memoryGet(_ command: BrokerCommand.MemoryGet) async throws -> AgentBrokerValue {
-        let reference = try parseMemoryReference(command.memoryID)
+        guard let reference = MemoryReference(parsing: command.memoryID) else {
+            throw BrokerValidationError.invalid(
+                "memory_id must be in the form '<horizon>:<frame>' or '<horizon>:<session_id>:<frame>'"
+            )
+        }
         let hit = try await layeredMemoryGet(reference: reference)
         return .object([
-            "memory_id": .string(hit.reference),
+            "memory_id": .string(hit.reference.wireValue),
             "horizon": .string(hit.horizon.rawValue),
             "session_id": .from(hit.sessionID?.uuidString),
             "agent_id": .from(hit.agentID),
@@ -1890,7 +1892,7 @@ extension AgentBrokerService {
         case .durable:
             let document = try await requireDocument(frameID: reference.frameID, memory: longTermMemory)
             return LayeredMemoryHit(
-                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: reference.frameID),
+                reference: .durable(frameID: reference.frameID),
                 horizon: .durable,
                 sessionID: nil,
                 agentID: nil,
@@ -1911,7 +1913,7 @@ extension AgentBrokerService {
             let loader: (MemoryOrchestrator) async throws -> LayeredMemoryHit = { memory in
                 let document = try await self.requireDocument(frameID: reference.frameID, memory: memory)
                 return LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(reference.horizon, sessionID: sessionID, frameID: reference.frameID),
+                    reference: reference,
                     horizon: reference.horizon,
                     sessionID: sessionID,
                     agentID: manifest.agentID,
@@ -1960,7 +1962,7 @@ extension AgentBrokerService {
             for item in execution.context.items {
                 let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: state.memory)
                 short.append(LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: canonicalFrameID),
+                    reference: .working(sessionID: sessionID, frameID: canonicalFrameID),
                     horizon: .working,
                     sessionID: sessionID,
                     agentID: state.manifest.agentID,
@@ -1982,7 +1984,7 @@ extension AgentBrokerService {
                     }
                 for document in documents.prefix(min(4, maxItems)) {
                     short.append(LayeredMemoryHit(
-                        reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: document.frameId),
+                        reference: .working(sessionID: sessionID, frameID: document.frameId),
                         horizon: .working,
                         sessionID: sessionID,
                         agentID: state.manifest.agentID,
@@ -2009,7 +2011,7 @@ extension AgentBrokerService {
         for item in longExecution.context.items {
             let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: longTermMemory)
             long.append(LayeredMemoryHit(
-                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: canonicalFrameID),
+                reference: .durable(frameID: canonicalFrameID),
                 horizon: .durable,
                 sessionID: nil,
                 agentID: nil,
@@ -2051,7 +2053,7 @@ extension AgentBrokerService {
                 for item in items {
                     let canonicalFrameID = try await self.canonicalDocumentFrameID(for: item.frameId, memory: memory)
                     hits.append(LayeredMemoryHit(
-                        reference: Self.makeMemoryReference(.episodic, sessionID: manifest.sessionID, frameID: canonicalFrameID),
+                        reference: .episodic(sessionID: manifest.sessionID, frameID: canonicalFrameID),
                         horizon: .episodic,
                         sessionID: manifest.sessionID,
                         agentID: manifest.agentID,
@@ -2074,7 +2076,7 @@ extension AgentBrokerService {
         medium = Self.deduplicateLayeredHits(medium).sorted {
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.timestampMs != $1.timestampMs { return $0.timestampMs > $1.timestampMs }
-            return $0.reference < $1.reference
+            return $0.reference.wireValue < $1.reference.wireValue
         }
         long = Self.deduplicateLayeredHits(long)
 
@@ -2148,7 +2150,7 @@ extension AgentBrokerService {
     }
 
     static func deduplicateLayeredHits(_ hits: [LayeredMemoryHit]) -> [LayeredMemoryHit] {
-        var seen = Set<String>()
+        var seen = Set<MemoryReference>()
         var deduped: [LayeredMemoryHit] = []
         deduped.reserveCapacity(hits.count)
         for hit in hits where seen.insert(hit.reference).inserted {
@@ -2703,33 +2705,9 @@ extension AgentBrokerService {
         }
     }
 
-    func parseMemoryReference(_ raw: String) throws -> MemoryReference {
-        let parts = raw.split(separator: ":").map(String.init)
-        guard parts.count >= 2 else {
-            throw BrokerValidationError.invalid("memory_id must be in the form '<horizon>:<frame>' or '<horizon>:<session_id>:<frame>'")
-        }
-        guard let horizon = MemoryHorizon(rawValue: parts[0]) else {
-            throw BrokerValidationError.invalid("memory_id horizon must be one of: working, episodic, durable")
-        }
-        switch horizon {
-        case .durable:
-            guard parts.count == 2, let frameID = UInt64(parts[1]) else {
-                throw BrokerValidationError.invalid("durable memory_id must be 'durable:<frame_id>'")
-            }
-            return MemoryReference(horizon: .durable, sessionID: nil, frameID: frameID)
-        case .working, .episodic:
-            guard parts.count == 3,
-                  let sessionID = UUID(uuidString: parts[1]),
-                  let frameID = UInt64(parts[2]) else {
-                throw BrokerValidationError.invalid("session memory_id must be '\(horizon.rawValue):<session_id>:<frame_id>'")
-            }
-            return MemoryReference(horizon: horizon, sessionID: sessionID, frameID: frameID)
-        }
-    }
-
     func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
         .object([
-            "memory_id": .string(hit.reference),
+            "memory_id": .string(hit.reference.wireValue),
             "horizon": .string(hit.horizon.rawValue),
             "session_id": .from(hit.sessionID?.uuidString),
             "agent_id": .from(hit.agentID),
@@ -2843,10 +2821,6 @@ extension AgentBrokerService {
             return dayString(fromMs: fallbackMs)
         }
         return trimmed
-    }
-
-    static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID?, frameID: UInt64) -> String {
-        LayeredRecall.makeMemoryReference(horizon, sessionID: sessionID, frameID: frameID)
     }
 
     static func nowMs() -> Int64 {

@@ -114,13 +114,61 @@ func layeredRecallFrameFilterInjectsProjectMetadataForScopedRetrieval() {
 }
 
 @Test
-func layeredRecallMakeMemoryReferenceFormatsHorizons() {
+func memoryReferenceWireValuePinsWireBytes() {
+    let sessionID = UUID(uuidString: "DEADBEEF-1234-5678-90AB-CDEF01234567")!
+    #expect(MemoryReference.durable(frameID: 42).wireValue == "durable:42")
+    #expect(MemoryReference.working(sessionID: sessionID, frameID: 7).wireValue == "working:\(sessionID.uuidString):7")
+    #expect(MemoryReference.working(sessionID: nil, frameID: 7).wireValue == "working:unknown:7")
+    #expect(MemoryReference.episodic(sessionID: sessionID, frameID: 9).wireValue == "episodic:\(sessionID.uuidString):9")
+}
+
+@Test
+func memoryReferenceParsingRoundTripsEveryProducedShape() {
     let sessionID = UUID()
-    #expect(LayeredRecall.makeMemoryReference(.durable, sessionID: nil, frameID: 42) == "durable:42")
-    #expect(
-        LayeredRecall.makeMemoryReference(.working, sessionID: sessionID, frameID: 7)
-            == "working:\(sessionID.uuidString):7"
-    )
+    let shapes: [MemoryReference] = [
+        .durable(frameID: 0),
+        .durable(frameID: UInt64.max),
+        .working(sessionID: nil, frameID: 0),
+        .working(sessionID: nil, frameID: UInt64.max),
+        .working(sessionID: sessionID, frameID: 7),
+        .episodic(sessionID: nil, frameID: 9),
+        .episodic(sessionID: sessionID, frameID: 9),
+    ]
+    for shape in shapes {
+        #expect(
+            MemoryReference(parsing: shape.wireValue) == shape,
+            "round-trip failed for '\(shape.wireValue)'"
+        )
+    }
+}
+
+@Test
+func memoryReferenceParsingRejectsMalformedLiterals() {
+    let malformed = [
+        "",
+        ":",
+        "durable",
+        "durable:",
+        "durable:x",
+        "durable:-1",
+        "durable:1:2",
+        "bogus:1",
+        "bogus:some-uuid:1",
+        "working:1",
+        "working:not-a-uuid:1",
+        "working::1",
+        "episodic:1:2:3",
+    ]
+    for raw in malformed {
+        #expect(MemoryReference(parsing: raw) == nil, "expected \(raw) to be rejected")
+    }
+}
+
+@Test
+func memoryReferenceInitRejectsSessionOnDurableLane() {
+    #expect(MemoryReference(horizon: .durable, sessionID: UUID(), frameID: 1) == nil)
+    #expect(MemoryReference(horizon: .durable, sessionID: nil, frameID: 1) != nil)
+    #expect(MemoryReference(horizon: .working, sessionID: nil, frameID: 1) != nil)
 }
 
 private func layeredHit(
@@ -131,7 +179,7 @@ private func layeredHit(
     metadata: [String: String] = [:]
 ) -> LayeredRecall.Hit {
     LayeredRecall.Hit(
-        reference: LayeredRecall.makeMemoryReference(horizon, sessionID: nil, frameID: frameID),
+        reference: MemoryReference(horizon: horizon, sessionID: nil, frameID: frameID)!,
         horizon: horizon,
         frameID: frameID,
         score: score,

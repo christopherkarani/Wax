@@ -27,7 +27,7 @@ package enum LayeredRecall {
     }
 
     package struct Hit: Sendable, Equatable {
-        package var reference: String
+        package var reference: MemoryReference
         package var horizon: Horizon
         package var sessionID: UUID?
         package var agentID: String?
@@ -44,7 +44,7 @@ package enum LayeredRecall {
         package var sources: [String]
 
         package init(
-            reference: String,
+            reference: MemoryReference,
             horizon: Horizon,
             sessionID: UUID? = nil,
             agentID: String? = nil,
@@ -73,18 +73,6 @@ package enum LayeredRecall {
             self.timestampMs = timestampMs
             self.kind = kind
             self.sources = sources
-        }
-    }
-
-    package struct MemoryReference: Sendable, Equatable {
-        package var horizon: Horizon
-        package var sessionID: UUID?
-        package var frameID: UInt64
-
-        package init(horizon: Horizon, sessionID: UUID?, frameID: UInt64) {
-            self.horizon = horizon
-            self.sessionID = sessionID
-            self.frameID = frameID
         }
     }
 
@@ -262,19 +250,6 @@ package enum LayeredRecall {
             self.endedManifests = endedManifests
             self.searchEndedSession = searchEndedSession
             self.nowMs = nowMs
-        }
-    }
-
-    package static func makeMemoryReference(
-        _ horizon: Horizon,
-        sessionID: UUID?,
-        frameID: UInt64
-    ) -> String {
-        switch horizon {
-        case .durable:
-            return "durable:\(frameID)"
-        case .working, .episodic:
-            return "\(horizon.rawValue):\(sessionID?.uuidString ?? "unknown"):\(frameID)"
         }
     }
 
@@ -465,7 +440,7 @@ package enum LayeredRecall {
 
     package static func hit(from item: RAGContext.Item, horizon: Horizon, sessionID: UUID?) -> Hit {
         Hit(
-            reference: makeMemoryReference(horizon, sessionID: sessionID, frameID: item.frameId),
+            reference: MemoryReference(horizon: horizon, sessionID: sessionID, frameID: item.frameId)!,
             horizon: horizon,
             sessionID: sessionID,
             frameID: item.frameId,
@@ -592,11 +567,7 @@ package enum LayeredRecall {
                     }
                 sessionHits = documents.prefix(retrievalTopK).map { document in
                     Hit(
-                        reference: makeMemoryReference(
-                            .working,
-                            sessionID: working.sessionID,
-                            frameID: document.frameId
-                        ),
+                        reference: .working(sessionID: working.sessionID, frameID: document.frameId),
                         horizon: .working,
                         sessionID: working.sessionID,
                         agentID: working.agentID,
@@ -704,11 +675,7 @@ package enum LayeredRecall {
                 }
                 hits.append(
                     Hit(
-                        reference: makeMemoryReference(
-                            .working,
-                            sessionID: sessionID,
-                            frameID: canonicalFrameID
-                        ),
+                        reference: .working(sessionID: sessionID, frameID: canonicalFrameID),
                         horizon: .working,
                         sessionID: sessionID,
                         agentID: lane.agentID,
@@ -743,7 +710,7 @@ package enum LayeredRecall {
                 }
                 hits.append(
                     Hit(
-                        reference: makeMemoryReference(.durable, sessionID: nil, frameID: canonicalFrameID),
+                        reference: .durable(frameID: canonicalFrameID),
                         horizon: .durable,
                         sessionID: nil,
                         frameID: canonicalFrameID,
@@ -790,11 +757,7 @@ package enum LayeredRecall {
                     explanations.append(contentsOf: laneHit.explanations)
                     hits.append(
                         Hit(
-                            reference: makeMemoryReference(
-                                .episodic,
-                                sessionID: manifest.sessionID,
-                                frameID: canonicalFrameID
-                            ),
+                            reference: .episodic(sessionID: manifest.sessionID, frameID: canonicalFrameID),
                             horizon: .episodic,
                             sessionID: manifest.sessionID,
                             agentID: manifest.agentID,
@@ -821,7 +784,7 @@ package enum LayeredRecall {
             deduped.sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                return lhs.reference < rhs.reference
+                return lhs.reference.wireValue < rhs.reference.wireValue
             }.prefix(request.topK)
         )
     }
