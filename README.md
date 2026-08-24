@@ -1,10 +1,5 @@
 
-
-
 <!-- HEADER:START -->
-
-
-
 
 <div align="center">
   <a href="https://trendshift.io/repositories/21759?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-21759" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/21759/daily?language=Swift" alt="christopherkarani%2FWax | Trendshift" width="250" height="55"/></a>
@@ -395,6 +390,49 @@ Close with `session_close` (or `handoff` then `session_end`). Do not invent a `s
 
 </details>
 
+<details>
+<summary><strong>Grokbot (xAI) — paste this into your Bot after wiring the server</strong></summary>
+
+Grokbot runs locally on your Mac, so Wax serves it over loopback — no tunnel, no cloud copy of your memory.
+
+One-time setup:
+
+```bash
+# 1. Stage Wax
+npx -y waxmcp@latest install
+
+# 2. Start the server and keep it running (add to your shell profile / login items)
+~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
+```
+
+Then in Grokbot: **Settings → Plugins → Add MCP server**
+
+| Field | Value |
+|-------|-------|
+| Name | `wax` |
+| URL | `http://127.0.0.1:3000/mcp` |
+
+Finally, paste this prompt into your **main (coordinator) bot** — it sets up its own memory and rolls Wax out to every bot on the team:
+
+```text
+You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
+
+Your own memory:
+- Starting any multi-step job: call handoff_latest (or session_start with project set to my name), keep the returned session_id, then recall before you act.
+- While working: remember task state as you go (scope: session with your session_id); store decisions, corrections, preferences, and facts durably (scope: durable).
+- Finishing: session_close with a summary and pending_tasks so your next session resumes cleanly.
+- Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
+
+Roll out to the team:
+1. List every bot we already have. For each one, add the "Your own memory" rules above to its persistent instructions/memory, then verify it can see the wax tools (have it run the wax stats tool) and report back which bots succeeded and which failed.
+2. From now on, whenever you spawn a new bot, include those same rules in its starting instructions before it begins any work.
+3. Save this whole policy durably in wax (scope: durable) so you keep enforcing it across sessions.
+```
+
+Wax stays 100% local: the `.wax` file never leaves your machine, and the loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+
+</details>
+
 Host install path: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md). Claude/doctor details: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ---
@@ -426,6 +464,7 @@ Most RAG setups end up with a database, a vector store, and a file server. Wax k
 Wax is tuned for M-series hardware and local recall.
 
 ### Recall Latency (p95)
+
 *Lower is better. Measured in milliseconds.*
 
 ```text
@@ -435,6 +474,7 @@ Cloud RAG     |█████████████████████�
 ```
 
 ### Cold Open Time (p95)
+
 *Lower is better. Measured in milliseconds.*
 
 ```text
@@ -495,6 +535,7 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 ## Ecosystem Tools
 
 ### 🤖 MCP Server
+
 Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your local memory to Claude Code or any MCP-compatible agent.
 
 ```bash
@@ -521,6 +562,7 @@ Local HTTP (when this process is the only writer):
 </details>
 
 ### 🔍 WaxRepo
+
 A semantic search TUI for your git history. Index any repository and find code or commits using natural language.
 
 ```bash

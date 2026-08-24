@@ -54,6 +54,7 @@ package actor MetalVectorEngine {
     // Zero-Copy: 'vectors' array removed. Primary storage is `vectorsBuffer`.
     
     private var frameIds: [UInt64]
+    private var positions: [UInt64: Int]
     private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
 
@@ -221,6 +222,7 @@ package actor MetalVectorEngine {
         self.vectorCount = 0
         self.reservedCapacity = Self.initialReserve
         self.frameIds = []
+        self.positions = [:]
         self.dirty = false
 
         let initialCapacity = Int(Self.initialReserve) * dimensions * MemoryLayout<Float>.stride
@@ -335,7 +337,7 @@ package actor MetalVectorEngine {
         try await withWriteLock {
             try validate(vector)
 
-            if let existingIndex = frameIds.firstIndex(of: frameId) {
+            if let existingIndex = positions[frameId] {
                 // Determine offset in shared buffer
                 let offset = existingIndex * dimensions
                 let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
@@ -352,6 +354,7 @@ package actor MetalVectorEngine {
                     basePtr[offset + dim] = vector[dim]
                 }
                 
+                positions[frameId] = frameIds.count
                 frameIds.append(frameId)
                 vectorCount += 1
             }
@@ -376,8 +379,9 @@ package actor MetalVectorEngine {
             
             let basePtr = vectorsBuffer.contents().assumingMemoryBound(to: Float.self)
 
+            self.positions.reserveCapacity(Int(maxNewCount))
             for (frameId, vector) in zip(frameIds, vectors) {
-                if let existingIndex = self.frameIds.firstIndex(of: frameId) {
+                if let existingIndex = self.positions[frameId] {
                     let offset = existingIndex * dimensions
                     for dim in 0..<dimensions {
                         basePtr[offset + dim] = vector[dim]
@@ -387,6 +391,7 @@ package actor MetalVectorEngine {
                     for dim in 0..<dimensions {
                         basePtr[offset + dim] = vector[dim]
                     }
+                    self.positions[frameId] = self.frameIds.count
                     self.frameIds.append(frameId)
                     vectorCount += 1
                 }
@@ -418,7 +423,7 @@ package actor MetalVectorEngine {
     package func remove(frameId: UInt64) async throws {
         await withWriteLock {
             guard vectorCount > 0 else { return }
-            guard let index = frameIds.firstIndex(of: frameId) else { return }
+            guard let index = positions[frameId] else { return }
 
             // To efficiently remove, we need to shift all subsequent vectors.
             // memmove is efficient for this.
@@ -432,7 +437,11 @@ package actor MetalVectorEngine {
                 dst.moveUpdate(from: src, count: countAfter * dimensions)
             }
             
+            positions.removeValue(forKey: frameId)
             frameIds.remove(at: index)
+            for next in index..<frameIds.count {
+                positions[frameIds[next]] = next
+            }
             vectorCount -= 1
             dirty = true
         }
@@ -839,6 +848,11 @@ package actor MetalVectorEngine {
             // Set vectorCount AFTER all structural validation succeeds.
             vectorCount = savedVectorCount
             frameIds = decodedFrameIds
+            positions.removeAll(keepingCapacity: true)
+            positions.reserveCapacity(decodedFrameIds.count)
+            for (index, id) in decodedFrameIds.enumerated() {
+                positions[id] = index
+            }
             dirty = false
         }
     }

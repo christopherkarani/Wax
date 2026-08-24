@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Measured comparison of MetalANNS 0.3.0 and Wax's legacy Metal vector engine.">
+  <title>MetalANNS 0.3.0 vs legacy Metal</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <p class="eyebrow">Wax · vector search benchmark</p>
+      <h1>MetalANNS 0.3.0 vs legacy Metal</h1>
+      <p class="lede">Warm query latency on Apple M3 Max. Same vectors, query, and top-k. Wax still ships the exact path by default; <code>.fast</code> is opt-in IVF.</p>
+      <div class="meta"><span>MetalANNS <strong>0.3.0</strong></span><span>24 Aug 2026</span><span>swift test (Debug)</span><span>M3 Max · 36 GB · macOS 26</span></div>
+    </header>
+
+    <section class="hero card" aria-label="Headline result">
+      <div>
+        <p class="label">What the data says</p>
+        <h2>Exact wins below 1k.<br>Legacy wins 10k–1M exact.<br>IVF <code>.fast</code> wins from 1k up.</h2>
+      </div>
+      <p class="hero-note">Default Wax search is still exact. Do not treat <code>.fast</code> as the production number.</p>
+    </section>
+
+    <section class="results" aria-labelledby="results-title">
+      <div class="section-heading">
+        <div><p class="label">Measured results</p><h2 id="results-title">Warm query latency</h2></div>
+        <p class="unit">lower is better · milliseconds</p>
+      </div>
+
+      <div class="table-wrap card">
+        <table>
+          <thead>
+            <tr>
+              <th>Vectors</th>
+              <th>Legacy Metal</th>
+              <th>MetalANNS exact</th>
+              <th>MetalANNS .fast</th>
+              <th>vs legacy</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>10</td>
+              <td>0.50</td>
+              <td class="win">0.13</td>
+              <td>0.13</td>
+              <td>exact 3.9×</td>
+            </tr>
+            <tr>
+              <td>1,000</td>
+              <td>1.06</td>
+              <td>0.61</td>
+              <td class="win">0.31</td>
+              <td>.fast 3.4×</td>
+            </tr>
+            <tr>
+              <td>10,000</td>
+              <td>1.34</td>
+              <td>1.45</td>
+              <td class="win">0.30</td>
+              <td>.fast 4.4×</td>
+            </tr>
+            <tr>
+              <td>100,000</td>
+              <td>2.53</td>
+              <td>5.14</td>
+              <td class="win">1.62</td>
+              <td>.fast 1.6×</td>
+            </tr>
+            <tr>
+              <td>1,000,000</td>
+              <td>7.85</td>
+              <td>30.84</td>
+              <td class="win">7.13</td>
+              <td>.fast 1.1×</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="details" aria-labelledby="method-title">
+      <div class="card detail-card"><p class="label">Method</p><h2 id="method-title">Same workload, three engines</h2><p>384-d deterministic vectors, cosine, top-24. One-shot ingest, one warmup search, then 8 timed queries (5 at 100k, 3 at 1M). Debug <code>swift test</code>, so these are wrapper+debug numbers, not MetalANNS’s own release CLI.</p><code>HybridVectorEngineBenchmark/testGPULargeNComparison</code></div>
+      <div class="card detail-card"><p class="label">Memvid</p><h2>Published, not same-machine</h2><p>Memvid FAQ: &lt;1&nbsp;ms at 1k docs, &lt;10&nbsp;ms at 100k. Wikipedia hybrid bench: 16&nbsp;ms p50 at 39k docs (includes retrieval stack, not a raw vector scan). This Wax run is vector-only, no embed, no BM25.</p></div>
+    </section>
+
+    <footer><span>Source: <a href="../Benchmarks.md">Wax benchmark docs</a></span><span>Measured locally · Debug XCTest</span></footer>
+  </main>
+</body>
+</html>
