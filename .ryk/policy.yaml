@@ -1,0 +1,152 @@
+# ryk preset: generic-agent
+# Coding DCG defaults: normal work allows; packs/hard fence block danger; no ask main loop.
+# mode strict + empty commands.allow (matrix-only) + commands.default allow.
+version: 1
+mode: strict
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: false
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+    - RYK_UNATTENDED
+    - RYK_OPENCLAW_UNATTENDED
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PASSWD*"
+    - "*PRIVATE*"
+    - "*KEY*"
+    - "AWS_*"
+    - "AZURE_*"
+    - "GITHUB_TOKEN"
+    - "GH_TOKEN"
+    - "OPENAI_API_KEY"
+    - "ANTHROPIC_API_KEY"
+    - "GOOGLE_API_KEY"
+    - "GOOGLE_APPLICATION_CREDENTIALS"
+    - "NPM_TOKEN"
+    - "PYPI_TOKEN"
+    - "SSH_AUTH_SOCK"
+
+files:
+  read:
+    allow:
+      - "./**"
+    deny:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.gcloud/**"
+      - "~/.azure/**"
+      - "~/.config/gh/**"
+      - "~/Library/Keychains/**"
+      - "./Library/Keychains/**"
+      - "~/Library/Application Support/**/Cookies*"
+      - "./Library/Application Support/**/Cookies*"
+      - "~/Library/Application Support/**/Login Data*"
+      - "./Library/Application Support/**/Login Data*"
+      - "~/Library/Application Support/Google/Chrome/**"
+      - "./Library/Application Support/Google/Chrome/**"
+      - "~/Library/Application Support/BraveSoftware/**"
+      - "./Library/Application Support/BraveSoftware/**"
+      - "~/Library/Application Support/Firefox/**"
+      - "./Library/Application Support/Firefox/**"
+      - "~/Library/Mobile Documents/**"
+      - "./Library/Mobile Documents/**"
+      - "~/.zsh_history"
+      - "~/.bash_history"
+      - "~/.zshrc"
+      - "~/.bashrc"
+      - "~/.profile"
+      - "**/id_rsa"
+      - "**/id_ed25519"
+      - "**/*credentials*"
+      - "**/*credential*"
+      - "**/*secret*"
+      - "**/*token*"
+  write:
+    allow:
+      - "./**"
+    deny:
+      # Dual patterns for robustness across hook/plugin path normalizations.
+      - "./.git/**"
+      - ".git/**"
+      - "./.ryk/**"
+      - ".ryk/**"
+      - "./.env"
+      - "./.env.*"
+      - "**/.env"
+      - "**/.env.*"
+    mode: staged
+
+commands:
+  default: allow
+  # Matrix-only Strict: empty commands.allow disables off-list refuse.
+  # Packs + hard fence block high/critical; deny patterns for catastrophes.
+  # Unmatched shell allows — normal coding work is not approval-gated.
+  deny:
+    - "rm -rf *"
+    - "find * -delete"
+    - "shred *"
+    - "curl * | sh"
+    - "wget * | bash"
+    - "sudo *"
+    - "su *"
+    - "doas *"
+    - "powershell *EncodedCommand*"
+    - "powershell *-enc*"
+    - "cat .env"
+    - "cat ~/.ssh/*"
+
+network:
+  mode: allowlist
+  default: deny
+  allow:
+    - "api.github.com"
+    - "*.github.com"
+    - "registry.npmjs.org"
+    - "pypi.org"
+  ask:
+    - "*.githubusercontent.com"
+  deny:
+    - "pastebin.com"
+    - "*.ngrok.io"
+    - "*.requestbin.net"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: ask
+  allow:
+    - "*.search_*"
+    - "*.list_*"
+    - "*.get_*"
+    - "glob"
+    - "grep"
+    - "list"
+    - "read"
+    - "todowrite"
+    - "todoread"
+    - "skill"
+    - "task"
+    - "question"
+    - "lsp"
+  deny:
+    - "*.delete_*"
+    - "*.shell"
+    - "*.run_command"
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true

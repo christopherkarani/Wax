@@ -1,0 +1,14 @@
+version: 1
+hosts:
+  - host: api.openai.com
+    sources: [pi:discover]
+  - host: openrouter.ai
+    sources: [pi:discover]
+  - host: opencode.ai
+    sources: [pi:discover, opencode:discover]
+  - host: models.opencode.ai
+    sources: [pi:discover, opencode:discover]
+  - host: api.x.ai
+    sources: [pi:discover, opencode:discover]
+  - host: auth.x.ai
+    sources: [pi:discover, opencode:discover]

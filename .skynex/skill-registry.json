@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "lastBuilt": "2026-08-24T22:38:28.262Z",
+  "skills": {
+    "diagnose-why-work-stopped": {
+      "name": "diagnose-why-work-stopped",
+      "description": "How to handle \"why did this work stop / why is this looping?\" assignments. Forensics first on the named tree, surface the exact stop-point, frame the fix as a general product rule that respects three invariants (productive work continues, only real blockers stop work, no infinite loops), and deliver a plan — no code changes — gated by board/CTO approval before child issues are created. Use whenever the issue title or body asks for forensics on a stalled, looping, or \"went too deep\" tree.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/diagnose-why-work-stopped/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/diagnose-why-work-stopped",
+      "scope": "user",
+      "hash": "ef1ca429982fe76d7b7dc7faffe7973534355b51880a14bc95cf9df85f405d67",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "paperclip": {
+      "name": "paperclip",
+      "description": "Interact with the Paperclip control plane API to manage tasks, coordinate with other agents, and follow company governance. Use when you need to check assignments, update task status, delegate work, post comments, set up or manage routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT use for the actual domain work itself (writing code, research, etc.) — only for Paperclip coordination.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/paperclip/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/paperclip",
+      "scope": "user",
+      "hash": "4234a1662c97e05e8667d268c849eafc18c22eefcd61e33361f78b69dd847d8f",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "paperclip-converting-plans-to-tasks": {
+      "name": "paperclip-converting-plans-to-tasks",
+      "description": "The Paperclip way of converting a plan into executable tasks. Use whenever you are asked to plan, scope, or break down work inside a Paperclip company. Industry-agnostic guidance on how to translate a plan into assigned issues with the right specialty, dependencies, and parallelization so Paperclip's executor can pick up the work — it does not prescribe a plan format. Pair with the `paperclip` skill, which covers the mechanics of writing the plan document and reassigning the issue.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/paperclip-converting-plans-to-tasks/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/paperclip-converting-plans-to-tasks",
+      "scope": "user",
+      "hash": "cbb93c650358bd562a21b77d41c99a5d4de62f385a157ae203c63e2fb718bcdf",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "paperclip-create-agent": {
+      "name": "paperclip-create-agent",
+      "description": "Create new agents in Paperclip with governance-aware hiring. Use when you need to inspect adapter configuration options, compare existing agent configs, draft a new agent prompt/config, and submit a hire request.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/paperclip-create-agent/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/paperclip-create-agent",
+      "scope": "user",
+      "hash": "22fd6cf94637a04df52578daf3bd0c40f6b8a198cdf3241a85646dae317098ef",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "paperclip-create-plugin": {
+      "name": "paperclip-create-plugin",
+      "description": "Create and develop external Paperclip plugins with the CLI-first workflow. Use when scaffolding a new plugin, working on a local plugin against a running Paperclip instance, or updating plugin authoring docs. Covers `paperclipai plugin init`, the local install loop via `paperclipai plugin install <path>`, worker/UI rebuild and reload semantics, and the required success checklist.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/paperclip-create-plugin/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/paperclip-create-plugin",
+      "scope": "user",
+      "hash": "fd37955ec6744b07ace88814c95217eca4d999eb013f6ea7cf786c209d72817b",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "paperclip-dev": {
+      "name": "paperclip-dev",
+      "description": "Develop and operate a local Paperclip instance — start and stop servers, pull updates from master, run builds and tests, manage worktrees, back up databases, and diagnose problems. Use whenever you need to work on the Paperclip codebase itself or keep a running instance healthy.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/paperclip-dev/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/paperclip-dev",
+      "scope": "user",
+      "hash": "35c5f1274fda559e91381ccfa2efa726d885ced65d55deb9f930217a11c8ca99",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "para-memory-files": {
+      "name": "para-memory-files",
+      "description": "File-based memory system using Tiago Forte's PARA method. Use this skill whenever you need to store, retrieve, update, or organize knowledge across sessions. Covers three memory layers: (1) Knowledge graph in PARA folders with atomic YAML facts, (2) Daily notes as raw timeline, (3) Tacit knowledge about user patterns. Also handles planning files, memory decay, weekly synthesis, and recall via qmd. Trigger on any memory operation: saving facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, or managing plans.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/para-memory-files/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/para-memory-files",
+      "scope": "user",
+      "hash": "da41f731f3b81c32d0ddf9edd4390e59387c9ffd1d774fc7dd917604e02e7600",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    },
+    "terminal-bench-loop": {
+      "name": "terminal-bench-loop",
+      "description": "Run a single Terminal-Bench problem through Paperclip in a bounded, human-in-the-loop improvement cycle until the smoke passes, the board rejects the next fix, the iteration budget is exhausted, or a real blocker is named. Each iteration runs a bounded smoke against an isolated Paperclip App worktree, captures artifacts, diagnoses the exact stop point with `/diagnose-why-work-stopped`, requests board confirmation before any product fix, then reruns against the same worktree. Use whenever an issue asks to \"run Terminal-Bench in a loop\", \"drive Terminal-Bench until it passes\", \"loop fix-git through Paperclip\", or otherwise points at a Terminal-Bench task and asks for bounded iteration with diagnosis.\n",
+      "filePath": "/Users/chriskarani/.pi/agent/skills/terminal-bench-loop/SKILL.md",
+      "baseDir": "/Users/chriskarani/.pi/agent/skills/terminal-bench-loop",
+      "scope": "user",
+      "hash": "4983f010e6c75fbf4e519feebae540875e66d8395e97444519743b75c23e535a",
+      "compactRules": [],
+      "tokensApprox": 0,
+      "exceedsBudget": false
+    }
+  },
+  "diagnostics": [
+    "pi-loader: skill path does not exist"
+  ]
+}

@@ -22,6 +22,15 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     package init(metric: VectorMetric, dimensions: Int) throws {
+        try self.init(metric: metric, dimensions: dimensions, searchMode: .exact)
+    }
+
+    package init(
+        metric: VectorMetric,
+        dimensions: Int,
+        searchMode: MetalANNS.SearchMode,
+        degree: Int? = nil
+    ) throws {
         guard dimensions > 0 else {
             throw WaxError.invalidToc(reason: "dimensions must be > 0")
         }
@@ -35,6 +44,10 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         self.dimensions = dimensions
         var configuration = IndexConfiguration.default
         configuration.metric = metric.toMetalANNSMetric()
+        configuration.searchMode = searchMode
+        if let degree {
+            configuration.degree = degree
+        }
         self.configuration = configuration
     }
 
@@ -151,6 +164,39 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         guard let index else { return [] }
         let results = try await index.search(query: preparedVector(query), topK: topK)
         return results.map { (frameId: $0.id, score: $0.score) }
+    }
+
+    package struct SearchTiming: Sendable {
+        package var prepareMs: Double
+        package var indexMs: Double
+        package var mapMs: Double
+        package var totalMs: Double
+    }
+
+    package func searchTimed(
+        vector query: [Float],
+        topK: Int
+    ) async throws -> (hits: [(frameId: UInt64, score: Float)], timing: SearchTiming) {
+        let totalStart = CFAbsoluteTimeGetCurrent()
+        try validate(query)
+        guard !frameIds.isEmpty else {
+            return ([], SearchTiming(prepareMs: 0, indexMs: 0, mapMs: 0, totalMs: 0))
+        }
+        try await ensureIndex()
+        guard let index else {
+            return ([], SearchTiming(prepareMs: 0, indexMs: 0, mapMs: 0, totalMs: 0))
+        }
+        let prepareStart = CFAbsoluteTimeGetCurrent()
+        let prepared = preparedVector(query)
+        let prepareMs = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1_000
+        let indexStart = CFAbsoluteTimeGetCurrent()
+        let results = try await index.search(query: prepared, topK: topK)
+        let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
+        let mapStart = CFAbsoluteTimeGetCurrent()
+        let hits = results.map { (frameId: $0.id, score: $0.score) }
+        let mapMs = (CFAbsoluteTimeGetCurrent() - mapStart) * 1_000
+        let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1_000
+        return (hits, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: mapMs, totalMs: totalMs))
     }
 
     package func stageForCommit(into wax: Wax) async throws {

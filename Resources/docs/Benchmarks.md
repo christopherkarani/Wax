@@ -2,6 +2,8 @@
 
 > Latest full benchmark report: [2026-03-06 Performance Results](benchmarks/2026-03-06-performance-results.md)
 >
+> Engine comparison: [MetalANNS 0.3.0 vs legacy Metal](benchmarks/metal-anns-comparison/)
+>
 > Highlights:
 > - Cold open p95: **9.2 ms**
 > - Warm hybrid with previews p95 / p99: **6.1 ms / 6.5 ms**
