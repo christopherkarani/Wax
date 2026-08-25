@@ -1,11 +1,7 @@
 /// Unified search response.
 package struct SearchResponse: Sendable, Equatable {
-    package enum Source: String, Sendable, Equatable, CaseIterable {
-        case text
-        case vector
-        case timeline
-        case structuredMemory
-    }
+    /// Single source-vocabulary type shared with `RAGContext`.
+    package typealias Source = RAGContext.Source
 
     package enum RankingTieBreakReason: String, Sendable, Equatable {
         case topResult

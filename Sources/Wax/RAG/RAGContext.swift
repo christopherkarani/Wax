@@ -119,23 +119,3 @@ public extension RAGContext.Source {
         }
     }
 }
-
-package extension RAGContext.Source {
-    static func fromSearchSource(_ source: SearchResponse.Source) -> RAGContext.Source {
-        switch source {
-        case .text:
-            return .text
-        case .vector:
-            return .vector
-        case .timeline:
-            return .timeline
-        case .structuredMemory:
-            return .structured
-        }
-    }
-
-    static func fromSearchSources(_ sources: [SearchResponse.Source]) -> [RAGContext.Source] {
-        if sources.isEmpty { return [.unknown] }
-        return sources.map(fromSearchSource)
-    }
-}
