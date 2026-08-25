@@ -78,6 +78,10 @@ actor MCPHTTPApplication {
 
     var endpoint: String { configuration.endpoint }
 
+    func boundPort() -> Int? {
+        channel?.localAddress?.port
+    }
+
     func start() async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
 
@@ -509,6 +513,20 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         if channelContext === context {
             channelContext = nil
         }
+        requestState = nil
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        requestState = nil
+        if channelContext === context {
+            channelContext = nil
+        }
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        requestState = nil
+        closeIfActive(context)
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -576,6 +594,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             context.write(wrapOutboundOut(.body(.byteBuffer(body))), promise: nil)
         }
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        closeIfActive(context)
     }
 
     private func completeRequest(
@@ -639,7 +658,10 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     }
                 }
             } catch {
-                // Let the connection drain naturally.
+                await hop(eventLoop) {
+                    self.closeActiveChannel()
+                }
+                return
             }
 
             await hop(eventLoop) {
@@ -669,7 +691,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     private func writeHeadAndFlush(statusCode: Int, headers: [String: String], version: HTTPVersion) {
-        guard let context = channelContext else { return }
+        guard let context = activeContext() else { return }
         var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
         for (name, value) in headers {
             head.headers.add(name: name, value: value)
@@ -679,15 +701,16 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     private func writeBodyChunk(_ chunk: Data) {
-        guard let context = channelContext else { return }
+        guard let context = activeContext() else { return }
         var buffer = context.channel.allocator.buffer(capacity: chunk.count)
         buffer.writeBytes(chunk)
         context.writeAndFlush(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
     }
 
     private func writeEnd() {
-        guard let context = channelContext else { return }
+        guard let context = activeContext() else { return }
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        closeIfActive(context)
     }
 
     private func writeCompleteResponse(
@@ -696,7 +719,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         version: HTTPVersion,
         bodyData: Data?
     ) {
-        guard let context = channelContext else { return }
+        guard let context = activeContext() else { return }
         var head = HTTPResponseHead(version: version, status: HTTPResponseStatus(statusCode: statusCode))
         for (name, value) in headers {
             head.headers.add(name: name, value: value)
@@ -708,6 +731,22 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         }
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        closeIfActive(context)
+    }
+
+    private func activeContext() -> ChannelHandlerContext? {
+        guard let context = channelContext, context.channel.isActive else { return nil }
+        return context
+    }
+
+    private func closeActiveChannel() {
+        guard let context = activeContext() else { return }
+        closeIfActive(context)
+    }
+
+    private func closeIfActive(_ context: ChannelHandlerContext) {
+        guard context.channel.isActive else { return }
+        context.close(promise: nil)
     }
 }
 #endif

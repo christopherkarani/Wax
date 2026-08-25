@@ -8,6 +8,7 @@ import Glibc
 
 #if MCPServer
 import MCP
+import NIOCore
 import NIOEmbedded
 import NIOHTTP1
 @testable import wax_mcp
@@ -1505,7 +1506,7 @@ func httpHandlerRejectsOversizedContentLengthBeforeReadingBody() async throws {
     try expectImmediatePayloadTooLargeResponse(on: channel)
     let trailingResponsePart = try channel.readOutbound(as: HTTPServerResponsePart.self)
     #expect(trailingResponsePart == nil)
-    _ = try channel.finish()
+    _ = try channel.finish(acceptAlreadyClosed: true)
 }
 
 @Test
@@ -1529,7 +1530,76 @@ func httpHandlerReturns404AfterRequestEndForUnknownPath() async throws {
         return
     }
     #expect(response.status == HTTPResponseStatus(statusCode: 404))
-    _ = try await channel.finish()
+    _ = try await channel.finish(acceptAlreadyClosed: true)
+}
+
+private final class HTTPChildChannelCloseProbe: ChannelOutboundHandler, @unchecked Sendable {
+    typealias OutboundIn = HTTPServerResponsePart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    private let lock = NSLock()
+    private var closed = false
+
+    var didClose: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
+    }
+
+    func close(context: ChannelHandlerContext, mode: CloseMode, promise: EventLoopPromise<Void>?) {
+        lock.lock()
+        closed = true
+        lock.unlock()
+        context.close(mode: mode, promise: promise)
+    }
+}
+
+@Test
+func httpHandlerClosesChannelAfterCompletedResponse() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 1_048),
+        serverFactory: { _, _ in
+            Issue.record("unknown path should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let probe = HTTPChildChannelCloseProbe()
+    let channel = await NIOAsyncTestingChannel(handlers: [probe, HTTPHandler(app: app)])
+    try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/not-mcp")
+
+    try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    try await channel.writeInbound(HTTPServerRequestPart.end(nil))
+
+    let responseHeadPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+    guard case .head(let response) = responseHeadPart else {
+        Issue.record("expected response head, got \(responseHeadPart)")
+        return
+    }
+    #expect(response.status == HTTPResponseStatus(statusCode: 404))
+    try await Task.sleep(for: .milliseconds(100))
+    await channel.testingEventLoop.run()
+    #expect(probe.didClose, "child channel must close after the HTTP response ends")
+    _ = try await channel.finish(acceptAlreadyClosed: true)
+}
+
+@Test
+func httpHandlerTearsDownOnChannelInactive() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 1_048),
+        serverFactory: { _, _ in
+            Issue.record("inactive teardown should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let channel = await NIOAsyncTestingChannel(handler: HTTPHandler(app: app))
+    try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/mcp")
+
+    try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    try await channel.close().get()
+    try await channel.throwIfErrorCaught()
+    _ = try await channel.finish(acceptAlreadyClosed: true)
 }
 
 @Test
@@ -1551,7 +1621,7 @@ func httpHandlerRejectsStreamingOverflowBeforeRequestEnd() async throws {
     try expectImmediatePayloadTooLargeResponse(on: channel)
     let trailingResponsePart = try channel.readOutbound(as: HTTPServerResponsePart.self)
     #expect(trailingResponsePart == nil)
-    _ = try channel.finish()
+    _ = try channel.finish(acceptAlreadyClosed: true)
 }
 
 private func expectImmediatePayloadTooLargeResponse(on channel: EmbeddedChannel) throws {
@@ -1754,6 +1824,141 @@ func httpSessionCleanupTaskStopsWithApplicationStop() async throws {
     await app.stop()
     try await startTask.value
     #expect(!(await app.hasActiveSessionCleanupTask()))
+}
+
+@Test
+func httpApplicationSurvivesOneHundredSequentialRequests() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(host: "127.0.0.1", port: 0, endpoint: "/mcp"),
+        serverFactory: { _, _ in
+            Issue.record("missing session header should not create an MCP server")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let startTask = Task { try await app.start() }
+    var port: Int?
+    for _ in 0..<200 {
+        if let bound = await app.boundPort(), bound > 0 {
+            port = bound
+            break
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let boundPort = try #require(port)
+    #expect(boundPort != 3000)
+
+    do {
+        let body = Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}".utf8)
+        for _ in 0..<100 {
+            let status = try postMCPOverTCP(
+                host: "127.0.0.1",
+                port: boundPort,
+                path: "/mcp",
+                body: body
+            )
+            #expect(status == 400)
+        }
+    } catch {
+        await app.stop()
+        _ = try? await startTask.value
+        throw error
+    }
+
+    await app.stop()
+    try await startTask.value
+}
+
+private enum POSIXHTTPClientError: Error {
+    case socket
+    case connect
+    case write
+    case read
+    case invalidStatus
+}
+
+/// Raw TCP POST. URLSession.shared.data hangs against this close-after-response
+/// server (NSURLConnectionLoader ignores timeoutInterval).
+private func postMCPOverTCP(host: String, port: Int, path: String, body: Data) throws -> Int {
+    let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+    guard fd >= 0 else { throw POSIXHTTPClientError.socket }
+    defer {
+        #if canImport(Darwin)
+        _ = Darwin.close(fd)
+        #else
+        _ = Glibc.close(fd)
+        #endif
+    }
+
+    #if canImport(Darwin)
+    var noSigPipe = 1
+    _ = setsockopt(
+        fd,
+        SOL_SOCKET,
+        SO_NOSIGPIPE,
+        &noSigPipe,
+        socklen_t(MemoryLayout.size(ofValue: noSigPipe))
+    )
+    #endif
+
+    var timeout = timeval(tv_sec: 3, tv_usec: 0)
+    _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+    var addr = sockaddr_in()
+    #if canImport(Darwin)
+    addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
+    #endif
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = in_port_t(UInt16(port).bigEndian)
+    let parsed = host.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
+    guard parsed == 1 else { throw POSIXHTTPClientError.connect }
+
+    let connected: Int32 = withUnsafePointer(to: &addr) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+            connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connected == 0 else { throw POSIXHTTPClientError.connect }
+
+    var request = Data()
+    request.append(contentsOf: Array("POST \(path) HTTP/1.1\r\n".utf8))
+    request.append(contentsOf: Array("Host: \(host):\(port)\r\n".utf8))
+    request.append(contentsOf: Array("Content-Type: application/json\r\n".utf8))
+    request.append(contentsOf: Array("Content-Length: \(body.count)\r\n".utf8))
+    request.append(contentsOf: Array("Connection: close\r\n\r\n".utf8))
+    request.append(body)
+
+    try request.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
+            throw POSIXHTTPClientError.write
+        }
+        var sent = 0
+        while sent < rawBuffer.count {
+            let n = send(fd, base + sent, rawBuffer.count - sent, 0)
+            guard n > 0 else { throw POSIXHTTPClientError.write }
+            sent += n
+        }
+    }
+
+    var collected = Data()
+    var chunk = [UInt8](repeating: 0, count: 1024)
+    while collected.count < 4096 {
+        let n = recv(fd, &chunk, chunk.count, 0)
+        if n == 0 { break }
+        guard n > 0 else { throw POSIXHTTPClientError.read }
+        collected.append(contentsOf: chunk[0..<n])
+        guard let lineEnd = collected.range(of: Data("\r\n".utf8)) else { continue }
+        let line = collected.subdata(in: collected.startIndex..<lineEnd.lowerBound)
+        guard let text = String(data: line, encoding: .utf8) else {
+            throw POSIXHTTPClientError.invalidStatus
+        }
+        let parts = text.split(separator: " ")
+        guard parts.count >= 2, let status = Int(parts[1]) else {
+            throw POSIXHTTPClientError.invalidStatus
+        }
+        return status
+    }
+    throw POSIXHTTPClientError.invalidStatus
 }
 
 @Test
