@@ -329,38 +329,26 @@ Use the project or user `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules`. Same text 
 ```text
 Wax is the shared memory layer. Chat dies; Wax does not. Skip one-line Q&A. Use on any multi-step coding, debug, or research task.
 
-Open every multi-step session:
-1. Prefer `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Or call `handoff_latest` first then `session_start` once. Keep `session_id`. Do not invent one.
-2. Call `recall` with default `scope: project` (hard-filters to resolved project; unlabeled/foreign frames excluded). Empty lane returns an explicit miss — pass `scope: global` only for cross-project reads. `recall` with `session_id` merges that session with durable memory under project scope.
+Session lifecycle:
+1. At session start call `session_open` (one-shot: fetches latest handoff + opens a session; pass `project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep the returned `session_id`. Never invent one; never put it inside `metadata`.
+2. After `/reload`, a restart, or returning to a task in the same repo, `session_open` resumes automatically; alternatively `handoff_latest` → `session_start`. Do not open duplicate sessions for the same work.
+3. Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end.
 
-Workflow rules:
-- Use `remember` to store decisions, discoveries, and short factual notes. Prefer `scope: session` (requires top-level `session_id`) or `scope: durable` (forbids `session_id`). Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits.
-- Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-- Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat.
-- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
-- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
+Reading:
+- `recall` (default `scope: project`) is the preferred read path. Empty lane is an explicit miss; pass `scope: global` only for cross-project reads. With `session_id`, recall merges that session's working memory with durable memory under project scope.
+- `search` returns raw ranked hits. Prefer `mode: "text"` for exact names and recent facts, `mode: "hybrid"` when semantic retrieval helps.
+- Long task needing all horizons at once: `compact_context`. Cross-session history with provenance: `corpus_search`.
 
-Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`.
+Writing — immediately, not at the end of a task:
+- Tactical (this task): `remember` with `scope: session` + top-level `session_id`, `memory_type: task_state`, `durability: working`. Write when you lock a plan, a path fails, you find a landmine / owner file / required gate, a milestone finishes, or before spawning a subagent / compacting / stopping. Read back with `recall` plus `session_id`.
+- Strategic (survives the session): `remember` with `scope: durable` (no `session_id`), `memory_type` ∈ decision | lesson | constraint | user_preference | fact. Write on corrections, architecture/product decisions, pitfalls that would waste the next agent's time, stable repo facts.
+- Example: `remember({ content: "What: auth uses JWT in src/auth.ts.\nWhy: stateless tokens for edge deploy.\nWhere: src/auth.ts\nLearned: refresh via middleware.", scope: "durable", memory_type: "decision" })`
+- Content format: `What: / Why: / Where: / Learned:`. No secrets, transcripts, or huge logs. (`remember` takes no `title` argument.)
+- Parent agents write to Wax before spawning children, and again from their evidence — children often have no Wax tools.
 
-Tactical (this task) — write immediately, not at the end:
-- `remember` with `scope: session`, top-level `session_id`, `memory_type: task_state`, `durability: working`
-- When: you lock a plan, a path fails (what + why), you find a landmine / owner file / required gate, a milestone finishes, or you are about to spawn a subagent / compact / stop
-- Read with `recall` plus `session_id`
+Structured memory: `entity_upsert` / `fact_assert` / `fact_retract` / `facts_query` / `entity_resolve` are for stable entities and graph-like facts, not transient debug notes.
 
-Strategic (survives this session):
-- `remember` with `scope: durable` (no `session_id`), `durability: durable`, `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact`
-- When: the user corrects you, you make an architecture or product decision, a pitfall will waste the next agent time, a standing preference appears, or a repo fact is stable
-
-Both horizons on a long task: `compact_context`.
-`recall` with `session_id` merges that session with durable long-term memory under project scope. `search` with `session_id` is session-store only.
-
-Share across agents: the parent writes before spawning. Children often have no Wax tools. The parent writes again from their evidence.
-
-Close: `session_close` (`session_id`, `content`, `project`, `pending_tasks`) or `handoff` then `session_end`.
-
-Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or huge logs. Do not manage `SESSION_STORE`, `--store-path`, or `flush`. Prefer `mode: "text"` for exact names and recent facts. Structured `entity_*` / `fact_*` tools are for stable graph facts, not debug notes.
+Boundaries: don't manage `SESSION_STORE`, `--store-path`, or `flush` — the broker owns those. If Wax is unreachable or errors, proceed without memory; do not retry-loop.
 ```
 
 </details>
