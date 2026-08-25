@@ -162,26 +162,20 @@ package enum LayeredRecall {
         package var mode: Memory.RetrievalMode
         package var topK: Int
         package var sessionID: UUID?
-        package var includeWorking: Bool
-        package var includeEpisodic: Bool
-        package var includeDurable: Bool
+        package var horizons: HorizonSet
 
         package init(
             query: String,
             mode: Memory.RetrievalMode,
             topK: Int,
             sessionID: UUID? = nil,
-            includeWorking: Bool,
-            includeEpisodic: Bool,
-            includeDurable: Bool
+            horizons: HorizonSet
         ) {
             self.query = query
             self.mode = mode
             self.topK = topK
             self.sessionID = sessionID
-            self.includeWorking = includeWorking
-            self.includeEpisodic = includeEpisodic
-            self.includeDurable = includeDurable
+            self.horizons = horizons
         }
     }
 
@@ -690,7 +684,7 @@ package enum LayeredRecall {
     ) async throws -> [Hit] {
         var hits: [Hit] = []
 
-        if request.includeWorking, let sessionID = request.sessionID, let lane = stores.workingLane(sessionID) {
+        if request.horizons.contains(.working), let sessionID = request.sessionID, let lane = stores.workingLane(sessionID) {
             let execution = try await lane.memory.searchExecution(
                 query: request.query,
                 mode: request.mode,
@@ -726,7 +720,7 @@ package enum LayeredRecall {
             }
         }
 
-        if request.includeDurable {
+        if request.horizons.contains(.durable) {
             let execution = try await stores.longTermMemory.searchExecution(
                 query: request.query,
                 mode: request.mode,
@@ -759,7 +753,7 @@ package enum LayeredRecall {
             }
         }
 
-        if request.includeEpisodic {
+        if request.horizons.contains(.episodic) {
             let manifests = try stores.endedManifests()
             let scopedManifests = manifests
                 .filter { manifest in

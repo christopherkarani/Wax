@@ -147,10 +147,54 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected memory_search")
             return
         }
-        #expect(payload.includeWorking == false)
-        #expect(payload.includeEpisodic == false)
-        #expect(payload.includeDurable == true)
+        #expect(payload.horizons == [.durable])
         #expect(payload.mode == .textOnly)
+    }
+
+    @Test
+    func memorySearchDefaultsToAllLanes() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "memory_search",
+            arguments: ["query": .string("needle")]
+        )
+        guard case .memorySearch(let payload) = decoded else {
+            Issue.record("expected memory_search")
+            return
+        }
+        #expect(payload.horizons == HorizonSet.all)
+    }
+
+    @Test
+    func memorySearchMapsIndividualLaneFlags() throws {
+        let workingOnly = try BrokerCommand.decode(
+            command: "memory_search",
+            arguments: ["query": .string("q"), "include_episodic": .bool(false), "include_durable": .bool(false)]
+        )
+        guard case .memorySearch(let payload) = workingOnly else {
+            Issue.record("expected memory_search")
+            return
+        }
+        #expect(payload.horizons == [.working])
+    }
+
+    @Test
+    func memorySearchRejectsEmptyLaneSelection() throws {
+        var thrownMessage: String?
+        do {
+            _ = try BrokerCommand.decode(
+                command: "memory_search",
+                arguments: [
+                    "query": .string("needle"),
+                    "include_working": .bool(false),
+                    "include_episodic": .bool(false),
+                    "include_durable": .bool(false),
+                ]
+            )
+        } catch let error as BrokerValidationError {
+            thrownMessage = error.errorDescription ?? String(describing: error)
+        }
+        let message = try #require(thrownMessage, "empty lane selection must be rejected at decode")
+        #expect(message.lowercased().contains("lane"))
     }
 
     @Test
