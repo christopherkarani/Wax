@@ -1539,6 +1539,8 @@ private final class HTTPChildChannelCloseProbe: ChannelOutboundHandler, @uncheck
 
     private let lock = NSLock()
     private var closed = false
+    private var holdEndWrites = false
+    private var heldEnd: (context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?)?
 
     var didClose: Bool {
         lock.lock()
@@ -1546,11 +1548,52 @@ private final class HTTPChildChannelCloseProbe: ChannelOutboundHandler, @uncheck
         return closed
     }
 
+    func holdEndUntilReleased() {
+        lock.lock()
+        holdEndWrites = true
+        lock.unlock()
+    }
+
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        let part = unwrapOutboundIn(data)
+        if case .end = part {
+            lock.lock()
+            let shouldHold = holdEndWrites && heldEnd == nil
+            if shouldHold {
+                heldEnd = (context, data, promise)
+                lock.unlock()
+                return
+            }
+            lock.unlock()
+        }
+        context.write(data, promise: promise)
+    }
+
+    func releaseHeldEnd() {
+        lock.lock()
+        let held = heldEnd
+        heldEnd = nil
+        holdEndWrites = false
+        lock.unlock()
+        guard let held else { return }
+        held.context.write(held.data, promise: held.promise)
+        held.context.flush()
+    }
+
     func close(context: ChannelHandlerContext, mode: CloseMode, promise: EventLoopPromise<Void>?) {
         lock.lock()
         closed = true
         lock.unlock()
         context.close(mode: mode, promise: promise)
+    }
+
+    func pollDidClose(on loop: NIOAsyncTestingEventLoop, iterations: Int = 10) async -> Bool {
+        if didClose { return true }
+        for _ in 0..<iterations {
+            await loop.run()
+            if didClose { return true }
+        }
+        return didClose
     }
 }
 
@@ -1577,9 +1620,71 @@ func httpHandlerClosesChannelAfterCompletedResponse() async throws {
         return
     }
     #expect(response.status == HTTPResponseStatus(statusCode: 404))
-    try await Task.sleep(for: .milliseconds(100))
+    let nextPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+    if case .body = nextPart {
+        let endPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+        guard case .end = endPart else {
+            Issue.record("expected response end after body, got \(endPart)")
+            return
+        }
+    } else {
+        guard case .end = nextPart else {
+            Issue.record("expected response end, got \(nextPart)")
+            return
+        }
+    }
+    #expect(
+        await probe.pollDidClose(on: channel.testingEventLoop),
+        "child channel must close after the HTTP response ends"
+    )
+    _ = try await channel.finish(acceptAlreadyClosed: true)
+}
+
+@Test
+func httpHandlerClosesChannelOnlyAfterEndFlushCompletes() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 1_048),
+        serverFactory: { _, _ in
+            Issue.record("unknown path should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let probe = HTTPChildChannelCloseProbe()
+    probe.holdEndUntilReleased()
+    let channel = await NIOAsyncTestingChannel(handlers: [probe, HTTPHandler(app: app)])
+    try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/not-mcp")
+
+    try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    try await channel.writeInbound(HTTPServerRequestPart.end(nil))
+
+    let responseHeadPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+    guard case .head(let response) = responseHeadPart else {
+        Issue.record("expected response head, got \(responseHeadPart)")
+        return
+    }
+    #expect(response.status == HTTPResponseStatus(statusCode: 404))
+    if let maybeBody = try await channel.readOutbound(as: HTTPServerResponsePart.self) {
+        guard case .body = maybeBody else {
+            Issue.record("expected optional body before held .end, got \(maybeBody)")
+            return
+        }
+    }
     await channel.testingEventLoop.run()
-    #expect(probe.didClose, "child channel must close after the HTTP response ends")
+    #expect(!probe.didClose, "close must wait until writeAndFlush(.end) completes")
+
+    try await channel.testingEventLoop.executeInContext {
+        probe.releaseHeldEnd()
+    }
+    let endPart = try await channel.waitForOutboundWrite(as: HTTPServerResponsePart.self)
+    guard case .end = endPart else {
+        Issue.record("expected response end after releasing held write, got \(endPart)")
+        return
+    }
+    #expect(
+        await probe.pollDidClose(on: channel.testingEventLoop),
+        "child channel must close after the HTTP .end flush completes"
+    )
     _ = try await channel.finish(acceptAlreadyClosed: true)
 }
 
@@ -1597,8 +1702,38 @@ func httpHandlerTearsDownOnChannelInactive() async throws {
     let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/mcp")
 
     try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    let outboundBeforeClose = try await channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(outboundBeforeClose == nil)
     try await channel.close().get()
     try await channel.throwIfErrorCaught()
+    let outboundAfterClose = try await channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(outboundAfterClose == nil, "inactive teardown must not emit HTTP response parts")
+    try await channel.writeInbound(HTTPServerRequestPart.end(nil))
+    let outboundAfterLateEnd = try await channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(outboundAfterLateEnd == nil, "inbound .end after inactive must be ignored")
+    _ = try await channel.finish(acceptAlreadyClosed: true)
+}
+
+@Test
+func httpHandlerTearsDownOnErrorCaught() async throws {
+    enum ProbeError: Error { case boom }
+    let app = MCPHTTPApplication(
+        configuration: .init(maxRequestBodyBytes: 1_048),
+        serverFactory: { _, _ in
+            Issue.record("error teardown should not reach MCP server creation")
+            throw MCP.MCPError.invalidRequest("unexpected server creation")
+        }
+    )
+    let channel = await NIOAsyncTestingChannel(handler: HTTPHandler(app: app))
+    try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
+    let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/mcp")
+
+    try await channel.writeInbound(HTTPServerRequestPart.head(head))
+    channel.pipeline.fireErrorCaught(ProbeError.boom)
+    await channel.testingEventLoop.run()
+    try await channel.writeInbound(HTTPServerRequestPart.end(nil))
+    let outboundAfterError = try await channel.readOutbound(as: HTTPServerResponsePart.self)
+    #expect(outboundAfterError == nil, "errorCaught must drop in-flight request state")
     _ = try await channel.finish(acceptAlreadyClosed: true)
 }
 
@@ -1837,17 +1972,17 @@ func httpApplicationSurvivesOneHundredSequentialRequests() async throws {
     )
     let startTask = Task { try await app.start() }
     var port: Int?
-    for _ in 0..<200 {
-        if let bound = await app.boundPort(), bound > 0 {
-            port = bound
-            break
-        }
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    let boundPort = try #require(port)
-    #expect(boundPort != 3000)
-
     do {
+        for _ in 0..<200 {
+            if let bound = await app.boundPort(), bound > 0 {
+                port = bound
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let boundPort = try #require(port)
+        #expect(boundPort != 3000)
+
         let body = Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}".utf8)
         for _ in 0..<100 {
             let status = try postMCPOverTCP(
@@ -1858,14 +1993,13 @@ func httpApplicationSurvivesOneHundredSequentialRequests() async throws {
             )
             #expect(status == 400)
         }
+        await app.stop()
+        try await startTask.value
     } catch {
         await app.stop()
         _ = try? await startTask.value
         throw error
     }
-
-    await app.stop()
-    try await startTask.value
 }
 
 private enum POSIXHTTPClientError: Error {

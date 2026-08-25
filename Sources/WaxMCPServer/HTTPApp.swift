@@ -526,6 +526,9 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         requestState = nil
+        if channelContext === context {
+            channelContext = nil
+        }
         closeIfActive(context)
     }
 
@@ -593,8 +596,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             body.writeBytes(bodyData)
             context.write(wrapOutboundOut(.body(.byteBuffer(body))), promise: nil)
         }
-        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
-        closeIfActive(context)
+        flushEndThenClose(context)
     }
 
     private func completeRequest(
@@ -709,8 +711,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private func writeEnd() {
         guard let context = activeContext() else { return }
-        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
-        closeIfActive(context)
+        flushEndThenClose(context)
     }
 
     private func writeCompleteResponse(
@@ -730,8 +731,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             buffer.writeBytes(body)
             context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         }
-        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
-        closeIfActive(context)
+        flushEndThenClose(context)
     }
 
     private func activeContext() -> ChannelHandlerContext? {
@@ -747,6 +747,13 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     private func closeIfActive(_ context: ChannelHandlerContext) {
         guard context.channel.isActive else { return }
         context.close(promise: nil)
+    }
+
+    private func flushEndThenClose(_ context: ChannelHandlerContext) {
+        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
+            guard context.channel.isActive else { return }
+            context.close(promise: nil)
+        }
     }
 }
 #endif
