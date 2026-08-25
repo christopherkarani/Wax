@@ -101,6 +101,7 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let wax = try await Wax.create(at: url)
+        let engineStore = UnifiedSearchEngineStore()
         let text = try await wax.enableTextSearch()
         let vector = searchMode.usesVector
             ? try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
@@ -155,7 +156,8 @@ final class ProductionReadinessStabilityTests: XCTestCase {
                         mode: searchMode.searchMode,
                         topK: 8,
                         nowMs: Int64(Date().timeIntervalSince1970 * 1000)
-                    )
+                    ),
+                    engineStore: engineStore
                 )
                 vectorSourceHits += response.results.filter { $0.sources.contains(.vector) }.count
                 let elapsed = clock.now - start

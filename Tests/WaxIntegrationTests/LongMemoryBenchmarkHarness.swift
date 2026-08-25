@@ -240,6 +240,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let wax = try await Wax.create(at: url)
+        let engineStore = UnifiedSearchEngineStore()
         let text = try await wax.enableTextSearch()
 
         let embedder: DeterministicEmbedder?
@@ -324,7 +325,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 enableRankingDiagnostics: config.enableDiagnostics,
                 rankingDiagnosticsTopK: 10
             )
-            let response = try await wax.searchWithEngineStore(request)
+            let response = try await wax.searchWithEngineStore(request, engineStore: engineStore)
             let rankedDocIDs = try await resolveDocIDs(
                 from: response.results,
                 wax: wax,
@@ -334,7 +335,10 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             if config.enableDiagnostics, config.topK < 10 {
                 var diagnosticRequest = request
                 diagnosticRequest.topK = 10
-                rankingResultsForDiagnostics = try await wax.searchWithEngineStore(diagnosticRequest).results
+                rankingResultsForDiagnostics = try await wax.searchWithEngineStore(
+                    diagnosticRequest,
+                    engineStore: engineStore
+                ).results
             } else {
                 rankingResultsForDiagnostics = response.results
             }
@@ -381,6 +385,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                     embedding: embedding,
                     vectorEnginePreference: .cpuOnly,
                     wax: wax,
+                    engineStore: engineStore,
                     config: ragConfig
                 )
                 let selected = Self.bestAnswerItem(query: searchQuery, items: context.items)
@@ -443,6 +448,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         let latency = try await latencySummary(
             fixture: fixture,
             wax: wax,
+            engineStore: engineStore,
             embedder: embedder,
             topK: config.topK,
             includeVectors: config.includeVectors,
@@ -722,6 +728,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
     private func latencySummary(
         fixture: LongMemoryFixture,
         wax: Wax,
+        engineStore: UnifiedSearchEngineStore,
         embedder: DeterministicEmbedder?,
         topK: Int,
         includeVectors: Bool,
@@ -748,7 +755,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
                 topK: topK,
                 nowMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
-            _ = try await wax.searchWithEngineStore(request)
+            _ = try await wax.searchWithEngineStore(request, engineStore: engineStore)
         }
 
         return LongMemoryLatencySummary(

@@ -148,6 +148,72 @@ struct EngineStoreLifecycleTests {
         }
     }
 
+    /// Session search with text/structured lanes off must not deserialize FTS
+    /// for structured fusion (or hybrid text) when the request carries a query.
+    /// A later optional-chaining fallthrough to a store would restore that leak.
+    @Test func session_disabledTextAndStructuredLanesSkipFTSEvenWithQuery() async throws {
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            do {
+                var writerConfig = WaxSession.Config()
+                writerConfig.enableTextSearch = true
+                writerConfig.enableStructuredMemory = true
+                writerConfig.enableVectorSearch = true
+                writerConfig.vectorDimensions = 2
+                writerConfig.vectorEnginePreference = .cpuOnly
+                let writer = try await wax.openSession(.readWrite(.fail), config: writerConfig)
+                let frameId = try await writer.put(
+                    Data("alpha".utf8),
+                    embedding: [1.0, 0.0],
+                    options: FrameMetaSubset(searchText: "alpha")
+                )
+                try await writer.indexText(frameId: frameId, text: "alpha")
+                try await writer.commit()
+                await writer.close()
+            }
+
+            var readerConfig = WaxSession.Config()
+            readerConfig.enableTextSearch = false
+            readerConfig.enableStructuredMemory = false
+            readerConfig.enableVectorSearch = true
+            readerConfig.vectorDimensions = 2
+            readerConfig.vectorEnginePreference = .cpuOnly
+            let session = try await wax.openSession(.readOnly, config: readerConfig)
+
+            let textLoads = Counter()
+            let vectorLoads = Counter()
+            let sideStore = UnifiedSearchEngineStore(
+                textEngineFactory: {
+                    await textLoads.increment()
+                    return try FTS5SearchEngine.inMemory()
+                },
+                vectorEngineFactory: { _, _ in
+                    await vectorLoads.increment()
+                    return CountingVectorEngine(dimensions: 2)
+                }
+            )
+
+            let response = try await session.search(
+                SearchRequest(
+                    query: "alpha",
+                    embedding: [1.0, 0.0],
+                    mode: .hybrid(alpha: 0.5),
+                    topK: 5,
+                    nowMs: 1_000
+                )
+            )
+            let sources = Set(response.results.flatMap(\.sources))
+            #expect(!sources.contains(.text))
+            #expect(!sources.contains(.structured))
+            #expect(await textLoads.value == 0)
+            #expect(await vectorLoads.value == 0)
+            #expect(await sideStore.cachedEngineCount == 0)
+
+            await session.close()
+            try await wax.close()
+        }
+    }
+
     private static func eventuallyNil(_ object: AnyObject?, timeout: Duration = .seconds(2)) -> Bool {
         if object == nil { return true }
         let clock = ContinuousClock()
