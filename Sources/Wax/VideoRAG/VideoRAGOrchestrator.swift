@@ -34,11 +34,6 @@ package actor VideoRAGOrchestrator {
         }
     }
 
-    private enum FrameKind {
-        static let root = VideoFrameKind.root.rawValue
-        static let segment = VideoFrameKind.segment.rawValue
-    }
-
     private enum MetaKey {
         static let source = VideoMetadataKey.source.rawValue
         static let sourceID = VideoMetadataKey.sourceID.rawValue
@@ -308,7 +303,7 @@ package actor VideoRAGOrchestrator {
             guard let meta = metaById[result.frameId] else { continue }
             let rootId = meta.parentId ?? meta.id
             guard let rootMeta = rootMetaById[rootId] else { continue }
-            if rootMeta.kind != FrameKind.root { continue }
+            if FrameKind(rawKind: rootMeta.kind) != .video(.root) { continue }
             if rootMeta.status == .deleted { continue }
             if rootMeta.supersededBy != nil { continue }
 
@@ -325,7 +320,7 @@ package actor VideoRAGOrchestrator {
             }
 
             // Timeline fallback can return roots; only record segment hits for segment-kind frames.
-            if meta.kind == FrameKind.segment {
+            if FrameKind(rawKind: meta.kind) == .video(.segment) {
                 let entries = meta.metadata?.entries ?? [:]
                 let idx = Int(entries[MetaKey.segmentIndex].flatMap(Int.init) ?? -1)
                 let startMs = entries[MetaKey.segmentStartMs].flatMap(Int64.init)
@@ -591,7 +586,7 @@ package actor VideoRAGOrchestrator {
             isLocal: true,
             fileURL: file.url
         )
-        let rootOptions = FrameMetaSubset(kind: FrameKind.root, metadata: rootMeta)
+        let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
 
         // Segment frames (embedded + optional transcript payload)
@@ -656,7 +651,7 @@ package actor VideoRAGOrchestrator {
             isLocal: record.isLocal,
             fileURL: record.localFileURL
         )
-        let rootOptions = FrameMetaSubset(kind: FrameKind.root, metadata: rootMeta)
+        let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
 
         if record.isLocal {
@@ -724,7 +719,7 @@ package actor VideoRAGOrchestrator {
             meta.entries[MetaKey.segmentEndMs] = String(segment.endMs)
             meta.entries[MetaKey.segmentMidMs] = String(segment.midMs)
 
-            let subset = FrameMetaSubset(kind: FrameKind.segment, role: .blob, parentId: rootId, metadata: meta)
+            let subset = FrameMetaSubset(kind: VideoFrameKind.segment.rawValue, role: .blob, parentId: rootId, metadata: meta)
             options.append(subset)
         }
 
@@ -794,7 +789,7 @@ package actor VideoRAGOrchestrator {
 
         var supersededRoots: Set<UInt64> = []
         supersededRoots.reserveCapacity(64)
-        for meta in metas where meta.kind == FrameKind.root {
+        for meta in metas where FrameKind(rawKind: meta.kind) == .video(.root) {
             if meta.supersededBy != nil || meta.status == .deleted {
                 supersededRoots.insert(meta.id)
             }
@@ -809,7 +804,8 @@ package actor VideoRAGOrchestrator {
                 continue
             }
             guard let kind = meta.kind else { continue }
-            if kind != FrameKind.root && kind != FrameKind.segment { continue }
+            let frameKind = FrameKind(rawKind: kind)
+            if frameKind != .video(.root) && frameKind != .video(.segment) { continue }
             guard let entries = meta.metadata?.entries else { continue }
             guard let source = entries[MetaKey.source],
                   let sourceID = entries[MetaKey.sourceID]
@@ -818,7 +814,7 @@ package actor VideoRAGOrchestrator {
             let src: VideoID.Source = (source == "photos") ? .photos : .file
             let vid = VideoID(source: src, id: sourceID)
 
-            if kind == FrameKind.root {
+            if frameKind == .video(.root) {
                 guard meta.supersededBy == nil else {
                     retiredVectorIds.insert(meta.id)
                     continue
