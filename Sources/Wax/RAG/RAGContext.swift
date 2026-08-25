@@ -63,18 +63,18 @@ public struct RAGContext: Sendable, Equatable {
     /// to detect that degradation instead of assuming it from scores.
     ///
     /// For logs, MCP, or docs that need the historical string form (`"text"`,
-    /// `"vector"`, `"hybrid(alpha=0.500)"`), use ``RetrievalMode/diagnosticsSummary``.
+    /// `"vector"`, `"hybrid(alpha=0.500)"`), use ``SearchMode/diagnosticsSummary``.
     public struct Diagnostics: Sendable, Equatable {
         /// The retrieval mode requested by the caller.
-        public var requestedMode: RetrievalMode
-        /// The retrieval mode actually executed (e.g. ``RetrievalMode/textOnly`` when the vector lane was unavailable).
-        public var effectiveMode: RetrievalMode
+        public var requestedMode: SearchMode
+        /// The retrieval mode actually executed (e.g. ``SearchMode/textOnly`` when the vector lane was unavailable).
+        public var effectiveMode: SearchMode
         /// What happened to the query embedding for this search.
         public var queryEmbeddingState: QueryEmbeddingState
 
         public init(
-            requestedMode: RetrievalMode,
-            effectiveMode: RetrievalMode,
+            requestedMode: SearchMode,
+            effectiveMode: SearchMode,
             queryEmbeddingState: QueryEmbeddingState
         ) {
             self.requestedMode = requestedMode
@@ -117,25 +117,5 @@ public extension RAGContext.Source {
         case .unknown:
             return "unknown"
         }
-    }
-}
-
-package extension RAGContext.Source {
-    static func fromSearchSource(_ source: SearchResponse.Source) -> RAGContext.Source {
-        switch source {
-        case .text:
-            return .text
-        case .vector:
-            return .vector
-        case .timeline:
-            return .timeline
-        case .structuredMemory:
-            return .structured
-        }
-    }
-
-    static func fromSearchSources(_ sources: [SearchResponse.Source]) -> [RAGContext.Source] {
-        if sources.isEmpty { return [.unknown] }
-        return sources.map(fromSearchSource)
     }
 }
