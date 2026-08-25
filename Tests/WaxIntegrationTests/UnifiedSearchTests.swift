@@ -207,7 +207,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         )
 
         #expect(latestResponse.results.map(\.frameId) == [evidenceFrame])
-        #expect(latestResponse.results.first?.sources == [.structuredMemory])
+        #expect(latestResponse.results.first?.sources == [.structured])
 
         let outOfFrameRangeResponse = try await session.search(
             SearchRequest(
@@ -286,7 +286,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         )
 
         #expect(response.results.map(\.frameId) == [evidenceFrame])
-        #expect(response.results.first?.sources == [.structuredMemory])
+        #expect(response.results.first?.sources == [.structured])
 
         await session.close()
         try await wax.close()
@@ -1569,7 +1569,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let timelineResult = try #require(byID[timelineOnly])
         #expect(textResult.sources.contains(.text))
         #expect(vectorResult.sources.contains(.vector))
-        #expect(evidenceResult.sources.contains(.structuredMemory))
+        #expect(evidenceResult.sources.contains(.structured))
         #expect(timelineResult.sources.contains(.timeline))
         #expect(timelineResult.sources.contains(.text) == false)
 
@@ -1579,7 +1579,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         #expect(laneSources.contains(.text))
         #expect(laneSources.contains(.vector))
         #expect(laneSources.contains(.timeline))
-        #expect(laneSources.contains(.structuredMemory))
+        #expect(laneSources.contains(.structured))
 
         for (previous, next) in zip(response.results, response.results.dropFirst()) {
             #expect(previous.score >= next.score)

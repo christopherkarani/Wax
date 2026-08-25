@@ -4,9 +4,9 @@ On-device memory for agents and apps: persist text (and experimental photo/video
 
 ## Language
 
-**RetrievalMode**:
-How a query is retrieved from Memory: text-only, vector-only, or hybrid. Hybrid may fall back to text; vector-only must not.
-_Avoid_: EmbeddingPolicy, QueryEmbeddingPolicy, DirectSearchMode, SearchMode (as the name hosts use)
+**SearchMode**:
+The canonical retrieval-mode type: text-only, vector-only, or hybrid(alpha). Hybrid may fall back to text; vector-only must not. Hosts keep writing `Memory.RetrievalMode`, a public alias of this type.
+_Avoid_: EmbeddingPolicy, QueryEmbeddingPolicy, DirectSearchMode, a second RetrievalMode type twin (the alias must stay an alias)
 
 **Ranking**:
 Plans the text-lane query (AND first, then OR fallback) and orders hits. Owns the published score.

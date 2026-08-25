@@ -78,7 +78,7 @@ for item in results.items {
 
 // Which lanes actually ran?
 if let diagnostics = results.diagnostics {
-    print(diagnostics.effectiveMode)          // RetrievalMode; prints "text", "vector", or "hybrid(alpha=…)"
+    print(diagnostics.effectiveMode)          // Memory.RetrievalMode (alias of SearchMode); prints "text", "vector", or "hybrid(alpha=…)"
     print(diagnostics.queryEmbeddingState)    // e.g. .available or .noEmbedder
 }
 ```
