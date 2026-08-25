@@ -602,45 +602,28 @@ extension AgentBrokerService {
         let query = command.query
         let topK = command.topK
         let mode = command.mode
-        let requestedWorking = command.includeWorking
-        let requestedEpisodic = command.includeEpisodic
-        let requestedDurable = command.includeDurable
+        let requested = command.horizons
+        let sessionLanes = requested.intersection([.working, .episodic])
         let policy: SessionResolutionPolicy
-        if requestedWorking || requestedEpisodic {
-            policy = requestedDurable ? .durableOnlyWhenAmbiguous : .requireUnambiguousWorking
-        } else {
+        if sessionLanes.isEmpty {
             policy = .unscoped
+        } else {
+            policy = requested.contains(.durable) ? .durableOnlyWhenAmbiguous : .requireUnambiguousWorking
         }
         let scope = try resolveSessionScope(command.sessionID, policy: policy)
         let sessionID: UUID?
-        let includeWorking: Bool
-        let includeEpisodic: Bool
-        let includeDurable: Bool
-        switch scope {
-        case .session(let resolved):
+        if case .session(let resolved) = scope {
             sessionID = resolved
-            includeWorking = requestedWorking
-            includeEpisodic = requestedEpisodic
-            includeDurable = requestedDurable
-        case .durableOnly:
+        } else {
             sessionID = nil
-            includeWorking = false
-            includeEpisodic = false
-            includeDurable = true
-        case .none:
-            sessionID = nil
-            includeWorking = false
-            includeEpisodic = requestedEpisodic
-            includeDurable = requestedDurable
         }
+        let horizons = Self.scopedHorizons(scope: scope, requested: requested)
         let hits = try await layeredMemorySearch(
             query: query,
             mode: mode,
             topK: topK,
             sessionID: sessionID,
-            includeWorking: includeWorking,
-            includeEpisodic: includeEpisodic,
-            includeDurable: includeDurable
+            horizons: horizons
         )
 
         if let sessionID {
@@ -1823,9 +1806,7 @@ extension AgentBrokerService {
         mode: Memory.RetrievalMode,
         topK: Int,
         sessionID: UUID?,
-        includeWorking: Bool,
-        includeEpisodic: Bool,
-        includeDurable: Bool
+        horizons: HorizonSet
     ) async throws -> [LayeredMemoryHit] {
         try await LayeredRecall.search(
             request: LayeredRecall.SearchRequest(
@@ -1833,9 +1814,7 @@ extension AgentBrokerService {
                 mode: mode,
                 topK: topK,
                 sessionID: sessionID,
-                includeWorking: includeWorking,
-                includeEpisodic: includeEpisodic,
-                includeDurable: includeDurable
+                horizons: horizons
             ),
             stores: layeredRecallStores()
         )
@@ -2495,6 +2474,19 @@ extension AgentBrokerService {
         case session(UUID)
         case durableOnly
         case none
+    }
+
+    /// Lane visibility after session-scope resolution: a resolved session keeps
+    /// the request, an unscoped search drops working, ambiguity keeps durable only.
+    static func scopedHorizons(scope: ResolvedSessionScope, requested: HorizonSet) -> HorizonSet {
+        switch scope {
+        case .session:
+            return requested
+        case .durableOnly:
+            return .durable
+        case .none:
+            return requested.subtracting(.working)
+        }
     }
 
     func resolveSessionScope(

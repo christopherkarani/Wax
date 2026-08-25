@@ -81,9 +81,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var mode: RetrievalMode
         package var topK: Int
         package var sessionID: UUID?
-        package var includeWorking: Bool
-        package var includeEpisodic: Bool
-        package var includeDurable: Bool
+        package var horizons: HorizonSet
     }
 
     package struct SessionStart: Sendable, Equatable {
@@ -418,14 +416,27 @@ extension BrokerCommand.MemorySearch {
             modeRaw: modeRaw,
             alpha: try args.optionalDouble("alpha")
         )
+        var horizons = HorizonSet()
+        if try args.optionalBool("include_working") ?? true {
+            horizons.insert(.working)
+        }
+        if try args.optionalBool("include_episodic") ?? true {
+            horizons.insert(.episodic)
+        }
+        if try args.optionalBool("include_durable") ?? true {
+            horizons.insert(.durable)
+        }
+        guard !horizons.isEmpty else {
+            throw BrokerValidationError.invalid(
+                "at least one horizon lane must stay enabled; include_working, include_episodic and include_durable are all false"
+            )
+        }
         return Self(
             query: query,
             mode: mode,
             topK: topK,
             sessionID: try BrokerCommand.parseOptionalSessionID(args),
-            includeWorking: try args.optionalBool("include_working") ?? true,
-            includeEpisodic: try args.optionalBool("include_episodic") ?? true,
-            includeDurable: try args.optionalBool("include_durable") ?? true
+            horizons: horizons
         )
     }
 }
