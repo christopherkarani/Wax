@@ -83,6 +83,7 @@ enum WaxMCPTools {
             if let oversize = contentLimitError(name: params.name, arguments: forwarded) {
                 return oversize
             }
+            omitBlankSessionIDIfNeeded(arguments: &forwarded)
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
@@ -182,6 +183,13 @@ private extension WaxMCPTools {
             throw ToolValidationError.invalid("verbosity must be one of: compact, verbose")
         }
         return trimmed
+    }
+
+    static func omitBlankSessionIDIfNeeded(arguments: inout [String: Value]) {
+        guard case .string(let raw)? = arguments["session_id"] else { return }
+        if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments.removeValue(forKey: "session_id")
+        }
     }
 
     static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {

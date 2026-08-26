@@ -957,6 +957,32 @@ func handleRejectsInvalidSessionIDUUID() async throws {
     }
 }
 
+@Test(arguments: [Optional<String>.none, Optional(""), Optional("   ")])
+func handleTreatsBlankSessionIDAsOmittedUnscopedPath(rawSessionID: String?) async throws {
+    try await withIsolatedBroker { service, _ in
+        let marker = "BLANK_SESSION_ID_UNSCOPED_\(UUID().uuidString)"
+        var rememberArgs: [String: AgentBrokerValue] = ["content": .string(marker)]
+        var searchArgs: [String: AgentBrokerValue] = [
+            "query": .string(marker),
+            "mode": .string("text"),
+            "topK": .int(10),
+        ]
+        if let rawSessionID {
+            rememberArgs["session_id"] = .string(rawSessionID)
+            searchArgs["session_id"] = .string(rawSessionID)
+        }
+
+        let remembered = await service.handle(.init(command: "remember", arguments: rememberArgs))
+        #expect(remembered.ok == true)
+
+        let searched = await service.handle(.init(command: "search", arguments: searchArgs))
+        #expect(searched.ok == true)
+        #expect((searched.error ?? "").contains("session_id must be a valid UUID") == false)
+        let texts = resultTexts(try requireObject(searched.payload))
+        #expect(texts.contains { $0.contains(marker) })
+    }
+}
+
 @Test
 func sessionStartDoesNotImplicitlyScopeUnscopedWrites() async throws {
     try await withIsolatedBroker { service, _ in
