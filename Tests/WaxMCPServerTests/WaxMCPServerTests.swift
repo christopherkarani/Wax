@@ -3544,6 +3544,22 @@ func invalidSessionIDIsRejected() async throws {
     }
 }
 
+@Test(arguments: [Optional<String>.none, Optional(""), Optional("   ")])
+func blankSessionIDIsTreatedAsOmittedOnMCPSearch(rawSessionID: String?) async throws {
+    try await withAgentBrokerService { service, _ in
+        var arguments: [String: Value] = ["query": "x", "mode": "text"]
+        if let rawSessionID {
+            arguments["session_id"] = .string(rawSessionID)
+        }
+        let result = await WaxMCPTools.handleCall(
+            params: .init(name: "search", arguments: arguments),
+            broker: service
+        )
+        #expect(result.isError != true)
+        #expect(firstText(in: result).contains("session_id must be a valid UUID") == false)
+    }
+}
+
 @Test
 func recallJSONResourceIncludesStructuredResults() async throws {
     try await withAgentBrokerService { service, _ in

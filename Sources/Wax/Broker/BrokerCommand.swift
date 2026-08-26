@@ -718,7 +718,7 @@ extension BrokerCommand.CorpusSearch {
 
 extension BrokerCommand {
     package static func parseOptionalSessionID(_ args: BrokerArguments) throws -> UUID? {
-        guard let raw = try args.optionalString("session_id") else { return nil }
+        guard let raw = normalizedOrNil(try args.optionalString("session_id")) else { return nil }
         guard let value = UUID(uuidString: raw) else {
             throw BrokerValidationError.invalid("session_id must be a valid UUID")
         }
