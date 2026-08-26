@@ -496,6 +496,56 @@ struct BrokerCommandDecodeTests {
         }
     }
 
+    @Test(arguments: [Optional<String>.none, Optional(""), Optional("   ")])
+    func omittedOrBlankSessionIDDecodesAsUnscoped(rawSessionID: String?) throws {
+        var searchArgs: [String: AgentBrokerValue] = [
+            "query": .string("needle"),
+            "mode": .string("text"),
+        ]
+        var recallArgs: [String: AgentBrokerValue] = ["query": .string("needle")]
+        var rememberArgs: [String: AgentBrokerValue] = ["content": .string("durable note")]
+        if let rawSessionID {
+            searchArgs["session_id"] = .string(rawSessionID)
+            recallArgs["session_id"] = .string(rawSessionID)
+            rememberArgs["session_id"] = .string(rawSessionID)
+        }
+
+        let search = try BrokerCommand.decode(command: "search", arguments: searchArgs)
+        guard case .search(let searchPayload) = search else {
+            Issue.record("expected search")
+            return
+        }
+        #expect(searchPayload.filters.sessionId == nil)
+
+        let recall = try BrokerCommand.decode(command: "recall", arguments: recallArgs)
+        guard case .recall(let recallPayload) = recall else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(recallPayload.filters.sessionId == nil)
+
+        let remember = try BrokerCommand.decode(command: "remember", arguments: rememberArgs)
+        guard case .remember(let rememberPayload) = remember else {
+            Issue.record("expected remember")
+            return
+        }
+        #expect(rememberPayload.sessionID == nil)
+    }
+
+    @Test
+    func invalidNonEmptySessionIDStillRejectedAtDecode() {
+        #expect(throws: BrokerValidationError.invalid("session_id must be a valid UUID")) {
+            _ = try BrokerCommand.decode(
+                command: "search",
+                arguments: [
+                    "query": .string("x"),
+                    "mode": .string("text"),
+                    "session_id": .string("not-a-uuid"),
+                ]
+            )
+        }
+    }
+
     @Test
     func entityResolveRejectsOutOfRangeLimit() {
         #expect(throws: BrokerValidationError.self) {
