@@ -12,7 +12,8 @@ import WaxVectorSearchArctic
 
 enum StoreSession {
     static let defaultStorePath = "~/.wax/memory.wax"
-    private static let defaultLockTimeoutSeconds = 5.0
+    /// CLI `--direct-store` wait. One budget covers preflight plus open.
+    static let defaultLockTimeoutSeconds = 30.0
 
     /// Whether this binary was compiled with MiniLM embedding support.
     static var miniLMCompiled: Bool {
@@ -44,15 +45,10 @@ enum StoreSession {
         return url
     }
 
-    private static var waxOptions: WaxOptions {
-        var options = WaxOptions()
-        options.lockWaitTimeout = lockWaitTimeout
-        return options
-    }
-
-    private static var lockWaitTimeout: Duration? {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    static func lockWaitTimeout(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Duration? {
+        guard let raw = environment["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty
         else {
             return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
@@ -62,6 +58,19 @@ enum StoreSession {
         }
         guard secs > 0 else { return nil }
         return .milliseconds(Int64(secs * 1000))
+    }
+
+    /// Subtract elapsed wait from a finite budget so preflight + open share one timeout.
+    static func remainingLockWait(budget: Duration?, elapsed: Duration) -> Duration? {
+        guard let budget else { return nil }
+        if elapsed >= budget { return .zero }
+        return budget - elapsed
+    }
+
+    private static func waxOptions(lockWaitTimeout: Duration?) -> WaxOptions {
+        var options = WaxOptions()
+        options.lockWaitTimeout = lockWaitTimeout
+        return options
     }
 
     /// Open a memory store with an optional embedder.
@@ -79,7 +88,15 @@ enum StoreSession {
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         requireVector: Bool = false
     ) async throws -> MemoryOrchestrator {
-        try StoreLockProbe.preflightExclusiveAccess(at: url, timeout: waxOptions.lockWaitTimeout)
+        let lockBudget = lockWaitTimeout()
+        let clock = ContinuousClock()
+        let waitStarted = clock.now
+        try StoreLockProbe.preflightExclusiveAccess(at: url, timeout: lockBudget)
+        let remainingWait = remainingLockWait(
+            budget: lockBudget,
+            elapsed: waitStarted.duration(to: clock.now)
+        )
+        let waxOptions = waxOptions(lockWaitTimeout: remainingWait)
         if requireVector, noEmbedder {
             throw CLIError("Vector search required but --no-embedder was set.")
         }
