@@ -759,7 +759,9 @@ extension Wax {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
-        guard cappedWindow > 1 else { return results }
+        // Window 1 still publishes the bonus so a lone exact hit outranks
+        // OR-fallback name matches from another store after corpus merge.
+        guard cappedWindow > 0 else { return results }
 
         let lowerNeedle = needle.lowercased()
         // Larger than same-repo (0.9) + same-project (0.7) + decision (0.45) + durable (0.25).

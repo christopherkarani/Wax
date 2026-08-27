@@ -25,6 +25,16 @@ func matchPlanStopwordsAndOperatorsAloneAreEmpty() {
 }
 
 @Test
+func matchPlanKeepsHyphenatedIdentifierAsToken() {
+    let tokens = MatchPlan.tokens(from: "qx7m-ishi-qa")
+    #expect(tokens.contains("qx7m-ishi-qa"))
+    #expect(tokens.contains("ishi"))
+    let plan = MatchPlan.plan(query: "qx7m-ishi-qa")
+    #expect(plan?.primaryMatch.contains("qx7m-ishi-qa") == true)
+    #expect(plan?.fallbackMatch?.contains(" OR ") == true)
+}
+
+@Test
 func matchPlanTreatsFTSPunctuationAsLiteralTokens() {
     let plan = MatchPlan.plan(query: #"task:(F076) NEAR(unclosed "quote""#)
     let primary = plan?.primaryMatch ?? ""
