@@ -20,9 +20,13 @@ The runtime binary stays `$HOME/.local/share/waxmcp/runtime/darwin-arm64/wax-mcp
 
 ```
 # Chris, from a real Terminal — agents must not run this:
+# If lsof shows a listener that is not this LaunchAgent, stop that process first.
+# Do not have the wrapper kill anyone. kickstart -k only kills the launchd job.
+lsof -nP -iTCP:3000 -sTCP:LISTEN
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.wax.mcp-http.plist  # ok if not loaded
-cp packaging/launchd/ai.wax.mcp-http.plist.template ~/Library/LaunchAgents/ai.wax.mcp-http.plist
-# substitute $HOME if the template uses it
+mkdir -p ~/.local/share/waxmcp/bin ~/.local/share/waxmcp/logs ~/Library/LaunchAgents
+sed "s|\$HOME|$HOME|g" packaging/launchd/ai.wax.mcp-http.plist.template \
+  > ~/Library/LaunchAgents/ai.wax.mcp-http.plist
 cp packaging/launchd/start-wax-mcp-http.sh ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
 chmod +x ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.wax.mcp-http.plist

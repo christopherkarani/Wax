@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 WRAP="$ROOT/start-wax-mcp-http.sh"
 PLIST="$ROOT/ai.wax.mcp-http.plist.template"
+README="$ROOT/README.md"
 failures=0
 
 fail() {
@@ -71,6 +72,24 @@ else
       fail "plist ProgramArguments[0] must end with start-wax-mcp-http.sh (got: ${first:-<empty>})"
       ;;
   esac
+fi
+
+if [[ ! -f "$README" ]]; then
+  fail "missing README $README"
+else
+  if grep -q 'sed "s|\\$HOME|$HOME|g" packaging/launchd/ai.wax.mcp-http.plist.template' "$README" \
+    && ! grep -q '^cp packaging/launchd/ai.wax.mcp-http.plist.template' "$README"; then
+    pass "README substitutes \$HOME with sed (no bare template cp)"
+  else
+    fail "README must sed-substitute \$HOME; must not bare-cp the plist template"
+  fi
+
+  if grep -q 'lsof -nP -iTCP:3000 -sTCP:LISTEN' "$README" \
+    && grep -B20 'launchctl bootstrap' "$README" | grep -q 'lsof -nP -iTCP:3000 -sTCP:LISTEN'; then
+    pass "README checks :3000 is free before launchctl bootstrap"
+  else
+    fail "README must lsof :3000 before launchctl bootstrap (do not kill)"
+  fi
 fi
 
 if [[ "$failures" -ne 0 ]]; then
