@@ -16,11 +16,10 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
         guard store.directStore else {
             throw ValidationError("--direct-store is required for embed-backfill")
         }
-        if CompactStorePathPolicy.expandedURL(store.storePath) == CompactStorePathPolicy.liveFamilyURL() {
-            throw ValidationError(
-                "embed-backfill refuses the live family store path \(StoreSession.defaultStorePath)"
-            )
-        }
+        try CompactStorePathPolicy.refuseLiveFamily(
+            CompactStorePathPolicy.expandedURL(store.storePath),
+            command: "embed-backfill"
+        )
     }
 
     func runAsync() async throws {

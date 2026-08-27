@@ -54,6 +54,7 @@ struct CompactStoreCommand: AsyncParsableCommand {
             storePath: storePath,
             output: output
         )
+        try failFastIfStoreHeld(at: sourceURL)
 
         let report = try await StoreSession.withOpen(at: sourceURL, noEmbedder: true) { memory in
             try await memory.rewriteLiveSet(
@@ -89,19 +90,32 @@ struct CompactStoreCommand: AsyncParsableCommand {
             print("WAL size: \(destWal.walSize)")
         }
     }
+
+    func failFastIfStoreHeld(at url: URL) throws {
+        guard try StoreLockProbe.tryExclusiveAccess(at: url) else {
+            throw CLIError(
+                "another process holds an exclusive lock on this store; if a broker is attached, use waxmcp stats / attach instead of waiting"
+            )
+        }
+    }
 }
 
 enum CompactStorePathPolicy {
     static func validate(storePath: String, output: String) throws {
         let source = expandedURL(storePath)
         let dest = expandedURL(output)
-        if source == liveFamilyURL() {
-            throw ValidationError(
-                "compact-store refuses the live family store path \(StoreSession.defaultStorePath)"
-            )
-        }
+        try refuseLiveFamily(source, command: "compact-store")
+        try refuseLiveFamily(dest, command: "compact-store")
         if source == dest {
             throw ValidationError("compact-store destination must differ from source")
+        }
+    }
+
+    static func refuseLiveFamily(_ url: URL, command: String) throws {
+        if url == liveFamilyURL() {
+            throw ValidationError(
+                "\(command) refuses the live family store path \(StoreSession.defaultStorePath)"
+            )
         }
     }
 
@@ -116,8 +130,10 @@ enum CompactStorePathPolicy {
         expandedURL(StoreSession.defaultStorePath)
     }
 
+    /// Trim then tilde-expand. Must match `StoreSession.resolveURL` identity without creating directories.
     static func expandedURL(_ raw: String) -> URL {
-        let expanded = (raw as NSString).expandingTildeInPath
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expanded = (trimmed as NSString).expandingTildeInPath
         return URL(fileURLWithPath: expanded).standardizedFileURL
     }
 }

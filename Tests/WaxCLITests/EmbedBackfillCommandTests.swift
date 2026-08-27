@@ -22,6 +22,27 @@ struct EmbedBackfillCommandTests {
         }
     }
 
+    @Test func embedBackfillRefusesLiveFamilyPath() throws {
+        #expect(throws: (any Error).self) {
+            _ = try EmbedBackfillCommand.parse([
+                "--direct-store",
+                "--store-path", StoreSession.defaultStorePath,
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try EmbedBackfillCommand.parse([
+                "--direct-store",
+                "--store-path", "~/.wax/memory.wax",
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try EmbedBackfillCommand.parse([
+                "--direct-store",
+                "--store-path", "~/.wax/memory.wax ",
+            ])
+        }
+    }
+
     @Test func embedBackfillNoEmbedderFailsClosed() async throws {
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-backfill-\(UUID().uuidString)")

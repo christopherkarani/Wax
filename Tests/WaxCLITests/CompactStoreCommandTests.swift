@@ -28,6 +28,29 @@ struct CompactStoreCommandTests {
                 "--output", "/tmp/wax-compact-out.wax",
             ])
         }
+        // Quoted trailing space must still refuse: open trims, so this is the live file.
+        #expect(throws: (any Error).self) {
+            _ = try CompactStoreCommand.parse([
+                "--direct-store",
+                "--store-path", "~/.wax/memory.wax ",
+                "--output", "/tmp/wax-compact-out.wax",
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try CompactStoreCommand.parse([
+                "--direct-store",
+                "--store-path", "/tmp/wax-compact-in.wax",
+                "--output", StoreSession.defaultStorePath,
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try CompactStoreCommand.parse([
+                "--direct-store",
+                "--overwrite",
+                "--store-path", "/tmp/wax-compact-in.wax",
+                "--output", "~/.wax/memory.wax",
+            ])
+        }
     }
 
     @Test func compactStoreRewritesTempCopyWithLongTermWal() async throws {
