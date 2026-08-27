@@ -94,6 +94,97 @@ func rewriteLiveSetDropsNonLivePayloadsAndPreservesFrameState() async throws {
 }
 
 @Test
+func rewriteLiveSetWalSizeFloorsAtSessionSizeAndCapsAtSourceRing() {
+    let session = Constants.sessionWalSize
+    let defaultRing = Constants.defaultWalSize
+
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: 107_000
+        ) == session
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: session + 1
+        ) == session + 1
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: defaultRing + 1
+        ) == defaultRing
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: session / 2,
+            payloadBytes: 1
+        ) == session / 2
+    )
+}
+
+@Test
+func rewriteLiveSetChoosesWalSizeFromPayloadNotSourceRing() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+
+        do {
+            let wax = try await Wax.create(at: sourceURL)
+            for index in 0..<20 {
+                _ = try await wax.put(
+                    Data("small live payload \(index)".utf8),
+                    options: FrameMetaSubset(searchText: "small live payload \(index)")
+                )
+            }
+            try await wax.commit()
+            let sourceWal = await wax.walStats()
+            #expect(sourceWal.walSize == Constants.defaultWalSize)
+            try await wax.close()
+        }
+
+        let sourceSizesBefore = try fileSizes(at: sourceURL)
+        #expect(sourceSizesBefore.logical >= Constants.defaultWalSize)
+
+        let report: LiveSetRewriteReport
+        do {
+            let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+            report = try await orchestrator.rewriteLiveSet(to: destinationURL)
+            try await orchestrator.close()
+        }
+
+        let sourceSizesAfter = try fileSizes(at: sourceURL)
+        #expect(sourceSizesAfter.logical == sourceSizesBefore.logical)
+
+        let rewrittenWax = try await Wax.open(at: destinationURL)
+        let destWal = await rewrittenWax.walStats()
+        #expect(destWal.walSize == Constants.sessionWalSize)
+        #expect(destWal.walSize >= Constants.sessionWalSize)
+        #expect(destWal.walSize <= Constants.defaultWalSize)
+        #expect(destWal.walSize <= 8 * 1024 * 1024)
+
+        let destFrames = await rewrittenWax.frameMetas()
+        #expect(destFrames.count == 20)
+        #expect(destFrames.filter { $0.status == .active && $0.supersededBy == nil }.count == 20)
+        try await rewrittenWax.verify()
+        try await rewrittenWax.close()
+
+        let destSizes = try fileSizes(at: destinationURL)
+        #expect(destSizes.logical < sourceSizesBefore.logical)
+        #expect(destSizes.logical < 16 * 1024 * 1024)
+        #expect(report.logicalBytesAfter < report.logicalBytesBefore)
+        #expect(report.frameCount == 20)
+        #expect(report.activeFrameCount == 20)
+    }
+}
+
+@Test
 func rewriteLiveSetRespectsDestinationOverwriteGuard() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let destinationURL = FileManager.default.temporaryDirectory
