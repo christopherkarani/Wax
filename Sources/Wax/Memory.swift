@@ -206,6 +206,16 @@ public actor Memory {
         try await orchestrator.flush()
     }
 
+    /// Embed live searchable frames that have no vectors, using the attached provider.
+    ///
+    /// Idempotent: frames that already have pending or committed vectors are skipped.
+    /// Throws ``WaxError/missingEmbedder`` when no provider is attached — never invents vectors.
+    /// Call ``flush()`` afterward to commit the new vectors.
+    @discardableResult
+    public func backfillUnembedded() async throws -> UInt64 {
+        try await orchestrator.backfillUnembedded()
+    }
+
     /// Close the memory handle and release resources.
     public func close() async throws {
         try await orchestrator.close()
@@ -227,6 +237,8 @@ public actor Memory {
         public var embedderIdentity: EmbeddingIdentity?
         /// Readiness of the embedding provider attached to this store.
         public var embeddingStatus: EmbeddingStatus
+        /// Live searchable frames that currently have no pending or committed vector.
+        public var framesWithoutVectors: UInt64
 
         public init(
             frameCount: UInt64,
@@ -235,7 +247,8 @@ public actor Memory {
             queryEmbedderConfigured: Bool,
             queryEmbeddingCircuitOpen: Bool,
             embedderIdentity: EmbeddingIdentity?,
-            embeddingStatus: EmbeddingStatus = .disabled
+            embeddingStatus: EmbeddingStatus = .disabled,
+            framesWithoutVectors: UInt64 = 0
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -244,6 +257,7 @@ public actor Memory {
             self.queryEmbeddingCircuitOpen = queryEmbeddingCircuitOpen
             self.embedderIdentity = embedderIdentity
             self.embeddingStatus = embeddingStatus
+            self.framesWithoutVectors = framesWithoutVectors
         }
     }
 
@@ -260,7 +274,8 @@ public actor Memory {
             queryEmbedderConfigured: runtime.embeddingStatus.isQueryEmbedderConfigured,
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
             embedderIdentity: runtime.embeddingStatus.identity,
-            embeddingStatus: runtime.embeddingStatus
+            embeddingStatus: runtime.embeddingStatus,
+            framesWithoutVectors: runtime.framesWithoutVectors
         )
     }
 
