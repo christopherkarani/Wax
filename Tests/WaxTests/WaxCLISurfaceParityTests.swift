@@ -32,6 +32,11 @@ import Testing
     #expect(source.contains("DemoCommand.self"))
 }
 
+@Test func waxCLIExposesEmbedBackfillCommand() throws {
+    let source = try WaxCLISource.load("WaxCLICommand.swift")
+    #expect(source.contains("EmbedBackfillCommand.self"))
+}
+
 @Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
