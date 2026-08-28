@@ -5491,7 +5491,7 @@ func sessionOpenDefaultsToBoundedHandoffWithoutRecall() async throws {
     try await withAgentBrokerService { service, _ in
         let project = "session-open-bounded-\(UUID().uuidString)"
         let content = String(repeating: "handoff content 🚀 ", count: 400)
-        let pendingTasks = (0..<12).map { index in
+        let pendingTasks: [AgentBrokerValue] = (0..<12).map { index in
             .string("task-\(index) " + String(repeating: "待", count: 200))
         }
         #expect((await service.handle(.init(
