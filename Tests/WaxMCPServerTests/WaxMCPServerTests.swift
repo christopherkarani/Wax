@@ -5539,7 +5539,7 @@ func sessionOpenDefaultsToBoundedHandoffWithoutRecall() async throws {
 func sessionOpenCompactHandoffTruncationPreservesUnicodeBoundaries() async throws {
     try await withAgentBrokerService { service, _ in
         let project = "session-open-unicode-\(UUID().uuidString)"
-        let content = String(repeating: "🧠界", count: 2_000)
+        let content = String(repeating: "🧠", count: 2_000)
         #expect((await service.handle(.init(
             command: "handoff",
             arguments: [
@@ -5566,6 +5566,7 @@ func sessionOpenCompactHandoffTruncationPreservesUnicodeBoundaries() async throw
         #expect(await counter.count(compactContent) <= 256)
         #expect(content.hasPrefix(compactContent))
         #expect(String(data: Data(compactContent.utf8), encoding: .utf8) == compactContent)
+        #expect(!compactContent.contains("�"))
         #expect((handoff["content_truncated"] as? Bool) == true)
     }
 }

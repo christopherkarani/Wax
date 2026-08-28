@@ -1234,15 +1234,10 @@ extension AgentBrokerService {
             maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
         )
         let tokenCounter = try await TokenCounter.shared()
-        let tokenLimitedContent = await tokenCounter.truncate(
+        let compactContent = await Self.tokenLimitedPrefix(
             byteLimitedContent,
+            counter: tokenCounter,
             maxTokens: BrokerLimits.maxSessionOpenHandoffContentTokens
-        )
-        // Token decoding is normally a prefix, but retain the byte guard as a
-        // final invariant for unusual tokenizer normalization sequences.
-        let compactContent = utf8Prefix(
-            tokenLimitedContent,
-            maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
         )
         let contentTruncated = compactContent != originalContent
 
@@ -1287,6 +1282,32 @@ extension AgentBrokerService {
             bytes += characterBytes
         }
         return result
+    }
+
+    /// Select a prefix from the original grapheme sequence rather than
+    /// decoding a sliced BPE token array. Decoding an arbitrary token prefix
+    /// can end in the middle of a multibyte scalar and introduce U+FFFD.
+    private static func tokenLimitedPrefix(
+        _ text: String,
+        counter: TokenCounter,
+        maxTokens: Int
+    ) async -> String {
+        guard maxTokens > 0, !text.isEmpty else { return "" }
+        let characters = Array(text)
+        var lower = 0
+        var upper = characters.count
+        var best = 0
+        while lower <= upper {
+            let middle = lower + (upper - lower) / 2
+            let candidate = String(characters.prefix(middle))
+            if await counter.count(candidate) <= maxTokens {
+                best = middle
+                lower = middle + 1
+            } else {
+                upper = middle - 1
+            }
+        }
+        return String(characters.prefix(best))
     }
 
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {

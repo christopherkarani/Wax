@@ -18,9 +18,8 @@ package enum BrokerLimits {
     package static let maxCompactContextItems = 64
     /// Bounds for the handoff projection returned by `session_open`.
     ///
-    /// The token limit is intentionally a deterministic whitespace-token
-    /// estimate. It keeps the session bootstrap path independent of the BPE
-    /// tokenizer while still preventing unbounded model input.
+    /// The token limit is enforced with the shared deterministic BPE tokenizer
+    /// while the byte limit keeps the bootstrap payload bounded before counting.
     package static let maxSessionOpenHandoffContentBytes = 2_048
     package static let maxSessionOpenHandoffContentTokens = 256
     package static let maxSessionOpenPendingTasks = 3
