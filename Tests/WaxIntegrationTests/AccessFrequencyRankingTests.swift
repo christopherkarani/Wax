@@ -154,6 +154,20 @@ func accessFrequencyKeepsPublishedScoreInUnitInterval() {
 }
 
 @Test
+func accessFrequencyCounterSaturatesAtUInt32Maximum() async {
+    let manager = AccessStatsManager()
+    await manager.importStats([
+        FrameAccessStats(frameId: 1, nowMs: 1_700_000_000_000)
+    ].map { stat in
+        var saturated = stat
+        saturated.accessCount = UInt32.max
+        return saturated
+    })
+    await manager.recordAccess(frameId: 1, nowMs: 1_700_000_000_001)
+    #expect(await manager.getStats(frameId: 1)?.accessCount == UInt32.max)
+}
+
+@Test
 func accessFrequencyStatsPersistAndReloadAtOrchestratorSeam() async throws {
     try await TempFiles.withTempFile { url in
         let nowMs: Int64 = 1_700_000_000_000

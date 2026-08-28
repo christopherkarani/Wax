@@ -23,7 +23,8 @@ package struct FrameAccessStats: Sendable, Equatable, Codable {
 
     package mutating func recordAccess(nowMs: Int64) {
         // Use saturating addition to prevent overflow
-        accessCount = accessCount.addingReportingOverflow(1).partialValue
+        let (nextCount, overflowed) = accessCount.addingReportingOverflow(1)
+        accessCount = overflowed ? UInt32.max : nextCount
         lastAccessMs = nowMs
     }
 }
