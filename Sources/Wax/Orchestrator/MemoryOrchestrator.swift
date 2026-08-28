@@ -231,6 +231,7 @@ package actor MemoryOrchestrator {
     let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
+    private let flushMutex = AsyncMutex()
 
     let session: WaxSession
     private var embedderLifecycle: EmbedderLifecycle
@@ -241,6 +242,11 @@ package actor MemoryOrchestrator {
 
     package func setSearchSnapshotHoldForTesting(_ duration: Duration?) {
         searchSnapshotHoldForTesting = duration
+    }
+    package var accessStatsPersistenceHoldForTesting: Duration? = nil
+
+    package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
+        accessStatsPersistenceHoldForTesting = duration
     }
     private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
@@ -1932,6 +1938,12 @@ package actor MemoryOrchestrator {
     // MARK: - Persistence lifecycle
 
     package func flush() async throws {
+        try await flushMutex.withLock { [self] in
+            try await flushSerialized()
+        }
+    }
+
+    private func flushSerialized() async throws {
         if let enrichmentPipeline {
             let drained = try await enrichmentPipeline.waitUntilIdle(
                 bestEffortTimeout: config.enrichmentFlushDrainTimeout
@@ -2585,6 +2597,9 @@ package actor MemoryOrchestrator {
     private func persistAccessStatsIfNeeded() async throws {
         guard let snapshot = await accessStatsManager.exportStatsSnapshotIfDirty() else {
             return
+        }
+        if let hold = accessStatsPersistenceHoldForTesting {
+            try await Task.sleep(for: hold)
         }
         let exported = snapshot.stats
         guard !exported.isEmpty else {

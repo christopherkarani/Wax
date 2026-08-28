@@ -203,6 +203,46 @@ func accessFrequencyStatsPersistAndReloadAtOrchestratorSeam() async throws {
     }
 }
 
+@Test
+func accessFrequencyOverlappingFlushesPublishNewestRevision() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.liveSetRewriteSchedule = .disabled
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember("access-frequency-overlap-token")
+        _ = try await memory.search(
+            query: "access-frequency-overlap-token",
+            mode: .textOnly,
+            topK: 1
+        )
+
+        // Hold the first snapshot after it has been captured. The second
+        // search creates a newer revision while the first flush is suspended;
+        // clearing the hold lets the second flush race the older continuation.
+        await memory.setAccessStatsPersistenceHoldForTesting(.milliseconds(250))
+        let firstFlush = Task { try await memory.flush() }
+        try await Task.sleep(for: .milliseconds(40))
+        _ = try await memory.search(
+            query: "access-frequency-overlap-token",
+            mode: .textOnly,
+            topK: 1
+        )
+        await memory.setAccessStatsPersistenceHoldForTesting(nil)
+        let secondFlush = Task { try await memory.flush() }
+
+        try await firstFlush.value
+        try await secondFlush.value
+        try await memory.close()
+
+        let reopened = try await MemoryOrchestrator(at: url, config: config)
+        let stats = await reopened.accessStatsSnapshot()
+        #expect(stats[remembered.frameId]?.accessCount == 2)
+        try await reopened.close()
+    }
+}
+
 private let hourMs: Int64 = 60 * 60 * 1000
 private let dayMs: Int64 = 24 * hourMs
 
