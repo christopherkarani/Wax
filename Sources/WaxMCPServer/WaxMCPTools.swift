@@ -245,6 +245,7 @@ private extension WaxMCPTools {
         case "wax_compact_context": return "compact_context"
         case "wax_markdown_export": return "markdown_export"
         case "wax_markdown_sync": return "markdown_sync"
+        case "wax_task_state_migrate": return "task_state_migrate"
         case "wax_entity_upsert": return "entity_upsert"
         case "wax_fact_assert": return "fact_assert"
         case "wax_fact_retract": return "fact_retract"

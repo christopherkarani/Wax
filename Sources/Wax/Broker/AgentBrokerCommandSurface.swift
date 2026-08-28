@@ -74,8 +74,8 @@ package enum AgentBrokerCommandSurface {
         ]),
         Entry(canonicalName: "memory_health", acceptedArgumentKeys: []),
         Entry(canonicalName: "knowledge_capture", acceptedArgumentKeys: [
-            "content", "metadata", "memory_type", "durability", "project", "repo", "confidence", "reviewed",
-            "locked", "subject", "kind", "aliases", "predicate", "object", "cwd",
+            "content", "session_id", "scope", "metadata", "memory_type", "durability", "project", "repo",
+            "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object", "cwd",
         ], requiresStructuredMemory: true),
         Entry(canonicalName: "corpus_search", acceptedArgumentKeys: ["query", "rebuild", "recursive", "mode", "alpha", "topK"]),
         Entry(canonicalName: "stats", acceptedArgumentKeys: ["session_id", "verbosity"]),
@@ -89,6 +89,10 @@ package enum AgentBrokerCommandSurface {
         Entry(canonicalName: "compact_context", acceptedArgumentKeys: ["query", "session_id", "token_budget", "max_items", "mode", "alpha"]),
         Entry(canonicalName: "markdown_export", acceptedArgumentKeys: ["output_dir", "session_id", "project", "all_projects", "cwd"]),
         Entry(canonicalName: "markdown_sync", acceptedArgumentKeys: ["root_dir", "dry_run"]),
+        Entry(
+            canonicalName: "task_state_migrate",
+            acceptedArgumentKeys: ["destination_path", "dry_run", "orphan_policy", "overwrite_destination"]
+        ),
         Entry(canonicalName: "entity_upsert", acceptedArgumentKeys: ["key", "kind", "aliases"], requiresStructuredMemory: true),
         Entry(canonicalName: "fact_assert", acceptedArgumentKeys: ["subject", "predicate", "object", "relation", "valid_from", "valid_to", "evidence"], requiresStructuredMemory: true),
         Entry(canonicalName: "fact_retract", acceptedArgumentKeys: ["fact_id", "at_ms"], requiresStructuredMemory: true),

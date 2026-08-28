@@ -216,7 +216,7 @@ extension AgentBrokerService {
             )
 
             if proposal.shouldWrite {
-                let normalized = approvedDreamMetadata(metadata: metadata, proposal: proposal)
+                let normalized = try approvedDreamMetadata(metadata: metadata, proposal: proposal)
                 try validateDurableWriteContent(content: entry.text, metadata: normalized)
                 counts.approvedDreams += 1
                 approvedFingerprints.insert(fingerprint)
@@ -250,7 +250,7 @@ extension AgentBrokerService {
     private func approvedDreamMetadata(
         metadata: [String: String],
         proposal: BrokerPromotionProposal
-    ) -> [String: String] {
+    ) throws -> [String: String] {
         let semantics = MemoryWriteSemantics(
             type: proposal.suggestedType,
             durability: proposal.suggestedDurability,
@@ -265,12 +265,21 @@ extension AgentBrokerService {
             inferredScope: scopeContext,
             nowMs: Self.nowMs()
         )
-        return MemorySemantics.approvedPromotionMetadata(
+        let approved = MemorySemantics.approvedPromotionMetadata(
             metadata: normalized,
             semantics: semantics,
             suggestedType: proposal.suggestedType,
             suggestedDurability: proposal.suggestedDurability,
             suggestedConfidence: proposal.confidence
+        )
+        return try MemorySemantics.validatedWriteMetadata(
+            metadata: approved,
+            semantics: semantics,
+            sessionID: nil,
+            scope: "durable",
+            activeSession: false,
+            inferredScope: scopeContext,
+            nowMs: Self.nowMs()
         )
     }
 
@@ -301,6 +310,18 @@ extension AgentBrokerService {
             }
             let existing = existingByMarker ?? existingByHash
             let semantics = semanticsForEntry(entry, existing)
+
+            // Validate before the unchanged fast path too: a legacy task_state
+            // diary must not remain silently accepted by Markdown sync.
+            _ = try MemorySemantics.validatedWriteMetadata(
+                metadata: existing?.metadata ?? [:],
+                semantics: semantics,
+                sessionID: nil,
+                scope: sourceKind == .memory ? "durable" : nil,
+                activeSession: false,
+                inferredScope: scopeContext,
+                nowMs: Self.nowMs()
+            )
 
             if let existing {
                 let existingInfo = MemorySemantics.parse(metadata: existing.metadata, nowMs: Self.nowMs())
@@ -436,7 +457,7 @@ extension AgentBrokerService {
         let beforeDocuments = try await longTermMemory.corpusSourceDocuments()
         let beforeIDs = Set(beforeDocuments.map { $0.frameId })
 
-        let normalized = managedDocumentMetadata(
+        let normalized = try managedDocumentMetadata(
             content: content,
             entry: entry,
             sourcePath: sourcePath,
@@ -487,7 +508,7 @@ extension AgentBrokerService {
         semantics: MemoryWriteSemantics,
         existing: MemoryOrchestrator.CorpusSourceDocument?
     ) throws {
-        let normalized = managedDocumentMetadata(
+        let normalized = try managedDocumentMetadata(
             content: content,
             entry: entry,
             sourcePath: sourcePath,
@@ -507,7 +528,7 @@ extension AgentBrokerService {
         dateKey: String?,
         semantics: MemoryWriteSemantics,
         existing: MemoryOrchestrator.CorpusSourceDocument?
-    ) -> [String: String] {
+    ) throws -> [String: String] {
         var baseMetadata = existing?.metadata ?? [:]
         baseMetadata[MemoryMetadataKeys.sourcePath] = sourcePath
         baseMetadata[MemoryMetadataKeys.sourceLine] = String(entry.lineNumber)
@@ -521,10 +542,12 @@ extension AgentBrokerService {
             baseMetadata[MemoryMetadataKeys.sourceMemoryID] = markerMemoryID
         }
 
-        return MemorySemantics.normalizeWriteMetadata(
+        return try MemorySemantics.validatedWriteMetadata(
             metadata: baseMetadata,
             semantics: semantics,
             sessionID: nil,
+            scope: sourceKind == .memory ? "durable" : nil,
+            activeSession: false,
             inferredScope: scopeContext,
             nowMs: Self.nowMs()
         )

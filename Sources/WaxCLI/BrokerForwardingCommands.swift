@@ -281,3 +281,12 @@ struct MarkdownSyncCommand: AsyncParsableCommand {
     @OptionGroup var forwarded: BrokerForwardOptions
     func runAsync() async throws { try await runBrokerForwardedCommand("markdown_sync", store: store, forwarded: forwarded) }
 }
+
+struct TaskStateMigrateCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "task-state-migrate", abstract: "Copy and repair legacy durable task-state memory")
+    @OptionGroup var store: VectorStoreOptions
+    @OptionGroup var forwarded: BrokerForwardOptions
+    func runAsync() async throws {
+        try await runBrokerForwardedCommand("task_state_migrate", store: store, forwarded: forwarded)
+    }
+}

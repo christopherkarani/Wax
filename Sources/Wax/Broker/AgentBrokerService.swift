@@ -243,6 +243,9 @@ package actor AgentBrokerService {
             case .markdownExport(let command):
                 payload = try await markdownExport(command)
                 shouldExit = false
+            case .taskStateMigrate(let command):
+                payload = try await taskStateMigrate(command)
+                shouldExit = false
             case .factsQuery(let command):
                 payload = try await factsQuery(command)
                 shouldExit = false
@@ -308,10 +311,12 @@ extension AgentBrokerService {
         if let sessionID {
             _ = try await memory(for: sessionID)
         }
-        let metadata = MemorySemantics.normalizeWriteMetadata(
+        let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
             semantics: command.writeSemantics,
             sessionID: sessionID,
+            scope: command.writeScope?.rawValue,
+            activeSession: sessionID != nil,
             inferredScope: writeScope(for: sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
         )
@@ -787,6 +792,15 @@ extension AgentBrokerService {
                 suggestedDurability: proposal.suggestedDurability,
                 suggestedConfidence: proposal.confidence
             )
+            normalizedMetadata = try MemorySemantics.validatedWriteMetadata(
+                metadata: normalizedMetadata,
+                semantics: writeSemantics,
+                sessionID: nil,
+                scope: "durable",
+                activeSession: false,
+                inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
+                nowMs: Self.nowMs()
+            )
             try validateDurableWriteContent(content: content, metadata: normalizedMetadata)
             try await longTermMemory.remember(content, metadata: normalizedMetadata)
             try await longTermMemory.flush()
@@ -843,11 +857,16 @@ extension AgentBrokerService {
     }
 
     func knowledgeCapture(_ command: BrokerCommand.KnowledgeCapture) async throws -> AgentBrokerValue {
-        let metadata = MemorySemantics.normalizeWriteMetadata(
+        if let sessionID = command.sessionID {
+            _ = try await memory(for: sessionID)
+        }
+        let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
             semantics: command.writeSemantics,
-            sessionID: nil,
-            inferredScope: writeScope(for: nil, clientCWD: command.cwd),
+            sessionID: command.sessionID,
+            scope: command.writeScope?.rawValue,
+            activeSession: command.sessionID != nil,
+            inferredScope: writeScope(for: command.sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
@@ -858,7 +877,8 @@ extension AgentBrokerService {
         let aliases = command.aliases
         let parsedObject = try command.object.map { try parseFactValue($0) }
 
-        try await longTermMemory.remember(command.content, metadata: metadata)
+        let memory = try await memory(for: command.sessionID)
+        try await memory.remember(command.content, metadata: metadata)
 
         var entityID: Int64?
         if let subject {
@@ -892,7 +912,21 @@ extension AgentBrokerService {
             ).rawValue
         }
 
+        try await memory.flush()
         try await longTermMemory.flush()
+
+        if let sessionID = command.sessionID {
+            try await refreshSessionManifest(sessionID)
+            try await appendSessionEvent(
+                sessionID: sessionID,
+                kind: .remembered,
+                payload: [
+                    "content_hash": Self.stableHash(command.content),
+                    "memory_type": metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue,
+                    "durability": metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue,
+                ]
+            )
+        }
 
         return .object([
             "status": .string("ok"),
