@@ -139,6 +139,7 @@ package actor MemoryOrchestrator {
         package var accessStatsScoringEnabled: Bool
         package var embedderIdentity: EmbeddingIdentity?
         package var embeddingStatus: EmbeddingStatus
+        package var framesWithoutVectors: UInt64
 
         package init(
             frameCount: UInt64,
@@ -153,7 +154,8 @@ package actor MemoryOrchestrator {
             structuredMemoryEnabled: Bool,
             accessStatsScoringEnabled: Bool,
             embedderIdentity: EmbeddingIdentity?,
-            embeddingStatus: EmbeddingStatus = .disabled
+            embeddingStatus: EmbeddingStatus = .disabled,
+            framesWithoutVectors: UInt64 = 0
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -168,6 +170,7 @@ package actor MemoryOrchestrator {
             self.accessStatsScoringEnabled = accessStatsScoringEnabled
             self.embedderIdentity = embedderIdentity
             self.embeddingStatus = embeddingStatus
+            self.framesWithoutVectors = framesWithoutVectors
         }
     }
 
@@ -909,12 +912,16 @@ package actor MemoryOrchestrator {
     }
 
     private static func vecSegmentContains(frameId: UInt64, bytes: Data) -> Bool {
+        vecSegmentFrameIds(bytes: bytes).contains(frameId)
+    }
+
+    private static func vecSegmentFrameIds(bytes: Data) -> Set<UInt64> {
         guard let payload = try? VectorSerializer.decodeVecSegment(from: bytes) else {
-            return false
+            return []
         }
         switch payload {
         case .metal(_, _, let frameIds):
-            return frameIds.contains(frameId)
+            return Set(frameIds)
         }
     }
 
@@ -1339,7 +1346,8 @@ package actor MemoryOrchestrator {
             structuredMemoryEnabled: config.enableStructuredMemory,
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embeddingStatus.identity,
-            embeddingStatus: embeddingStatus
+            embeddingStatus: embeddingStatus,
+            framesWithoutVectors: await Self.framesWithoutVectorsCount(wax)
         )
     }
 
@@ -1352,6 +1360,55 @@ package actor MemoryOrchestrator {
         guard config.enableVectorSearch else { return false }
         if case .loading = embeddingStatus { return true }
         return false
+    }
+
+    /// Embed live searchable frames that have no vectors using the attached provider.
+    ///
+    /// Returns the number of frames newly embedded. Already-vectorized frames are
+    /// skipped. Throws ``WaxError/missingEmbedder`` when no provider is attached.
+    @discardableResult
+    package func backfillUnembedded() async throws -> UInt64 {
+        let snapshot = readyEmbedderSnapshot
+        guard config.enableVectorSearch, let embedder = snapshot.provider else {
+            throw WaxError.missingEmbedder
+        }
+
+        let missing = await unembeddedLiveSources()
+        guard !missing.isEmpty else {
+            await refreshEmbeddingCoverage()
+            return 0
+        }
+
+        try await session.ensureVectorEngine(dimensions: embedder.dimensions)
+
+        let batchSize = max(1, config.ingestBatchSize)
+        var embedded: UInt64 = 0
+        var index = 0
+        while index < missing.count {
+            let end = min(index + batchSize, missing.count)
+            let batch = Array(missing[index..<end])
+            let vectors = try await Self.prepareEmbeddingsBatchOptimized(
+                chunks: batch.map(\.searchText),
+                embedder: embedder,
+                capabilities: snapshot.capabilities,
+                cache: embeddingCache,
+                timeout: config.ingestEmbeddingTimeout
+            )
+            try await wax.putEmbeddingBatch(
+                frameIds: batch.map(\.id),
+                vectors: vectors
+            )
+            if let identity = embedder.identity {
+                try await ensureMemoryBindingIfNeeded(
+                    MemoryBindingCompatibility.binding(from: identity)
+                )
+            }
+            embedded += UInt64(batch.count)
+            index = end
+        }
+
+        await refreshEmbeddingCoverage()
+        return embedded
     }
 
     /// Wait until automatic compile has attached, or throw if it failed.
@@ -2233,11 +2290,47 @@ package actor MemoryOrchestrator {
     }
 
     private static func storeHasUnembeddedChunks(_ wax: Wax) async -> Bool {
-        let chunks = await wax.liveChunkCount()
-        guard chunks > 0 else { return false }
-        let pending = UInt64(await wax.pendingEmbeddingMutations().count)
-        let indexed = await wax.committedVecIndexManifest()?.vectorCount ?? 0
-        return chunks > indexed + pending
+        await framesWithoutVectorsCount(wax) > 0
+    }
+
+    private static func framesWithoutVectorsCount(_ wax: Wax) async -> UInt64 {
+        UInt64((await unembeddedLiveSources(in: wax)).count)
+    }
+
+    private func unembeddedLiveSources() async -> [SurrogateSourceFrame] {
+        await Self.unembeddedLiveSources(in: wax)
+    }
+
+    private static func unembeddedLiveSources(in wax: Wax) async -> [SurrogateSourceFrame] {
+        let sources = await wax.activeSurrogateSourceFrames()
+        let embedded = await embeddedFrameIds(in: wax)
+        return sources.filter { !embedded.contains($0.id) }
+    }
+
+    private static func embeddedFrameIds(in wax: Wax) async -> Set<UInt64> {
+        var ids = Set<UInt64>()
+        for pending in await wax.pendingEmbeddingMutations() {
+            ids.insert(pending.frameId)
+        }
+        if let staged = await wax.readStagedVecIndexBytes() {
+            ids.formUnion(Self.vecSegmentFrameIds(bytes: staged.bytes))
+        }
+        if let bytes = try? await wax.readCommittedVecIndexBytes() {
+            ids.formUnion(Self.vecSegmentFrameIds(bytes: bytes))
+        }
+        return ids
+    }
+
+    private func refreshEmbeddingCoverage() async {
+        guard case .ready(let provider, let capabilities, _) = embedderLifecycle else {
+            return
+        }
+        let lacksVectors = await Self.storeHasUnembeddedChunks(wax)
+        embedderLifecycle = .ready(
+            provider: provider,
+            capabilities: capabilities,
+            degradedReason: lacksVectors ? "some saved frames have no vectors" : nil
+        )
     }
 
     private func queryEmbeddingResult(

@@ -54,7 +54,16 @@ package struct MatchPlan: Equatable, Sendable {
 
         func flush() {
             if !buffer.isEmpty {
-                tokens.append(String(buffer))
+                let raw = String(buffer)
+                tokens.append(raw)
+                if raw.contains(where: { $0 == "-" || $0 == "_" }) {
+                    for part in raw.split(whereSeparator: { $0 == "-" || $0 == "_" }) {
+                        let piece = String(part)
+                        if !piece.isEmpty {
+                            tokens.append(piece)
+                        }
+                    }
+                }
                 buffer.removeAll(keepingCapacity: true)
             }
         }
@@ -168,7 +177,9 @@ package struct MatchPlan: Equatable, Sendable {
     ]
 
     private static let asciiPunctuationScalars: Set<UnicodeScalar> = {
-        let scalars = "!\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~".unicodeScalars
+        // Keep '-' and '_' as identifier glue so hyphenated tokens stay intact;
+        // split parts are still emitted from `aliasTokens` for OR fallback.
+        let scalars = "!\\\"#$%&'()*+,./:;<=>?@[\\\\]^`{|}~".unicodeScalars
         return Set(scalars)
     }()
 

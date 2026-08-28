@@ -189,12 +189,21 @@ package extension MemoryOrchestrator {
         let sourceSizes = try Self.fileSizes(at: sourceURL)
         let sourceFrames = await wax.frameMetas()
         let sourceWalSize = (await wax.walStats()).walSize
+        let payloadLiveness = await wax.committedPayloadLivenessBytes()
+        let livePayloadBytes = payloadLiveness.totalPayloadBytes &- payloadLiveness.deadPayloadBytes
+        let payloadBytes = options.dropNonLivePayloads
+            ? livePayloadBytes
+            : payloadLiveness.totalPayloadBytes
+        let destinationWalSize = Self.walSizeForLiveSetRewrite(
+            sourceWalSize: sourceWalSize,
+            payloadBytes: payloadBytes
+        )
         let committedLexManifest = await wax.committedLexIndexManifest()
         let committedVecManifest = await wax.committedVecIndexManifest()
         let committedLexBytes = try await wax.readCommittedLexIndexBytes()
         let committedVecBytes = try await wax.readCommittedVecIndexBytes()
 
-        let rewritten = try await Wax.create(at: destinationURL, walSize: sourceWalSize)
+        let rewritten = try await Wax.create(at: destinationURL, walSize: destinationWalSize)
         var droppedPayloadFrames = 0
         do {
             for frame in sourceFrames {
@@ -561,6 +570,17 @@ package extension MemoryOrchestrator {
             searchText: frame.searchText,
             metadata: frame.metadata
         )
+    }
+
+    /// Destination WAL is payload-derived: never clone a large empty source ring,
+    /// never go below `Constants.sessionWalSize` when the source ring allows it,
+    /// and never exceed the source ring.
+    static func walSizeForLiveSetRewrite(sourceWalSize: UInt64, payloadBytes: UInt64) -> UInt64 {
+        let floor = Constants.sessionWalSize
+        let cap = sourceWalSize
+        let boundedFloor = min(floor, cap)
+        let needed = max(boundedFloor, payloadBytes)
+        return min(cap, needed)
     }
 
     private static func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {
