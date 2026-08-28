@@ -28,7 +28,7 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
    - When you learn something durable, call `remember` with concise factual text.
    - For session-scoped writes, pass `session_id` as a **top-level** argument.
    - Never put `session_id` inside `metadata`.
-   - `task_state` is session-local working state: it requires an active session and rejects durable or locked writes. Repair legacy records with `task_state_migrate` into a distinct destination after a dry run; choose quarantine (default) or drop for orphaned records.
+   - `task_state` is session-local working state: it requires an active session and rejects durable or locked writes. Repair legacy records with `task_state_migrate` into a complete distinct-store copy after a dry run; choose quarantine (default) or drop for orphaned records.
 3. **End**
    - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
    - Keep `content` to a concise state summary. Put unfinished work only in `pending_tasks`; do not copy pending tasks into content or store transcripts.
@@ -62,7 +62,7 @@ Response guidance:
 | Stable entities in a knowledge graph | `entity_upsert` / `entity_resolve` |
 | Structured facts that can be retracted later | `fact_assert` / `fact_retract` / `facts_query` |
 | Natural-language knowledge capture (when available) | `knowledge_capture` |
-| Repair legacy durable task state | `task_state_migrate` (distinct destination, dry-run first) |
+| Repair legacy durable task state | `task_state_migrate` (complete distinct-store copy, dry-run first) |
 
 Write quality rules:
 

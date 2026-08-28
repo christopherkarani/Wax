@@ -143,7 +143,7 @@ them in this order:
 | `npx -y waxmcp@latest --transport http ...` | Serve MCP over HTTP for multi-agent setups |
 | `npx -y waxmcp@latest mcp doctor` | Validate setup and run a tools/list smoke check |
 | `npx -y waxmcp@latest vector-health` | Check vector search status of the HTTP endpoint |
-| `npx -y waxmcp@latest task-state-migrate --arg destination_path=/tmp/repaired.wax --arg dry_run=true` | Report and repair legacy durable `task_state` frames into a distinct store |
+| `npx -y waxmcp@latest task-state-migrate --direct-store --store-path ~/.wax/memory.wax --destination-path /tmp/repaired.wax --dry-run` | Report and repair legacy durable `task_state` frames into a distinct, complete store copy |
 | `npx -y waxmcp@latest install` | Locate or build (`--build`) the `wax-mcp` binary |
 | `npx -y waxmcp@latest install-hermes-plugin` | Install the Hermes wax-memory plugin |
 | `npx -y waxmcp@latest install-openclaw-plugin` | Print OpenClaw plugin install steps |

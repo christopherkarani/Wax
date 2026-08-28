@@ -310,6 +310,13 @@ if (forwardedArgs[0] === "install-all-plugins") {
 }
 
 // --- Default: run MCP server ---
+// Maintenance commands that are exposed by wax-cli must be dispatched before
+// the MCP flag translation below. Otherwise the launcher would pass the
+// subcommand token to wax-mcp, which treats it as an unknown server argument.
+if (forwardedArgs[0] === "task-state-migrate") {
+  runBinary("wax-cli", forwardedArgs);
+}
+
 // Translate the legacy 'mcp' prefix to native wax-mcp flags
 const mcpFlags = [];
 let i = 0;

@@ -142,6 +142,17 @@ package actor AgentBrokerService {
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
+        if Self.isTaskStateMigrationRequest(request) {
+            // Migration snapshots and mutates a copy of the long-term store. It
+            // must hold both locks: remember intentionally uses its own mutex so
+            // deferred embedding waits do not block reads, but a migration must
+            // not race that writer while hashing or copying the source.
+            return await commandMutex.withLock { [self] in
+                await rememberMutex.withLock { [self] in
+                    await handleSerialized(request)
+                }
+            }
+        }
         let mutex = Self.isRememberRequest(request) ? rememberMutex : commandMutex
         return await mutex.withLock { [self] in
             await handleSerialized(request)
@@ -156,6 +167,19 @@ package actor AgentBrokerService {
             return false
         }
         if case .remember = command {
+            return true
+        }
+        return false
+    }
+
+    private static func isTaskStateMigrationRequest(_ request: AgentBrokerRequest) -> Bool {
+        guard let command = try? BrokerCommand.decode(
+            command: request.command,
+            arguments: request.arguments
+        ) else {
+            return false
+        }
+        if case .taskStateMigrate = command {
             return true
         }
         return false

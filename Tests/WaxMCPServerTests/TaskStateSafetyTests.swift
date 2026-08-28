@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 #if MCPServer
 import MCP
@@ -160,11 +161,97 @@ func markdownTaskStateImportIsRejectedBeforeDurableWrite() async throws {
 }
 
 @Test
+func taskStateMigrationRejectsUnsafeDestinationPaths() async throws {
+    try await withTaskStateBroker { service, rootURL in
+        let directoryDestination = rootURL.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryDestination, withIntermediateDirectories: false)
+        let directoryResponse = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: ["destination_path": .string(directoryDestination.path)]
+        ))
+        #expect(!directoryResponse.ok)
+
+        let symlinkTarget = rootURL.appendingPathComponent("symlink-target", isDirectory: true)
+        let symlinkParent = rootURL.appendingPathComponent("symlink-parent", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkTarget, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: symlinkParent, withDestinationURL: symlinkTarget)
+        let symlinkResponse = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: [
+                "destination_path": .string(
+                    symlinkParent.appendingPathComponent("repaired.wax").path
+                )
+            ]
+        ))
+        #expect(!symlinkResponse.ok)
+        #expect(!FileManager.default.fileExists(
+            atPath: symlinkTarget.appendingPathComponent("repaired.wax").path
+        ))
+
+        let sourceURL = rootURL.appendingPathComponent("memory.wax")
+        let sourceAlias = rootURL.appendingPathComponent("source-alias.wax")
+        try FileManager.default.linkItem(at: sourceURL, to: sourceAlias)
+        let aliasResponse = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: [
+                "destination_path": .string(sourceAlias.path),
+                "overwrite_destination": .bool(true),
+            ]
+        ))
+        #expect(!aliasResponse.ok)
+
+        let symlinkDestinationTarget = rootURL.appendingPathComponent("destination-target.wax")
+        let symlinkDestination = rootURL.appendingPathComponent("destination-link.wax")
+        try Data("sentinel".utf8).write(to: symlinkDestinationTarget)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkDestination,
+            withDestinationURL: symlinkDestinationTarget
+        )
+        let destinationSymlinkResponse = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: [
+                "destination_path": .string(symlinkDestination.path),
+                "overwrite_destination": .bool(true),
+            ]
+        ))
+        #expect(!destinationSymlinkResponse.ok)
+        #expect(String(data: try Data(contentsOf: symlinkDestinationTarget), encoding: .utf8) == "sentinel")
+
+        let lockedDestination = rootURL.appendingPathComponent("locked-destination.wax")
+        let lockedContents = Data("locked-sentinel".utf8)
+        try lockedContents.write(to: lockedDestination)
+        let lock = try FileLock.acquire(at: lockedDestination, mode: .exclusive)
+        let lockedResponse = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: [
+                "destination_path": .string(lockedDestination.path),
+                "overwrite_destination": .bool(true),
+            ]
+        ))
+        try lock.release()
+        #expect(!lockedResponse.ok)
+        #expect(try Data(contentsOf: lockedDestination) == lockedContents)
+    }
+}
+
+@Test
 func taskStateMigrationIsCopyFirstAuditedAndIdempotent() async throws {
     try await withTaskStateBroker { service, rootURL in
         let started = await service.handle(.init(command: "session_start"))
         let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
         let sessionUUID = try #require(UUID(uuidString: sessionID))
+        let retainedEntity = EntityKey("project:wax")
+        let retainedPredicate = PredicateKey("status")
+        _ = try await service.longTermMemory.upsertEntity(
+            key: retainedEntity,
+            kind: "project",
+            aliases: ["Wax"]
+        )
+        _ = try await service.longTermMemory.assertFact(
+            subject: retainedEntity,
+            predicate: retainedPredicate,
+            object: .string("active")
+        )
         try await service.longTermMemory.remember(
             "legacy task state with valid provenance",
             metadata: [
@@ -213,7 +300,7 @@ func taskStateMigrationIsCopyFirstAuditedAndIdempotent() async throws {
 
         var config = OrchestratorConfig.default
         config.enableVectorSearch = false
-        config.enableStructuredMemory = false
+        config.enableStructuredMemory = true
         let repaired = try await MemoryOrchestrator(at: destination, config: config)
         let repairedDocuments = try await repaired.corpusSourceDocuments()
         #expect(repairedDocuments.count == 3)
@@ -225,6 +312,18 @@ func taskStateMigrationIsCopyFirstAuditedAndIdempotent() async throws {
         #expect(repairedDocuments.contains {
             $0.metadata[MemoryMetadataKeys.migrationAction] == "quarantine" &&
                 $0.metadata[MemoryMetadataKeys.type] == MemoryType.note.rawValue
+        })
+        #expect(try await repaired.entity(forKey: retainedEntity)?.key == retainedEntity)
+        let retainedFacts = try await repaired.facts(
+            about: retainedEntity,
+            predicate: retainedPredicate,
+            limit: 20
+        )
+        #expect(retainedFacts.hits.contains { hit in
+            if case .string(let value) = hit.fact.object {
+                return value == "active"
+            }
+            return false
         })
         try await repaired.close()
 
