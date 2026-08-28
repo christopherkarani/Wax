@@ -41,7 +41,7 @@ struct VectorHealthCommand: AsyncParsableCommand {
                 "semanticProbe": [
                     "passed": primary.canary.passed,
                     "vectorSourceSeen": primary.canary.vectorSourceSeen,
-                    "expectedDocMatched": primary.canary.expectedDocMatched,
+                    "expectedDocMatched": primary.canary.expectedDocMatched ?? NSNull(),
                     "canaryFrameId": primary.canary.frameId ?? NSNull(),
                     "topPreview": primary.canary.topPreview,
                     "topSources": primary.canary.topSources,
@@ -90,7 +90,7 @@ private extension VectorHealthCommand {
     struct SemanticProbeResult {
         let passed: Bool
         let vectorSourceSeen: Bool
-        let expectedDocMatched: Bool
+        let expectedDocMatched: Bool?
         let topPreview: String
         let topSources: [String]
         let queryEmbeddingState: RAGContext.QueryEmbeddingState
@@ -120,14 +120,14 @@ private extension VectorHealthCommand {
                 timeRange: nil
             )
             let vectorSourceSeen = execution.hits.contains { $0.sources.contains(.vector) }
-            let expectedDocMatched = canaryFrame == nil || execution.hits.contains {
-                $0.frameId == canaryFrame?.id
+            let expectedDocMatched = canaryFrame.map { frame in
+                execution.hits.contains { $0.frameId == frame.id }
             }
             let canaryPassed = execution.effectiveMode == .vectorOnly
                 && execution.queryEmbeddingState == .available
                 // A store without a live searchable frame has no frame to
                 // match, but the target query still proves the engine/provider.
-                && (canaryFrame == nil || (vectorSourceSeen && expectedDocMatched))
+                && (canaryFrame == nil || (vectorSourceSeen && expectedDocMatched == true))
             return PrimaryStoreCheck(
                 path: stats.storeURL.path,
                 vectorSearchEnabled: stats.vectorSearchEnabled,

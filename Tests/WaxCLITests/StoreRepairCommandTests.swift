@@ -210,5 +210,24 @@ struct StoreRepairCommandTests {
         ])
         try await command.runAsync()
     }
+
+    @Test
+    func vectorHealthEmptyStoreDoesNotClaimDocumentMatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-repair-health-empty-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("target.wax")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let store = try await Wax.create(at: source)
+        try await store.close()
+
+        let command = try VectorHealthCommand.parse([
+            "--direct-store",
+            "--store-path", source.path,
+            "--format", "json",
+        ])
+        try await command.runAsync()
+    }
 #endif
 }
