@@ -768,7 +768,7 @@ enum WaxMCPAgentPlaybook {
         - Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat.
         - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
         - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
-        - `task_state` is session-local working state: it requires an active top-level `session_id` and rejects `scope: durable`, `durability: durable`, and `locked`. To repair legacy durable task-state frames, run `task_state_migrate` with a distinct `destination_path`; use `dry_run: true` first and choose `orphan_policy: quarantine` (default) or `drop`.
+        - `task_state` is session-local working state: it requires an active top-level `session_id` and rejects `scope: durable`, `durability: durable`, and `locked`. To repair legacy durable task-state frames, run `task_state_migrate` with a distinct `destination_path`; it copies the complete store before changing only task-state trees. Use `dry_run: true` first and choose `orphan_policy: quarantine` (default) or `drop`.
 
         Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`.
 
@@ -801,7 +801,7 @@ enum WaxMCPAgentPlaybook {
 
         Write as you go:
         - This task: `remember` with `scope: session`, `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
-        - `task_state` requires an active session and is always working; never request durable or locked task state. Repair legacy records with `task_state_migrate` into a distinct destination after a dry run.
+        - `task_state` requires an active session and is always working; never request durable or locked task state. Repair legacy records with `task_state_migrate` into a distinct complete-store copy after a dry run.
         - Long-term: `remember` with `scope: durable` (no `session_id`), type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (corrections, decisions, standing prefs, stable repo facts).
 
         Read: `recall` defaults to project scope (no foreign/unlabeled frames). Need cross-project → `scope: global`. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
