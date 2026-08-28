@@ -20,6 +20,8 @@ import Testing
         "CorpusSearchCommand.self",
         "MarkdownExportCommand.self",
         "MarkdownSyncCommand.self",
+        "CompactStoreCommand.self",
+        "EmbedBackfillCommand.self",
     ]
 
     for command in requiredCommands {

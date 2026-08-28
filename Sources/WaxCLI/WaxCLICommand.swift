@@ -26,6 +26,8 @@ struct WaxCLI: ParsableCommand {
             CompactStoreCommand.self,
             EmbedBackfillCommand.self,
             VectorHealthCommand.self,
+            CompactStoreCommand.self,
+            EmbedBackfillCommand.self,
             FlushCommand.self,
             SessionStartCommand.self,
             SessionResumeCommand.self,
