@@ -1208,31 +1208,20 @@ extension AgentBrokerService {
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
+        // Keep the bootstrap wire shape deliberately small.  Callers that
+        // need project/repo, lease state, or the full handoff can issue the
+        // corresponding explicit read after they have the session UUID.
         var payload: [String: AgentBrokerValue] = [
-            "status": .string("ok"),
             "session_id": .from(sessionID),
-            "handoff": Self.compactSessionOpenHandoff(handoffPayload),
-            "project": .from(resolvedProject),
-            "repo": .from(resolvedRepo),
-            "display_text": .string(
-                "Session open. session_id=\(sessionID ?? "nil") project=\(resolvedProject ?? "nil")."
-            ),
+            "handoff": try await Self.compactSessionOpenHandoff(handoffPayload),
         ]
-        if let startObject {
-            if let resumed = startObject["resumed"] {
-                payload["resumed"] = resumed
-            }
-            if let recovered = startObject["recovered_lease"] {
-                payload["recovered_lease"] = recovered
-            }
-        }
         if let recallPayload {
             payload["recall"] = recallPayload
         }
         return .object(payload)
     }
 
-    private static func compactSessionOpenHandoff(_ value: AgentBrokerValue) -> AgentBrokerValue {
+    private static func compactSessionOpenHandoff(_ value: AgentBrokerValue) async throws -> AgentBrokerValue {
         guard let handoff = value.objectValue,
               handoff["found"]?.boolValue == true
         else {
@@ -1244,9 +1233,16 @@ extension AgentBrokerService {
             originalContent,
             maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
         )
-        let compactContent = tokenPrefix(
+        let tokenCounter = try await TokenCounter.shared()
+        let tokenLimitedContent = await tokenCounter.truncate(
             byteLimitedContent,
             maxTokens: BrokerLimits.maxSessionOpenHandoffContentTokens
+        )
+        // Token decoding is normally a prefix, but retain the byte guard as a
+        // final invariant for unusual tokenizer normalization sequences.
+        let compactContent = utf8Prefix(
+            tokenLimitedContent,
+            maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
         )
         let contentTruncated = compactContent != originalContent
 
@@ -1274,7 +1270,7 @@ extension AgentBrokerService {
             "pending_tasks_truncated": .from(pendingTaskTruncations),
             "pending_tasks_omitted": .from(omittedTaskCount),
             "content_bytes": .from(compactContent.utf8.count),
-            "content_tokens": .from(whitespaceTokenCount(compactContent)),
+            "content_tokens": .from(await tokenCounter.count(compactContent)),
         ])
     }
 
@@ -1291,32 +1287,6 @@ extension AgentBrokerService {
             bytes += characterBytes
         }
         return result
-    }
-
-    /// Count stable, whitespace-delimited tokens for the compact bootstrap bound.
-    private static func whitespaceTokenCount(_ text: String) -> Int {
-        text.split(whereSeparator: \.isWhitespace).count
-    }
-
-    private static func tokenPrefix(_ text: String, maxTokens: Int) -> String {
-        guard maxTokens > 0 else { return "" }
-        var tokenCount = 0
-        var insideToken = false
-        var index = text.startIndex
-        while index < text.endIndex {
-            let character = text[index]
-            if character.isWhitespace {
-                insideToken = false
-            } else if !insideToken {
-                guard tokenCount < maxTokens else {
-                    return String(text[..<index])
-                }
-                tokenCount += 1
-                insideToken = true
-            }
-            index = text.index(after: index)
-        }
-        return text
     }
 
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {

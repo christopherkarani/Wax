@@ -131,7 +131,7 @@ Score bands (“~61 → ~80”) are not exit criteria (C9). Exit = contracts bel
 
 #### 2.1 Cheap open and one write API (G4) — C10
 
-- `session_open(project?, agent_id?, run_id?, recall_query?)` → `{session_id, handoff, recall?, project, repo}`.
+- `session_open(project?, agent_id?, run_id?, recall_query?)` → `{session_id, handoff, recall?}`. The default response contains only the session UUID and a bounded handoff projection (content ≤2,048 UTF-8 bytes and ≤256 tokenizer tokens; at most 3 pending tasks, each ≤256 bytes), plus truncation counters/flags. Recall is omitted unless `recall_query` is non-empty and is always capped at 5 results. Use explicit `handoff_latest`, `session_start`, or `recall` when the full metadata or unbounded handoff is required.
 - `remember(content, scope: session|durable, type?, project?)` — stop teaching “omit session_id = durable” as the only rule (keep omit-compat short-term).
 - Canonical verbs in playbook + `AgentInstructions`: `session_open`, `remember`, `recall`, `session_close`, `stats`. Aliases remain callable for compat but are absent from paste blocks and default blurbs.
 

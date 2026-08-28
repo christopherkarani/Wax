@@ -5517,6 +5517,7 @@ func sessionOpenDefaultsToBoundedHandoffWithoutRecall() async throws {
 
         #expect(opened.isError != true)
         let payload = try parseJSONText(in: opened)
+        #expect(Set(payload.keys) == Set(["session_id", "handoff"]))
         #expect(payload["session_id"] as? String != nil)
         #expect(payload["recall"] == nil)
         let handoff = try requireObject(payload, key: "handoff")
@@ -5561,6 +5562,8 @@ func sessionOpenCompactHandoffTruncationPreservesUnicodeBoundaries() async throw
         let handoff = try requireObject(try parseJSONText(in: opened), key: "handoff")
         let compactContent = try requireString(handoff, key: "content")
         #expect(compactContent.utf8.count <= 2_048)
+        let counter = try await TokenCounter.shared()
+        #expect(await counter.count(compactContent) <= 256)
         #expect(content.hasPrefix(compactContent))
         #expect(String(data: Data(compactContent.utf8), encoding: .utf8) == compactContent)
         #expect((handoff["content_truncated"] as? Bool) == true)
