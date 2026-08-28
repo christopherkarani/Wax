@@ -75,6 +75,70 @@ struct StoreRepairCommandTests {
     }
 
     @Test
+    func maintenanceCommandsRejectDirectoryOutputsAndLockedDestinations() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-repair-destination-guards-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("source.wax")
+        let directory = root.appendingPathComponent("output-directory", isDirectory: true)
+        let destination = root.appendingPathComponent("output.wax")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceStore = try await Wax.create(at: source)
+        try await sourceStore.close()
+
+        #expect(throws: (any Error).self) {
+            _ = try CompactStoreCommand.parse([
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", source.path,
+                "--output", directory.path,
+            ])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try EmbedBackfillCommand.parse([
+                "--direct-store",
+                "--store-path", source.path,
+                "--output", directory.path,
+            ])
+        }
+
+        FileManager.default.createFile(atPath: destination.path, contents: Data("old output".utf8))
+        let held = try FileLock.acquire(at: destination, mode: .exclusive, timeout: .seconds(1))
+        defer { try? held.release() }
+
+        let compact = try CompactStoreCommand.parse([
+            "--direct-store",
+            "--no-embedder",
+            "--overwrite",
+            "--store-path", source.path,
+            "--output", destination.path,
+        ])
+        do {
+            try await compact.runAsync()
+            Issue.record("compact-store must fail before replacing a locked output")
+        } catch let error as CLIError {
+            #expect(error.message.contains("locked"))
+        }
+
+        try held.release()
+        let embedBackfill = try EmbedBackfillCommand.parse([
+            "--direct-store",
+            "--overwrite",
+            "--store-path", source.path,
+            "--output", destination.path,
+        ])
+        let heldAgain = try FileLock.acquire(at: destination, mode: .exclusive, timeout: .seconds(1))
+        defer { try? heldAgain.release() }
+        do {
+            try await embedBackfill.runAsync()
+            Issue.record("embed-backfill must fail before replacing a locked output")
+        } catch let error as CLIError {
+            #expect(error.message.contains("locked"))
+        }
+    }
+
+    @Test
     func compactStorePreservesSourceAndDeepVerifiesReopenedDestination() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-repair-compact-\(UUID().uuidString)", isDirectory: true)

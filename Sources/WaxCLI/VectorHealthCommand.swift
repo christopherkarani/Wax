@@ -42,6 +42,7 @@ struct VectorHealthCommand: AsyncParsableCommand {
                     "passed": primary.canary.passed,
                     "vectorSourceSeen": primary.canary.vectorSourceSeen,
                     "expectedDocMatched": primary.canary.expectedDocMatched,
+                    "canaryFrameId": primary.canary.frameId ?? NSNull(),
                     "topPreview": primary.canary.topPreview,
                     "topSources": primary.canary.topSources,
                     "queryEmbeddingState": primary.canary.queryEmbeddingState.rawValue,
@@ -94,6 +95,7 @@ private extension VectorHealthCommand {
         let topSources: [String]
         let queryEmbeddingState: RAGContext.QueryEmbeddingState
         let effectiveMode: SearchMode
+        let frameId: UInt64?
     }
 
     func checkPrimaryStore() async throws -> PrimaryStoreCheck {
@@ -107,19 +109,25 @@ private extension VectorHealthCommand {
             requireVector: true
         ) { memory in
             let stats = await memory.runtimeStats()
+            let canaryFrame = await memory.healthCanaryFrame()
+            let canaryQuery = canaryFrame?.searchText ?? "wax vector health canary"
+            let canaryFilter = canaryFrame.map { FrameFilter(frameIds: Set([$0.id])) }
             let execution = try await memory.searchExecution(
-                query: "wax vector health canary",
+                query: canaryQuery,
                 mode: .vectorOnly,
-                topK: 5,
-                frameFilter: nil,
+                topK: 1,
+                frameFilter: canaryFilter,
                 timeRange: nil
             )
             let vectorSourceSeen = execution.hits.contains { $0.sources.contains(.vector) }
+            let expectedDocMatched = canaryFrame == nil || execution.hits.contains {
+                $0.frameId == canaryFrame?.id
+            }
             let canaryPassed = execution.effectiveMode == .vectorOnly
                 && execution.queryEmbeddingState == .available
-                // An empty store has no frame to return, but the actual target
-                // query still proves the provider and vector engine are live.
-                && (stats.frameCount == 0 || vectorSourceSeen)
+                // A store without a live searchable frame has no frame to
+                // match, but the target query still proves the engine/provider.
+                && (canaryFrame == nil || (vectorSourceSeen && expectedDocMatched))
             return PrimaryStoreCheck(
                 path: stats.storeURL.path,
                 vectorSearchEnabled: stats.vectorSearchEnabled,
@@ -129,11 +137,12 @@ private extension VectorHealthCommand {
                 canary: SemanticProbeResult(
                     passed: canaryPassed,
                     vectorSourceSeen: vectorSourceSeen,
-                    expectedDocMatched: !execution.hits.isEmpty,
+                    expectedDocMatched: expectedDocMatched,
                     topPreview: execution.hits.first?.previewText ?? "",
                     topSources: (execution.hits.first?.sources ?? []).map(\.rawValue),
                     queryEmbeddingState: execution.queryEmbeddingState,
-                    effectiveMode: execution.effectiveMode
+                    effectiveMode: execution.effectiveMode,
+                    frameId: canaryFrame?.id,
                 )
             )
         }

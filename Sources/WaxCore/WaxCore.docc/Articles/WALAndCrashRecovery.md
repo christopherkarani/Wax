@@ -12,7 +12,7 @@ The WAL (Write-Ahead Log) is a fixed-size circular ring buffer that records all 
 
 ## Ring Buffer Architecture
 
-The WAL occupies a contiguous region starting at file offset 8 KiB. Its default size is 8 MiB, configurable at creation time. The ring buffer uses two pointers:
+The WAL occupies a contiguous region starting at file offset 8 KiB. New long-term stores use an 8 MiB WAL by default, configurable at creation time. Broker session stores use a 4 MiB WAL. Existing stores retain their recorded size when opened; a copy-first compaction can reclaim a legacy 256 MiB ring. The ring buffer uses two pointers:
 
 - **Write position** — where the next record will be written
 - **Checkpoint position** — the boundary of committed records

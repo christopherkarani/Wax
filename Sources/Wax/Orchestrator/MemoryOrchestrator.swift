@@ -1357,6 +1357,13 @@ package actor MemoryOrchestrator {
         )
     }
 
+    /// Select a real live searchable frame for operator health canaries. The
+    /// caller can then constrain the vector query to this ID instead of
+    /// validating a synthetic temporary store.
+    package func healthCanaryFrame() async -> SurrogateSourceFrame? {
+        await wax.activeSurrogateSourceFrames().first
+    }
+
     /// True when query embedding can run now (``.active`` / ``.degraded``).
     package func isQueryEmbedderReady() async -> Bool {
         embeddingStatus.isQueryEmbedderConfigured
