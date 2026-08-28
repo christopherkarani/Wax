@@ -1212,6 +1212,7 @@ package actor MemoryOrchestrator {
             var item = item
             let accessReasons = MemorySemantics.accessReasons(
                 stats: accessStatsMap[item.frameId],
+                metadata: item.metadata,
                 nowMs: recallNowMs
             ).reasons
             if !accessReasons.isEmpty {
@@ -1290,13 +1291,22 @@ package actor MemoryOrchestrator {
             embeddingAvailable: queryEmbedding.embedding != nil
         )
 
+        // Access-aware ranking needs additional candidates so a stale top hit
+        // can be displaced by a close, recently/frequently used result. The
+        // candidate window is bounded and applies only when the feature is on.
+        let searchTopK: Int
+        if !config.enableAccessStatsScoring || topK > 16 {
+            searchTopK = topK
+        } else {
+            searchTopK = topK * 3
+        }
         let request = SearchRequest(
             query: trimmed,
             embedding: queryEmbedding.embedding,
             vectorEnginePreference: preference,
             vectorSearchTimeout: config.vectorSearchTimeout,
             mode: searchMode,
-            topK: topK,
+            topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
             scopeContext: config.defaultScopeContext,
@@ -1310,9 +1320,19 @@ package actor MemoryOrchestrator {
         } else {
             [:]
         }
-        let hits = response.results.map { result in
+        let scoredResults = config.enableAccessStatsScoring
+            ? AccessFrequencyRanker.rerank(
+                results: response.results,
+                query: trimmed,
+                accessStats: accessStatsMap,
+                nowMs: searchNowMs,
+                maxWindow: searchTopK
+            )
+            : response.results
+        let hits = scoredResults.prefix(topK).map { result in
             let accessReasons = MemorySemantics.accessReasons(
                 stats: accessStatsMap[result.frameId],
+                metadata: result.metadata,
                 nowMs: searchNowMs
             ).reasons
             return MemorySearchHit(

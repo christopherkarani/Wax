@@ -28,12 +28,23 @@ package struct FastRAGContextBuilder: Sendable {
         let counter = try await TokenCounter.shared()
 
         // 1) Run unified search
+        // Access-aware ranking needs a little headroom so a stale top result can
+        // be displaced by a recently/frequently used candidate just outside the
+        // normal context window. The bound keeps enabled-mode work predictable.
+        let searchTopK: Int
+        if accessStatsManager == nil {
+            searchTopK = clamped.searchTopK
+        } else if clamped.searchTopK <= 24 {
+            searchTopK = clamped.searchTopK * 2
+        } else {
+            searchTopK = clamped.searchTopK
+        }
         let request = SearchRequest(
             query: query,
             embedding: embedding,
             vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
-            topK: clamped.searchTopK,
+            topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
             scopeContext: scopeContext,
@@ -45,20 +56,38 @@ package struct FastRAGContextBuilder: Sendable {
         } else {
             try await wax.search(request)
         }
+        let scoringMetadata: [UInt64: FrameMeta] = if accessStatsManager != nil,
+                                                        clamped.deterministicNowMs == nil {
+            await wax.frameMetas(frameIds: response.results.map(\.frameId))
+        } else {
+            [:]
+        }
+        let accessScoringNowMs = clamped.deterministicNowMs
+            ?? scoringMetadata.values.map(\.timestamp).max()
+            ?? 0
+        let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
+            await accessStatsManager.getStats(frameIds: response.results.map { $0.frameId })
+        } else {
+            [:]
+        }
+        let accessRankedResults = accessStatsManager == nil
+            ? response.results
+            : AccessFrequencyRanker.rerank(
+                results: response.results,
+                query: query,
+                accessStats: accessStatsMap,
+                nowMs: accessScoringNowMs,
+                maxWindow: searchTopK
+            )
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking
             ? Self.orderCandidatesForAnswer(
-                results: response.results,
+                results: accessRankedResults,
                 query: query,
                 config: clamped,
                 analyzer: queryAnalyzer
             )
-            : response.results
-        let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
-            await accessStatsManager.getStats(frameIds: rankedResults.map { $0.frameId })
-        } else {
-            [:]
-        }
+            : accessRankedResults
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0
@@ -122,6 +151,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -262,6 +292,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -356,6 +387,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -393,13 +425,18 @@ package struct FastRAGContextBuilder: Sendable {
     private func enrichedExplanations(
         _ existing: [String],
         frameId: UInt64,
+        metadata: [String: String],
         accessStatsMap: [UInt64: FrameAccessStats],
         nowMs: Int64?
     ) -> [String] {
         // Unknown "now" skips access-reason enrichment: a zero sentinel would mark
         // every frame with access stats as "recently used".
         let accessReasons = nowMs.map {
-            MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: $0).reasons
+            MemorySemantics.accessReasons(
+                stats: accessStatsMap[frameId],
+                metadata: metadata,
+                nowMs: $0
+            ).reasons
         } ?? []
         var seen = Set<String>()
         var combined: [String] = []
