@@ -497,6 +497,67 @@ func waitUntilReadyForRememberThrowsWhenCompileFails() async throws {
     }
 }
 
+@Test
+func framesWithoutVectorsCountsUnembeddedSourceFramesNotChunks() async throws {
+    try await TempFiles.withTempFile { url in
+        let provider = DeterministicTextEmbedder()
+        let staleText = "this source frame has a vector before deletion"
+        let currentText = "this live source frame still needs a vector"
+
+        do {
+            let seeded = try await Memory(
+                at: url,
+                config: .init(
+                    requireOnDeviceProviders: false,
+                    embedding: .custom(provider)
+                )
+            )
+            try await seeded.save(staleText)
+            try await seeded.flush()
+            try await seeded.close()
+        }
+
+        do {
+            let textOnly = try await Memory(
+                at: url,
+                config: .init(
+                    enableVectorSearch: false,
+                    requireOnDeviceProviders: false
+                )
+            )
+            let staleResults = try await textOnly.search(
+                staleText,
+                options: .init(topK: 1, mode: .textOnly)
+            )
+            guard let staleFrameId = staleResults.items.first?.frameId else {
+                Issue.record("setup: expected the vectorized source frame to be searchable")
+                try await textOnly.close()
+                return
+            }
+            try await textOnly.delete(frameID: staleFrameId)
+            try await textOnly.save(currentText)
+            try await textOnly.flush()
+            try await textOnly.close()
+        }
+
+        let reopened = try await Memory(
+            at: url,
+            config: .init(
+                requireOnDeviceProviders: false,
+                embedding: .custom(provider)
+            )
+        )
+        let stats = await reopened.stats()
+        #expect(stats.framesWithoutVectors == 1)
+        guard case .degraded = stats.embeddingStatus else {
+            Issue.record("expected degraded coverage for the live source without a vector, got \(stats.embeddingStatus)")
+            try await reopened.close()
+            return
+        }
+        try await reopened.close()
+    }
+}
+
 private enum TestReadinessError: Error {
     case boom
 }

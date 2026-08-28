@@ -2295,23 +2295,20 @@ package actor MemoryOrchestrator {
     }
 
     private static func framesWithoutVectorsCount(_ wax: Wax) async -> UInt64 {
-        let chunks = await wax.liveChunkCount()
-        guard chunks > 0 else { return 0 }
-        let pending = UInt64(await wax.pendingEmbeddingMutations().count)
-        let indexed = await wax.committedVecIndexManifest()?.vectorCount ?? 0
-        if chunks > indexed + pending {
-            return chunks - indexed - pending
-        }
-        return 0
+        UInt64((await unembeddedLiveSources(in: wax)).count)
     }
 
     private func unembeddedLiveSources() async -> [SurrogateSourceFrame] {
+        await Self.unembeddedLiveSources(in: wax)
+    }
+
+    private static func unembeddedLiveSources(in wax: Wax) async -> [SurrogateSourceFrame] {
         let sources = await wax.activeSurrogateSourceFrames()
-        let embedded = await embeddedFrameIds()
+        let embedded = await embeddedFrameIds(in: wax)
         return sources.filter { !embedded.contains($0.id) }
     }
 
-    private func embeddedFrameIds() async -> Set<UInt64> {
+    private static func embeddedFrameIds(in wax: Wax) async -> Set<UInt64> {
         var ids = Set<UInt64>()
         for pending in await wax.pendingEmbeddingMutations() {
             ids.insert(pending.frameId)
