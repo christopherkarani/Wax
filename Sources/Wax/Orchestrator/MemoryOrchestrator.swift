@@ -1758,9 +1758,18 @@ package actor MemoryOrchestrator {
         requestedMode: SearchMode?
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
-        let resolvedRequestedMode = requestedMode ?? recallConfig.searchMode
-        let embeddingPolicy = requestedMode.map(Self.queryEmbeddingPolicy(for:)) ?? .ifAvailable
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let implicitExactIntent = requestedMode == nil
+            && RuleBasedQueryClassifier.isExactIntentQuery(trimmedQuery)
+        let resolvedRequestedMode = requestedMode
+            ?? (implicitExactIntent ? .textOnly : recallConfig.searchMode)
+        let embeddingPolicy: QueryEmbeddingPolicy = if let requestedMode {
+            Self.queryEmbeddingPolicy(for: requestedMode)
+        } else if implicitExactIntent {
+            .never
+        } else {
+            .ifAvailable
+        }
         guard !trimmedQuery.isEmpty else {
             return RecallExecution(
                 context: RAGContext(query: query, items: [], totalTokens: 0),
