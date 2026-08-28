@@ -18,7 +18,7 @@ public actor Memory {
             enableTextSearch: Bool = true,
             enableVectorSearch: Bool = true,
             enableStructuredMemory: Bool = false,
-            enableAccessStatsScoring: Bool = false,
+            enableAccessStatsScoring: Bool = true,
             enableAsyncEnrichment: Bool = false,
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,

@@ -34,7 +34,7 @@ package actor AgentBrokerService {
         noEmbedder: Bool,
         embedderChoice: String,
         requireVector: Bool,
-        enableAccessStatsScoring: Bool = false,
+        enableAccessStatsScoring: Bool = true,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         embedderOverride: (any EmbeddingProvider)? = nil,
         readiness: EmbeddingReadiness = .shared,

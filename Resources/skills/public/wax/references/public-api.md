@@ -24,7 +24,7 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (false), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`.
 
 ### Memory.EmbeddingSource
 

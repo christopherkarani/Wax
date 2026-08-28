@@ -3,6 +3,12 @@ import Testing
 @testable import Wax
 
 @Test
+func accessFrequencyScoringIsEnabledByDefaultAtPublicConfig() {
+    #expect(Memory.Config.default.enableAccessStatsScoring)
+    #expect(OrchestratorConfig.default.enableAccessStatsScoring)
+}
+
+@Test
 func accessFrequencyDisabledModeLeavesCandidatesUntouched() {
     let results = [
         makeAccessRankingResult(frameId: 1, score: 0.40, preview: "alpha"),
