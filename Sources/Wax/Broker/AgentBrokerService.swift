@@ -1140,6 +1140,10 @@ extension AgentBrokerService {
     }
 
     /// `handoff_latest` + `session_start` + optional `recall` in one round-trip (Phase 2).
+    ///
+    /// The handoff is intentionally projected to a bounded bootstrap shape.
+    /// Callers that need frame metadata or the complete pending-task list can
+    /// use `handoff_latest` explicitly.
     func sessionOpen(_ command: BrokerCommand.SessionOpen) async throws -> AgentBrokerValue {
         let project = command.project
         let repo = command.repo
@@ -1195,6 +1199,7 @@ extension AgentBrokerService {
             var recallArgs: [String: AgentBrokerValue] = [
                 "query": .string(recallQuery),
                 "scope": .string("project"),
+                "limit": .from(5),
             ]
             if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
             if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
@@ -1206,7 +1211,7 @@ extension AgentBrokerService {
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .from(sessionID),
-            "handoff": handoffPayload,
+            "handoff": Self.compactSessionOpenHandoff(handoffPayload),
             "project": .from(resolvedProject),
             "repo": .from(resolvedRepo),
             "display_text": .string(
@@ -1225,6 +1230,93 @@ extension AgentBrokerService {
             payload["recall"] = recallPayload
         }
         return .object(payload)
+    }
+
+    private static func compactSessionOpenHandoff(_ value: AgentBrokerValue) -> AgentBrokerValue {
+        guard let handoff = value.objectValue,
+              handoff["found"]?.boolValue == true
+        else {
+            return value
+        }
+
+        let originalContent = handoff["content"]?.stringValue ?? ""
+        let byteLimitedContent = utf8Prefix(
+            originalContent,
+            maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
+        )
+        let compactContent = tokenPrefix(
+            byteLimitedContent,
+            maxTokens: BrokerLimits.maxSessionOpenHandoffContentTokens
+        )
+        let contentTruncated = compactContent != originalContent
+
+        let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let boundedTasks = originalTasks
+            .prefix(BrokerLimits.maxSessionOpenPendingTasks)
+            .map { task in
+                utf8Prefix(task, maxBytes: BrokerLimits.maxSessionOpenPendingTaskBytes)
+            }
+        let pendingTaskTruncations = zip(
+            originalTasks.prefix(BrokerLimits.maxSessionOpenPendingTasks),
+            boundedTasks
+        ).reduce(into: 0) { count, task in
+            if task.0 != task.1 { count += 1 }
+        }
+        let omittedTaskCount = max(0, originalTasks.count - boundedTasks.count)
+        let anyTruncated = contentTruncated || pendingTaskTruncations > 0 || omittedTaskCount > 0
+
+        return .object([
+            "found": .bool(true),
+            "content": .string(compactContent),
+            "pending_tasks": .array(boundedTasks.map { .string($0) }),
+            "truncated": .bool(anyTruncated),
+            "content_truncated": .bool(contentTruncated),
+            "pending_tasks_truncated": .from(pendingTaskTruncations),
+            "pending_tasks_omitted": .from(omittedTaskCount),
+            "content_bytes": .from(compactContent.utf8.count),
+            "content_tokens": .from(whitespaceTokenCount(compactContent)),
+        ])
+    }
+
+    /// Return a prefix without splitting a user-visible Unicode grapheme.
+    private static func utf8Prefix(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        var bytes = 0
+        var result = String()
+        result.reserveCapacity(min(text.utf8.count, maxBytes))
+        for character in text {
+            let characterBytes = String(character).utf8.count
+            guard bytes + characterBytes <= maxBytes else { break }
+            result.append(character)
+            bytes += characterBytes
+        }
+        return result
+    }
+
+    /// Count stable, whitespace-delimited tokens for the compact bootstrap bound.
+    private static func whitespaceTokenCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
+    }
+
+    private static func tokenPrefix(_ text: String, maxTokens: Int) -> String {
+        guard maxTokens > 0 else { return "" }
+        var tokenCount = 0
+        var insideToken = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character.isWhitespace {
+                insideToken = false
+            } else if !insideToken {
+                guard tokenCount < maxTokens else {
+                    return String(text[..<index])
+                }
+                tokenCount += 1
+                insideToken = true
+            }
+            index = text.index(after: index)
+        }
+        return text
     }
 
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {
