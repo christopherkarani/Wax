@@ -28,6 +28,7 @@ struct StatsCommand: AsyncParsableCommand {
             case .text:
                 print("Store: \(brokerString(payload, "storePath") ?? store.storePath)")
                 print("Frames: \(brokerInt(payload, "frameCount") ?? 0) (\(brokerInt(payload, "pendingFrames") ?? 0) pending)")
+                print("Frames without vectors: \(brokerInt64(payload, "framesWithoutVectors") ?? 0)")
                 print("Generation: \(brokerInt(payload, "generation") ?? 0)")
                 let diskBytes = Int64(brokerInt64(payload, "diskBytes") ?? 0)
                 print("Disk: \(ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))")
@@ -70,6 +71,7 @@ struct StatsCommand: AsyncParsableCommand {
                 printJSON([
                     "frameCount": stats.frameCount,
                     "pendingFrames": stats.pendingFrames,
+                    "framesWithoutVectors": stats.framesWithoutVectors,
                     "generation": stats.generation,
                     "diskBytes": diskBytes,
                     "storePath": stats.storeURL.path,
@@ -103,6 +105,7 @@ struct StatsCommand: AsyncParsableCommand {
             case .text:
                 print("Store: \(stats.storeURL.path)")
                 print("Frames: \(stats.frameCount) (\(stats.pendingFrames) pending)")
+                print("Frames without vectors: \(stats.framesWithoutVectors)")
                 print("Generation: \(stats.generation)")
                 print("Disk: \(ByteCountFormatter.string(fromByteCount: Int64(diskBytes), countStyle: .file))")
                 print("MiniLM compiled: \(compiled ? "yes" : "no")")

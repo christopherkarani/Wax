@@ -968,6 +968,7 @@ extension AgentBrokerService {
         return .object([
             "frameCount": .from(stats.frameCount),
             "pendingFrames": .from(stats.pendingFrames),
+            "framesWithoutVectors": .from(stats.framesWithoutVectors),
             "generation": .from(stats.generation),
             "diskBytes": .from(diskBytes),
             "storePath": .string(stats.storeURL.path),
