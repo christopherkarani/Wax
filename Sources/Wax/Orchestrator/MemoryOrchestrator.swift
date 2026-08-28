@@ -2583,11 +2583,12 @@ package actor MemoryOrchestrator {
     }
 
     private func persistAccessStatsIfNeeded() async throws {
-        guard let exported = await accessStatsManager.exportStatsIfDirty() else {
+        guard let snapshot = await accessStatsManager.exportStatsSnapshotIfDirty() else {
             return
         }
+        let exported = snapshot.stats
         guard !exported.isEmpty else {
-            await accessStatsManager.markPersisted()
+            _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
             return
         }
         let payload = try JSONEncoder().encode(exported)
@@ -2619,6 +2620,9 @@ package actor MemoryOrchestrator {
                 )
             }
         }
-        await accessStatsManager.markPersisted()
+        // A search may have recorded newer accesses while the WAL writes
+        // above awaited. Only acknowledge the revision we actually persisted;
+        // a newer revision remains dirty for the next flush.
+        _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
     }
 }

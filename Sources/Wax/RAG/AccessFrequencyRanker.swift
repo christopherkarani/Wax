@@ -42,10 +42,10 @@ package enum AccessFrequencyRanker {
             // lexical lane. Never let a stale-access penalty undo that guarantee.
             let adjustment = exact ? max(0, base.adjustment) : base.adjustment
             var updated = result
-            // Search scores are published as normalized values. Keep the
-            // weak access signal from producing an out-of-contract score when
-            // a candidate already sits at either boundary.
-            updated.score = min(1, max(0, result.score + adjustment))
+            // Search scores are rank keys rather than probabilities. Preserve
+            // the existing score scale and apply access as a bounded offset;
+            // the composite ordering below remains stable for ties.
+            updated.score = result.score + adjustment
 
             var explanations = result.explanations
             if !base.reasons.isEmpty {

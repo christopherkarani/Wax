@@ -135,11 +135,11 @@ func accessFrequencyAdjustmentIsBoundedAgainstRichGetRicherAmplification() {
 }
 
 @Test
-func accessFrequencyKeepsPublishedScoreInUnitInterval() {
+func accessFrequencyPreservesPublishedScoreScale() {
     let nowMs: Int64 = 1_700_000_000_000
     var stats = FrameAccessStats(frameId: 1, nowMs: nowMs)
     stats.accessCount = UInt32.max
-    let result = makeAccessRankingResult(frameId: 1, score: 0.99, preview: "boundary")
+    let result = makeAccessRankingResult(frameId: 1, score: 4.0, preview: "boundary")
 
     let ranked = AccessFrequencyRanker.rerank(
         results: [result],
@@ -149,8 +149,8 @@ func accessFrequencyKeepsPublishedScoreInUnitInterval() {
         maxWindow: 1
     )
 
-    #expect(ranked[0].score >= 0)
-    #expect(ranked[0].score <= 1)
+    #expect(ranked[0].score > result.score)
+    #expect(ranked[0].score == result.score + AccessFrequencyRanker.maximumAdjustment)
 }
 
 @Test
@@ -165,6 +165,17 @@ func accessFrequencyCounterSaturatesAtUInt32Maximum() async {
     })
     await manager.recordAccess(frameId: 1, nowMs: 1_700_000_000_001)
     #expect(await manager.getStats(frameId: 1)?.accessCount == UInt32.max)
+}
+
+@Test
+func accessFrequencyPersistenceAcknowledgesOnlyTheSnapshotRevision() async {
+    let manager = AccessStatsManager()
+    await manager.recordAccess(frameId: 1, nowMs: 1_700_000_000_000)
+    let snapshot = await manager.exportStatsSnapshotIfDirty()
+    #expect(snapshot != nil)
+    await manager.recordAccess(frameId: 1, nowMs: 1_700_000_000_001)
+    #expect(await manager.markPersisted(ifRevision: snapshot?.revision ?? 0) == false)
+    #expect(await manager.exportStatsIfDirty() != nil)
 }
 
 @Test

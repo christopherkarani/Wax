@@ -88,6 +88,10 @@ package struct FastRAGContextBuilder: Sendable {
                 analyzer: queryAnalyzer
             )
             : accessRankedResults
+        // The search request may be overfetched only to give access-aware
+        // reranking headroom. Context assembly still honors the caller's
+        // requested result count.
+        let contextResults = Array(rankedResults.prefix(max(0, clamped.searchTopK)))
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0
@@ -106,7 +110,7 @@ package struct FastRAGContextBuilder: Sendable {
             && clamped.maxSurrogates > 0
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
-        let sourceFrameIds = rankedResults.map { $0.frameId }
+        let sourceFrameIds = contextResults.map { $0.frameId }
         let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? await wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
@@ -129,7 +133,7 @@ package struct FastRAGContextBuilder: Sendable {
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
-            for result in rankedResults {
+            for result in contextResults {
                 if let expanded = try await expansionText(
                     frameId: result.frameId,
                     wax: wax,
@@ -183,7 +187,7 @@ package struct FastRAGContextBuilder: Sendable {
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
             orderedSurrogateIds.reserveCapacity(maxToLoad)
-            for result in rankedResults {
+            for result in contextResults {
                 if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 guard let surrogateId = surrogateMap[result.frameId] else { continue }
                 orderedSurrogateIds.append(surrogateId)
@@ -224,7 +228,7 @@ package struct FastRAGContextBuilder: Sendable {
             let frameMetaMap = sourceFrameMetasTask
 
             // Parallel tier selection and tier extraction, preserving response order.
-            let surrogateWorkItems = rankedResults
+            let surrogateWorkItems = contextResults
                 .compactMap { result -> (result: SearchResponse.Result, surrogateFrameId: UInt64)? in
                     if let expandedFrameId, result.frameId == expandedFrameId { return nil }
                     guard let surrogateId = surrogateMap[result.frameId] else { return nil }
@@ -316,7 +320,7 @@ package struct FastRAGContextBuilder: Sendable {
             var snippetCandidates: [(result: SearchResponse.Result, preview: String)] = []
             snippetCandidates.reserveCapacity(min(clamped.maxSnippets, 32))
 
-            for result in rankedResults {
+            for result in contextResults {
                 if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 if surrogateSourceFrameIds.contains(result.frameId) { continue }
                 guard snippetCount < clamped.maxSnippets else { break }

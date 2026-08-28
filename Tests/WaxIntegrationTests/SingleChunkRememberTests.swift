@@ -9,6 +9,9 @@ func singleChunkRememberAddsOneFrame() async throws {
         var config = OrchestratorConfig.default
         config.enableVectorSearch = false
         config.enableTextSearch = true
+        // This characterization test asserts document-frame writes; access
+        // statistics are persisted as a separate system frame when enabled.
+        config.enableAccessStatsScoring = false
 
         let content = "canary-7f3a91 single-chunk remember must add one frame"
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
