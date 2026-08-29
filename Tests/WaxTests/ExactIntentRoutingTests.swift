@@ -94,6 +94,7 @@ func exactIntentClassifierCoversIdentifiersAndQuotedNamesWithoutBareWordPromotio
         "arch/f1fd967c/T2",
         "#PR-145",
         "AgentBrokerClient",
+        "HYBRID_DEFAULT_QUERY_MARKER",
     ]
     for query in identifiers {
         #expect(RuleBasedQueryClassifier.isExactIntentQuery(query))
