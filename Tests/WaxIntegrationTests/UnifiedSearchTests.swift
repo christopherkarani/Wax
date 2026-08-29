@@ -155,6 +155,27 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+@Test func extremeTopKUsesBoundedOverfetchWithoutIntegerOverflow() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+        let frameID = try await wax.put(Data("WAX-OVERFLOW-CANARY".utf8))
+        try await text.indexText(frameId: frameID, text: "WAX-OVERFLOW-CANARY")
+        try await text.commit()
+
+        let response = try await wax.search(
+            SearchRequest(
+                query: "WAX-OVERFLOW-CANARY",
+                mode: .textOnly,
+                topK: Int.max
+            )
+        )
+        #expect(response.results.first?.frameId == frameID)
+
+        try await wax.close()
+    }
+}
+
 @Test func structuredSearchTimeRangeBeforeDoesNotOverrideExplicitAsOf() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

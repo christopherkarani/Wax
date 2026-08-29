@@ -1223,6 +1223,21 @@ func handoffRoundTripWorksOnBroker() async throws {
     }
 }
 
+@Test
+func statsPayloadIncludesFramesWithoutVectors() async throws {
+    try await withIsolatedBroker { service, _ in
+        let response = await service.handle(.init(command: "stats"))
+        #expect(response.ok == true, "stats failed: \(response.error ?? "nil")")
+
+        let data = try JSONEncoder().encode(response)
+        let json = try JSONSerialization.jsonObject(with: data)
+        let responseObject = try #require(json as? [String: Any])
+        let payload = try #require(responseObject["payload"] as? [String: Any])
+        let framesWithoutVectors = try #require(payload["framesWithoutVectors"] as? NSNumber)
+        #expect(framesWithoutVectors.int64Value >= 0)
+    }
+}
+
 private func recallItem(
     frameId: UInt64,
     score: Float,

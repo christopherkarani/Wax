@@ -215,7 +215,7 @@ private func runFrameStore(storeURL: URL) async throws {
     let payloadText = "FrameStore stress payload \(UUID().uuidString)"
     let payload = Data(payloadText.utf8)
 
-    // Use a modest WAL so stress runs stay light; production default is 256 MiB.
+    // Use a modest WAL so stress runs stay light; production default is 8 MiB.
     let store = try await FrameStore.create(at: storeURL, walSize: 4 * 1024 * 1024)
     let frameID = try await store.put(payload, kind: "note", metadata: ["demo": "framestore"])
     print("PUT_ID \(frameID)")

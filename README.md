@@ -283,6 +283,36 @@ Then send JSON-line commands:
 > [!NOTE]
 > Vector search requires the embedder. If it's unavailable, hybrid/vector commands fail loudly instead of silently falling back to text-only mode.
 
+### Repair a store safely
+
+The offline maintenance commands always require an explicit source, destination,
+and direct-file opt-in. They take a locked, byte-verified copy of the source,
+perform the work in a staging file, deep-verify it, and atomically publish the
+destination. The source is not modified. A destination that already exists must
+be a regular, unlocked file and requires `--overwrite`; symlink and live-store
+aliases are rejected.
+
+```bash
+# Compact a degraded or legacy store without touching the source.
+wax-cli compact-store \
+  --direct-store \
+  --no-embedder \
+  --store-path /path/to/source.wax \
+  --output /path/to/compacted.wax
+
+# Backfill missing vectors on a verified copy (requires an embedder build).
+wax-cli embed-backfill \
+  --direct-store \
+  --store-path /path/to/source.wax \
+  --output /path/to/backfilled.wax
+```
+
+Use `--overwrite` only when replacing an existing destination is intentional.
+Do not point either command at `~/.wax/memory.wax` or another broker-managed
+live-store path; stop attached writers first and use `--format json` when the
+result is consumed by automation. The commands report `sourceUnchanged` and
+`deepVerified` on successful JSON output.
+
 ---
 
 ## Agent Quick Start

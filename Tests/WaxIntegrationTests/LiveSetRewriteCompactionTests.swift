@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import Wax
 import WaxCore
+import WaxVectorSearch
 
 @Test
 func rewriteLiveSetDropsNonLivePayloadsAndPreservesFrameState() async throws {
@@ -94,6 +95,233 @@ func rewriteLiveSetDropsNonLivePayloadsAndPreservesFrameState() async throws {
 }
 
 @Test
+func rewriteLiveSetWalSizeFloorsAtSessionSizeAndCapsAtSourceRing() {
+    let session = Constants.sessionWalSize
+    let defaultRing = Constants.defaultWalSize
+
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: 107_000
+        ) == session
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: session + 1
+        ) == session + 1
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: defaultRing + 1
+        ) == defaultRing
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: session / 2,
+            payloadBytes: 1
+        ) == session / 2
+    )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: 1,
+            largestFrameWalBytes: session + 1024,
+            totalFrameWalBytes: session + 2048
+        ) == session + 2048
+    )
+}
+
+@Test
+func rewriteLiveSetAccountsForLargeFrameMetadataInWalSize() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 8 * 1024 * 1024
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        let largeMetadata = Metadata([
+            "large": String(repeating: "m", count: 4 * 1024 * 1024)
+        ])
+        _ = try await wax.put(
+            Data("metadata-rich frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "metadata-rich frame",
+                metadata: largeMetadata
+            )
+        )
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        let wal = await rewritten.walStats()
+        #expect(wal.walSize > Constants.sessionWalSize)
+        #expect(wal.walSize <= UInt64(sourceWalSize))
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
+}
+
+@Test
+func rewriteLiveSetBatchesWhenAggregateFrameWalExceedsSourceRing() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 1 * 1024 * 1024
+        let metadataValue = String(repeating: "m", count: 32 * 1024)
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        for index in 0..<64 {
+            _ = try await wax.put(
+                Data("metadata-rich frame \(index)".utf8),
+                options: FrameMetaSubset(
+                    searchText: "metadata-rich frame \(index)",
+                    metadata: Metadata(["large": metadataValue])
+                )
+            )
+        }
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        let wal = await rewritten.walStats()
+        #expect(wal.walSize == UInt64(sourceWalSize))
+        #expect((await rewritten.frameMetas()).count == 64)
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
+}
+
+@Test
+func rewriteLiveSetPreflightsLargeNextFrameBeforeAppending() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 8 * 1024 * 1024
+        let firstMetadata = String(repeating: "a", count: 3 * 1024 * 1024)
+        let secondMetadata = String(repeating: "b", count: 4 * 1024 * 1024)
+        let thirdMetadata = String(repeating: "c", count: 2 * 1024 * 1024)
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        _ = try await wax.put(
+            Data("first large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "first large metadata frame",
+                metadata: Metadata(["large": firstMetadata])
+            )
+        )
+        try await wax.commit()
+        _ = try await wax.put(
+            Data("second large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "second large metadata frame",
+                metadata: Metadata(["large": secondMetadata])
+            )
+        )
+        try await wax.commit()
+        _ = try await wax.put(
+            Data("third large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "third large metadata frame",
+                metadata: Metadata(["large": thirdMetadata])
+            )
+        )
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        #expect((await rewritten.frameMetas()).count == 3)
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
+}
+
+@Test
+func rewriteLiveSetChoosesWalSizeFromPayloadNotSourceRing() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+
+        do {
+            let wax = try await Wax.create(at: sourceURL)
+            for index in 0..<20 {
+                _ = try await wax.put(
+                    Data("small live payload \(index)".utf8),
+                    options: FrameMetaSubset(searchText: "small live payload \(index)")
+                )
+            }
+            try await wax.commit()
+            let sourceWal = await wax.walStats()
+            #expect(sourceWal.walSize == Constants.defaultWalSize)
+            try await wax.close()
+        }
+
+        let sourceSizesBefore = try fileSizes(at: sourceURL)
+        #expect(sourceSizesBefore.logical >= Constants.defaultWalSize)
+
+        let report: LiveSetRewriteReport
+        do {
+            let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+            report = try await orchestrator.rewriteLiveSet(to: destinationURL)
+            try await orchestrator.close()
+        }
+
+        let sourceSizesAfter = try fileSizes(at: sourceURL)
+        #expect(sourceSizesAfter.logical == sourceSizesBefore.logical)
+
+        let rewrittenWax = try await Wax.open(at: destinationURL)
+        let destWal = await rewrittenWax.walStats()
+        #expect(destWal.walSize == Constants.sessionWalSize)
+        #expect(destWal.walSize >= Constants.sessionWalSize)
+        #expect(destWal.walSize <= Constants.defaultWalSize)
+        #expect(destWal.walSize <= 8 * 1024 * 1024)
+
+        let destFrames = await rewrittenWax.frameMetas()
+        #expect(destFrames.count == 20)
+        #expect(destFrames.filter { $0.status == .active && $0.supersededBy == nil }.count == 20)
+        try await rewrittenWax.verify()
+        try await rewrittenWax.close()
+
+        let destSizes = try fileSizes(at: destinationURL)
+        #expect(destSizes.logical < sourceSizesBefore.logical)
+        #expect(destSizes.logical < 16 * 1024 * 1024)
+        #expect(report.logicalBytesAfter < report.logicalBytesBefore)
+        #expect(report.frameCount == 20)
+        #expect(report.activeFrameCount == 20)
+    }
+}
+
+@Test
 func rewriteLiveSetRespectsDestinationOverwriteGuard() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let destinationURL = FileManager.default.temporaryDirectory
@@ -119,6 +347,98 @@ func rewriteLiveSetRespectsDestinationOverwriteGuard() async throws {
         )
         #expect(report.destinationURL == destinationURL.standardizedFileURL)
         try await orchestrator.close()
+    }
+}
+
+@Test
+func rewriteLiveSetRefusesDirectoryAndLockedDestinationBeforePromotion() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-rewrite-safety-\(UUID().uuidString)", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination.wax")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        try await orchestrator.remember("rewrite safety frame")
+        try await orchestrator.flush()
+
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        await #expect(throws: WaxError.self) {
+            _ = try await orchestrator.rewriteLiveSet(
+                to: destinationURL,
+                options: .init(overwriteDestination: true)
+            )
+        }
+
+        try FileManager.default.removeItem(at: destinationURL)
+        FileManager.default.createFile(atPath: destinationURL.path, contents: Data("occupied".utf8))
+        let lock = try FileLock.acquire(at: destinationURL, mode: .exclusive)
+        await #expect(throws: WaxError.self) {
+            _ = try await orchestrator.rewriteLiveSet(
+                to: destinationURL,
+                options: .init(overwriteDestination: true)
+            )
+        }
+        try lock.release()
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func rewriteLiveSetPreservesMemoryBindingAndRejectsIncompatibleProvider() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let source = try await Wax.create(at: sourceURL)
+        let binding = MemoryBinding(
+            embeddingProvider: "rewrite-provider",
+            embeddingModel: "rewrite-model-v1",
+            embeddingDimensions: 4,
+            embeddingNormalized: true
+        )
+        try await source.overwriteMemoryBindingForTesting(binding)
+        _ = try await source.put(
+            Data("binding preservation frame".utf8),
+            options: FrameMetaSubset(searchText: "binding preservation frame")
+        )
+        try await source.commit()
+        try await source.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        #expect(await rewritten.memoryBinding() == binding)
+        try await rewritten.close()
+
+        var vectorConfig = OrchestratorConfig.default
+        vectorConfig.enableVectorSearch = true
+        do {
+            _ = try await MemoryOrchestrator(
+                at: destinationURL,
+                config: vectorConfig,
+                embedder: RewriteBindingEmbedder(
+                    provider: "rewrite-provider",
+                    model: "rewrite-model-v2"
+                )
+            )
+            Issue.record("rewrite output must retain the binding and reject an incompatible provider")
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                Issue.record("expected memory binding mismatch, got \(error)")
+                return
+            }
+            #expect(reason.contains("memory binding"))
+        }
     }
 }
 
@@ -350,6 +670,26 @@ private func seedDeadPayloadStore(at url: URL) async throws {
 
     try await wax.commit()
     try await wax.close()
+}
+
+private struct RewriteBindingEmbedder: EmbeddingProvider, Sendable {
+    let dimensions: Int = 4
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity?
+
+    init(provider: String, model: String) {
+        identity = EmbeddingIdentity(
+            provider: provider,
+            model: model,
+            dimensions: 4,
+            normalized: true
+        )
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return [0.5, 0.5, 0.5, 0.5]
+    }
 }
 
 private func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {
