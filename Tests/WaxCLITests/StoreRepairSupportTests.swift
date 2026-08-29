@@ -63,4 +63,33 @@ struct StoreRepairSupportTests {
         #expect(try StoreRepairSupport.fingerprint(of: source) == before)
         #expect(try StoreRepairSupport.fingerprint(of: destination) == before)
     }
+
+    @Test
+    func rollbackLeavesSwappedSymlinkDestinationUntouched() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-repair-rollback-\(UUID().uuidString)", isDirectory: true)
+        let destination = root.appendingPathComponent("destination.wax")
+        let staging = root.appendingPathComponent("staging.wax")
+        let attackerTarget = root.appendingPathComponent("attacker-target.txt")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: destination.path, contents: Data("previous".utf8))
+        FileManager.default.createFile(atPath: staging.path, contents: Data("published".utf8))
+        let promotion = try StoreRepairSupport.promoteVerifiedOutput(
+            from: staging,
+            to: destination,
+            overwrite: true
+        )
+
+        FileManager.default.createFile(atPath: attackerTarget.path, contents: Data("attacker".utf8))
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: attackerTarget)
+
+        #expect(throws: (any Error).self) {
+            try StoreRepairSupport.rollbackPromotion(promotion)
+        }
+        #expect(StoreRepairSupport.isSymbolicLink(at: destination))
+        #expect(try Data(contentsOf: attackerTarget) == Data("attacker".utf8))
+    }
 }

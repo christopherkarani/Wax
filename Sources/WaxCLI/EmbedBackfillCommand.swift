@@ -107,7 +107,8 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
         let promotion = try StoreRepairSupport.promoteVerifiedOutput(
             from: stagingURL,
             to: destinationURL,
-            overwrite: overwrite
+            overwrite: overwrite,
+            source: sourceURL
         )
         do {
             _ = try await StoreRepairSupport.verifyDeep(at: destinationURL)

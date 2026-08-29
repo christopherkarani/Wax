@@ -114,7 +114,8 @@ struct CompactStoreCommand: AsyncParsableCommand {
         let promotion = try StoreRepairSupport.promoteVerifiedOutput(
             from: stagingURL,
             to: destinationURL,
-            overwrite: overwrite
+            overwrite: overwrite,
+            source: sourceURL
         )
         let publishedWal: WaxWALStats
         do {

@@ -73,6 +73,23 @@ func websiteGettingStartedUsesPublicMemoryQuickStart() throws {
 }
 
 @Test
+func websiteStoreMaintenanceDocumentsCopyFirstOperatorContract() throws {
+    let path = DocumentationPaths.websiteDocs
+        .appendingPathComponent("core/store-maintenance.md")
+    let text = try String(contentsOf: path, encoding: .utf8)
+
+    #expect(text.contains("compact-store"))
+    #expect(text.contains("embed-backfill"))
+    #expect(text.contains("--direct-store"))
+    #expect(text.contains("--output"))
+    #expect(text.contains("--overwrite"))
+    #expect(text.contains("source file unchanged"))
+    #expect(text.contains("deep verification"))
+    #expect(text.contains("advisory lock"))
+    #expect(!text.contains("MemoryOrchestrator"))
+}
+
+@Test
 func websiteFoundationModelsGuideMatchesPublicSessionAPI() throws {
     let path = DocumentationPaths.websiteDocs
         .appendingPathComponent("ios/foundation-models.md")

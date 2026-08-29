@@ -249,8 +249,12 @@ package extension MemoryOrchestrator {
         let committedVecManifest = await wax.committedVecIndexManifest()
         let committedLexBytes = try await wax.readCommittedLexIndexBytes()
         let committedVecBytes = try await wax.readCommittedVecIndexBytes()
+        let sourceMemoryBinding = await wax.memoryBinding()
 
         let rewritten = try await Wax.create(at: stagingURL, walSize: destinationWalSize)
+        if let sourceMemoryBinding {
+            try await rewritten.setMemoryBindingIfMissing(sourceMemoryBinding)
+        }
         var droppedPayloadFrames = 0
         let shouldBatchFrameWrites = frameWalBytes.total > destinationWalSize
         let batchCommitThreshold = max(
@@ -722,6 +726,7 @@ package extension MemoryOrchestrator {
     private struct RewritePromotion {
         let destinationURL: URL
         let backupURL: URL?
+        let publishedIdentity: FileIdentity?
     }
 
     private static func rewriteStagingURL(for destinationURL: URL) -> URL {
@@ -754,6 +759,9 @@ package extension MemoryOrchestrator {
         guard !sameFileIdentity(sourceURL, destinationURL) else {
             throw WaxError.io("rewriteLiveSet destination aliases source")
         }
+        guard isRegularFile(at: stagingURL), !isSymbolicLink(at: stagingURL) else {
+            throw WaxError.io("rewriteLiveSet staging output changed before promotion")
+        }
 
         if fileManager.fileExists(atPath: destinationURL.path) {
             guard let attributes = try? fileManager.attributesOfItem(atPath: destinationURL.path),
@@ -770,6 +778,10 @@ package extension MemoryOrchestrator {
                     "rewriteLiveSet destination is locked by another process: \(destinationURL.path)"
                 )
             }
+            guard isRegularFile(at: destinationURL),
+                  !isSymbolicLink(at: destinationURL) else {
+                throw WaxError.io("rewriteLiveSet destination changed before promotion")
+            }
             let backupName = ".\(destinationURL.lastPathComponent)-previous-\(UUID().uuidString)"
             _ = try fileManager.replaceItemAt(
                 destinationURL,
@@ -779,18 +791,45 @@ package extension MemoryOrchestrator {
             )
             let backupURL = destinationURL.deletingLastPathComponent()
                 .appendingPathComponent(backupName)
-            return RewritePromotion(destinationURL: destinationURL, backupURL: backupURL)
+            return RewritePromotion(
+                destinationURL: destinationURL,
+                backupURL: backupURL,
+                publishedIdentity: fileIdentity(at: destinationURL)
+            )
         }
 
         try fileManager.moveItem(at: stagingURL, to: destinationURL)
-        return RewritePromotion(destinationURL: destinationURL, backupURL: nil)
+        return RewritePromotion(
+            destinationURL: destinationURL,
+            backupURL: nil,
+            publishedIdentity: fileIdentity(at: destinationURL)
+        )
     }
 
     private static func rollbackRewritePromotion(_ promotion: RewritePromotion) throws {
+        // The advisory lock probe used before replace cannot prevent an
+        // unrelated process from swapping this pathname afterward. Never
+        // recursively remove a changed directory or symlink; leave it and
+        // surface the rollback failure for operator recovery instead.
         let fileManager = FileManager.default
-        try? fileManager.removeItem(at: promotion.destinationURL)
+        if fileManager.fileExists(atPath: promotion.destinationURL.path) {
+            guard !isSymbolicLink(at: promotion.destinationURL),
+                  let expected = promotion.publishedIdentity,
+                  fileIdentity(at: promotion.destinationURL) == expected else {
+                throw WaxError.io(
+                    "rewriteLiveSet rollback refused to remove a destination path changed after promotion"
+                )
+            }
+            try fileManager.removeItem(at: promotion.destinationURL)
+        }
         if let backupURL = promotion.backupURL,
            fileManager.fileExists(atPath: backupURL.path) {
+            guard !isSymbolicLink(at: backupURL), isRegularFile(at: backupURL) else {
+                throw WaxError.io("rewriteLiveSet rollback backup is no longer a regular file")
+            }
+            guard !fileManager.fileExists(atPath: promotion.destinationURL.path) else {
+                throw WaxError.io("rewriteLiveSet rollback destination reappeared before backup restore")
+            }
             try fileManager.moveItem(at: backupURL, to: promotion.destinationURL)
         }
     }
@@ -816,6 +855,34 @@ package extension MemoryOrchestrator {
 
     private static func isSymbolicLink(at url: URL) -> Bool {
         (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
+    private static func isRegularFile(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              !isSymbolicLink(at: url),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let type = attributes[.type] as? FileAttributeType
+        else {
+            return false
+        }
+        return type == .typeRegular
+    }
+
+    private struct FileIdentity: Equatable {
+        let device: UInt64?
+        let inode: UInt64?
+    }
+
+    private static func fileIdentity(at url: URL) -> FileIdentity? {
+        guard isRegularFile(at: url),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        else {
+            return nil
+        }
+        return FileIdentity(
+            device: (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+            inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        )
     }
 
     private static func sameFileIdentity(_ lhs: URL, _ rhs: URL) -> Bool {

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import Wax
 import WaxCore
+import WaxVectorSearch
 
 @Test
 func rewriteLiveSetDropsNonLivePayloadsAndPreservesFrameState() async throws {
@@ -335,6 +336,61 @@ func rewriteLiveSetRefusesDirectoryAndLockedDestinationBeforePromotion() async t
 }
 
 @Test
+func rewriteLiveSetPreservesMemoryBindingAndRejectsIncompatibleProvider() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let source = try await Wax.create(at: sourceURL)
+        let binding = MemoryBinding(
+            embeddingProvider: "rewrite-provider",
+            embeddingModel: "rewrite-model-v1",
+            embeddingDimensions: 4,
+            embeddingNormalized: true
+        )
+        try await source.overwriteMemoryBindingForTesting(binding)
+        _ = try await source.put(
+            Data("binding preservation frame".utf8),
+            options: FrameMetaSubset(searchText: "binding preservation frame")
+        )
+        try await source.commit()
+        try await source.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        #expect(await rewritten.memoryBinding() == binding)
+        try await rewritten.close()
+
+        var vectorConfig = OrchestratorConfig.default
+        vectorConfig.enableVectorSearch = true
+        do {
+            _ = try await MemoryOrchestrator(
+                at: destinationURL,
+                config: vectorConfig,
+                embedder: RewriteBindingEmbedder(
+                    provider: "rewrite-provider",
+                    model: "rewrite-model-v2"
+                )
+            )
+            Issue.record("rewrite output must retain the binding and reject an incompatible provider")
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                Issue.record("expected memory binding mismatch, got \(error)")
+                return
+            }
+            #expect(reason.contains("memory binding"))
+        }
+    }
+}
+
+@Test
 func scheduledLiveSetRewriteCreatesValidatedCandidateWhenThresholdMet() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let maintenanceDir = FileManager.default.temporaryDirectory
@@ -562,6 +618,26 @@ private func seedDeadPayloadStore(at url: URL) async throws {
 
     try await wax.commit()
     try await wax.close()
+}
+
+private struct RewriteBindingEmbedder: EmbeddingProvider, Sendable {
+    let dimensions: Int = 4
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity?
+
+    init(provider: String, model: String) {
+        identity = EmbeddingIdentity(
+            provider: provider,
+            model: model,
+            dimensions: 4,
+            normalized: true
+        )
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return [0.5, 0.5, 0.5, 0.5]
+    }
 }
 
 private func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {

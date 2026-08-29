@@ -24,6 +24,10 @@ enum StoreRepairSupport {
     struct Promotion: Sendable {
         let destination: URL
         let backup: URL?
+        /// Identity of the file this promotion installed. Rollback only
+        /// removes this inode; a path replaced by another process is left
+        /// untouched for manual recovery.
+        let publishedIdentity: FileIdentity?
     }
 
     static func expandedURL(_ raw: String) -> URL {
@@ -160,6 +164,9 @@ enum StoreRepairSupport {
     ) throws {
         let path = url.standardizedFileURL
         guard FileManager.default.fileExists(atPath: path.path) else { return }
+        guard !isSymbolicLink(at: path) else {
+            throw CLIError("\(command) \(label) must be a regular file, not a symlink")
+        }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path.path),
               let type = attributes[.type] as? FileAttributeType,
               type == .typeRegular
@@ -171,7 +178,10 @@ enum StoreRepairSupport {
     /// Take a non-blocking exclusive probe before replacing an existing
     /// destination. Renaming over a locked file is legal on Unix and would
     /// strand the writer on an unlinked inode, so this check belongs immediately
-    /// before promotion as well as at command start.
+    /// before promotion as well as at command start. The probe is advisory and
+    /// cannot stop an uncooperating process from swapping the pathname after
+    /// it closes; no-follow checks and identity matching below keep rollback
+    /// from deleting an unexpected path.
     static func ensureDestinationUnlockedIfPresent(
         at url: URL,
         command: String
@@ -227,6 +237,11 @@ enum StoreRepairSupport {
                 throw CLIError("output destination already exists; pass --overwrite to replace it")
             }
             try ensureDestinationUnlockedIfPresent(at: destinationPath, command: "store repair")
+            let destinationIdentity = identity(of: destinationPath)
+            guard !isSymbolicLink(at: destinationPath),
+                  identity(of: destinationPath) == destinationIdentity else {
+                throw CLIError("output destination changed while preparing the copy")
+            }
             try FileManager.default.removeItem(at: destinationPath)
         }
         try FileManager.default.copyItem(at: canonicalSource, to: destinationPath)
@@ -244,7 +259,8 @@ enum StoreRepairSupport {
     static func promoteVerifiedOutput(
         from staging: URL,
         to destination: URL,
-        overwrite: Bool
+        overwrite: Bool,
+        source: URL? = nil
     ) throws -> Promotion {
         let stagingPath = staging.standardizedFileURL
         let destinationPath = destination.standardizedFileURL
@@ -257,12 +273,28 @@ enum StoreRepairSupport {
         guard FileManager.default.fileExists(atPath: stagingPath.path) else {
             throw CLIError("verified repair output is missing")
         }
+        // The staging pathname is also untrusted until the atomic operation;
+        // do not move a path that was swapped to a symlink or directory.
+        try ensureRegularFileIfPresent(at: stagingPath, label: "staging", command: "store repair")
+        if let source {
+            guard !sameFile(source, destinationPath) else {
+                throw CLIError("verified repair output destination aliases source")
+            }
+        }
 
         if FileManager.default.fileExists(atPath: destinationPath.path) {
             guard overwrite else {
                 throw CLIError("output destination already exists; pass --overwrite to replace it")
             }
             try ensureDestinationUnlockedIfPresent(at: destinationPath, command: "store repair")
+            // Re-check immediately before replace. The advisory lock is
+            // released by the probe, so an external writer can still race;
+            // these no-follow checks minimize the unsafe window and the
+            // identity carried by Promotion makes rollback fail closed.
+            try ensureRegularFileIfPresent(at: destinationPath, label: "output", command: "store repair")
+            guard !isSymbolicLink(at: destinationPath) else {
+                throw CLIError("verified repair output refuses a destination symlink")
+            }
             let backupName = ".\(canonicalDestination.lastPathComponent)-previous-\(UUID().uuidString)"
             _ = try FileManager.default.replaceItemAt(
                 destinationPath,
@@ -272,23 +304,46 @@ enum StoreRepairSupport {
             )
             let backupURL = destinationPath.deletingLastPathComponent()
                 .appendingPathComponent(backupName)
-            return Promotion(destination: destinationPath, backup: backupURL)
+            return Promotion(
+                destination: destinationPath,
+                backup: backupURL,
+                publishedIdentity: identity(of: destinationPath)
+            )
         } else {
             try FileManager.default.moveItem(at: stagingPath, to: destinationPath)
-            return Promotion(destination: destinationPath, backup: nil)
+            return Promotion(
+                destination: destinationPath,
+                backup: nil,
+                publishedIdentity: identity(of: destinationPath)
+            )
         }
     }
 
     static func finalizePromotion(_ promotion: Promotion) throws {
         if let backup = promotion.backup {
-            try? FileManager.default.removeItem(at: backup)
+            guard FileManager.default.fileExists(atPath: backup.path) else { return }
+            try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
+            try FileManager.default.removeItem(at: backup)
         }
     }
 
     static func rollbackPromotion(_ promotion: Promotion) throws {
-        try? FileManager.default.removeItem(at: promotion.destination)
+        if FileManager.default.fileExists(atPath: promotion.destination.path) {
+            guard !isSymbolicLink(at: promotion.destination),
+                  let expected = promotion.publishedIdentity,
+                  identity(of: promotion.destination) == expected else {
+                throw CLIError(
+                    "repair rollback refused to remove a destination path changed after promotion"
+                )
+            }
+            try FileManager.default.removeItem(at: promotion.destination)
+        }
         if let backup = promotion.backup,
            FileManager.default.fileExists(atPath: backup.path) {
+            try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
+            guard !FileManager.default.fileExists(atPath: promotion.destination.path) else {
+                throw CLIError("repair rollback destination reappeared before backup restore")
+            }
             try FileManager.default.moveItem(at: backup, to: promotion.destination)
         }
     }
