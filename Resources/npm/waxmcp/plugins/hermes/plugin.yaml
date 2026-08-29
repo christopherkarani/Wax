@@ -1,5 +1,5 @@
 name: wax-memory
-version: 0.1.36
+version: 0.1.37
 description: "Wax-backed native memory provider for Hermes Agent. Delegates to the Wax MCP broker over HTTP for cross-session persistence, RAG recall, structured memory, and managed Markdown projections."
 pip_dependencies:
   - requests>=2.28
