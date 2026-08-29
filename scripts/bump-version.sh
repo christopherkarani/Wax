@@ -266,8 +266,11 @@ if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
     "s|archive/refs/tags/waxmcp-v[0-9]+\\.[0-9]+\\.[0-9]+|archive/refs/tags/waxmcp-v${TARGET_VERSION}|g" \
     "$HOMEBREW_FORMULA"
 
-  # Compute SHA from local git archive of the working tree index when possible.
-  # GitHub source archives use: git archive --format=tar.gz --prefix=Wax-<tag>/ <tag>
+  # Compute a provisional SHA from a local git archive so the formula is
+  # syntactically valid before the tag exists. GitHub's tag tarball hashes
+  # differently — Resources/scripts/finalize-homebrew-formula.sh (and the
+  # release-waxmcp Homebrew job) replace this with the brew-installable digest
+  # after `waxmcp-v<version>` is pushed.
   TMP_ARCHIVE=$(mktemp "${TMPDIR:-/tmp}/wax-homebrew-sha.XXXXXX.tar.gz")
   git -C "$ROOT" archive --format=tar.gz \
     --prefix="Wax-waxmcp-v${TARGET_VERSION}/" \
@@ -287,9 +290,10 @@ if [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]]; then
     "s|sha256 \"[a-f0-9]+\"|sha256 \"${NEW_SHA}\"|" \
     "$HOMEBREW_FORMULA"
 
-  info "Homebrew formula → $TARGET_VERSION (SHA: ${NEW_SHA:0:16}...)"
-  echo "     ⚠️  SHA computed from local git archive — verify after pushing tag:"
-  echo "        curl -sL https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v${TARGET_VERSION}.tar.gz | shasum -a 256"
+  info "Homebrew formula → $TARGET_VERSION (provisional SHA: ${NEW_SHA:0:16}...)"
+  echo "     ⚠️  After tagging, finalize with:"
+  echo "        Resources/scripts/finalize-homebrew-formula.sh $TARGET_VERSION --push-tap"
+  echo "     (release-waxmcp.yml runs this automatically on waxmcp-v* tags)"
 fi
 
 # Surface 8: Hermes README

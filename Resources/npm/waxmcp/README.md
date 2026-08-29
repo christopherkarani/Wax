@@ -192,7 +192,10 @@ git commit -m "release: bump waxmcp version"
 ```
 
 Pushing tag `waxmcp-v<version>` triggers the publish workflow
-(`.github/workflows/release-waxmcp.yml`). `package.json` and
-`Sources/WaxMCPServer/main.swift` must stay in lockstep; CI checks that before
-publishing. Dist artifacts carry `sha256` checksums, verified at pack time by
-`scripts/verify-dist.mjs`.
+(`.github/workflows/release-waxmcp.yml`). That workflow also finalizes the
+Homebrew formula `sha256` from the GitHub tag archive and commits it back to
+`main`. Set repository secret `HOMEBREW_TAP_TOKEN` (PAT with `contents: write`
+on `christopherkarani/homebrew-wax`) to sync the external tap automatically.
+`package.json` and `Sources/WaxMCPServer/main.swift` must stay in lockstep; CI
+checks that before publishing. Dist artifacts carry `sha256` checksums,
+verified at pack time by `scripts/verify-dist.mjs`.

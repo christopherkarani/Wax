@@ -61,4 +61,19 @@ grep -Fq 'darwin-arm64' "$CANONICAL_RELEASE_SCRIPT" \
 grep -Fq 'build-waxmcp-binaries.sh" "$platform" "$triple"' "$CANONICAL_RELEASE_SCRIPT" \
   || fail "canonical release script must use the shared multi-platform binary builder"
 
+FINALIZE_SCRIPT="$ROOT_DIR/Resources/scripts/finalize-homebrew-formula.sh"
+[[ -x "$FINALIZE_SCRIPT" ]] || fail "finalize-homebrew-formula.sh must exist and be executable"
+
+grep -Fq 'finalize-homebrew-formula.sh' "$WORKFLOW" \
+  || fail "release workflow must finalize Homebrew sha256 from the GitHub tag archive"
+
+grep -Fq 'name: Finalize Homebrew formula' "$WORKFLOW" \
+  || fail "release workflow must include a Homebrew finalize job"
+
+grep -Fq 'HOMEBREW_TAP_TOKEN' "$WORKFLOW" \
+  || fail "release workflow must document HOMEBREW_TAP_TOKEN for tap sync"
+
+grep -Fq -e '--push-tap' "$FINALIZE_SCRIPT" \
+  || fail "finalize-homebrew-formula.sh must support --push-tap for the external tap"
+
 echo "release_workflow_tests: ok"
