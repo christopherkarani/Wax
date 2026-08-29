@@ -24,14 +24,18 @@ package struct MatchPlan: Equatable, Sendable {
         )
     }
 
-    package static func tokens(from query: String, maxTokens: Int = 16) -> [String] {
+    package static func tokens(
+        from query: String,
+        maxTokens: Int = 16,
+        splitIdentifierParts: Bool = true
+    ) -> [String] {
         let capped = max(0, maxTokens)
         guard capped > 0 else { return [] }
         var seen: Set<String> = []
         var tokens: [String] = []
         tokens.reserveCapacity(capped)
 
-        for token in aliasTokens(from: query) {
+        for token in aliasTokens(from: query, splitIdentifierParts: splitIdentifierParts) {
             let normalized = token.lowercased()
             guard !normalized.isEmpty else { continue }
             guard !ftsStopWords.contains(normalized) else { continue }
@@ -49,6 +53,13 @@ package struct MatchPlan: Equatable, Sendable {
     }
 
     package static func aliasTokens(from query: String) -> [String] {
+        aliasTokens(from: query, splitIdentifierParts: true)
+    }
+
+    private static func aliasTokens(
+        from query: String,
+        splitIdentifierParts: Bool
+    ) -> [String] {
         var tokens: [String] = []
         var buffer = String.UnicodeScalarView()
 
@@ -56,7 +67,8 @@ package struct MatchPlan: Equatable, Sendable {
             if !buffer.isEmpty {
                 let raw = String(buffer)
                 tokens.append(raw)
-                if raw.contains(where: { $0 == "-" || $0 == "_" }) {
+                if splitIdentifierParts,
+                   raw.contains(where: { $0 == "-" || $0 == "_" }) {
                     for part in raw.split(whereSeparator: { $0 == "-" || $0 == "_" }) {
                         let piece = String(part)
                         if !piece.isEmpty {
@@ -129,7 +141,14 @@ package struct MatchPlan: Equatable, Sendable {
         var normalized: [String] = []
 
         for phrase in rawQuotedPhrases(from: query, maxPhrases: maxPhrases) {
-            let phraseTokens = tokens(from: phrase, maxTokens: maxTokensPerPhrase)
+            // A quoted phrase is an intentional adjacency constraint. Keep
+            // identifier glue inside the phrase so `"foo-bar"` remains a
+            // single FTS phrase instead of becoming `"foo-bar foo bar"`.
+            let phraseTokens = tokens(
+                from: phrase,
+                maxTokens: maxTokensPerPhrase,
+                splitIdentifierParts: false
+            )
             guard !phraseTokens.isEmpty else { continue }
             let value = phraseTokens.joined(separator: " ")
             if seen.insert(value).inserted {

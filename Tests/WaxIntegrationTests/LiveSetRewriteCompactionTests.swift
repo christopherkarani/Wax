@@ -122,6 +122,90 @@ func rewriteLiveSetWalSizeFloorsAtSessionSizeAndCapsAtSourceRing() {
             payloadBytes: 1
         ) == session / 2
     )
+    #expect(
+        MemoryOrchestrator.walSizeForLiveSetRewrite(
+            sourceWalSize: defaultRing,
+            payloadBytes: 1,
+            largestFrameWalBytes: session + 1024,
+            totalFrameWalBytes: session + 2048
+        ) == session + 2048
+    )
+}
+
+@Test
+func rewriteLiveSetAccountsForLargeFrameMetadataInWalSize() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 8 * 1024 * 1024
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        let largeMetadata = Metadata([
+            "large": String(repeating: "m", count: 4 * 1024 * 1024)
+        ])
+        _ = try await wax.put(
+            Data("metadata-rich frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "metadata-rich frame",
+                metadata: largeMetadata
+            )
+        )
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        let wal = await rewritten.walStats()
+        #expect(wal.walSize > Constants.sessionWalSize)
+        #expect(wal.walSize <= UInt64(sourceWalSize))
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
+}
+
+@Test
+func rewriteLiveSetBatchesWhenAggregateFrameWalExceedsSourceRing() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 1 * 1024 * 1024
+        let metadataValue = String(repeating: "m", count: 32 * 1024)
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        for index in 0..<64 {
+            _ = try await wax.put(
+                Data("metadata-rich frame \(index)".utf8),
+                options: FrameMetaSubset(
+                    searchText: "metadata-rich frame \(index)",
+                    metadata: Metadata(["large": metadataValue])
+                )
+            )
+        }
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        let wal = await rewritten.walStats()
+        #expect(wal.walSize == UInt64(sourceWalSize))
+        #expect((await rewritten.frameMetas()).count == 64)
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
 }
 
 @Test
@@ -209,6 +293,43 @@ func rewriteLiveSetRespectsDestinationOverwriteGuard() async throws {
             options: .init(overwriteDestination: true, dropNonLivePayloads: true, verifyDeep: false)
         )
         #expect(report.destinationURL == destinationURL.standardizedFileURL)
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func rewriteLiveSetRefusesDirectoryAndLockedDestinationBeforePromotion() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-rewrite-safety-\(UUID().uuidString)", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination.wax")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        try await orchestrator.remember("rewrite safety frame")
+        try await orchestrator.flush()
+
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        await #expect(throws: WaxError.self) {
+            _ = try await orchestrator.rewriteLiveSet(
+                to: destinationURL,
+                options: .init(overwriteDestination: true)
+            )
+        }
+
+        try FileManager.default.removeItem(at: destinationURL)
+        FileManager.default.createFile(atPath: destinationURL.path, contents: Data("occupied".utf8))
+        let lock = try FileLock.acquire(at: destinationURL, mode: .exclusive)
+        await #expect(throws: WaxError.self) {
+            _ = try await orchestrator.rewriteLiveSet(
+                to: destinationURL,
+                options: .init(overwriteDestination: true)
+            )
+        }
+        try lock.release()
         try await orchestrator.close()
     }
 }

@@ -76,6 +76,7 @@ struct CompactStoreCommandTests {
         let sourceWal = await source.walStats()
         #expect(sourceWal.walSize == Constants.defaultWalSize)
         try await source.close()
+        let sourceHashBefore = try StoreRepairSupport.fingerprint(of: sourceURL)
 
         var command = try CompactStoreCommand.parse([
             "--direct-store",
@@ -97,5 +98,6 @@ struct CompactStoreCommandTests {
         let destSize = try destURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         #expect(destSize < 32 * 1024 * 1024)
         #expect(destSize < Int(Constants.defaultWalSize))
+        #expect(try StoreRepairSupport.fingerprint(of: sourceURL) == sourceHashBefore)
     }
 }

@@ -35,6 +35,14 @@ func matchPlanKeepsHyphenatedIdentifierAsToken() {
 }
 
 @Test
+func matchPlanKeepsHyphenatedQuotedPhraseTogether() {
+    let plan = MatchPlan.plan(query: #"What is "foo-bar"?"#)
+    #expect(plan?.primaryMatch.contains(#""foo-bar""#) == true)
+    #expect(plan?.primaryMatch.contains(#""foo-bar foo bar""#) == false)
+    #expect(MatchPlan.normalizedQuotedPhrases(from: #""foo-bar""#) == ["foo-bar"])
+}
+
+@Test
 func matchPlanTreatsFTSPunctuationAsLiteralTokens() {
     let plan = MatchPlan.plan(query: #"task:(F076) NEAR(unclosed "quote""#)
     let primary = plan?.primaryMatch ?? ""

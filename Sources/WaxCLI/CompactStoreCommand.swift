@@ -49,45 +49,103 @@ struct CompactStoreCommand: AsyncParsableCommand {
     func runAsync() async throws {
         _ = noEmbedder
         let sourceURL = try StoreSession.resolveURL(storePath)
-        let destURL = try CompactStorePathPolicy.destinationURL(from: output)
+        let destinationURL = try CompactStorePathPolicy.destinationURL(from: output)
         try CompactStorePathPolicy.validate(
             storePath: storePath,
             output: output
         )
+        try StoreRepairSupport.validate(
+            source: sourceURL,
+            destination: destinationURL,
+            command: "compact-store"
+        )
+        try StoreRepairSupport.ensureRegularFileIfPresent(
+            at: destinationURL,
+            label: "output",
+            command: "compact-store"
+        )
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            guard overwrite else {
+                throw CLIError("output destination already exists; pass --overwrite to replace it")
+            }
+            try StoreRepairSupport.ensureDestinationUnlockedIfPresent(
+                at: destinationURL,
+                command: "compact-store"
+            )
+        }
         try failFastIfStoreHeld(at: sourceURL)
 
-        let report = try await StoreSession.withOpen(at: sourceURL, noEmbedder: true) { memory in
+        let sourceIdentity = StoreRepairSupport.identity(of: sourceURL)
+        let sourceCopyURL = StoreRepairSupport.stagingURL(for: destinationURL)
+        let stagingURL = StoreRepairSupport.stagingURL(for: destinationURL)
+        defer {
+            try? FileManager.default.removeItem(at: sourceCopyURL)
+            try? FileManager.default.removeItem(at: stagingURL)
+        }
+        let sourceFingerprint = try StoreRepairSupport.copySource(
+            from: sourceURL,
+            to: sourceCopyURL,
+            overwrite: false
+        )
+        _ = try await StoreRepairSupport.verifyDeep(at: sourceCopyURL)
+
+        let report = try await StoreSession.withOpen(at: sourceCopyURL, noEmbedder: true) { memory in
             try await memory.rewriteLiveSet(
-                to: destURL,
+                to: stagingURL,
                 options: LiveSetRewriteOptions(
-                    overwriteDestination: overwrite,
+                    overwriteDestination: false,
                     dropNonLivePayloads: true,
                     verifyDeep: true
                 )
             )
         }
 
-        let dest = try await Wax.open(at: destURL)
-        let destWal = await dest.walStats()
-        try await dest.close()
+        _ = try await StoreRepairSupport.verifyDeep(at: stagingURL)
+        let sourceAfter = try StoreRepairSupport.fingerprint(of: sourceURL)
+        guard sourceAfter == sourceFingerprint,
+              StoreRepairSupport.identity(of: sourceURL) == sourceIdentity else {
+            throw CLIError("source store changed during compaction; output is not promoted")
+        }
+        try StoreRepairSupport.validate(
+            source: sourceURL,
+            destination: destinationURL,
+            command: "compact-store"
+        )
+        let promotion = try StoreRepairSupport.promoteVerifiedOutput(
+            from: stagingURL,
+            to: destinationURL,
+            overwrite: overwrite
+        )
+        let publishedWal: WaxWALStats
+        do {
+            publishedWal = try await StoreRepairSupport.verifyDeep(at: destinationURL)
+            try StoreRepairSupport.finalizePromotion(promotion)
+        } catch {
+            try? StoreRepairSupport.rollbackPromotion(promotion)
+            throw error
+        }
 
         switch format {
         case .json:
             printJSON([
-                "sourcePath": report.sourceURL.path,
-                "outputPath": report.destinationURL.path,
+                "sourcePath": sourceURL.path,
+                "outputPath": destinationURL.path,
                 "frameCount": report.frameCount,
                 "activeFrameCount": report.activeFrameCount,
                 "droppedPayloadFrames": report.droppedPayloadFrames,
                 "logicalBytesBefore": report.logicalBytesBefore,
                 "logicalBytesAfter": report.logicalBytesAfter,
-                "walSizeAfter": destWal.walSize,
+                "walSizeAfter": publishedWal.walSize,
+                "sourceUnchanged": true,
+                "deepVerified": true,
             ])
         case .text:
-            print("Compacted \(report.sourceURL.path) → \(report.destinationURL.path)")
+            print("Compacted \(sourceURL.path) → \(destinationURL.path)")
             print("Frames: \(report.frameCount) (\(report.activeFrameCount) active)")
             print("Logical size: \(report.logicalBytesAfter) bytes (was \(report.logicalBytesBefore))")
-            print("WAL size: \(destWal.walSize)")
+            print("WAL size: \(publishedWal.walSize)")
+            print("Source unchanged: yes")
+            print("Deep verification: PASS")
         }
     }
 
@@ -97,43 +155,5 @@ struct CompactStoreCommand: AsyncParsableCommand {
                 "another process holds an exclusive lock on this store; if a broker is attached, use waxmcp stats / attach instead of waiting"
             )
         }
-    }
-}
-
-enum CompactStorePathPolicy {
-    static func validate(storePath: String, output: String) throws {
-        let source = expandedURL(storePath)
-        let dest = expandedURL(output)
-        try refuseLiveFamily(source, command: "compact-store")
-        try refuseLiveFamily(dest, command: "compact-store")
-        if source == dest {
-            throw ValidationError("compact-store destination must differ from source")
-        }
-    }
-
-    static func refuseLiveFamily(_ url: URL, command: String) throws {
-        if url == liveFamilyURL() {
-            throw ValidationError(
-                "\(command) refuses the live family store path \(StoreSession.defaultStorePath)"
-            )
-        }
-    }
-
-    static func destinationURL(from raw: String) throws -> URL {
-        let url = expandedURL(raw)
-        let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return url
-    }
-
-    static func liveFamilyURL() -> URL {
-        expandedURL(StoreSession.defaultStorePath)
-    }
-
-    /// Trim then tilde-expand. Must match `StoreSession.resolveURL` identity without creating directories.
-    static func expandedURL(_ raw: String) -> URL {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let expanded = (trimmed as NSString).expandingTildeInPath
-        return URL(fileURLWithPath: expanded).standardizedFileURL
     }
 }

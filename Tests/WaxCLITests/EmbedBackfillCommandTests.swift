@@ -18,6 +18,7 @@ struct EmbedBackfillCommandTests {
             _ = try EmbedBackfillCommand.parse([
                 "--store-path", "/tmp/wax-backfill.wax",
                 "--no-embedder",
+                "--output", "/tmp/wax-backfill-out.wax",
             ])
         }
     }
@@ -27,18 +28,21 @@ struct EmbedBackfillCommandTests {
             _ = try EmbedBackfillCommand.parse([
                 "--direct-store",
                 "--store-path", StoreSession.defaultStorePath,
+                "--output", "/tmp/wax-backfill-out.wax",
             ])
         }
         #expect(throws: (any Error).self) {
             _ = try EmbedBackfillCommand.parse([
                 "--direct-store",
                 "--store-path", "~/.wax/memory.wax",
+                "--output", "/tmp/wax-backfill-out.wax",
             ])
         }
         #expect(throws: (any Error).self) {
             _ = try EmbedBackfillCommand.parse([
                 "--direct-store",
                 "--store-path", "~/.wax/memory.wax ",
+                "--output", "/tmp/wax-backfill-out.wax",
             ])
         }
     }
@@ -62,6 +66,8 @@ struct EmbedBackfillCommandTests {
             "--direct-store",
             "--no-embedder",
             "--store-path", storeURL.path,
+            "--output", FileManager.default.temporaryDirectory
+                .appendingPathComponent("wax-backfill-out-\(UUID().uuidString).wax").path,
             "--format", "json",
         ])
         do {
