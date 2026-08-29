@@ -92,4 +92,29 @@ struct StoreRepairSupportTests {
         #expect(StoreRepairSupport.isSymbolicLink(at: destination))
         #expect(try Data(contentsOf: attackerTarget) == Data("attacker".utf8))
     }
+
+    @Test
+    func rollbackRetainsPublishedDestinationWhenBackupDisappears() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-repair-rollback-missing-backup-\(UUID().uuidString)", isDirectory: true)
+        let destination = root.appendingPathComponent("destination.wax")
+        let staging = root.appendingPathComponent("staging.wax")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: destination.path, contents: Data("previous".utf8))
+        FileManager.default.createFile(atPath: staging.path, contents: Data("published".utf8))
+        let promotion = try StoreRepairSupport.promoteVerifiedOutput(
+            from: staging,
+            to: destination,
+            overwrite: true
+        )
+        let backup = try #require(promotion.backup)
+        try FileManager.default.removeItem(at: backup)
+
+        #expect(throws: (any Error).self) {
+            try StoreRepairSupport.rollbackPromotion(promotion)
+        }
+        #expect(try Data(contentsOf: destination) == Data("published".utf8))
+    }
 }

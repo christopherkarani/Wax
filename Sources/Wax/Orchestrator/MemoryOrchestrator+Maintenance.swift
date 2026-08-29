@@ -752,6 +752,7 @@ package extension MemoryOrchestrator {
         let destinationURL: URL
         let backupURL: URL?
         let publishedIdentity: FileIdentity?
+        let backupIdentity: FileIdentity?
     }
 
     private static func rewriteStagingURL(for destinationURL: URL) -> URL {
@@ -812,14 +813,17 @@ package extension MemoryOrchestrator {
                 destinationURL,
                 withItemAt: stagingURL,
                 backupItemName: backupName,
-                options: []
+                // Retain the prior live set until finalization has verified
+                // the published inode; rollback relies on this copy.
+                options: [.withoutDeletingBackupItem]
             )
             let backupURL = destinationURL.deletingLastPathComponent()
                 .appendingPathComponent(backupName)
             return RewritePromotion(
                 destinationURL: destinationURL,
                 backupURL: backupURL,
-                publishedIdentity: fileIdentity(at: destinationURL)
+                publishedIdentity: fileIdentity(at: destinationURL),
+                backupIdentity: fileIdentity(at: backupURL)
             )
         }
 
@@ -827,7 +831,8 @@ package extension MemoryOrchestrator {
         return RewritePromotion(
             destinationURL: destinationURL,
             backupURL: nil,
-            publishedIdentity: fileIdentity(at: destinationURL)
+            publishedIdentity: fileIdentity(at: destinationURL),
+            backupIdentity: nil
         )
     }
 
@@ -837,7 +842,60 @@ package extension MemoryOrchestrator {
         // recursively remove a changed directory or symlink; leave it and
         // surface the rollback failure for operator recovery instead.
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: promotion.destinationURL.path) {
+        if let backupURL = promotion.backupURL {
+            // Validate and pin the rollback source before touching the
+            // published destination. If it disappeared or changed, retain the
+            // published output for operator recovery.
+            guard fileManager.fileExists(atPath: backupURL.path),
+                  !isSymbolicLink(at: backupURL),
+                  isRegularFile(at: backupURL),
+                  let expected = promotion.backupIdentity,
+                  fileIdentity(at: backupURL) == expected else {
+                throw WaxError.io(
+                    "rewriteLiveSet rollback retained published output because the backup changed or disappeared"
+                )
+            }
+
+            if fileManager.fileExists(atPath: promotion.destinationURL.path) {
+                guard !isSymbolicLink(at: promotion.destinationURL),
+                      let expected = promotion.publishedIdentity,
+                      fileIdentity(at: promotion.destinationURL) == expected else {
+                    throw WaxError.io(
+                        "rewriteLiveSet rollback refused to remove a destination path changed after promotion"
+                    )
+                }
+            }
+
+            let quarantine = promotion.destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".\(promotion.destinationURL.lastPathComponent)-rollback-\(UUID().uuidString)")
+            guard !fileManager.fileExists(atPath: quarantine.path) else {
+                throw WaxError.io("rewriteLiveSet rollback quarantine path already exists")
+            }
+            do {
+                if fileManager.fileExists(atPath: promotion.destinationURL.path) {
+                    try fileManager.moveItem(at: promotion.destinationURL, to: quarantine)
+                }
+                guard fileManager.fileExists(atPath: backupURL.path),
+                      !isSymbolicLink(at: backupURL),
+                      isRegularFile(at: backupURL),
+                      fileIdentity(at: backupURL) == expected else {
+                    throw WaxError.io(
+                        "rewriteLiveSet rollback retained published output because the backup changed during restore"
+                    )
+                }
+                try fileManager.moveItem(at: backupURL, to: promotion.destinationURL)
+                try? fileManager.removeItem(at: quarantine)
+            } catch {
+                // Restore the published inode when the backup race is
+                // detected after quarantine. Never overwrite a path another
+                // process recreated while rollback was in flight.
+                if fileManager.fileExists(atPath: quarantine.path),
+                   !fileManager.fileExists(atPath: promotion.destinationURL.path) {
+                    try? fileManager.moveItem(at: quarantine, to: promotion.destinationURL)
+                }
+                throw error
+            }
+        } else if fileManager.fileExists(atPath: promotion.destinationURL.path) {
             guard !isSymbolicLink(at: promotion.destinationURL),
                   let expected = promotion.publishedIdentity,
                   fileIdentity(at: promotion.destinationURL) == expected else {
@@ -847,22 +905,16 @@ package extension MemoryOrchestrator {
             }
             try fileManager.removeItem(at: promotion.destinationURL)
         }
-        if let backupURL = promotion.backupURL,
-           fileManager.fileExists(atPath: backupURL.path) {
-            guard !isSymbolicLink(at: backupURL), isRegularFile(at: backupURL) else {
-                throw WaxError.io("rewriteLiveSet rollback backup is no longer a regular file")
-            }
-            guard !fileManager.fileExists(atPath: promotion.destinationURL.path) else {
-                throw WaxError.io("rewriteLiveSet rollback destination reappeared before backup restore")
-            }
-            try fileManager.moveItem(at: backupURL, to: promotion.destinationURL)
-        }
     }
 
     private static func finalizeRewritePromotion(_ promotion: RewritePromotion) throws {
         guard let backupURL = promotion.backupURL else { return }
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: backupURL.path) else { return }
+        guard fileManager.fileExists(atPath: backupURL.path) else {
+            throw WaxError.io(
+                "rewriteLiveSet promotion backup disappeared; published output was retained"
+            )
+        }
 
         // Keep the rollback copy until the published destination is still the
         // inode that passed verification. If another writer replaced the
@@ -875,8 +927,12 @@ package extension MemoryOrchestrator {
                 "rewriteLiveSet promotion destination changed before backup cleanup"
             )
         }
-        guard isRegularFile(at: backupURL) else {
-            throw WaxError.io("rewriteLiveSet promotion backup is no longer a regular file")
+        guard isRegularFile(at: backupURL),
+              let expected = promotion.backupIdentity,
+              fileIdentity(at: backupURL) == expected else {
+            throw WaxError.io(
+                "rewriteLiveSet promotion backup changed before cleanup; published output was retained"
+            )
         }
         try fileManager.removeItem(at: backupURL)
     }
@@ -1021,8 +1077,17 @@ package extension MemoryOrchestrator {
         )
 
         let backupURL = sourceURL.deletingLastPathComponent().appendingPathComponent(backupName)
-        if FileManager.default.fileExists(atPath: backupURL.path) {
-            try? FileManager.default.removeItem(at: backupURL)
+        let promotion = RewritePromotion(
+            destinationURL: sourceURL,
+            backupURL: backupURL,
+            publishedIdentity: fileIdentity(at: sourceURL),
+            backupIdentity: fileIdentity(at: backupURL)
+        )
+        do {
+            try Self.finalizeRewritePromotion(promotion)
+        } catch {
+            try? Self.rollbackRewritePromotion(promotion)
+            throw error
         }
 
         if let footerSlice = try FooterScanner.findLastValidFooter(in: sourceURL) {

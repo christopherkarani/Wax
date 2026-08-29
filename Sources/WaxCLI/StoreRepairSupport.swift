@@ -28,6 +28,9 @@ enum StoreRepairSupport {
         /// removes this inode; a path replaced by another process is left
         /// untouched for manual recovery.
         let publishedIdentity: FileIdentity?
+        /// Identity of the prior output captured at promotion time. Rollback
+        /// validates this inode before moving it back into place.
+        let backupIdentity: FileIdentity?
     }
 
     static func expandedURL(_ raw: String) -> URL {
@@ -300,28 +303,37 @@ enum StoreRepairSupport {
                 destinationPath,
                 withItemAt: stagingPath,
                 backupItemName: backupName,
-                options: []
+                // Keep the prior output until finalizePromotion has verified
+                // the published inode. Rollback needs this copy if a later
+                // validation step fails.
+                options: [.withoutDeletingBackupItem]
             )
             let backupURL = destinationPath.deletingLastPathComponent()
                 .appendingPathComponent(backupName)
             return Promotion(
                 destination: destinationPath,
                 backup: backupURL,
-                publishedIdentity: identity(of: destinationPath)
+                publishedIdentity: identity(of: destinationPath),
+                backupIdentity: identity(of: backupURL)
             )
         } else {
             try FileManager.default.moveItem(at: stagingPath, to: destinationPath)
             return Promotion(
                 destination: destinationPath,
                 backup: nil,
-                publishedIdentity: identity(of: destinationPath)
+                publishedIdentity: identity(of: destinationPath),
+                backupIdentity: nil
             )
         }
     }
 
     static func finalizePromotion(_ promotion: Promotion) throws {
         guard let backup = promotion.backup else { return }
-        guard FileManager.default.fileExists(atPath: backup.path) else { return }
+        guard FileManager.default.fileExists(atPath: backup.path) else {
+            throw CLIError(
+                "repair promotion backup disappeared; published output was retained"
+            )
+        }
 
         // Retain the rollback copy unless the destination is still the exact
         // inode that was verified and published by this promotion. A pathname
@@ -335,11 +347,70 @@ enum StoreRepairSupport {
             )
         }
         try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
+        guard let expected = promotion.backupIdentity,
+              identity(of: backup) == expected else {
+            throw CLIError(
+                "repair promotion backup changed before cleanup; published output was retained"
+            )
+        }
         try FileManager.default.removeItem(at: backup)
     }
 
     static func rollbackPromotion(_ promotion: Promotion) throws {
-        if FileManager.default.fileExists(atPath: promotion.destination.path) {
+        let fileManager = FileManager.default
+        if let backup = promotion.backup {
+            // Validate and pin the rollback source before touching the
+            // published destination. If it disappeared or changed, retain the
+            // published output for operator recovery.
+            guard fileManager.fileExists(atPath: backup.path),
+                  !isSymbolicLink(at: backup),
+                  let expected = promotion.backupIdentity,
+                  identity(of: backup) == expected else {
+                throw CLIError(
+                    "repair rollback retained published output because the backup changed or disappeared"
+                )
+            }
+            try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
+
+            if fileManager.fileExists(atPath: promotion.destination.path) {
+                guard !isSymbolicLink(at: promotion.destination),
+                      let expected = promotion.publishedIdentity,
+                      identity(of: promotion.destination) == expected else {
+                    throw CLIError(
+                        "repair rollback refused to remove a destination path changed after promotion"
+                    )
+                }
+            }
+
+            let quarantine = promotion.destination.deletingLastPathComponent()
+                .appendingPathComponent(".\(promotion.destination.lastPathComponent)-rollback-\(UUID().uuidString)")
+            guard !fileManager.fileExists(atPath: quarantine.path) else {
+                throw CLIError("repair rollback quarantine path already exists")
+            }
+            do {
+                if fileManager.fileExists(atPath: promotion.destination.path) {
+                    try fileManager.moveItem(at: promotion.destination, to: quarantine)
+                }
+                guard fileManager.fileExists(atPath: backup.path),
+                      !isSymbolicLink(at: backup),
+                      identity(of: backup) == expected else {
+                    throw CLIError(
+                        "repair rollback retained published output because the backup changed during restore"
+                    )
+                }
+                try fileManager.moveItem(at: backup, to: promotion.destination)
+                try? fileManager.removeItem(at: quarantine)
+            } catch {
+                // Restore the published inode when the backup race is
+                // detected after quarantine. Never overwrite a path another
+                // process recreated while rollback was in flight.
+                if fileManager.fileExists(atPath: quarantine.path),
+                   !fileManager.fileExists(atPath: promotion.destination.path) {
+                    try? fileManager.moveItem(at: quarantine, to: promotion.destination)
+                }
+                throw error
+            }
+        } else if fileManager.fileExists(atPath: promotion.destination.path) {
             guard !isSymbolicLink(at: promotion.destination),
                   let expected = promotion.publishedIdentity,
                   identity(of: promotion.destination) == expected else {
@@ -347,15 +418,7 @@ enum StoreRepairSupport {
                     "repair rollback refused to remove a destination path changed after promotion"
                 )
             }
-            try FileManager.default.removeItem(at: promotion.destination)
-        }
-        if let backup = promotion.backup,
-           FileManager.default.fileExists(atPath: backup.path) {
-            try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
-            guard !FileManager.default.fileExists(atPath: promotion.destination.path) else {
-                throw CLIError("repair rollback destination reappeared before backup restore")
-            }
-            try FileManager.default.moveItem(at: backup, to: promotion.destination)
+            try fileManager.removeItem(at: promotion.destination)
         }
     }
 
