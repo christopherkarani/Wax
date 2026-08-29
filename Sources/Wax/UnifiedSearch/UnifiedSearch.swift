@@ -59,10 +59,10 @@ extension Wax {
             includeVector = true
         }
 
-        // Identifier overfetch + exact-match rerank are text-lane only.
-        // vectorOnly must not widen the pending window or promote a buried exact frame.
-        let identifierWindow: Int? = (
-            includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isLexicalIdentifierQuery) ?? false)
+        // Exact-intent overfetch + rerank are text-lane only. vectorOnly must not
+        // widen the pending window or promote a buried lexical frame.
+        let exactIntentWindow: Int? = (
+            includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isExactIntentQuery) ?? false)
         ) ? min(max(Self.boundedMultiply(requestedTopK, by: 3), 12), 48) : nil
 
         let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
@@ -472,7 +472,7 @@ extension Wax {
         }
 
         var pendingResults: [PendingResult] = []
-        let pendingLimit = identifierWindow ?? requestedTopK
+        let pendingLimit = exactIntentWindow ?? requestedTopK
         pendingResults.reserveCapacity(min(pendingLimit, baseResults.count))
 
         if !baseResults.isEmpty {
@@ -602,11 +602,11 @@ extension Wax {
             nowMs: semanticNowMs,
             maxWindow: min(max(Self.boundedMultiply(request.topK, by: 3), 12), 48)
         )
-        if let identifierWindow, let trimmedQuery {
+        if let exactIntentWindow, let trimmedQuery {
             filtered = Self.identifierExactMatchRerank(
                 results: filtered,
                 query: trimmedQuery,
-                maxWindow: identifierWindow
+                maxWindow: exactIntentWindow
             )
         }
         if filtered.count > requestedTopK {
@@ -747,10 +747,13 @@ extension Wax {
         return combined
     }
 
-    /// Query-side exact-substring boost for identifier-like queries (caps, hyphens, few tokens).
-    /// FTS `unicode61` splits hyphens, so similar prose can beat the unique token on BM25;
-    /// same-repo/project semantic rerank can then lift a neighbor. This pass runs after
-    /// semantic rerank so an exact phrase hit stays rank 1. Vector-only ranking is unchanged.
+    /// Query-side exact-intent boost for identifiers and quoted phrases.
+    /// FTS `unicode61` splits identifier punctuation, so similar prose can beat a
+    /// unique token on BM25; same-repo/project semantic rerank can then lift a
+    /// neighbor. A token-boundary match receives the strong bonus, while a
+    /// substring match receives only a small lexical nudge. This pass runs after
+    /// semantic rerank so an exact phrase hit stays rank 1. Vector-only ranking
+    /// is unchanged.
     private static func identifierExactMatchRerank(
         results: [SearchResponse.Result],
         query: String,
@@ -759,32 +762,39 @@ extension Wax {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
-        // Window 1 still publishes the bonus so a lone exact hit outranks
-        // OR-fallback name matches from another store after corpus merge.
         guard cappedWindow > 0 else { return results }
 
-        let lowerNeedle = needle.lowercased()
-        // Larger than same-repo (0.9) + same-project (0.7) + decision (0.45) + durable (0.25).
-        let exactMatchBonus: Float = 5.0
+        let needles = exactIntentNeedles(from: needle)
+        guard !needles.isEmpty else { return results }
 
-        let scoredHead = results.prefix(cappedWindow).enumerated().map { index, result -> (index: Int, composite: Float, matched: Bool, result: SearchResponse.Result) in
+        // Larger than same-repo (0.9) + same-project (0.7) + decision (0.45) + durable (0.25).
+        let exactTokenBonus: Float = 5.0
+        let substringBonus: Float = 0.5
+
+        let scoredHead = results.prefix(cappedWindow).enumerated().map { index, result -> (index: Int, composite: Float, strength: ExactIntentMatchStrength, result: SearchResponse.Result) in
             let haystack = dehighlightedPreviewText(result.previewText ?? "").lowercased()
-            let matched = !haystack.isEmpty && haystack.contains(lowerNeedle)
+            let strength = bestExactIntentMatch(in: haystack, needles: needles)
             var updated = result
-            if matched {
+            switch strength {
+            case .token:
                 updated.explanations = dedupedExplanations(result.explanations + ["exact identifier match"])
+            case .substring:
+                updated.explanations = dedupedExplanations(result.explanations + ["identifier substring match"])
+            case .none:
+                break
             }
             return (
                 index: index,
-                composite: result.score + (matched ? exactMatchBonus : 0),
-                matched: matched,
+                composite: result.score + strength.bonus(exactTokenBonus: exactTokenBonus, substringBonus: substringBonus),
+                strength: strength,
                 result: updated
             )
         }
 
-        guard scoredHead.contains(where: \.matched) else { return results }
+        guard scoredHead.contains(where: { $0.strength != .none }) else { return results }
 
         let rankedHead = scoredHead.sorted { lhs, rhs in
+            if lhs.strength != rhs.strength { return lhs.strength.rawValue > rhs.strength.rawValue }
             if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
             if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
             return lhs.index < rhs.index
@@ -801,6 +811,154 @@ extension Wax {
         combined.reserveCapacity(results.count)
         combined.append(contentsOf: results.dropFirst(cappedWindow))
         return combined
+    }
+
+    private enum ExactIntentMatchStrength: Int, Equatable {
+        case none = 0
+        case substring = 1
+        case token = 2
+
+        func bonus(exactTokenBonus: Float, substringBonus: Float) -> Float {
+            switch self {
+            case .none: 0
+            case .substring: substringBonus
+            case .token: exactTokenBonus
+            }
+        }
+    }
+
+    /// Quoted phrases carry the exact target inside a natural-language query;
+    /// identifier queries use the whole trimmed value. Preserve all quoted
+    /// phrases so a result matching any explicit target can be promoted.
+    private static func exactIntentNeedles(from query: String) -> [String] {
+        let phrases = MatchPlan.rawQuotedPhrases(from: query).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        return phrases.isEmpty ? [query] : phrases
+    }
+
+    private static func bestExactIntentMatch(
+        in haystack: String,
+        needles: [String]
+    ) -> ExactIntentMatchStrength {
+        guard !haystack.isEmpty else { return .none }
+        var best: ExactIntentMatchStrength = .none
+        for needle in needles {
+            let candidate = needle.lowercased()
+            guard !candidate.isEmpty else { continue }
+            let strength = exactIntentMatchStrength(needle: candidate, in: haystack)
+            if strength.rawValue > best.rawValue {
+                best = strength
+                if best == .token { break }
+            }
+        }
+        return best
+    }
+
+    /// Classify a case-insensitive occurrence by the characters immediately
+    /// around it. Identifier glue is treated as part of the token when it
+    /// continues into another identifier scalar, while hyphen/underscore glue
+    /// remains strict for the #166 path. This preserves UUID/dot/path equality
+    /// without making sentence punctuation defeat a quoted name.
+    private static func exactIntentMatchStrength(
+        needle: String,
+        in haystack: String
+    ) -> ExactIntentMatchStrength {
+        let identifierGlue = CharacterSet(charactersIn: "-_.:/@#%+")
+        var searchStart = haystack.startIndex
+        var best: ExactIntentMatchStrength = .none
+
+        while searchStart < haystack.endIndex,
+              let range = haystack.range(of: needle, options: [.literal], range: searchStart..<haystack.endIndex)
+        {
+            let before = range.lowerBound > haystack.startIndex
+                ? haystack.index(before: range.lowerBound)
+                : nil
+            let after = range.upperBound < haystack.endIndex
+                ? range.upperBound
+                : nil
+            let hasTokenBoundaries = isExactIntentBoundary(
+                at: before,
+                direction: .before,
+                in: haystack,
+                glue: identifierGlue
+            ) && isExactIntentBoundary(
+                at: after,
+                direction: .after,
+                in: haystack,
+                glue: identifierGlue
+            )
+            if hasTokenBoundaries {
+                return .token
+            }
+            best = .substring
+            searchStart = range.upperBound
+        }
+        return best
+    }
+
+    private enum ExactIntentBoundaryDirection {
+        case before
+        case after
+    }
+
+    private static func isExactIntentBoundary(
+        at index: String.Index?,
+        direction: ExactIntentBoundaryDirection,
+        in haystack: String,
+        glue: CharacterSet
+    ) -> Bool {
+        guard let index else { return true }
+        let character = haystack[index]
+        let scalarView = character.unicodeScalars
+        if scalarView.contains(where: { CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) }) {
+            return false
+        }
+        // Hyphen and underscore are always identifier glue. A quoted phrase
+        // such as "Ada Lovelace" must not treat "Ada Lovelace-Foundation"
+        // as an equal token sequence merely because the query itself has no
+        // identifier punctuation.
+        if scalarView.contains(where: { $0 == "-" || $0 == "_" }) {
+            return false
+        }
+        guard scalarView.contains(where: glue.contains) else {
+            return true
+        }
+
+        // Punctuation in an identifier can also be ordinary sentence
+        // punctuation (for example, `build.agent_v2.`). Walk through a glue
+        // run and only reject the boundary when it continues into another
+        // identifier scalar. This keeps `build.agent_v2.extra` as a prefix
+        // distractor while allowing a terminal period after the exact ID.
+        var cursor: String.Index
+        switch direction {
+        case .before:
+            guard index > haystack.startIndex else { return true }
+            cursor = haystack.index(before: index)
+        case .after:
+            guard index < haystack.endIndex else { return true }
+            cursor = haystack.index(after: index)
+        }
+        while cursor < haystack.endIndex {
+            let adjacent = haystack[cursor]
+            let adjacentScalars = adjacent.unicodeScalars
+            if adjacentScalars.contains(where: {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+            }) {
+                return false
+            }
+            guard adjacentScalars.contains(where: glue.contains) else {
+                return true
+            }
+            switch direction {
+            case .before:
+                guard cursor > haystack.startIndex else { return true }
+                cursor = haystack.index(before: cursor)
+            case .after:
+                cursor = haystack.index(after: cursor)
+            }
+        }
+        return true
     }
 
     private static func baseExplanations(
