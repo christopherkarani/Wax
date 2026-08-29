@@ -5,15 +5,17 @@ import Wax
 struct VectorHealthCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "vector-health",
-        abstract: "Verify MiniLM vector search health with a semantic probe"
+        abstract: "Verify vector search health against the target store"
     )
 
     @OptionGroup var store: VectorStoreOptions
 
     func runAsync() async throws {
         let primary = try await checkPrimaryStore()
-        let probe = try await runSemanticProbe()
-        let healthy = primary.vectorSearchEnabled && primary.embedderIdentity != nil && probe.passed
+        let healthy = primary.vectorSearchEnabled
+            && primary.embedderIdentity != nil
+            && primary.framesWithoutVectors == 0
+            && primary.canary.passed
 
         switch store.format {
         case .json:
@@ -32,20 +34,27 @@ struct VectorHealthCommand: AsyncParsableCommand {
                 "primaryStore": [
                     "path": primary.path,
                     "vectorSearchEnabled": primary.vectorSearchEnabled,
+                    "frameCount": primary.frameCount,
+                    "framesWithoutVectors": primary.framesWithoutVectors,
                     "embedder": embedder,
                 ],
                 "semanticProbe": [
-                    "passed": probe.passed,
-                    "vectorSourceSeen": probe.vectorSourceSeen,
-                    "expectedDocMatched": probe.expectedDocMatched,
-                    "topPreview": probe.topPreview,
-                    "topSources": probe.topSources,
+                    "passed": primary.canary.passed,
+                    "vectorSourceSeen": primary.canary.vectorSourceSeen,
+                    "expectedDocMatched": primary.canary.expectedDocMatched ?? NSNull(),
+                    "canaryFrameId": primary.canary.frameId ?? NSNull(),
+                    "topPreview": primary.canary.topPreview,
+                    "topSources": primary.canary.topSources,
+                    "queryEmbeddingState": primary.canary.queryEmbeddingState.rawValue,
+                    "effectiveMode": primary.canary.effectiveMode.diagnosticsSummary,
+                    "targetStore": true,
                 ],
             ])
         case .text:
             print("Vector health: \(healthy ? "PASS" : "FAIL")")
             print("Store: \(primary.path)")
             print("Vector search: \(primary.vectorSearchEnabled ? "enabled" : "disabled")")
+            print("Frames without vectors: \(primary.framesWithoutVectors)")
             if let identity = primary.embedderIdentity {
                 let provider = identity.provider ?? "unknown"
                 let model = identity.model ?? "unknown"
@@ -54,11 +63,11 @@ struct VectorHealthCommand: AsyncParsableCommand {
             } else {
                 print("Embedder: none")
             }
-            print("Semantic probe: \(probe.passed ? "PASS" : "FAIL")")
-            print("Probe vector source seen: \(probe.vectorSourceSeen ? "yes" : "no")")
-            print("Probe expected doc matched: \(probe.expectedDocMatched ? "yes" : "no")")
-            if !probe.topPreview.isEmpty {
-                print("Probe top preview: \(probe.topPreview)")
+            print("Primary-store canary: \(primary.canary.passed ? "PASS" : "FAIL")")
+            print("Canary vector source seen: \(primary.canary.vectorSourceSeen ? "yes" : "no")")
+            print("Canary query embedding: \(primary.canary.queryEmbeddingState.rawValue)")
+            if !primary.canary.topPreview.isEmpty {
+                print("Canary top preview: \(primary.canary.topPreview)")
             }
         }
 
@@ -73,14 +82,20 @@ private extension VectorHealthCommand {
         let path: String
         let vectorSearchEnabled: Bool
         let embedderIdentity: EmbeddingIdentity?
+        let frameCount: UInt64
+        let framesWithoutVectors: UInt64
+        let canary: SemanticProbeResult
     }
 
     struct SemanticProbeResult {
         let passed: Bool
         let vectorSourceSeen: Bool
-        let expectedDocMatched: Bool
+        let expectedDocMatched: Bool?
         let topPreview: String
         let topSources: [String]
+        let queryEmbeddingState: RAGContext.QueryEmbeddingState
+        let effectiveMode: SearchMode
+        let frameId: UInt64?
     }
 
     func checkPrimaryStore() async throws -> PrimaryStoreCheck {
@@ -94,56 +109,41 @@ private extension VectorHealthCommand {
             requireVector: true
         ) { memory in
             let stats = await memory.runtimeStats()
+            let canaryFrame = await memory.healthCanaryFrame()
+            let canaryQuery = canaryFrame?.searchText ?? "wax vector health canary"
+            let canaryFilter = canaryFrame.map { FrameFilter(frameIds: Set([$0.id])) }
+            let execution = try await memory.searchExecution(
+                query: canaryQuery,
+                mode: .vectorOnly,
+                topK: 1,
+                frameFilter: canaryFilter,
+                timeRange: nil
+            )
+            let vectorSourceSeen = execution.hits.contains { $0.sources.contains(.vector) }
+            let expectedDocMatched = canaryFrame.map { frame in
+                execution.hits.contains { $0.frameId == frame.id }
+            }
+            let canaryPassed = execution.effectiveMode == .vectorOnly
+                && execution.queryEmbeddingState == .available
+                // A store without a live searchable frame has no frame to
+                // match, but the target query still proves the engine/provider.
+                && (canaryFrame == nil || (vectorSourceSeen && expectedDocMatched == true))
             return PrimaryStoreCheck(
                 path: stats.storeURL.path,
                 vectorSearchEnabled: stats.vectorSearchEnabled,
-                embedderIdentity: stats.embedderIdentity
-            )
-        }
-    }
-
-    func runSemanticProbe() async throws -> SemanticProbeResult {
-        let probeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wax-vector-health-\(UUID().uuidString).wax")
-        defer {
-            try? FileManager.default.removeItem(at: probeURL)
-        }
-        return try await StoreSession.withOpen(
-            at: probeURL,
-            noEmbedder: store.noEmbedder,
-            embedderChoice: store.embedder,
-            embedderTuning: store.embedderTuning,
-            requireVector: true
-        ) { memory in
-            let expectedDocument = "An automobile needs periodic maintenance and tire rotation."
-            try await memory.remember(expectedDocument, metadata: ["probe": "vector-health"])
-            try await memory.remember(
-                "Bananas are a tropical fruit often eaten in smoothies.",
-                metadata: ["probe": "vector-health"]
-            )
-            try await memory.flush()
-
-            let hits = try await memory.search(
-                query: "car service",
-                mode: .hybrid(alpha: 0.5),
-                topK: 3,
-                frameFilter: nil
-            )
-
-            let topHit = hits.first
-            let vectorSourceSeen = hits.contains(where: { $0.sources.contains(.vector) })
-            let expectedDocMatched = hits.contains {
-                ($0.previewText ?? "").localizedCaseInsensitiveContains("automobile")
-            }
-            let topPreview = topHit?.previewText ?? ""
-            let topSources = (topHit?.sources ?? []).map(\.rawValue)
-
-            return SemanticProbeResult(
-                passed: vectorSourceSeen && expectedDocMatched,
-                vectorSourceSeen: vectorSourceSeen,
-                expectedDocMatched: expectedDocMatched,
-                topPreview: topPreview,
-                topSources: topSources
+                embedderIdentity: stats.embedderIdentity,
+                frameCount: stats.frameCount,
+                framesWithoutVectors: stats.framesWithoutVectors,
+                canary: SemanticProbeResult(
+                    passed: canaryPassed,
+                    vectorSourceSeen: vectorSourceSeen,
+                    expectedDocMatched: expectedDocMatched,
+                    topPreview: execution.hits.first?.previewText ?? "",
+                    topSources: (execution.hits.first?.sources ?? []).map(\.rawValue),
+                    queryEmbeddingState: execution.queryEmbeddingState,
+                    effectiveMode: execution.effectiveMode,
+                    frameId: canaryFrame?.id,
+                )
             )
         }
     }

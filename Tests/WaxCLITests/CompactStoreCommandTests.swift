@@ -89,8 +89,8 @@ struct CompactStoreCommandTests {
 
         let dest = try await Wax.open(at: destURL)
         let destWal = await dest.walStats()
-        // Shipped rewriteLiveSet automatic dest for a 256 MiB source with small
-        // payload is sessionWalSize. Constants.longTermWalSize is not on this line.
+        // Shipped rewriteLiveSet keeps a small-payload destination at
+        // sessionWalSize; Constants.longTermWalSize is not on this line.
         #expect(destWal.walSize == Constants.sessionWalSize)
         try await dest.verify(deep: true)
         try await dest.close()
