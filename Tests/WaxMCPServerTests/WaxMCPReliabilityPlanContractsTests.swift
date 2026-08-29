@@ -270,8 +270,7 @@ func t02SessionOpenStampsExplicitProjectOntoManifestAndRemember() async throws {
         ))
         #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
         let openPayload = try requireObject(opened.payload)
-        #expect(openPayload["project"]?.stringValue == "Espresso")
-        #expect(openPayload["repo"]?.stringValue == "Espresso")
+        #expect(Set(openPayload.keys) == Set(["session_id", "handoff"]))
         let sessionID = try requireString(openPayload, "session_id")
 
         let remembered = await service.handle(.init(
@@ -708,9 +707,7 @@ func sessionOpenStampsExplicitProjectOntoSessionManifest() async throws {
         ))
         #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
         let payload = try requireObject(opened.payload)
-        #expect(payload["project"]?.stringValue == "ExplicitOpenProject")
-        #expect(payload["repo"]?.stringValue == "ExplicitOpenProject")
-        #expect(payload["repo"]?.stringValue != "ForeignOpenRepo")
+        #expect(Set(payload.keys) == Set(["session_id", "handoff"]))
         let sessionID = try requireString(payload, "session_id")
 
         let recall = await service.handle(.init(

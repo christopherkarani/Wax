@@ -5487,6 +5487,170 @@ func sessionOpenCompactRecursivelyRemovesDisplayText() async throws {
 }
 
 @Test
+func sessionOpenDefaultsToBoundedHandoffWithoutRecall() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "session-open-bounded-\(UUID().uuidString)"
+        let content = String(repeating: "handoff content 🚀 ", count: 400)
+        let pendingTasks: [AgentBrokerValue] = (0..<12).map { index in
+            .string("task-\(index) " + String(repeating: "待", count: 200))
+        }
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string(content),
+                "project": .string(project),
+                "pending_tasks": .array(pendingTasks),
+            ]
+        ))).ok == true)
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("bounded-open-agent"),
+                    "run_id": .string(UUID().uuidString),
+                ]
+            ),
+            broker: service
+        )
+
+        #expect(opened.isError != true)
+        let payload = try parseJSONText(in: opened)
+        #expect(Set(payload.keys) == Set(["session_id", "handoff"]))
+        #expect(payload["session_id"] as? String != nil)
+        #expect(payload["recall"] == nil)
+        let handoff = try requireObject(payload, key: "handoff")
+        let compactContent = try requireString(handoff, key: "content")
+        let tasks = try requireArray(handoff, key: "pending_tasks")
+        #expect(compactContent.utf8.count <= 2_048)
+        #expect((handoff["content_bytes"] as? Int ?? 2_049) <= 2_048)
+        #expect((handoff["content_tokens"] as? Int ?? 257) <= 256)
+        #expect(tasks.count <= 3)
+        #expect(tasks.allSatisfy { (($0 as? String)?.utf8.count ?? 257) <= 256 })
+        #expect((handoff["truncated"] as? Bool) == true)
+        #expect((handoff["pending_tasks_omitted"] as? Int) == 9)
+        #expect(handoff["frame_id"] == nil)
+        #expect(handoff["timestamp_ms"] == nil)
+    }
+}
+
+@Test
+func sessionOpenCompactHandoffTruncationPreservesUnicodeBoundaries() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "session-open-unicode-\(UUID().uuidString)"
+        let content = String(repeating: "🧠", count: 2_000)
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string(content),
+                "project": .string(project),
+            ]
+        ))).ok == true)
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("unicode-open-agent"),
+                    "run_id": .string(UUID().uuidString),
+                ]
+            ),
+            broker: service
+        )
+        let handoff = try requireObject(try parseJSONText(in: opened), key: "handoff")
+        let compactContent = try requireString(handoff, key: "content")
+        #expect(compactContent.utf8.count <= 2_048)
+        let counter = try await TokenCounter.shared()
+        #expect(await counter.count(compactContent) <= 256)
+        #expect(content.hasPrefix(compactContent))
+        #expect(String(data: Data(compactContent.utf8), encoding: .utf8) == compactContent)
+        #expect(!compactContent.contains("�"))
+        #expect((handoff["content_truncated"] as? Bool) == true)
+    }
+}
+
+@Test
+func sessionOpenExplicitRecallRemainsCapped() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "session-open-recall-\(UUID().uuidString)"
+        let marker = "SESSION_OPEN_RECALL_CAP_\(UUID().uuidString)"
+        for index in 0..<8 {
+            #expect((await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("\(marker) result \(index)"),
+                    "project": .string(project),
+                ]
+            ))).ok == true)
+        }
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("recall-open-agent"),
+                    "run_id": .string(UUID().uuidString),
+                    "recall_query": .string(marker),
+                ]
+            ),
+            broker: service
+        )
+        let payload = try parseJSONText(in: opened)
+        let recall = try requireObject(payload, key: "recall")
+        #expect((recall["limit"] as? Int) == 5)
+        #expect((recall["result_count"] as? Int ?? 6) <= 5)
+    }
+}
+
+@Test
+func sessionOpenLeavesFullHandoffLatestExplicitReadUnchanged() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "session-open-full-read-\(UUID().uuidString)"
+        let content = "Full handoff content stays on handoff_latest."
+        let tasks = ["task one", "task two", "task three", "task four"]
+        #expect((await service.handle(.init(
+            command: "handoff",
+            arguments: [
+                "content": .string(content),
+                "project": .string(project),
+                "pending_tasks": .array(tasks.map { .string($0) }),
+            ]
+        ))).ok == true)
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("full-read-agent"),
+                    "run_id": .string(UUID().uuidString),
+                ]
+            ),
+            broker: service
+        )
+        let compactHandoff = try requireObject(try parseJSONText(in: opened), key: "handoff")
+        #expect(compactHandoff["frame_id"] == nil)
+        #expect(compactHandoff["timestamp_ms"] == nil)
+
+        let latest = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "handoff_latest",
+                arguments: ["project": .string(project)]
+            ),
+            broker: service
+        )
+        let latestPayload = try parseJSONText(in: latest)
+        #expect(latestPayload["content"] as? String == content)
+        #expect((latestPayload["pending_tasks"] as? [String]) == tasks)
+        #expect(latestPayload["frame_id"] != nil)
+        #expect(latestPayload["timestamp_ms"] != nil)
+    }
+}
+
+@Test
 func invalidArgumentErrorListsAcceptedArguments() async throws {
     try await withAgentBrokerService { service, _ in
         let result = await WaxMCPTools.handleCall(
@@ -5925,14 +6089,30 @@ private func containsKeyRecursively(_ key: String, in value: Any) -> Bool {
 
 private func parseJSONText(in result: CallTool.Result) throws -> [String: Any] {
     let text = firstText(in: result)
-    guard let data = text.data(using: .utf8) else {
-        throw NSError(domain: "WaxMCPServerTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 result"])
+    if let dict = decodeJSONObject(text) {
+        return dict
     }
-    let object = try JSONSerialization.jsonObject(with: data)
-    guard let dict = object as? [String: Any] else {
-        throw NSError(domain: "WaxMCPServerTests", code: 3, userInfo: [NSLocalizedDescriptionKey: "Result is not a JSON object"])
+    for content in result.content {
+        if case .resource(let resource, _, _) = content,
+           let resourceText = resource.text,
+           let dict = decodeJSONObject(resourceText) {
+            return dict
+        }
     }
-    return dict
+    let preview = text.isEmpty ? "<empty>" : String(text.prefix(200))
+    throw NSError(
+        domain: "WaxMCPServerTests",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Result is not a JSON object: \(preview)"]
+    )
+}
+
+private func decodeJSONObject(_ text: String) -> [String: Any]? {
+    guard !text.isEmpty, let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) else {
+        return nil
+    }
+    return object as? [String: Any]
 }
 
 private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) throws -> [String: Any] {

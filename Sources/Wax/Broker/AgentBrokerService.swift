@@ -1140,6 +1140,10 @@ extension AgentBrokerService {
     }
 
     /// `handoff_latest` + `session_start` + optional `recall` in one round-trip (Phase 2).
+    ///
+    /// The handoff is intentionally projected to a bounded bootstrap shape.
+    /// Callers that need frame metadata or the complete pending-task list can
+    /// use `handoff_latest` explicitly.
     func sessionOpen(_ command: BrokerCommand.SessionOpen) async throws -> AgentBrokerValue {
         let project = command.project
         let repo = command.repo
@@ -1195,6 +1199,7 @@ extension AgentBrokerService {
             var recallArgs: [String: AgentBrokerValue] = [
                 "query": .string(recallQuery),
                 "scope": .string("project"),
+                "limit": .from(5),
             ]
             if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
             if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
@@ -1203,28 +1208,107 @@ extension AgentBrokerService {
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
+        // Keep the bootstrap wire shape deliberately small.  Callers that
+        // need project/repo, lease state, or the full handoff can issue the
+        // corresponding explicit read after they have the session UUID.
         var payload: [String: AgentBrokerValue] = [
-            "status": .string("ok"),
             "session_id": .from(sessionID),
-            "handoff": handoffPayload,
-            "project": .from(resolvedProject),
-            "repo": .from(resolvedRepo),
-            "display_text": .string(
-                "Session open. session_id=\(sessionID ?? "nil") project=\(resolvedProject ?? "nil")."
-            ),
+            "handoff": try await Self.compactSessionOpenHandoff(handoffPayload),
         ]
-        if let startObject {
-            if let resumed = startObject["resumed"] {
-                payload["resumed"] = resumed
-            }
-            if let recovered = startObject["recovered_lease"] {
-                payload["recovered_lease"] = recovered
-            }
-        }
         if let recallPayload {
             payload["recall"] = recallPayload
         }
         return .object(payload)
+    }
+
+    private static func compactSessionOpenHandoff(_ value: AgentBrokerValue) async throws -> AgentBrokerValue {
+        guard let handoff = value.objectValue,
+              handoff["found"]?.boolValue == true
+        else {
+            return value
+        }
+
+        let originalContent = handoff["content"]?.stringValue ?? ""
+        let byteLimitedContent = utf8Prefix(
+            originalContent,
+            maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
+        )
+        let tokenCounter = try await TokenCounter.shared()
+        let compactContent = await Self.tokenLimitedPrefix(
+            byteLimitedContent,
+            counter: tokenCounter,
+            maxTokens: BrokerLimits.maxSessionOpenHandoffContentTokens
+        )
+        let contentTruncated = compactContent != originalContent
+
+        let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let boundedTasks = originalTasks
+            .prefix(BrokerLimits.maxSessionOpenPendingTasks)
+            .map { task in
+                utf8Prefix(task, maxBytes: BrokerLimits.maxSessionOpenPendingTaskBytes)
+            }
+        let pendingTaskTruncations = zip(
+            originalTasks.prefix(BrokerLimits.maxSessionOpenPendingTasks),
+            boundedTasks
+        ).reduce(into: 0) { count, task in
+            if task.0 != task.1 { count += 1 }
+        }
+        let omittedTaskCount = max(0, originalTasks.count - boundedTasks.count)
+        let anyTruncated = contentTruncated || pendingTaskTruncations > 0 || omittedTaskCount > 0
+
+        return .object([
+            "found": .bool(true),
+            "content": .string(compactContent),
+            "pending_tasks": .array(boundedTasks.map { .string($0) }),
+            "truncated": .bool(anyTruncated),
+            "content_truncated": .bool(contentTruncated),
+            "pending_tasks_truncated": .from(pendingTaskTruncations),
+            "pending_tasks_omitted": .from(omittedTaskCount),
+            "content_bytes": .from(compactContent.utf8.count),
+            "content_tokens": .from(await tokenCounter.count(compactContent)),
+        ])
+    }
+
+    /// Return a prefix without splitting a user-visible Unicode grapheme.
+    private static func utf8Prefix(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        var bytes = 0
+        var result = String()
+        result.reserveCapacity(min(text.utf8.count, maxBytes))
+        for character in text {
+            let characterBytes = String(character).utf8.count
+            guard bytes + characterBytes <= maxBytes else { break }
+            result.append(character)
+            bytes += characterBytes
+        }
+        return result
+    }
+
+    /// Bound `text` to `maxTokens` while remaining a grapheme prefix of `text`.
+    ///
+    /// Encode the full string once, then take a proportional character prefix
+    /// and shrink by graphemes if that prefix is still over budget. This avoids
+    /// re-tokenizing every binary-search midpoint on `TokenCounter.shared()`,
+    /// which serializes orchestrator chunking and MCP remember/recall.
+    private static func tokenLimitedPrefix(
+        _ text: String,
+        counter: TokenCounter,
+        maxTokens: Int
+    ) async -> String {
+        guard maxTokens > 0, !text.isEmpty else { return "" }
+        let fullCount = await counter.count(text)
+        if fullCount <= maxTokens { return text }
+
+        let characters = Array(text)
+        var high = max(1, min(characters.count, (maxTokens * characters.count) / fullCount))
+        var candidate = String(characters.prefix(high))
+        var candidateCount = await counter.count(candidate)
+        while candidateCount > maxTokens && high > 1 {
+            high = max(1, (high * 3) / 4)
+            candidate = String(characters.prefix(high))
+            candidateCount = await counter.count(candidate)
+        }
+        return candidateCount <= maxTokens ? candidate : ""
     }
 
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {

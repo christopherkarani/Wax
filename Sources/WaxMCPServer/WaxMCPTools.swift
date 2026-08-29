@@ -388,10 +388,12 @@ private extension WaxMCPTools {
     static func encodeJSON(_ value: Value) -> String? {
         let object = toJSONObject(value)
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) else {
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]),
+              let json = String(data: data, encoding: .utf8),
+              !json.isEmpty else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        return json
     }
 
     static func toJSONObject(_ value: Value) -> Any {
@@ -403,7 +405,7 @@ private extension WaxMCPTools {
         case .int(let value):
             return value
         case .double(let value):
-            return value
+            return value.isFinite ? value : NSNull()
         case .string(let value):
             return value
         case .data(_, let data):
