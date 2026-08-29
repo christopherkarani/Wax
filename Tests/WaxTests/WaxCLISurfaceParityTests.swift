@@ -27,6 +27,16 @@ import Testing
     for command in requiredCommands {
         #expect(source.contains(command), "Missing CLI broker parity command \(command)")
     }
+
+    for command in ["CompactStoreCommand.self", "EmbedBackfillCommand.self"] {
+        let registrations = source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.trimmingCharacters(in: .whitespaces) == "\(command)," }
+        #expect(
+            registrations.count == 1,
+            "CLI must register \(command) exactly once, found \(registrations.count)"
+        )
+    }
 }
 
 @Test func waxCLIExposesLinuxDemoCommand() throws {
