@@ -99,6 +99,11 @@ package enum AgentBrokerCommandSurface {
         Entry(canonicalName: "facts_query", acceptedArgumentKeys: ["subject", "predicate", "as_of", "system_as_of", "valid_as_of", "limit"], requiresStructuredMemory: true),
         Entry(canonicalName: "entity_resolve", acceptedArgumentKeys: ["alias", "limit"], requiresStructuredMemory: true),
         Entry(canonicalName: "flush", acceptedArgumentKeys: [], exposure: .control),
+        Entry(
+            canonicalName: "memory_maintain",
+            acceptedArgumentKeys: ["apply", "dry_run", "force_reclaim"],
+            exposure: .control
+        ),
         Entry(canonicalName: "shutdown", aliases: ["exit", "quit"], acceptedArgumentKeys: [], exposure: .control),
     ]
 

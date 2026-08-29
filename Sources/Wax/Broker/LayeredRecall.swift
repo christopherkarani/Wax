@@ -631,6 +631,15 @@ package enum LayeredRecall {
             durableHits = execution.context.items.map {
                 hit(from: $0, horizon: .durable, sessionID: nil)
             }
+            let nowMs = stores.nowMs()
+            durableHits = durableHits.filter { hit in
+                MemoryRetention.isVisibleInDefaultRecall(
+                    metadata: hit.metadata,
+                    nowMs: nowMs,
+                    query: request.query,
+                    mode: request.mode
+                )
+            }
         }
 
         let merged: [Hit]
@@ -728,7 +737,14 @@ package enum LayeredRecall {
                 frameFilter: nil,
                 timeRange: nil
             )
+            let nowMs = stores.nowMs()
             for result in execution.hits {
+                guard MemoryRetention.isVisibleInDefaultRecall(
+                    metadata: result.metadata,
+                    nowMs: nowMs,
+                    query: request.query,
+                    mode: request.mode
+                ) else { continue }
                 guard let canonicalFrameID = await stores.canonicalFrameID(
                     result.frameId,
                     stores.longTermMemory
@@ -758,6 +774,8 @@ package enum LayeredRecall {
             let scopedManifests = manifests
                 .filter { manifest in
                     guard manifest.status == .ended else { return false }
+                    guard manifest.reclaimedAtMs == nil else { return false }
+                    guard FileManager.default.fileExists(atPath: manifest.storePath) else { return false }
                     if let sessionID = request.sessionID, manifest.sessionID == sessionID { return false }
                     if let current = request.sessionID, let active = stores.workingLane(current) {
                         if let agentID = active.agentID, manifest.agentID != agentID { return false }

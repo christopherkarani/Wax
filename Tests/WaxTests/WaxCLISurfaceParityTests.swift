@@ -21,6 +21,7 @@ import Testing
         "MarkdownExportCommand.self",
         "MarkdownSyncCommand.self",
         "CompactStoreCommand.self",
+        "MemoryMaintainCommand.self",
         "EmbedBackfillCommand.self",
     ]
 

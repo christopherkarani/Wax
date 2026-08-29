@@ -24,6 +24,7 @@ struct WaxCLI: ParsableCommand {
             DaemonCommand.self,
             StatsCommand.self,
             CompactStoreCommand.self,
+            MemoryMaintainCommand.self,
             EmbedBackfillCommand.self,
             VectorHealthCommand.self,
             FlushCommand.self,
@@ -765,7 +766,7 @@ enum WaxMCPAgentPlaybook {
         - Use `recall` for assembled context and `search` for raw ranked hits.
         - Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
         - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-        - Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat.
+        - Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat. Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or operator `memory-maintain` in the agent loop.
         - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
         - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
         - `task_state` is session-local working state: it requires an active top-level `session_id` and rejects `scope: durable`, `durability: durable`, and `locked`. To repair legacy durable task-state frames, run `task_state_migrate` with a distinct `destination_path`; it copies the complete store before changing only task-state trees. Use `dry_run: true` first and choose `orphan_policy: quarantine` (default) or `drop`.
@@ -788,7 +789,7 @@ enum WaxMCPAgentPlaybook {
 
         Close: `session_close` (`session_id`, `content`, `project`, `pending_tasks`) or `handoff` then `session_end`.
 
-        Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or huge logs. Do not manage `SESSION_STORE`, `--store-path`, or `flush`. Prefer `mode: "text"` for exact names and recent facts. Structured `entity_*` / `fact_*` tools are for stable graph facts, not debug notes.
+        Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or huge logs. Do not manage `SESSION_STORE`, `--store-path`, or `flush`. Do not call `memory-maintain` from the agent loop. Prefer `mode: "text"` for exact names and recent facts. Structured `entity_*` / `fact_*` tools are for stable graph facts, not debug notes.
         """
 
     /// Pasteable Hermes / OpenClaw SOUL.md stanza. Append; do not replace the soul.
@@ -806,7 +807,7 @@ enum WaxMCPAgentPlaybook {
 
         Read: `recall` defaults to project scope (no foreign/unlabeled frames). Need cross-project → `scope: global`. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
 
-        Close with `session_close` (or `handoff` then `session_end`). Do not invent a `session_id` or put it in `metadata`. Do not store secrets.
+        Close with `session_close` (or `handoff` then `session_end`). Harvest is automatic; do not call `memory_promote` or `memory-maintain` in the agent loop. Do not invent a `session_id` or put it in `metadata`. Do not store secrets.
         """
 
     static let githubSkillURL =

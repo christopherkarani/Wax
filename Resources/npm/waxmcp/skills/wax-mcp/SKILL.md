@@ -32,7 +32,8 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 3. **End**
    - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
    - Keep `content` to a concise state summary. Put unfinished work only in `pending_tasks`; do not copy pending tasks into content or store transcripts.
-   - Call `session_end` (pass `session_id` when multiple sessions may be active).
+   - Prefer `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or call `session_end` (pass `session_id` when multiple sessions may be active).
+   - Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or `memory-maintain` in the agent loop; `wax-cli memory-maintain` is operator-only.
    - `session_end` `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
 
 ## Read Path
@@ -72,8 +73,8 @@ Write quality rules:
 
 ## Anti-Patterns (do not do these)
 
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows.
-  The broker owns long-term memory and virtual session stores.
+- Do not manage `SESSION_STORE`, `--store-path`, `flush`, or `memory-maintain` in normal agent flows.
+  The broker owns long-term memory and virtual session stores. `wax-cli memory-maintain` is operator-only.
 - Do not skip `handoff_latest` at session start and re-ask the user for prior context.
 - Do not invent a `session_id`; only use values returned by `session_start` / `session_resume`.
 - Do not put `session_id` inside `metadata`.
@@ -85,7 +86,7 @@ Write quality rules:
 - Read handoffs and recall results before asking the user to restate known context.
 - When a cross-session hit matters, cite provenance so the user knows which session store it came from.
 - Use `session_resume` only when continuing a known persisted `session_id` after a restart.
-- Use `compact_context` / `session_synthesize` / promotion tools only when the task needs long-horizon compaction or durable promotion, not as default chatter.
+- Use `compact_context` / `session_synthesize` / promotion tools only when the task needs long-horizon compaction or durable promotion, not as default chatter. Close already harvests promotable facts.
 - Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid can rank old test frames first.
 - `memory_get` IDs are `durable:<frame>` or `episodic:<session_id>:<frame>`. Never a bare frame number.
 
