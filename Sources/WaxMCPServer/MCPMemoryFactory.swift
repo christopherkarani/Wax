@@ -54,7 +54,7 @@ enum MCPMemoryFactory {
         }
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
-        config.enableAccessStatsScoring = false
+        config.enableAccessStatsScoring = true
         let request = try HostEmbeddingReadiness.request(
             noEmbedder: noEmbedder,
             requireVector: false,
@@ -117,7 +117,7 @@ enum MCPMemoryFactory {
         config.enableVectorSearch = false
         config.rag.searchMode = .textOnly
         config.enableStructuredMemory = false
-        config.enableAccessStatsScoring = false
+        config.enableAccessStatsScoring = true
         do {
             return try await MemoryOrchestrator(at: url, config: config, waxOptions: waxOptions())
         } catch {

@@ -28,12 +28,23 @@ package struct FastRAGContextBuilder: Sendable {
         let counter = try await TokenCounter.shared()
 
         // 1) Run unified search
+        // Access-aware ranking needs a little headroom so a stale top result can
+        // be displaced by a recently/frequently used candidate just outside the
+        // normal context window. The bound keeps enabled-mode work predictable.
+        let searchTopK: Int
+        if accessStatsManager == nil {
+            searchTopK = clamped.searchTopK
+        } else if clamped.searchTopK <= 24 {
+            searchTopK = clamped.searchTopK * 2
+        } else {
+            searchTopK = clamped.searchTopK
+        }
         let request = SearchRequest(
             query: query,
             embedding: embedding,
             vectorEnginePreference: vectorEnginePreference,
             mode: clamped.searchMode,
-            topK: clamped.searchTopK,
+            topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
             scopeContext: scopeContext,
@@ -45,20 +56,46 @@ package struct FastRAGContextBuilder: Sendable {
         } else {
             try await wax.search(request)
         }
+        let scoringMetadata: [UInt64: FrameMeta] = if accessStatsManager != nil,
+                                                        clamped.deterministicNowMs == nil {
+            await wax.frameMetas(frameIds: response.results.map(\.frameId))
+        } else {
+            [:]
+        }
+        let accessScoringNowMs = clamped.deterministicNowMs
+            ?? scoringMetadata.values.map(\.timestamp).max()
+            ?? 0
+        let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: response.results.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
+        } else {
+            [:]
+        }
+        let accessRankedResults = accessStatsManager == nil
+            ? response.results
+            : AccessFrequencyRanker.rerank(
+                results: response.results,
+                query: query,
+                accessStats: accessStatsMap,
+                nowMs: accessScoringNowMs,
+                maxWindow: searchTopK
+            )
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking
             ? Self.orderCandidatesForAnswer(
-                results: response.results,
+                results: accessRankedResults,
                 query: query,
                 config: clamped,
                 analyzer: queryAnalyzer
             )
-            : response.results
-        let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
-            await accessStatsManager.getStats(frameIds: rankedResults.map { $0.frameId })
-        } else {
-            [:]
-        }
+            : accessRankedResults
+        // The search request may be overfetched only to give access-aware
+        // reranking headroom. Context assembly still honors the caller's
+        // requested result count.
+        let contextResults = Array(rankedResults.prefix(max(0, clamped.searchTopK)))
 
         var items: [RAGContext.Item] = []
         var usedTokens = 0
@@ -77,7 +114,7 @@ package struct FastRAGContextBuilder: Sendable {
             && clamped.maxSurrogates > 0
             && clamped.surrogateMaxTokens > 0
             && clamped.maxContextTokens > 0
-        let sourceFrameIds = rankedResults.map { $0.frameId }
+        let sourceFrameIds = contextResults.map { $0.frameId }
         let surrogateMapTask: [UInt64: UInt64] = shouldPrefetchSurrogates
             ? await wax.surrogateFrameIds(for: sourceFrameIds)
             : [:]
@@ -100,7 +137,7 @@ package struct FastRAGContextBuilder: Sendable {
 
         // 2) Expansion: first result with valid UTF-8 frame content
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
-            for result in rankedResults {
+            for result in contextResults {
                 if let expanded = try await expansionText(
                     frameId: result.frameId,
                     wax: wax,
@@ -122,6 +159,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -153,7 +191,7 @@ package struct FastRAGContextBuilder: Sendable {
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
             orderedSurrogateIds.reserveCapacity(maxToLoad)
-            for result in rankedResults {
+            for result in contextResults {
                 if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 guard let surrogateId = surrogateMap[result.frameId] else { continue }
                 orderedSurrogateIds.append(surrogateId)
@@ -194,7 +232,7 @@ package struct FastRAGContextBuilder: Sendable {
             let frameMetaMap = sourceFrameMetasTask
 
             // Parallel tier selection and tier extraction, preserving response order.
-            let surrogateWorkItems = rankedResults
+            let surrogateWorkItems = contextResults
                 .compactMap { result -> (result: SearchResponse.Result, surrogateFrameId: UInt64)? in
                     if let expandedFrameId, result.frameId == expandedFrameId { return nil }
                     guard let surrogateId = surrogateMap[result.frameId] else { return nil }
@@ -262,6 +300,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -285,7 +324,7 @@ package struct FastRAGContextBuilder: Sendable {
             var snippetCandidates: [(result: SearchResponse.Result, preview: String)] = []
             snippetCandidates.reserveCapacity(min(clamped.maxSnippets, 32))
 
-            for result in rankedResults {
+            for result in contextResults {
                 if let expandedFrameId, result.frameId == expandedFrameId { continue }
                 if surrogateSourceFrameIds.contains(result.frameId) { continue }
                 guard snippetCount < clamped.maxSnippets else { break }
@@ -356,6 +395,7 @@ package struct FastRAGContextBuilder: Sendable {
                             explanations: enrichedExplanations(
                                 result.explanations,
                                 frameId: result.frameId,
+                                metadata: result.metadata,
                                 accessStatsMap: accessStatsMap,
                                 nowMs: nowMs
                             )
@@ -393,13 +433,18 @@ package struct FastRAGContextBuilder: Sendable {
     private func enrichedExplanations(
         _ existing: [String],
         frameId: UInt64,
+        metadata: [String: String],
         accessStatsMap: [UInt64: FrameAccessStats],
         nowMs: Int64?
     ) -> [String] {
         // Unknown "now" skips access-reason enrichment: a zero sentinel would mark
         // every frame with access stats as "recently used".
         let accessReasons = nowMs.map {
-            MemorySemantics.accessReasons(stats: accessStatsMap[frameId], nowMs: $0).reasons
+            MemorySemantics.accessReasons(
+                stats: accessStatsMap[frameId],
+                metadata: metadata,
+                nowMs: $0
+            ).reasons
         } ?? []
         var seen = Set<String>()
         var combined: [String] = []

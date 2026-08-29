@@ -23,7 +23,8 @@ package struct FrameAccessStats: Sendable, Equatable, Codable {
 
     package mutating func recordAccess(nowMs: Int64) {
         // Use saturating addition to prevent overflow
-        accessCount = accessCount.addingReportingOverflow(1).partialValue
+        let (nextCount, overflowed) = accessCount.addingReportingOverflow(1)
+        accessCount = overflowed ? UInt32.max : nextCount
         lastAccessMs = nowMs
     }
 }
@@ -32,6 +33,7 @@ package struct FrameAccessStats: Sendable, Equatable, Codable {
 package actor AccessStatsManager {
     private var stats: [UInt64: FrameAccessStats] = [:]
     private var dirty = false
+    private var revision: UInt64 = 0
 
     package init() {}
 
@@ -44,6 +46,7 @@ package actor AccessStatsManager {
             stats[frameId] = FrameAccessStats(frameId: frameId, nowMs: nowMs)
         }
         dirty = true
+        revision = revision == UInt64.max ? 0 : revision + 1
     }
 
     /// Record accesses for multiple frames at once.
@@ -58,6 +61,7 @@ package actor AccessStatsManager {
             }
         }
         dirty = true
+        revision = revision == UInt64.max ? 0 : revision + 1
     }
     
     /// Get stats for a single frame.
@@ -87,6 +91,7 @@ package actor AccessStatsManager {
         stats = stats.filter { activeFrameIds.contains($0.key) }
         if stats.count != before {
             dirty = true
+            revision = revision == UInt64.max ? 0 : revision + 1
         }
     }
     
@@ -101,15 +106,33 @@ package actor AccessStatsManager {
         return exportStats()
     }
 
+    /// Return a dirty snapshot together with the revision observed at the
+    /// snapshot boundary. Persistence can then acknowledge only that exact
+    /// revision, preserving accesses recorded while the store write awaited.
+    package func exportStatsSnapshotIfDirty() -> (stats: [FrameAccessStats], revision: UInt64)? {
+        guard dirty else { return nil }
+        return (exportStats(), revision)
+    }
+
     /// Mark the current in-memory snapshot as persisted.
     package func markPersisted() {
         dirty = false
+    }
+
+    /// Clear the dirty bit only when no newer access mutation occurred after
+    /// the persisted snapshot was taken.
+    @discardableResult
+    package func markPersisted(ifRevision snapshotRevision: UInt64) -> Bool {
+        guard revision == snapshotRevision else { return false }
+        dirty = false
+        return true
     }
     
     /// Import stats from persistence.
     package func importStats(_ imported: [FrameAccessStats]) {
         stats = Dictionary(uniqueKeysWithValues: imported.map { ($0.frameId, $0) })
         dirty = false
+        revision = revision == UInt64.max ? 0 : revision + 1
     }
     
     /// Total number of tracked frames.
