@@ -15,7 +15,7 @@ Offset          Region              Size
 ──────          ──────              ────
 0 KiB           Header Page A       4 KiB
 4 KiB           Header Page B       4 KiB
-8 KiB           WAL Ring Buffer     Configurable (default 256 MiB)
+8 KiB           WAL Ring Buffer     Configurable (default 8 MiB)
 WAL + 8 KiB     Frame Payloads      Variable
 After Payloads  TOC                 Variable
 After TOC       Footer              64 bytes
@@ -121,7 +121,7 @@ Frame payloads support four encoding strategies via `CanonicalEncoding`:
 | Header region (A+B) | 8 KiB |
 | Footer size | 64 bytes |
 | WAL record header | 48 bytes |
-| Default WAL size | 256 MiB |
+| Default WAL size | 8 MiB |
 | Max string bytes | 16 MiB |
 | Max blob bytes | 256 MiB |
 | Max array count | 10,000,000 |

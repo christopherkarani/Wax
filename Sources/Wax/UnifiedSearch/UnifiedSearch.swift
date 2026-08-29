@@ -63,7 +63,7 @@ extension Wax {
         // vectorOnly must not widen the pending window or promote a buried exact frame.
         let identifierWindow: Int? = (
             includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isLexicalIdentifierQuery) ?? false)
-        ) ? min(max(requestedTopK * 3, 12), 48) : nil
+        ) ? min(max(Self.boundedMultiply(requestedTopK, by: 3), 12), 48) : nil
 
         let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
         let cache = UnifiedSearchEngineCache.shared
@@ -593,14 +593,14 @@ extension Wax {
             filtered = Self.intentAwareRerank(
                 results: filtered,
                 query: trimmedQuery,
-                maxWindow: min(max(request.topK * 2, 10), 32)
+                maxWindow: min(max(Self.boundedMultiply(request.topK, by: 2), 10), 32)
             )
         }
         filtered = Self.semanticMemoryRerank(
             results: filtered,
             scopeContext: request.scopeContext,
             nowMs: semanticNowMs,
-            maxWindow: min(max(request.topK * 3, 12), 48)
+            maxWindow: min(max(Self.boundedMultiply(request.topK, by: 3), 12), 48)
         )
         if let identifierWindow, let trimmedQuery {
             filtered = Self.identifierExactMatchRerank(
@@ -759,7 +759,9 @@ extension Wax {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
-        guard cappedWindow > 1 else { return results }
+        // Window 1 still publishes the bonus so a lone exact hit outranks
+        // OR-fallback name matches from another store after corpus merge.
+        guard cappedWindow > 0 else { return results }
 
         let lowerNeedle = needle.lowercased()
         // Larger than same-repo (0.9) + same-project (0.7) + decision (0.45) + durable (0.25).
@@ -1357,19 +1359,28 @@ extension Wax {
 
     private static func candidateLimit(for topK: Int) -> Int {
         guard topK > 0 else { return 0 }
-        let expanded = topK > Int.max / 3 ? Int.max : topK * 3
+        let expanded = boundedMultiply(topK, by: 3)
         let capped = min(expanded, 1000)
-        return max(topK, capped)
+        // Keep the public request's topK from becoming an unbounded SQLite or
+        // vector-engine limit. FTS independently caps at 10,000; matching the
+        // same ceiling here also makes Int.max requests safe.
+        return min(max(topK, capped), 10_000)
     }
 
     private static func candidateLimit(for topK: Int, filter: FrameFilter) -> Int {
         let baseLimit = candidateLimit(for: topK)
         guard needsCallerFilterOverfetch(filter) else { return baseLimit }
 
-        let multiplied = topK > Int.max / 5 ? Int.max : topK * 5
+        let multiplied = boundedMultiply(topK, by: 5)
         let withSlack = topK > Int.max - 200 ? Int.max : topK + 200
         let overfetchLimit = min(1000, max(multiplied, withSlack))
         return max(baseLimit, overfetchLimit)
+    }
+
+    private static func boundedMultiply(_ value: Int, by multiplier: Int) -> Int {
+        guard value > 0, multiplier > 0 else { return 0 }
+        guard value <= Int.max / multiplier else { return Int.max }
+        return value * multiplier
     }
 
     private static func needsCallerFilterOverfetch(_ filter: FrameFilter) -> Bool {

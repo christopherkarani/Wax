@@ -40,10 +40,17 @@ package enum Constants {
     /// WAL starts immediately after the header region.
     package static let walOffset: UInt64 = headerRegionSize
 
-    /// Default WAL size used by tests/examples (256 MiB).
-    package static let defaultWalSize: UInt64 = 256 * 1024 * 1024
+    /// WAL size for newly created long-term stores (8 MiB).
+    /// Existing 256 MiB files stay 256 MiB until copy-first compact; this only affects new creates.
+    package static let longTermWalSize: UInt64 = 8 * 1024 * 1024
 
-    /// WAL size for new broker virtual session stores only; open keeps existing WAL. Long-term stores keep `defaultWalSize`.
+    /// Historical long-term WAL size retained by existing stores until copy-first compact.
+    package static let legacyLargeWalSize: UInt64 = 256 * 1024 * 1024
+
+    /// Default WAL size for new long-term stores.
+    package static let defaultWalSize: UInt64 = longTermWalSize
+
+    /// WAL size for new broker virtual session stores only; open keeps existing WAL.
     package static let sessionWalSize: UInt64 = 4 * 1024 * 1024
 
     // MARK: - Decoder Limits (recommended defaults)

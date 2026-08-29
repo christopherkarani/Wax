@@ -25,6 +25,7 @@ const sidebars = {
         "media/photo-rag",
         "media/video-rag",
         "core/getting-started",
+        "core/store-maintenance",
         "core/file-format",
         "core/wal-crash-recovery",
         "core/structured-memory",

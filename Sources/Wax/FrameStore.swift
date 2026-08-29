@@ -30,7 +30,7 @@ public actor FrameStore {
         }
     }
 
-    public static let defaultWalSize: UInt64 = 256 * 1024 * 1024
+    public static let defaultWalSize: UInt64 = Constants.defaultWalSize
 
     private let session: WaxSession
     private let wax: Wax

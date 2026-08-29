@@ -18,6 +18,7 @@ Source: `Sources/Wax/Memory.swift`
 - Deprecated aliases: `search(_:strategy:options:)` and `search(_:strategy:options:reranker:)` (generic shims; use the existential form)
 - `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed).
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage.
+- `public func backfillUnembedded() async throws -> UInt64` — embeds live searchable frames that have no vectors using the attached provider. Idempotent. Throws `WaxError.missingEmbedder` when no provider is attached; never invents vectors. Call `flush()` to commit.
 - `public func close() async throws` — flushes, then closes.
 - `public func stats() async -> Memory.Stats`
 
@@ -55,7 +56,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 
 ### Memory.Stats
 
-`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`.
+`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`, `framesWithoutVectors`.
 
 `queryEmbedderConfigured` is derived: `true` only for `active` and `degraded`.
 

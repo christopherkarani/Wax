@@ -2887,6 +2887,15 @@ package actor Wax {
         }
     }
 
+    /// Return whether a WAL payload can be appended without overflowing the
+    /// current pending ring. Higher-level maintenance uses this preflight to
+    /// commit a batch before writing the next frame record.
+    package func canAppendWALPayload(payloadSize: Int) async -> Bool {
+        await withReadLock {
+            wal.canAppend(payloadSize: payloadSize)
+        }
+    }
+
     package func timeline(_ query: TimelineQuery) async -> [FrameMeta] {
         await withReadLock {
             TimelineQuery.filter(frames: toc.frames, query: query)
