@@ -42,7 +42,7 @@ struct DaemonCommand: AsyncParsableCommand {
             requireVector: store.requireVector,
             enableAccessStatsScoring: featureFlagEnabled(
                 "WAX_MCP_FEATURE_ACCESS_STATS",
-                default: false
+                default: true
             ),
             embedderTuning: store.embedderTuning
         )

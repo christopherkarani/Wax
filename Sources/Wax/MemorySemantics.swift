@@ -348,19 +348,33 @@ package enum MemorySemantics {
 
     package static func accessReasons(
         stats: FrameAccessStats?,
+        metadata: [String: String] = [:],
         nowMs: Int64
     ) -> (adjustment: Float, reasons: [String]) {
         guard let stats else { return (0, []) }
-        var adjustment: Float = 0
+        var adjustment = AccessFrequencyRanker.rawAdjustment(stats: stats, nowMs: nowMs)
+
+        // Durable and locked memories remain governed by their stronger
+        // semantic policy. Access history may reinforce them, but stale access
+        // must not demote an explicitly durable/locked record.
+        let durability = parse(metadata: metadata, nowMs: nowMs).durability
+        if adjustment < 0, durability == .durable || durability == .locked {
+            adjustment = 0
+        }
+
         var reasons: [String] = []
-        if stats.accessCount >= 3 {
-            adjustment += min(0.25, Float(stats.accessCount) * 0.03)
+        let cappedCount = min(stats.accessCount, 32)
+        if cappedCount >= 3 {
             reasons.append("repeated use")
         }
         let hoursSinceAccess = max(0, nowMs - stats.lastAccessMs) / (1000 * 60 * 60)
         if hoursSinceAccess <= 24 {
-            adjustment += 0.15
             reasons.append("recently used")
+        }
+        if adjustment < 0 {
+            reasons.append("stale access")
+        } else if adjustment > 0, reasons.isEmpty {
+            reasons.append("access frequency boost")
         }
         return (adjustment, reasons)
     }

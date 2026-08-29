@@ -105,7 +105,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
         memoryConfig.enableAccessStatsScoring = featureFlagEnabled(
             "WAX_MCP_FEATURE_ACCESS_STATS",
-            default: false
+            default: true
         )
 
         let currentExecutablePath = try resolveCurrentExecutablePath()

@@ -231,6 +231,7 @@ package actor MemoryOrchestrator {
     let config: OrchestratorConfig
     private let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
+    private let flushMutex = AsyncMutex()
 
     let session: WaxSession
     private var embedderLifecycle: EmbedderLifecycle
@@ -241,6 +242,11 @@ package actor MemoryOrchestrator {
 
     package func setSearchSnapshotHoldForTesting(_ duration: Duration?) {
         searchSnapshotHoldForTesting = duration
+    }
+    package var accessStatsPersistenceHoldForTesting: Duration? = nil
+
+    package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
+        accessStatsPersistenceHoldForTesting = duration
     }
     private let enrichmentPipeline: EnrichmentPipeline?
     private let accessStatsManager = AccessStatsManager()
@@ -1170,9 +1176,9 @@ package actor MemoryOrchestrator {
         )
     }
 
-    /// Shared recall implementation: builds the RAG context and records frame accesses.
-    /// All package recall() overloads funnel through here so that `ragConfigForRecall()` and
-    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
+    /// Shared recall implementation: builds the RAG context from the access-stat
+    /// snapshot taken before this call. Recall does not record access, so identical
+    /// queries stay byte-identical. Stats accrue from explicit get/promote.
     private func buildRecallContext(
         query: String,
         embedding: [Float]?,
@@ -1203,7 +1209,11 @@ package actor MemoryOrchestrator {
             config: recallConfig
         )
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: context.items.map(\.frameId))
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: context.items.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
         } else {
             [:]
         }
@@ -1212,6 +1222,7 @@ package actor MemoryOrchestrator {
             var item = item
             let accessReasons = MemorySemantics.accessReasons(
                 stats: accessStatsMap[item.frameId],
+                metadata: item.metadata,
                 nowMs: recallNowMs
             ).reasons
             if !accessReasons.isEmpty {
@@ -1219,7 +1230,6 @@ package actor MemoryOrchestrator {
             }
             return item
         }
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId), nowMs: recallNowMs)
         return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
@@ -1290,13 +1300,22 @@ package actor MemoryOrchestrator {
             embeddingAvailable: queryEmbedding.embedding != nil
         )
 
+        // Access-aware ranking needs additional candidates so a stale top hit
+        // can be displaced by a close, recently/frequently used result. The
+        // candidate window is bounded and applies only when the feature is on.
+        let searchTopK: Int
+        if !config.enableAccessStatsScoring || topK > 16 {
+            searchTopK = topK
+        } else {
+            searchTopK = topK * 3
+        }
         let request = SearchRequest(
             query: trimmed,
             embedding: queryEmbedding.embedding,
             vectorEnginePreference: preference,
             vectorSearchTimeout: config.vectorSearchTimeout,
             mode: searchMode,
-            topK: topK,
+            topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
             scopeContext: config.defaultScopeContext,
@@ -1306,13 +1325,27 @@ package actor MemoryOrchestrator {
 
         let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: response.results.map(\.frameId))
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: response.results.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
         } else {
             [:]
         }
-        let hits = response.results.map { result in
+        let scoredResults = config.enableAccessStatsScoring
+            ? AccessFrequencyRanker.rerank(
+                results: response.results,
+                query: trimmed,
+                accessStats: accessStatsMap,
+                nowMs: searchNowMs,
+                maxWindow: searchTopK
+            )
+            : response.results
+        let hits = scoredResults.prefix(topK).map { result in
             let accessReasons = MemorySemantics.accessReasons(
                 stats: accessStatsMap[result.frameId],
+                metadata: result.metadata,
                 nowMs: searchNowMs
             ).reasons
             return MemorySearchHit(
@@ -1324,7 +1357,6 @@ package actor MemoryOrchestrator {
                 explanations: dedupedExplanations(result.explanations + accessReasons)
             )
         }
-        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId), nowMs: searchNowMs)
         return SearchExecution(
             hits: hits,
             requestedMode: mode,
@@ -1444,6 +1476,13 @@ package actor MemoryOrchestrator {
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
         await accessStatsManager.snapshot()
+    }
+
+    /// Records an explicit use of a frame (get/promote). Search and recall rank
+    /// against the stored snapshot but do not mutate it.
+    package func recordAccess(frameId: UInt64) async {
+        let nowMs = config.rag.deterministicNowMs ?? nowProvider()
+        await recordAccessesIfEnabled(frameIds: [frameId], nowMs: nowMs)
     }
 
     private func dedupedExplanations(_ reasons: [String]) -> [String] {
@@ -1928,6 +1967,12 @@ package actor MemoryOrchestrator {
     // MARK: - Persistence lifecycle
 
     package func flush() async throws {
+        try await flushMutex.withLock { [self] in
+            try await flushSerialized()
+        }
+    }
+
+    private func flushSerialized() async throws {
         if let enrichmentPipeline {
             let drained = try await enrichmentPipeline.waitUntilIdle(
                 bestEffortTimeout: config.enrichmentFlushDrainTimeout
@@ -2579,11 +2624,15 @@ package actor MemoryOrchestrator {
     }
 
     private func persistAccessStatsIfNeeded() async throws {
-        guard let exported = await accessStatsManager.exportStatsIfDirty() else {
+        guard let snapshot = await accessStatsManager.exportStatsSnapshotIfDirty() else {
             return
         }
+        if let hold = accessStatsPersistenceHoldForTesting {
+            try await Task.sleep(for: hold)
+        }
+        let exported = snapshot.stats
         guard !exported.isEmpty else {
-            await accessStatsManager.markPersisted()
+            _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
             return
         }
         let payload = try JSONEncoder().encode(exported)
@@ -2615,6 +2664,9 @@ package actor MemoryOrchestrator {
                 )
             }
         }
-        await accessStatsManager.markPersisted()
+        // A get/promote may have recorded newer accesses while the WAL writes
+        // above awaited. Only acknowledge the revision we actually persisted;
+        // a newer revision remains dirty for the next flush.
+        _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
     }
 }

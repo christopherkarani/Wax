@@ -5,7 +5,7 @@ package struct OrchestratorConfig: Sendable {
     package var enableTextSearch: Bool = true
     package var enableVectorSearch: Bool = true
     package var enableStructuredMemory: Bool = false
-    package var enableAccessStatsScoring: Bool = false
+    package var enableAccessStatsScoring: Bool = true
     package var enableAsyncEnrichment: Bool = false
 
     package var rag: FastRAGConfig = .init()

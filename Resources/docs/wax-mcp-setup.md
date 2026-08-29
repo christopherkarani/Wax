@@ -87,8 +87,8 @@ swift run --traits MCPServer wax-cli mcp serve
 - `WAX_MCP_FEATURE_LICENSE=1`: enable `LicenseValidator`
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=1` (default): enable graph/entity/fact tools
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=0`: disable structured memory graph tools
-- `WAX_MCP_FEATURE_ACCESS_STATS=0` (default): disable access-stat-based scoring persistence
-- `WAX_MCP_FEATURE_ACCESS_STATS=1`: enable access-stat recording + scoring path
+- `WAX_MCP_FEATURE_ACCESS_STATS=1` (default): enable access-stat recording + retrieval scoring
+- `WAX_MCP_FEATURE_ACCESS_STATS=0`: disable access-stat-based scoring persistence
 
 ## MCP tool highlights
 

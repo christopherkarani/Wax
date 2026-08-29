@@ -61,10 +61,9 @@ func accessStatsPersistAsSystemFrameWhenEnabled() async throws {
     config.enableAccessStatsScoring = true
 
     let memory = try await MemoryOrchestrator(at: url, config: config)
-    try await memory.remember("ACCESS_STATS_PERSISTENCE_TOKEN")
+    let remembered = try await memory.remember("ACCESS_STATS_PERSISTENCE_TOKEN")
     try await memory.flush()
-
-    _ = try await memory.recall(query: "ACCESS_STATS_PERSISTENCE_TOKEN")
+    await memory.recordAccess(frameId: remembered.frameId)
     try await memory.flush()
     try await memory.close()
 
@@ -121,7 +120,7 @@ func legacyAccessStatsMarkerFrameIsSupersededAfterBootstrap() async throws {
     accessStatsConfig.enableAccessStatsScoring = true
 
     let reopened = try await MemoryOrchestrator(at: url, config: accessStatsConfig)
-    _ = try await reopened.recall(query: "ACCESS_STATS_LEGACY_BOOTSTRAP_TOKEN")
+    await reopened.recordAccess(frameId: documentID)
     try await reopened.flush()
     try await reopened.close()
 
