@@ -5805,17 +5805,19 @@ func defaultRecallUsesHybridWhenVectorCoverageIsPartial() async throws {
     do {
         #expect((await hybrid.handle(.init(
             command: "remember",
-            arguments: ["content": .string("HYBRID_DEFAULT_QUERY_MARKER")]
+            arguments: ["content": .string("hybrid default query marker for partial vector coverage")]
         ))).ok == true)
 
         let stats = try #require((await hybrid.handle(.init(command: "stats"))).payload?.objectValue)
         #expect(stats["embeddingStatus"]?.stringValue == "degraded")
         #expect(stats["queryEmbeddingAvailable"]?.boolValue == true)
 
+        // Ordinary prose, not a SCREAMING_SNAKE identifier. Omitted-mode
+        // recall must still request hybrid when vector coverage is partial.
         let recalled = await hybrid.handle(.init(
             command: "recall",
             arguments: [
-                "query": .string("HYBRID_DEFAULT_QUERY_MARKER"),
+                "query": .string("hybrid default query marker"),
                 "scope": .string("global"),
                 "limit": .int(5),
             ]
