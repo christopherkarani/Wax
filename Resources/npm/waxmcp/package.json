@@ -1,6 +1,6 @@
 {
   "name": "waxmcp",
-  "version": "0.1.32",
+  "version": "0.1.36",
   "description": "Shared memory runtime for AI agents. One local .wax store shared by your whole agent team over MCP.",
   "keywords": [
     "agent-memory",
