@@ -376,7 +376,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
 
     private func handle(client: Int32) {
         var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
-        let pollResult = poll(&descriptor, 1, 200)
+        let pollResult = poll(&descriptor, 1, 2_000)
         if pollResult <= 0 {
             close(client)
             return

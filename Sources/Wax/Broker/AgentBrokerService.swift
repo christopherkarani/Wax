@@ -901,8 +901,16 @@ extension AgentBrokerService {
         let aliases = command.aliases
         let parsedObject = try command.object.map { try parseFactValue($0) }
 
-        let memory = try await memory(for: command.sessionID)
-        try await memory.remember(command.content, metadata: metadata)
+        let isSessionTaskState =
+            metadata[MemoryMetadataKeys.type] == MemoryType.taskState.rawValue
+            && command.sessionID != nil
+        if isSessionTaskState, let sessionID = command.sessionID {
+            let sessionMemory = try await memory(for: sessionID)
+            try await sessionMemory.remember(command.content, metadata: metadata)
+            try await sessionMemory.flush()
+        } else {
+            try await longTermMemory.remember(command.content, metadata: metadata)
+        }
 
         var entityID: Int64?
         if let subject {
@@ -936,7 +944,6 @@ extension AgentBrokerService {
             ).rawValue
         }
 
-        try await memory.flush()
         try await longTermMemory.flush()
 
         if let sessionID = command.sessionID {

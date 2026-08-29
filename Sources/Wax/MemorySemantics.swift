@@ -527,13 +527,12 @@ package enum MemorySemantics {
         }
     }
 
-    private static func defaultMemoryType(sessionID: UUID?, existing metadata: [String: String]) -> MemoryType {
+    private static func defaultMemoryType(sessionID _: UUID?, existing metadata: [String: String]) -> MemoryType {
         if let raw = metadata[MemoryMetadataKeys.type], let typed = MemoryType(rawValue: raw) {
             return typed
         }
-        if sessionID != nil || metadata["session_id"] != nil {
-            return .taskState
-        }
+        // Session presence does not imply task_state. Ordinary session notes stay
+        // notes so the task_state safety contract applies only when requested.
         return .note
     }
 

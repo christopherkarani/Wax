@@ -105,6 +105,53 @@ func taskStateWritesRequireSessionAndWorkingDurability() async throws {
 }
 
 @Test
+func unclassifiedSessionWritesStayWorkingNotesNotTaskState() async throws {
+    try await withTaskStateBroker { service, _ in
+        let started = await service.handle(.init(command: "session_start"))
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+
+        let durable = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Durable memory anchor: Wax is the long-term source of truth."),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(durable.ok)
+        #expect(durable.payload?.objectValue?["memory_id"]?.stringValue == "durable:0")
+
+        let appended = await service.handle(.init(
+            command: "memory_append",
+            arguments: [
+                "content": .string("Working memory anchor: current task is OpenClaw adapter implementation."),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(appended.ok)
+        #expect(appended.payload?.objectValue?["memory_type"]?.stringValue == MemoryType.note.rawValue)
+        #expect(appended.payload?.objectValue?["durability"]?.stringValue == MemoryDurability.working.rawValue)
+        let workingID = try #require(appended.payload?.objectValue?["memory_id"]?.stringValue)
+        #expect(workingID.hasPrefix("working:\(sessionID):"))
+
+        let search = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string("anchor"),
+                "session_id": .string(sessionID),
+                "topK": .int(6),
+                "mode": .string("text"),
+            ]
+        ))
+        #expect(search.ok)
+        let results = try #require(search.payload?.objectValue?["results"]?.arrayValue)
+        #expect(results.contains { $0.objectValue?["horizon"]?.stringValue == "working" })
+        #expect(results.contains { $0.objectValue?["horizon"]?.stringValue == "durable" })
+        #expect(results.contains { $0.objectValue?["memory_id"]?.stringValue == workingID })
+    }
+}
+
+@Test
 func knowledgeCaptureTaskStateUsesSessionLane() async throws {
     try await withTaskStateBroker { service, _ in
         let rejected = await service.handle(.init(
