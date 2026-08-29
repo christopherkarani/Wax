@@ -1240,9 +1240,7 @@ extension AgentBrokerService {
             payload["frame_id"] = .from(handoffFrameID)
             payload["committed"] = .bool(true)
         }
-        if let error = harvest.error {
-            payload["harvest_error"] = .string(error)
-        }
+        payload.merge(harvestErrorPayload(harvest)) { _, new in new }
         return .object(payload)
     }
 
@@ -1444,7 +1442,12 @@ extension AgentBrokerService {
             "reclaim_after_ms": .from(harvest.reclaimAfterMs),
             "reclaimed": .bool(reclaimed),
             "display_text": .string(display),
-        ])
+        ].merging(harvestErrorPayload(harvest)) { _, new in new })
+    }
+
+    private func harvestErrorPayload(_ harvest: SessionHarvest.Report) -> [String: AgentBrokerValue] {
+        guard let error = harvest.error, !error.isEmpty else { return [:] }
+        return ["harvest_error": .string(error)]
     }
 
     private func makeHarvestCallback() -> @Sendable (VirtualSessionStore.SessionState) async -> SessionHarvest.Report {
@@ -1475,7 +1478,7 @@ extension AgentBrokerService {
         }
         let immediate = manifest.reclaimAfterMs == manifest.harvestedAtMs
         return SessionHarvest.Report(
-            harvested: manifest.harvestedAtMs != nil && manifest.harvestError == nil,
+            harvested: manifest.harvestedAtMs != nil,
             promotedCount: manifest.promotedCount,
             leftoverDocumentCount: immediate ? 0 : 1,
             leftoverLockedCount: 0,

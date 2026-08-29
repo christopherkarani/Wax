@@ -1,5 +1,4 @@
 import Foundation
-import WaxCore
 
 package struct SessionDiskStats: Sendable, Equatable {
     package var rootPath: String
@@ -149,42 +148,5 @@ package enum SessionReclaim {
             to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: manifest.sessionID)
         )
         return tombstone
-    }
-
-    package static func compactThenUnlink(
-        manifest: BrokerSessionManifest,
-        sessionRootURL: URL,
-        nowMs: Int64,
-        openMemory: (@Sendable (URL) async throws -> MemoryOrchestrator)? = nil
-    ) async throws -> BrokerSessionManifest {
-        let storeURL = URL(fileURLWithPath: manifest.storePath)
-        if let openMemory, FileManager.default.fileExists(atPath: storeURL.path) {
-            let size = MemoryRetention.fileApparentBytes(at: storeURL.path)
-            if size >= Constants.sessionWalSize {
-                let compactURL = storeURL.deletingLastPathComponent()
-                    .appendingPathComponent(".\(manifest.sessionID.uuidString)-reclaim-compact.wax")
-                do {
-                    let memory = try await openMemory(storeURL)
-                    do {
-                        _ = try await memory.rewriteLiveSet(
-                            to: compactURL,
-                            options: LiveSetRewriteOptions(
-                                overwriteDestination: true,
-                                dropNonLivePayloads: true,
-                                verifyDeep: false
-                            )
-                        )
-                    } catch {
-                        try await memory.close()
-                        throw error
-                    }
-                    try await memory.close()
-                    try? FileManager.default.removeItem(at: compactURL)
-                } catch {
-                    try? FileManager.default.removeItem(at: compactURL)
-                }
-            }
-        }
-        return try unlink(manifest: manifest, sessionRootURL: sessionRootURL, nowMs: nowMs)
     }
 }

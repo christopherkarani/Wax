@@ -638,3 +638,36 @@ func recallRecordsImpressionsWithoutEngagement() async throws {
         #expect((afterGet?.engagementCount ?? 0) >= 1)
     }
 }
+
+@Test
+func applyHarvestPersistsPromotionsWhenHarvestedWithError() {
+    var manifest = BrokerSessionManifest(
+        sessionID: UUID(),
+        agentID: "agent",
+        runID: "run",
+        project: nil,
+        repo: nil,
+        storePath: "/tmp/partial.wax",
+        eventLogPath: "/tmp/partial.events.jsonl",
+        status: .ended,
+        brokerLeaseOwnerID: nil,
+        leaseExpiresAtMs: nil,
+        createdAtMs: 1,
+        updatedAtMs: 1
+    )
+    let report = SessionHarvest.Report(
+        harvested: true,
+        promotedCount: 3,
+        leftoverDocumentCount: 1,
+        leftoverLockedCount: 0,
+        reclaimAfterMs: 99,
+        error: "remember failed",
+        alreadyHarvested: false
+    )
+    VirtualSessionStore.applyHarvest(report, to: &manifest, nowMs: 50)
+    #expect(manifest.harvestedAtMs == 50)
+    #expect(manifest.promotedCount == 3)
+    #expect(manifest.harvestError == "remember failed")
+    #expect(manifest.reclaimAfterMs == 99)
+    #expect(!report.immediateReclaimEligible)
+}

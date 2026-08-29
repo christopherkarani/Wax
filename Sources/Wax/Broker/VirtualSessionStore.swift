@@ -822,18 +822,19 @@ package final class VirtualSessionStore: @unchecked Sendable {
         to manifest: inout BrokerSessionManifest,
         nowMs: Int64
     ) {
-        if let error = report.error, !error.isEmpty {
-            manifest.harvestError = error
+        if report.harvested {
+            manifest.harvestError = (report.error?.isEmpty == false) ? report.error : nil
+            if manifest.harvestedAtMs == nil {
+                manifest.harvestedAtMs = nowMs
+            }
+            manifest.promotedCount = report.promotedCount
+            if let reclaimAfterMs = report.reclaimAfterMs {
+                manifest.reclaimAfterMs = reclaimAfterMs
+            }
             return
         }
-        guard report.harvested else { return }
-        manifest.harvestError = nil
-        if manifest.harvestedAtMs == nil {
-            manifest.harvestedAtMs = nowMs
-        }
-        manifest.promotedCount = report.promotedCount
-        if let reclaimAfterMs = report.reclaimAfterMs {
-            manifest.reclaimAfterMs = reclaimAfterMs
+        if let error = report.error, !error.isEmpty {
+            manifest.harvestError = error
         }
     }
 

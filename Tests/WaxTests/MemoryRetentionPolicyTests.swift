@@ -66,7 +66,6 @@ func coldTierIsHiddenFromDefaultHybridAndVisibleToText() {
     #expect(
         MemoryRetention.isVisibleInDefaultRecall(
             metadata: metadata,
-            stats: nil,
             nowMs: nowMs,
             query: "what should we never auto-delete",
             mode: .hybrid(alpha: 0.5)
@@ -75,11 +74,33 @@ func coldTierIsHiddenFromDefaultHybridAndVisibleToText() {
     #expect(
         MemoryRetention.isVisibleInDefaultRecall(
             metadata: metadata,
-            stats: nil,
             nowMs: nowMs,
             query: "WAXCOLD-ZX9",
             mode: .textOnly
         )
+    )
+}
+
+@Test
+func untaggedAgedDurableLibraryStaysVisibleInHybridRecall() {
+    let nowMs: Int64 = 1_700_000_000_000
+    let metadata = [
+        MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+        MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+        MemoryMetadataKeys.createdAtMs: String(nowMs - 40 * 24 * 60 * 60 * 1000),
+    ]
+    #expect(
+        MemoryRetention.isCold(metadata: metadata, stats: nil, nowMs: nowMs),
+        "keep-score may classify untagged library as cold for a future archive pass"
+    )
+    #expect(
+        MemoryRetention.isVisibleInDefaultRecall(
+            metadata: metadata,
+            nowMs: nowMs,
+            query: "what should we never auto-delete",
+            mode: .hybrid(alpha: 0.5)
+        ),
+        "unset wax.tier must stay hot in default hybrid recall"
     )
 }
 

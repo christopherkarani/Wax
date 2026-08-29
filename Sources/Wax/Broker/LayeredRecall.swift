@@ -631,6 +631,15 @@ package enum LayeredRecall {
             durableHits = execution.context.items.map {
                 hit(from: $0, horizon: .durable, sessionID: nil)
             }
+            let nowMs = stores.nowMs()
+            durableHits = durableHits.filter { hit in
+                MemoryRetention.isVisibleInDefaultRecall(
+                    metadata: hit.metadata,
+                    nowMs: nowMs,
+                    query: request.query,
+                    mode: request.mode
+                )
+            }
         }
 
         let merged: [Hit]
@@ -662,22 +671,10 @@ package enum LayeredRecall {
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
-        let accessStats = await stores.longTermMemory.accessStatsSnapshot()
-        let nowMs = stores.nowMs()
-        let visibleHits = selected.hits.filter { hit in
-            guard hit.horizon == .durable else { return true }
-            return MemoryRetention.isVisibleInDefaultRecall(
-                metadata: hit.metadata,
-                stats: accessStats[hit.frameID],
-                nowMs: nowMs,
-                query: request.query,
-                mode: request.mode
-            )
-        }
         let primary = sessionExecution ?? durableExecution
 
         return RecallResult(
-            hits: visibleHits,
+            hits: selected.hits,
             scope: request.scope,
             identity: identity,
             projectMiss: selected.projectMiss,
@@ -740,12 +737,10 @@ package enum LayeredRecall {
                 frameFilter: nil,
                 timeRange: nil
             )
-            let accessStats = await stores.longTermMemory.accessStatsSnapshot()
             let nowMs = stores.nowMs()
             for result in execution.hits {
                 guard MemoryRetention.isVisibleInDefaultRecall(
                     metadata: result.metadata,
-                    stats: accessStats[result.frameId],
                     nowMs: nowMs,
                     query: request.query,
                     mode: request.mode

@@ -60,6 +60,7 @@ package enum SessionHarvest {
             var promotedCount = 0
             var leftoverDocumentCount = 0
             var leftoverLockedCount = 0
+            var harvestError: String?
 
             for document in documents {
                 let info = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
@@ -97,25 +98,45 @@ package enum SessionHarvest {
                     leftoverDocumentCount += 1
                     continue
                 }
-                let written = try await longTermMemory.remember(document.text, metadata: metadata)
-                if let sourceStats = sessionStats[document.frameId] {
-                    await longTermMemory.seedAccessStats(frameId: written.frameId, from: sourceStats)
-                }
-                longTermDocuments.append(
-                    MemoryOrchestrator.CorpusSourceDocument(
-                        frameId: written.frameId,
-                        timestampMs: nowMs,
-                        kind: document.kind,
-                        role: document.role,
-                        text: document.text,
-                        metadata: metadata
+                do {
+                    let written = try await longTermMemory.remember(document.text, metadata: metadata)
+                    if let sourceStats = sessionStats[document.frameId] {
+                        await longTermMemory.seedAccessStats(frameId: written.frameId, from: sourceStats)
+                    }
+                    longTermDocuments.append(
+                        MemoryOrchestrator.CorpusSourceDocument(
+                            frameId: written.frameId,
+                            timestampMs: nowMs,
+                            kind: document.kind,
+                            role: document.role,
+                            text: document.text,
+                            metadata: metadata
+                        )
                     )
-                )
-                promotedCount += 1
+                    promotedCount += 1
+                } catch {
+                    leftoverDocumentCount += 1
+                    if harvestError == nil {
+                        harvestError = error.localizedDescription
+                    }
+                }
             }
-            try await longTermMemory.flush()
+            do {
+                try await longTermMemory.flush()
+            } catch {
+                harvestError = error.localizedDescription
+                return Report(
+                    harvested: false,
+                    promotedCount: promotedCount,
+                    leftoverDocumentCount: leftoverDocumentCount,
+                    leftoverLockedCount: leftoverLockedCount,
+                    reclaimAfterMs: nil,
+                    error: harvestError,
+                    alreadyHarvested: false
+                )
+            }
 
-            let immediate = leftoverDocumentCount == 0 && leftoverLockedCount == 0
+            let immediate = leftoverDocumentCount == 0 && leftoverLockedCount == 0 && harvestError == nil
             let reclaimAfterMs = immediate ? nowMs : nowMs + retention.recentlyClosedMs
             return Report(
                 harvested: true,
@@ -123,7 +144,7 @@ package enum SessionHarvest {
                 leftoverDocumentCount: leftoverDocumentCount,
                 leftoverLockedCount: leftoverLockedCount,
                 reclaimAfterMs: reclaimAfterMs,
-                error: nil,
+                error: harvestError,
                 alreadyHarvested: false
             )
         } catch {

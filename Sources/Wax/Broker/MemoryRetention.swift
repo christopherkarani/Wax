@@ -102,6 +102,7 @@ package enum MemoryRetention {
         return .hot
     }
 
+    /// Keep-score archival candidate (REQ-011). Default recall uses explicit `wax.tier` only.
     package static func isCold(
         metadata: [String: String],
         stats: FrameAccessStats?,
@@ -136,18 +137,21 @@ package enum MemoryRetention {
         return RuleBasedQueryClassifier.isExactIntentQuery(query)
     }
 
+    /// Default hybrid omits only explicit `wax.tier=cold`. Unset tier is hot (REQ-010).
     package static func isVisibleInDefaultRecall(
         metadata: [String: String],
-        stats: FrameAccessStats?,
         nowMs: Int64,
         query: String,
-        mode: Memory.RetrievalMode?,
-        settings: MemoryRetentionSettings = .default
+        mode: Memory.RetrievalMode?
     ) -> Bool {
         if includeColdInRetrieval(query: query, mode: mode) {
             return true
         }
-        return !isCold(metadata: metadata, stats: stats, nowMs: nowMs, settings: settings)
+        let info = MemorySemantics.parse(metadata: metadata, nowMs: nowMs)
+        if info.durability == .locked {
+            return true
+        }
+        return parsedTier(metadata) != .cold
     }
 
     package static func isQuarantineCandidate(
