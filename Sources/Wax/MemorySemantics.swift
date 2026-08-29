@@ -459,9 +459,13 @@ package enum MemorySemantics {
     }
 
     package static func classifyCandidate(text: String, metadata: [String: String]) -> MemoryType {
+        // Implicit `note` is the default stamp for unclassified session writes.
+        // Treat it like `task_state`: ignore the stored type so text cues such as
+        // "Decision:" can still promote. Explicit types stay trusted.
         if let raw = metadata[MemoryMetadataKeys.type],
            let typed = MemoryType(rawValue: raw),
-           typed != .taskState {
+           typed != .taskState,
+           typed != .note {
             return typed
         }
         let lower = text.lowercased()
