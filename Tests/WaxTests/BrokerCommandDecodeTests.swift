@@ -32,6 +32,7 @@ struct BrokerCommandDecodeTests {
         #expect(AgentBrokerCommandSurface.canonicalCommand(for: "wax_recall") == nil)
         #expect(AgentBrokerCommandSurface.isPublicCommand("memory_append"))
         #expect(!AgentBrokerCommandSurface.isPublicCommand("flush"))
+        #expect(!AgentBrokerCommandSurface.isPublicCommand("memory_maintain"))
         #expect(AgentBrokerCommandSurface.requiresStructuredMemory("facts_query"))
         #expect(!AgentBrokerCommandSurface.requiresStructuredMemory("recall"))
 
@@ -551,6 +552,32 @@ struct BrokerCommandDecodeTests {
                 Issue.record("\(command) threw unexpected error \(error)")
             }
         }
+    }
+
+    @Test
+    func memoryMaintainDefaultsToDryRunAndHonorsDryRunOverride() throws {
+        let dry = try BrokerCommand.decode(command: "memory_maintain", arguments: [:])
+        guard case .memoryMaintain(let payload) = dry else {
+            Issue.record("expected memory_maintain")
+            return
+        }
+        #expect(payload.apply == false)
+        #expect(payload.forceReclaim == false)
+
+        let forcedDry = try BrokerCommand.decode(
+            command: "memory_maintain",
+            arguments: [
+                "apply": .bool(true),
+                "dry_run": .bool(true),
+                "force_reclaim": .bool(true),
+            ]
+        )
+        guard case .memoryMaintain(let overridden) = forcedDry else {
+            Issue.record("expected memory_maintain override")
+            return
+        }
+        #expect(overridden.apply == false)
+        #expect(overridden.forceReclaim == true)
     }
 
     @Test

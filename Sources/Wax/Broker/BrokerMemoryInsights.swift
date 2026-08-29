@@ -82,6 +82,8 @@ package struct BrokerMemoryHealth: Sendable, Equatable {
     package var lowHitFrameIds: [UInt64]
     package var duplicatePairs: [BrokerHealthDuplicatePair]
     package var contradictionSummaries: [String]
+    package var quarantineCandidateIds: [UInt64]
+    package var reclaimableSessionIds: [UUID]
 }
 
 package enum BrokerMemoryInsights {
@@ -298,6 +300,7 @@ package enum BrokerMemoryInsights {
         var expired: [UInt64] = []
         var stale: [UInt64] = []
         var lowHit: [UInt64] = []
+        var quarantine: [UInt64] = []
 
         for document in documents {
             let info = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
@@ -310,9 +313,16 @@ package enum BrokerMemoryInsights {
                 if ageDays > 30, info.durability == .working || info.durability == .ephemeral {
                     stale.append(document.frameId)
                 }
-                if let stat = accessStats[document.frameId], ageDays > 14, stat.accessCount <= 1 {
+                if let stat = accessStats[document.frameId], ageDays > 14, stat.engagementCount <= 1 {
                     lowHit.append(document.frameId)
                 }
+            }
+            if MemoryRetention.isQuarantineCandidate(
+                metadata: document.metadata,
+                stats: accessStats[document.frameId],
+                nowMs: nowMs
+            ) {
+                quarantine.append(document.frameId)
             }
         }
 
@@ -326,7 +336,9 @@ package enum BrokerMemoryInsights {
             staleFrameIds: stale.sorted(),
             lowHitFrameIds: lowHit.sorted(),
             duplicatePairs: duplicatePairs,
-            contradictionSummaries: contradictionSummaries
+            contradictionSummaries: contradictionSummaries,
+            quarantineCandidateIds: quarantine.sorted(),
+            reclaimableSessionIds: []
         )
     }
 

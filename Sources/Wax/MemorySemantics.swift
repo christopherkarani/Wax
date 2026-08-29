@@ -89,6 +89,7 @@ package enum MemoryMetadataKeys {
     package static let expiresAtMs = "wax.expires_at_ms"
     package static let confidence = "wax.confidence"
     package static let reviewed = "wax.reviewed"
+    package static let tier = "wax.tier"
     package static let promotedFromSession = "wax.promoted_from_session"
     package static let promotedFromFrame = "wax.promoted_from_frame"
     package static let duplicateOfFrame = "wax.duplicate_of_frame"
@@ -442,11 +443,13 @@ package enum MemorySemantics {
         }
 
         var reasons: [String] = []
-        let cappedCount = min(stats.accessCount, 32)
+        let rankingCount = stats.engagementCount
+        let rankingLast = stats.lastEngagementMs > 0 ? stats.lastEngagementMs : stats.firstAccessMs
+        let cappedCount = min(rankingCount, 32)
         if cappedCount >= 3 {
             reasons.append("repeated use")
         }
-        let hoursSinceAccess = max(0, nowMs - stats.lastAccessMs) / (1000 * 60 * 60)
+        let hoursSinceAccess = max(0, nowMs - rankingLast) / (1000 * 60 * 60)
         if hoursSinceAccess <= 24 {
             reasons.append("recently used")
         }
