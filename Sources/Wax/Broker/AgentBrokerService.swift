@@ -316,15 +316,6 @@ extension AgentBrokerService {
     typealias LayeredMemoryHit = LayeredRecall.Hit
     typealias MemoryReference = LayeredRecall.MemoryReference
 
-    struct CompactContextAssembly {
-        var short: [LayeredMemoryHit]
-        var medium: [LayeredMemoryHit]
-        var long: [LayeredMemoryHit]
-        var compactedText: String
-        var summary: String
-        var usedTokens: Int
-    }
-
     struct MarkdownProjectionReport {
         var memoryMarkdownPath: String
         var dailyNotePaths: [String]
@@ -1707,12 +1698,21 @@ extension AgentBrokerService {
             try await refreshSessionManifest(sessionID)
         }
         try await longTermMemory.flush()
-        let assembled = try await assembleCompactContext(
-            query: query,
-            sessionID: sessionID,
-            mode: mode,
-            tokenBudget: tokenBudget,
-            maxItems: maxItems
+        let counter = try await TokenCounter.shared()
+        let tokenizer = CompactAssembly.Tokenizer(
+            count: { text in await counter.count(text) },
+            truncate: { text, maxTokens in await counter.truncate(text, maxTokens: maxTokens) }
+        )
+        let assembled = try await CompactAssembly.assemble(
+            request: CompactAssembly.Request(
+                query: query,
+                sessionID: sessionID,
+                mode: mode,
+                tokenBudget: tokenBudget,
+                maxItems: maxItems
+            ),
+            stores: layeredRecallStores(),
+            tokenizer: tokenizer
         )
         if let sessionID {
             try await recordCheckpoint(
@@ -1721,7 +1721,7 @@ extension AgentBrokerService {
                 compactedText: assembled.compactedText
             )
         }
-        for hit in assembled.short {
+        for hit in assembled.short + assembled.medium + assembled.long {
             if hit.horizon == .durable {
                 await longTermMemory.recordAccess(frameId: hit.frameID)
             } else if let sessionID = hit.sessionID, let session = activeSessions[sessionID] {
@@ -2323,6 +2323,53 @@ extension AgentBrokerService {
                 }
                 return laneHits
             },
+            recallEndedSession: { manifest, query, mode, topK, frameFilter in
+                let sessionURL = URL(fileURLWithPath: manifest.storePath)
+                return try await self.openAdhocMemory(
+                    at: sessionURL,
+                    structuredMemoryEnabled: false,
+                    noEmbedder: noEmbedderFlag
+                ) { memory in
+                    let items = try await memory.recallExecution(
+                        query: query,
+                        mode: mode,
+                        frameFilter: frameFilter,
+                        timeRange: nil,
+                        topK: topK
+                    ).context.items
+                    var hits: [LayeredRecall.Hit] = []
+                    hits.reserveCapacity(items.count)
+                    for item in items {
+                        let canonicalFrameID = await self.bestEffortCanonicalDocumentFrameID(
+                            for: item.frameId,
+                            memory: memory
+                        ) ?? item.frameId
+                        hits.append(
+                            LayeredRecall.Hit(
+                                reference: LayeredRecall.makeMemoryReference(
+                                    .episodic,
+                                    sessionID: manifest.sessionID,
+                                    frameID: canonicalFrameID
+                                ),
+                                horizon: .episodic,
+                                sessionID: manifest.sessionID,
+                                agentID: manifest.agentID,
+                                runID: manifest.runID,
+                                frameID: canonicalFrameID,
+                                score: item.score,
+                                text: item.text,
+                                preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
+                                metadata: item.metadata,
+                                explanations: ["recent session episode"] + item.explanations,
+                                timestampMs: manifest.updatedAtMs,
+                                kind: "\(item.kind)",
+                                sources: item.sources.map(\.rawValue)
+                            )
+                        )
+                    }
+                    return hits
+                }
+            },
             nowMs: { Self.nowMs() }
         )
     }
@@ -2379,226 +2426,6 @@ extension AgentBrokerService {
                 body: loader
             )
         }
-    }
-
-    func assembleCompactContext(
-        query: String,
-        sessionID: UUID?,
-        mode: Memory.RetrievalMode,
-        tokenBudget: Int,
-        maxItems: Int
-    ) async throws -> CompactContextAssembly {
-        let counter = try await TokenCounter.shared()
-        var short: [LayeredMemoryHit] = []
-        var medium: [LayeredMemoryHit] = []
-        var long: [LayeredMemoryHit] = []
-
-        if let sessionID, let state = activeSessions[sessionID] {
-            let execution = try await state.memory.recallExecution(
-                query: query,
-                mode: mode,
-                frameFilter: nil,
-                timeRange: nil,
-                topK: min(4, maxItems)
-            )
-            for item in execution.context.items {
-                let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: state.memory)
-                short.append(LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: canonicalFrameID),
-                    horizon: .working,
-                    sessionID: sessionID,
-                    agentID: state.manifest.agentID,
-                    runID: state.manifest.runID,
-                    frameID: canonicalFrameID,
-                    score: item.score,
-                    text: item.text,
-                    preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
-                    metadata: item.metadata,
-                    explanations: ["current session"] + item.explanations,
-                    timestampMs: state.manifest.updatedAtMs
-                ))
-            }
-            if short.isEmpty {
-                let documents = try await state.memory.corpusSourceDocuments()
-                    .sorted { lhs, rhs in
-                        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                        return lhs.frameId > rhs.frameId
-                    }
-                for document in documents.prefix(min(4, maxItems)) {
-                    short.append(LayeredMemoryHit(
-                        reference: Self.makeMemoryReference(.working, sessionID: sessionID, frameID: document.frameId),
-                        horizon: .working,
-                        sessionID: sessionID,
-                        agentID: state.manifest.agentID,
-                        runID: state.manifest.runID,
-                        frameID: document.frameId,
-                        score: 0.2,
-                        text: document.text,
-                        preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                        metadata: document.metadata,
-                        explanations: ["current session", "recent session note"],
-                        timestampMs: document.timestampMs
-                    ))
-                }
-            }
-        }
-
-        let longExecution = try await longTermMemory.recallExecution(
-            query: query,
-            mode: mode,
-            frameFilter: nil,
-            timeRange: nil,
-            topK: min(4, maxItems)
-        )
-        for item in longExecution.context.items {
-            let canonicalFrameID = try await canonicalDocumentFrameID(for: item.frameId, memory: longTermMemory)
-            long.append(LayeredMemoryHit(
-                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: canonicalFrameID),
-                horizon: .durable,
-                sessionID: nil,
-                agentID: nil,
-                runID: nil,
-                frameID: canonicalFrameID,
-                score: item.score,
-                text: item.text,
-                preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
-                metadata: item.metadata,
-                explanations: ["durable memory"] + item.explanations,
-                timestampMs: item.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0
-            ))
-        }
-
-        let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-        let selectedManifests = manifests
-            .filter { manifest in
-                if let sessionID, manifest.sessionID == sessionID { return false }
-                if let sessionID, let active = activeSessions[sessionID]?.manifest, manifest.agentID != active.agentID {
-                    return false
-                }
-                return manifest.status == .ended
-            }
-        for manifest in selectedManifests {
-            let episodicHits = try await openAdhocMemory(
-                at: URL(fileURLWithPath: manifest.storePath),
-                structuredMemoryEnabled: false,
-                noEmbedder: noEmbedder
-            ) { memory in
-                let items = try await memory.recallExecution(
-                    query: query,
-                    mode: mode,
-                    frameFilter: nil,
-                    timeRange: nil,
-                    topK: 2
-                ).context.items
-                var hits: [LayeredMemoryHit] = []
-                hits.reserveCapacity(items.count)
-                for item in items {
-                    let canonicalFrameID = try await self.canonicalDocumentFrameID(for: item.frameId, memory: memory)
-                    hits.append(LayeredMemoryHit(
-                        reference: Self.makeMemoryReference(.episodic, sessionID: manifest.sessionID, frameID: canonicalFrameID),
-                        horizon: .episodic,
-                        sessionID: manifest.sessionID,
-                        agentID: manifest.agentID,
-                        runID: manifest.runID,
-                        frameID: canonicalFrameID,
-                        score: item.score,
-                        text: item.text,
-                        preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
-                        metadata: item.metadata,
-                        explanations: ["recent session episode"] + item.explanations,
-                        timestampMs: manifest.updatedAtMs
-                    ))
-                }
-                return hits
-            }
-            medium.append(contentsOf: episodicHits)
-        }
-
-        short = Self.deduplicateLayeredHits(short)
-        medium = Self.deduplicateLayeredHits(medium).sorted {
-            if $0.score != $1.score { return $0.score > $1.score }
-            if $0.timestampMs != $1.timestampMs { return $0.timestampMs > $1.timestampMs }
-            return $0.reference < $1.reference
-        }
-        long = Self.deduplicateLayeredHits(long)
-
-        let ordered = Array((short.prefix(maxItems) + medium.prefix(maxItems) + long.prefix(maxItems)).prefix(maxItems * 3))
-        var selectedShort: [LayeredMemoryHit] = []
-        var selectedMedium: [LayeredMemoryHit] = []
-        var selectedLong: [LayeredMemoryHit] = []
-        var usedTokens = await counter.count(renderCompactedContext(
-            query: query,
-            short: selectedShort,
-            medium: selectedMedium,
-            long: selectedLong
-        ))
-
-        for hit in ordered {
-            var candidateShort = selectedShort
-            var candidateMedium = selectedMedium
-            var candidateLong = selectedLong
-            switch hit.horizon {
-            case .working:
-                candidateShort.append(hit)
-            case .episodic:
-                candidateMedium.append(hit)
-            case .durable:
-                candidateLong.append(hit)
-            }
-            let candidateText = renderCompactedContext(
-                query: query,
-                short: candidateShort,
-                medium: candidateMedium,
-                long: candidateLong
-            )
-            let candidateTokens = await counter.count(candidateText)
-            guard candidateTokens <= tokenBudget else { continue }
-            selectedShort = candidateShort
-            selectedMedium = candidateMedium
-            selectedLong = candidateLong
-            usedTokens = candidateTokens
-        }
-
-        var compactedText = renderCompactedContext(
-            query: query,
-            short: selectedShort,
-            medium: selectedMedium,
-            long: selectedLong
-        )
-        let renderedTokens = await counter.count(compactedText)
-        if renderedTokens > tokenBudget {
-            compactedText = await counter.truncate(compactedText, maxTokens: tokenBudget)
-            usedTokens = await counter.count(compactedText)
-        } else {
-            usedTokens = renderedTokens
-        }
-        let summary = [
-            selectedShort.first?.preview,
-            selectedMedium.first?.preview,
-            selectedLong.first?.preview,
-        ]
-        .compactMap { $0 }
-        .prefix(3)
-        .joined(separator: " | ")
-
-        return CompactContextAssembly(
-            short: selectedShort,
-            medium: selectedMedium,
-            long: selectedLong,
-            compactedText: compactedText,
-            summary: summary.isEmpty ? "No compacted context available." : summary,
-            usedTokens: usedTokens
-        )
-    }
-
-    static func deduplicateLayeredHits(_ hits: [LayeredMemoryHit]) -> [LayeredMemoryHit] {
-        var seen = Set<String>()
-        var deduped: [LayeredMemoryHit] = []
-        deduped.reserveCapacity(hits.count)
-        for hit in hits where seen.insert(hit.reference).inserted {
-            deduped.append(hit)
-        }
-        return deduped
     }
 
     func exportMarkdownProjection(
@@ -3224,30 +3051,6 @@ extension AgentBrokerService {
         }
     }
 
-    func renderCompactedContext(
-        query: String,
-        short: [LayeredMemoryHit],
-        medium: [LayeredMemoryHit],
-        long: [LayeredMemoryHit]
-    ) -> String {
-        var lines = ["Query: \(query)"]
-        func appendSection(_ title: String, _ hits: [LayeredMemoryHit]) {
-            guard !hits.isEmpty else { return }
-            lines.append("")
-            lines.append(title)
-            for hit in hits {
-                let reason = hit.explanations.prefix(2).joined(separator: ", ")
-                lines.append("- \(hit.preview)")
-                if !reason.isEmpty {
-                    lines.append("  why: \(reason)")
-                }
-            }
-        }
-        appendSection("Short-Term Context", short)
-        appendSection("Medium-Term Context", medium)
-        appendSection("Long-Term Context", long)
-        return lines.joined(separator: "\n")
-    }
 
     func renderMemoryMarkdown(documents: [MemoryOrchestrator.CorpusSourceDocument]) -> String {
         var sections: [MemoryType: [String]] = [:]
