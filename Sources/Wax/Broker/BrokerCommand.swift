@@ -30,6 +30,7 @@ package enum BrokerCommand: Sendable, Equatable {
     case sessionOpen(SessionOpen)
     case compactContext(CompactContext)
     case markdownExport(MarkdownExport)
+    case taskStateMigrate(TaskStateMigrate)
     case factsQuery(FactsQuery)
     case memoryPromote(MemoryPromote)
     case promote(MemoryPromote)
@@ -152,6 +153,8 @@ package enum BrokerCommand: Sendable, Equatable {
 
     package struct KnowledgeCapture: Sendable, Equatable {
         package var content: String
+        package var sessionID: UUID?
+        package var writeScope: RememberWriteScope?
         package var metadata: [String: String]
         package var writeSemantics: MemoryWriteSemantics
         package var cwd: String?
@@ -193,6 +196,13 @@ package enum BrokerCommand: Sendable, Equatable {
         package var project: String?
         package var allProjects: Bool
         package var cwd: String?
+    }
+
+    package struct TaskStateMigrate: Sendable, Equatable {
+        package var destinationPath: String
+        package var dryRun: Bool
+        package var orphanPolicy: TaskStateOrphanPolicy
+        package var overwriteDestination: Bool
     }
 
     package struct FactsQuery: Sendable, Equatable {
@@ -295,6 +305,8 @@ package enum BrokerCommand: Sendable, Equatable {
             return .compactContext(try CompactContext.decode(args))
         case "markdown_export":
             return .markdownExport(try MarkdownExport.decode(args))
+        case "task_state_migrate":
+            return .taskStateMigrate(try TaskStateMigrate.decode(args))
         case "facts_query":
             return .factsQuery(try FactsQuery.decode(args))
         case "memory_promote":
@@ -561,16 +573,36 @@ extension BrokerCommand.SessionSynthesize {
 
 extension BrokerCommand.KnowledgeCapture {
     package static func decode(_ args: BrokerArguments) throws -> Self {
+        let sessionID = try BrokerCommand.parseOptionalSessionID(args)
+        let writeScope = try BrokerCommand.parseRememberWriteScope(args)
+        if let writeScope {
+            switch writeScope {
+            case .session:
+                guard sessionID != nil else {
+                    throw BrokerValidationError.invalid("scope session requires session_id")
+                }
+            case .durable:
+                if sessionID != nil {
+                    throw BrokerValidationError.invalid("scope durable forbids session_id")
+                }
+            }
+        }
         var writeSemantics = try BrokerCommand.parseWriteSemantics(args)
-        if !writeSemantics.lock, writeSemantics.durability == nil {
+        if !writeSemantics.lock, writeSemantics.durability == nil, sessionID == nil {
             writeSemantics.durability = .durable
+        }
+        let metadata = try BrokerCommand.coerceMetadata(try args.optionalObject("metadata"))
+        if metadata["session_id"] != nil {
+            throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
         }
         return Self(
             content: try args.requiredStringPreservingWhitespace(
                 "content",
                 maxBytes: BrokerLimits.maxContentBytes
             ),
-            metadata: try BrokerCommand.coerceMetadata(try args.optionalObject("metadata")),
+            sessionID: sessionID,
+            writeScope: writeScope,
+            metadata: metadata,
             writeSemantics: writeSemantics,
             cwd: try args.optionalString("cwd"),
             subject: try args.optionalString("subject"),
@@ -649,6 +681,23 @@ extension BrokerCommand.MarkdownExport {
             project: try args.optionalString("project"),
             allProjects: try args.optionalBool("all_projects") ?? false,
             cwd: try args.optionalString("cwd")
+        )
+    }
+}
+
+extension BrokerCommand.TaskStateMigrate {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let rawPolicy = try args.optionalString("orphan_policy") ?? TaskStateOrphanPolicy.quarantine.rawValue
+        guard let orphanPolicy = TaskStateOrphanPolicy(rawValue: rawPolicy.lowercased()) else {
+            throw BrokerValidationError.invalid(
+                "orphan_policy must be one of: \(TaskStateOrphanPolicy.allCases.map(\.rawValue).joined(separator: ", "))"
+            )
+        }
+        return Self(
+            destinationPath: try args.requiredString("destination_path", maxBytes: BrokerLimits.maxPathBytes),
+            dryRun: try args.optionalBool("dry_run") ?? false,
+            orphanPolicy: orphanPolicy,
+            overwriteDestination: try args.optionalBool("overwrite_destination") ?? false
         )
     }
 }

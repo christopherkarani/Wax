@@ -11,7 +11,7 @@ Use when the active Hermes memory provider is `wax-memory`.
 
 1. Confirm the broker is reachable: `hermes wax-memory doctor`
 2. Prefer `wax_recall` for assembled context and `wax_search` for raw hits
-3. Store durable facts with `wax_remember` and `memory_type` from `note`, `task_state`, `user_preference`, `decision`, `lesson`, `handoff`, `constraint`, `fact`
+3. Store durable facts with `wax_remember` and `memory_type` from `note`, `user_preference`, `decision`, `lesson`, `handoff`, `constraint`, `fact`; `task_state` is session-local working state and requires an active session
 4. Write session continuity with `wax_handoff`; do not dump raw transcripts
 5. Use structured tools (`wax_entity_upsert`, `wax_fact_assert`, `wax_facts_query`) only for stable knowledge-graph facts
 

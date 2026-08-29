@@ -376,7 +376,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
 
     private func handle(client: Int32) {
         var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
-        let pollResult = poll(&descriptor, 1, 200)
+        let pollResult = poll(&descriptor, 1, 2_000)
         if pollResult <= 0 {
             close(client)
             return
@@ -445,6 +445,7 @@ func toolsListContainsExpectedTools() {
     #expect(names.contains("compact_context"))
     #expect(names.contains("markdown_export"))
     #expect(names.contains("markdown_sync"))
+    #expect(names.contains("task_state_migrate"))
     #expect(names.contains("entity_upsert"))
     #expect(names.contains("fact_assert"))
     #expect(names.contains("fact_retract"))
@@ -523,7 +524,7 @@ func toolSchemaRegression() {
     }
 
     // Core tools must be present (regression: renaming or removing breaks clients)
-    let requiredTools = ["memory_append", "memory_search", "memory_get", "remember", "recall", "search", "session_synthesize", "memory_promote", "promote", "memory_health", "knowledge_capture", "corpus_search", "stats", "session_resume", "compact_context", "markdown_export", "markdown_sync"]
+    let requiredTools = ["memory_append", "memory_search", "memory_get", "remember", "recall", "search", "session_synthesize", "memory_promote", "promote", "memory_health", "knowledge_capture", "corpus_search", "stats", "session_resume", "compact_context", "markdown_export", "markdown_sync", "task_state_migrate"]
     for required in requiredTools {
         #expect(uniqueNames.contains(required), "Required tool '\(required)' is missing from schema")
     }
@@ -554,6 +555,7 @@ func toolSchemaRegression() {
         ("compact_context", ToolSchemas.waxCompactContext, true),
         ("markdown_export", ToolSchemas.waxMarkdownExport, true),
         ("markdown_sync", ToolSchemas.waxMarkdownSync, true),
+        ("task_state_migrate", ToolSchemas.waxTaskStateMigrate, true),
         ("entity_upsert", ToolSchemas.waxEntityUpsert, true),
         ("fact_assert", ToolSchemas.waxFactAssert, true),
         ("fact_retract", ToolSchemas.waxFactRetract, true),
@@ -4025,7 +4027,7 @@ func brokerMarkdownExportSkipsActiveSessionsOwnedByOtherBrokers() async throws {
 }
 
 @Test
-func brokerMarkdownExportUsesStoredMemoryTypeForSections() async throws {
+func brokerRememberRejectsDurableTaskStateBeforeMarkdownExport() async throws {
     try await withAgentBrokerService { service, _ in
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-markdown-stored-type-\(UUID().uuidString)", isDirectory: true)
@@ -4041,7 +4043,8 @@ func brokerMarkdownExportUsesStoredMemoryTypeForSections() async throws {
                 "reviewed": .bool(true),
             ]
         ))
-        #expect(remember.ok == true)
+        #expect(remember.ok == false)
+        #expect((remember.error ?? "").contains("task_state"))
 
         let export = await service.handle(.init(
             command: "markdown_export",
@@ -4053,9 +4056,8 @@ func brokerMarkdownExportUsesStoredMemoryTypeForSections() async throws {
         let payload = try #require(export.payload?.objectValue)
         let memoryPath = try #require(payload["memory_md_path"]?.stringValue)
         let markdown = try String(contentsOfFile: memoryPath, encoding: .utf8)
-        #expect(markdown.contains("## task_state"))
-        #expect(!markdown.contains("## decision"))
-        #expect(markdown.contains(content))
+        #expect(!markdown.contains("## task_state"))
+        #expect(!markdown.contains(content))
     }
 }
 

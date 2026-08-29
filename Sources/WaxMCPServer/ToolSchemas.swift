@@ -119,6 +119,11 @@ enum ToolSchemas {
             description: "Import and reconcile managed Markdown projections like MEMORY.md, daily notes, and DREAMS.md back into Wax.",
             inputSchema: waxMarkdownSync
         ),
+        Tool(
+            name: "task_state_migrate",
+            description: "Copy the long-term store into a distinct destination while repairing legacy durable task_state frames; reports source preservation and deep verification.",
+            inputSchema: waxTaskStateMigrate
+        ),
         ]
 
         let structuredTools: [Tool] = [
@@ -604,6 +609,15 @@ enum ToolSchemas {
                 "description": "Natural-language durable knowledge to store.",
                 "maxLength": .int(maxContentBytes),
             ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional active session UUID for session-local task_state or working knowledge.",
+            ],
+            "scope": [
+                "type": "string",
+                "description": "Write horizon. session requires session_id; durable forbids session_id.",
+                "enum": ["session", "durable"],
+            ],
             "metadata": [
                 "type": "object",
                 "description": "Optional metadata map. Scalar values are coerced to strings.",
@@ -736,6 +750,28 @@ enum ToolSchemas {
             "dry_run": ["type": "boolean", "description": "When true, report projected create/update/delete counts without mutating Wax state."],
         ],
         required: ["root_dir"]
+    )
+    static let waxTaskStateMigrate: Value = objectSchema(
+        properties: [
+            "destination_path": [
+                "type": "string",
+                "description": "Distinct destination .wax path for the repaired copy. The source store is never overwritten.",
+            ],
+            "dry_run": [
+                "type": "boolean",
+                "description": "Report the planned rehome/quarantine/drop counts without creating the destination.",
+            ],
+            "orphan_policy": [
+                "type": "string",
+                "description": "How task_state frames without valid session provenance are handled. Default: quarantine.",
+                "enum": ["quarantine", "drop"],
+            ],
+            "overwrite_destination": [
+                "type": "boolean",
+                "description": "Allow replacing an existing destination when its migration manifest does not match. Default: false.",
+            ],
+        ],
+        required: ["destination_path"]
     )
 
     static let waxEntityUpsert: Value = objectSchema(

@@ -281,3 +281,87 @@ struct MarkdownSyncCommand: AsyncParsableCommand {
     @OptionGroup var forwarded: BrokerForwardOptions
     func runAsync() async throws { try await runBrokerForwardedCommand("markdown_sync", store: store, forwarded: forwarded) }
 }
+
+struct TaskStateMigrateCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "task-state-migrate", abstract: "Copy and repair legacy durable task-state memory")
+    @OptionGroup var store: VectorStoreOptions
+    @OptionGroup var forwarded: BrokerForwardOptions
+
+    @Option(
+        name: .customLong("destination-path"),
+        help: "Distinct destination .wax path for the repaired copy"
+    )
+    var destinationPath: String?
+
+    @Option(
+        name: .customLong("orphan-policy"),
+        help: "Orphan handling policy: quarantine (default) or drop"
+    )
+    var orphanPolicy: String?
+
+    @Flag(name: .customLong("dry-run"), help: "Report the migration without creating a destination")
+    var dryRun = false
+
+    @Flag(
+        name: .customLong("overwrite-destination"),
+        help: "Replace an existing destination only when its migration manifest does not match"
+    )
+    var overwriteDestination = false
+
+    func runAsync() async throws {
+        var arguments = try forwarded.values()
+        if let destinationPath {
+            arguments["destination_path"] = .string(destinationPath)
+        }
+        if dryRun {
+            arguments["dry_run"] = .bool(true)
+        }
+        if let orphanPolicy {
+            arguments["orphan_policy"] = .string(orphanPolicy)
+        }
+        if overwriteDestination {
+            arguments["overwrite_destination"] = .bool(true)
+        }
+        guard arguments["destination_path"]?.stringValue != nil else {
+            throw CLIError("--destination-path is required")
+        }
+
+        let response: AgentBrokerResponse
+        if store.directStore {
+            response = try await performDirectTaskStateMigration(arguments: arguments)
+        } else {
+            response = try await AgentBrokerCLI.perform(
+                command: "task_state_migrate",
+                arguments: arguments,
+                storePath: store.storePath,
+                embedderChoice: store.embedder.rawValue,
+                noEmbedder: store.noEmbedder,
+                requireVector: store.requireVector,
+                embedderTuning: store.embedderTuning
+            )
+        }
+        printBrokerResponse(response, format: store.format)
+    }
+
+    private func performDirectTaskStateMigration(
+        arguments: [String: AgentBrokerValue]
+    ) async throws -> AgentBrokerResponse {
+        let expandedStorePath = AgentBrokerPathing.expandPath(store.storePath)
+        let service = try await AgentBrokerService(
+            storePath: expandedStorePath,
+            sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(storePath: expandedStorePath),
+            noEmbedder: store.noEmbedder,
+            embedderChoice: store.embedder.rawValue,
+            requireVector: store.requireVector,
+            embedderTuning: store.embedderTuning
+        )
+        let response = await service.handle(
+            AgentBrokerRequest(command: "task_state_migrate", arguments: arguments)
+        )
+        try await service.close()
+        guard response.ok else {
+            throw CLIError(response.error ?? "Broker command failed")
+        }
+        return response
+    }
+}

@@ -347,8 +347,12 @@ package enum AgentBrokerClient {
         }
 
         let payload = try JSONEncoder().encode(request)
-        try writeAll(fd, payload)
-        try writeAll(fd, Data([0x0A]))
+        do {
+            try writeAll(fd, payload)
+            try writeAll(fd, Data([0x0A]))
+        } catch let error as BrokerClientError where treatTimeoutAsUnavailable && error.isTransientDisconnect {
+            return nil
+        }
         shutdown(fd, socketShutdownWrite)
 
         guard let line = try readSocketResponseLine(
@@ -375,12 +379,18 @@ package enum AgentBrokerClient {
                 if count < 0 {
                     if errno == EINTR { continue }
                     if errno == EPIPE {
-                        throw BrokerClientError("Broker closed the connection while sending request")
+                        throw BrokerClientError(
+                            "Broker closed the connection while sending request",
+                            isTransientDisconnect: true
+                        )
                     }
                     throw BrokerClientError("Broker request write failed: \(String(cString: strerror(errno)))")
                 }
                 if count == 0 {
-                    throw BrokerClientError("Broker closed the connection while sending request")
+                    throw BrokerClientError(
+                        "Broker closed the connection while sending request",
+                        isTransientDisconnect: true
+                    )
                 }
                 sent += count
             }
@@ -468,9 +478,11 @@ package enum AgentBrokerClient {
 
 private struct BrokerClientError: LocalizedError {
     let message: String
+    let isTransientDisconnect: Bool
 
-    init(_ message: String) {
+    init(_ message: String, isTransientDisconnect: Bool = false) {
         self.message = message
+        self.isTransientDisconnect = isTransientDisconnect
     }
 
     var errorDescription: String? { message }

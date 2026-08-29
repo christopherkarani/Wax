@@ -365,6 +365,47 @@ struct WaxCLIMemoryTests {
         #expect(queryOutput.stdout.contains("..open]"))
     }
 
+    @Test func directTaskStateMigrationUsesNativeFlags() throws {
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-task-state-migrate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let sourceURL = tempDir.appendingPathComponent("source.wax")
+        let destinationURL = tempDir.appendingPathComponent("repaired.wax")
+
+        let seed = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "remember",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", sourceURL.path,
+                "--metadata", "wax.memory_type=task_state",
+                "--metadata", "wax.durability=durable",
+                "legacy task state",
+            ],
+            timeout: 20
+        )
+        #expect(seed.status == EXIT_SUCCESS, "seed remember should succeed: \(seed.stderr)")
+
+        let dryRun = try runProcess(
+            executableURL: executable,
+            arguments: [
+                "task-state-migrate",
+                "--direct-store",
+                "--no-embedder",
+                "--store-path", sourceURL.path,
+                "--destination-path", destinationURL.path,
+                "--dry-run",
+            ],
+            timeout: 30
+        )
+        #expect(dryRun.status == EXIT_SUCCESS, "task-state-migrate should accept native flags: \(dryRun.stderr)")
+        #expect(dryRun.stdout.contains("quarantined_document_count"))
+        #expect(!FileManager.default.fileExists(atPath: destinationURL.path))
+    }
+
     @Test func directStatsAndFlushHonorRequireVectorWithNoEmbedder() throws {
         let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
         let tempDir = FileManager.default.temporaryDirectory

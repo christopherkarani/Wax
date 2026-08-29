@@ -14,6 +14,7 @@ enum MCPAgentInstructions {
         3) When you learn durable facts, call remember with concise factual content. Prefer scope=session|durable; session requires top-level session_id; durable forbids session_id. Never put session_id inside metadata.
         4) Near session end, prefer session_close(session_id, content, optional project/pending_tasks) for atomic handoff+end. Keep content to a concise state summary; put unfinished work only in pending_tasks and never store transcripts. Or call handoff then session_end. session_end/session_close `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
         5) A persisted session_id survives broker hops: remember/recall/handoff rebind that UUID when the manifest is still active. Ended/unknown UUIDs return structured inactive errors (resumable=false).
+        6) task_state is session-local working state: it requires an active session and rejects durable or locked writes. Repair legacy records with task_state_migrate into a distinct destination after a dry run; choose quarantine (default) or drop for orphaned records.
 
         Canonical verbs: session_open, remember, recall, session_close, stats.
 

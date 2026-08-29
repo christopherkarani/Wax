@@ -47,6 +47,34 @@ func npmReadmeLocalDevelopmentUsesRepoRootPackagePath() throws {
     #expect(readme.contains("npx --yes ./Resources/npm/waxmcp mcp doctor"))
 }
 
+@Test
+func npmTaskStateMigrationDocsMatchNativeLauncherDispatch() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let readme = try String(
+        contentsOf: repoRoot.appendingPathComponent("Resources/npm/waxmcp/README.md"),
+        encoding: .utf8
+    )
+    let launcher = try String(
+        contentsOf: repoRoot.appendingPathComponent("Resources/npm/waxmcp/bin/waxmcp.js"),
+        encoding: .utf8
+    )
+    let cliSource = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCLI/BrokerForwardingCommands.swift"),
+        encoding: .utf8
+    )
+
+    #expect(readme.contains("task-state-migrate --direct-store --store-path"))
+    #expect(readme.contains("--destination-path /tmp/repaired.wax --dry-run"))
+    #expect(launcher.contains("forwardedArgs[0] === \"task-state-migrate\""))
+    #expect(launcher.contains("runBinary(\"wax-cli\", forwardedArgs)"))
+    #expect(cliSource.contains("customLong(\"destination-path\")"))
+    #expect(cliSource.contains("customLong(\"dry-run\")"))
+    #expect(cliSource.contains("customLong(\"overwrite-destination\")"))
+}
+
 // MARK: - Test Embedder for README examples
 
 private actor TestReadmeEmbedder: EmbeddingProvider {
