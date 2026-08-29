@@ -17,6 +17,8 @@ func accessFrequencyDisabledModeLeavesCandidatesUntouched() {
     ]
     var stats = FrameAccessStats(frameId: 2, nowMs: 1_700_000_000_000)
     stats.accessCount = 32
+    stats.engagementCount = 32
+    stats.lastEngagementMs = stats.lastImpressionMs
 
     let ranked = AccessFrequencyRanker.rerank(
         results: results,
@@ -49,8 +51,12 @@ func accessFrequencyDemotesStaleLowUseAndExplainsPublishedAdjustment() {
     ]
     var stale = FrameAccessStats(frameId: 1, nowMs: nowMs - 30 * dayMs)
     stale.accessCount = 1
+    stale.engagementCount = 1
+    stale.lastEngagementMs = stale.lastImpressionMs
     var recent = FrameAccessStats(frameId: 2, nowMs: nowMs - 6 * hourMs)
     recent.accessCount = 8
+    recent.engagementCount = 8
+    recent.lastEngagementMs = recent.lastImpressionMs
 
     let ranked = AccessFrequencyRanker.rerank(
         results: results,
@@ -96,6 +102,8 @@ func accessFrequencyProtectsExactIdentifierAndDurablePolicy() {
     let staleExact = FrameAccessStats(frameId: 1, nowMs: nowMs - 90 * dayMs)
     var recentNeighbor = FrameAccessStats(frameId: 2, nowMs: nowMs)
     recentNeighbor.accessCount = 32
+    recentNeighbor.engagementCount = 32
+    recentNeighbor.lastEngagementMs = recentNeighbor.lastImpressionMs
 
     let ranked = AccessFrequencyRanker.rerank(
         results: [exact, neighbor],
@@ -127,6 +135,8 @@ func accessFrequencyAdjustmentIsBoundedAgainstRichGetRicherAmplification() {
     let nowMs: Int64 = 1_700_000_000_000
     var saturated = FrameAccessStats(frameId: 1, nowMs: nowMs)
     saturated.accessCount = UInt32.max
+    saturated.engagementCount = UInt32.max
+    saturated.lastEngagementMs = saturated.lastImpressionMs
     let positive = AccessFrequencyRanker.adjustment(stats: saturated, nowMs: nowMs)
     #expect(positive == AccessFrequencyRanker.maximumAdjustment)
 
@@ -140,6 +150,8 @@ func accessFrequencyPreservesPublishedScoreScale() {
     let nowMs: Int64 = 1_700_000_000_000
     var stats = FrameAccessStats(frameId: 1, nowMs: nowMs)
     stats.accessCount = UInt32.max
+    stats.engagementCount = UInt32.max
+    stats.lastEngagementMs = stats.lastImpressionMs
     let result = makeAccessRankingResult(frameId: 1, score: 4.0, preview: "boundary")
 
     let ranked = AccessFrequencyRanker.rerank(

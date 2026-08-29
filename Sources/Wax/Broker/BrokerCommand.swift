@@ -36,6 +36,7 @@ package enum BrokerCommand: Sendable, Equatable {
     case promote(MemoryPromote)
     case factAssert(FactAssert)
     case corpusSearch(CorpusSearch)
+    case memoryMaintain(MemoryMaintain)
 
     package enum RememberWriteScope: String, Sendable, Equatable {
         case session
@@ -121,6 +122,11 @@ package enum BrokerCommand: Sendable, Equatable {
 
     package struct Stats: Sendable, Equatable {
         package var sessionID: UUID?
+    }
+
+    package struct MemoryMaintain: Sendable, Equatable {
+        package var apply: Bool
+        package var forceReclaim: Bool
     }
 
     package struct MarkdownSync: Sendable, Equatable {
@@ -317,6 +323,8 @@ package enum BrokerCommand: Sendable, Equatable {
             return .factAssert(try FactAssert.decode(args))
         case "corpus_search":
             return .corpusSearch(try CorpusSearch.decode(args))
+        case "memory_maintain":
+            return .memoryMaintain(try MemoryMaintain.decode(args))
         default:
             throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
         }
@@ -511,6 +519,17 @@ extension BrokerCommand.MemoryGet {
 extension BrokerCommand.Stats {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(sessionID: try BrokerCommand.parseOptionalSessionID(args))
+    }
+}
+
+extension BrokerCommand.MemoryMaintain {
+    package static func decode(_ args: BrokerArguments) throws -> Self {
+        let apply = try args.optionalBool("apply") ?? false
+        let dryRun = try args.optionalBool("dry_run")
+        return Self(
+            apply: dryRun == true ? false : apply,
+            forceReclaim: try args.optionalBool("force_reclaim") ?? false
+        )
     }
 }
 

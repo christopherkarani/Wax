@@ -434,6 +434,7 @@ func toolsListContainsExpectedTools() {
     #expect(names.contains("knowledge_capture"))
     #expect(names.contains("corpus_search"))
     #expect(!names.contains("flush"))
+    #expect(!names.contains("memory_maintain"))
     #expect(names.contains("stats"))
     #expect(names.contains("session_start"))
     #expect(names.contains("session_resume"))

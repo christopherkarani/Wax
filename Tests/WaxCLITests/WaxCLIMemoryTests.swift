@@ -909,6 +909,7 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("task_state"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("compact_context"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("memory-maintain"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("## Memory (Wax)"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
     }

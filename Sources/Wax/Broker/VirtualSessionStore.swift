@@ -323,13 +323,19 @@ package final class VirtualSessionStore: @unchecked Sendable {
         }
     }
 
-    package func end(sessionID: UUID?) async throws -> EndResult {
+    package func end(
+        sessionID: UUID?,
+        afterFlush: (@Sendable (SessionState) async -> SessionHarvest.Report)? = nil
+    ) async throws -> EndResult {
         try await endMutex.withLock { [self] in
-            try await endSerialized(sessionID: sessionID)
+            try await endSerialized(sessionID: sessionID, afterFlush: afterFlush)
         }
     }
 
-    private func endSerialized(sessionID: UUID?) async throws -> EndResult {
+    private func endSerialized(
+        sessionID: UUID?,
+        afterFlush: (@Sendable (SessionState) async -> SessionHarvest.Report)?
+    ) async throws -> EndResult {
         let target: (id: UUID, state: SessionState)? = try locked {
             switch endTarget(sessionID) {
             case .idle:
@@ -361,16 +367,21 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
         // `_live` retains the state for retry, while `endingSessions` removes it
         // from every routable view before the first suspension point.
-        if target.state.manifest.status != .ended {
-            do {
-                try await target.state.memory.flush()
-                _ = try locked {
-                    guard var state = _live[target.id] else {
-                        throw Self.notActiveError(for: target.id)
-                    }
-                    let timestamp = nowMs()
+        do {
+            try await target.state.memory.flush()
+            var harvest = SessionHarvest.Report.skipped
+            if let afterFlush {
+                harvest = await afterFlush(target.state)
+            }
+            _ = try locked {
+                guard var state = _live[target.id] else {
+                    throw Self.notActiveError(for: target.id)
+                }
+                let timestamp = nowMs()
+                let wasEnded = state.manifest.status == .ended
+                if !wasEnded {
                     state.manifest.status = .ended
-                    state.manifest.updatedAtMs = timestamp
+                    state.manifest.endedAtMs = timestamp
                     state.manifest.brokerLeaseOwnerID = nil
                     state.manifest.leaseExpiresAtMs = nil
                     if endEventFailuresForTesting > 0 {
@@ -387,14 +398,16 @@ package final class VirtualSessionStore: @unchecked Sendable {
                         ),
                         to: state.eventLogURL
                     )
-                    try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-                    _live[target.id] = state
-                    return state
                 }
-            } catch {
-                _ = locked { endingSessions.remove(target.id) }
-                throw error
+                state.manifest.updatedAtMs = timestamp
+                Self.applyHarvest(harvest, to: &state.manifest, nowMs: timestamp)
+                try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
+                _live[target.id] = state
+                return state
             }
+        } catch {
+            _ = locked { endingSessions.remove(target.id) }
+            throw error
         }
 
         // A close failure deliberately leaves the session reserved (not routable)
@@ -778,6 +791,49 @@ package final class VirtualSessionStore: @unchecked Sendable {
             endingSessions.contains(entry.key)
                 && entry.value.manifest.agentID == agentID
                 && entry.value.manifest.runID == runID
+        }
+    }
+
+    package func persistHarvestToDisk(
+        sessionID: UUID,
+        report: SessionHarvest.Report,
+        markEnded: Bool,
+        nowMs: Int64? = nil
+    ) throws -> BrokerSessionManifest {
+        let timestamp = nowMs ?? self.nowMs()
+        var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        if markEnded, manifest.status != .ended {
+            manifest.status = .ended
+            manifest.endedAtMs = timestamp
+            manifest.brokerLeaseOwnerID = nil
+            manifest.leaseExpiresAtMs = nil
+        }
+        manifest.updatedAtMs = timestamp
+        Self.applyHarvest(report, to: &manifest, nowMs: timestamp)
+        try BrokerSessionPersistence.saveManifest(
+            manifest,
+            to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
+        )
+        return manifest
+    }
+
+    package static func applyHarvest(
+        _ report: SessionHarvest.Report,
+        to manifest: inout BrokerSessionManifest,
+        nowMs: Int64
+    ) {
+        if let error = report.error, !error.isEmpty {
+            manifest.harvestError = error
+            return
+        }
+        guard report.harvested else { return }
+        manifest.harvestError = nil
+        if manifest.harvestedAtMs == nil {
+            manifest.harvestedAtMs = nowMs
+        }
+        manifest.promotedCount = report.promotedCount
+        if let reclaimAfterMs = report.reclaimAfterMs {
+            manifest.reclaimAfterMs = reclaimAfterMs
         }
     }
 

@@ -282,6 +282,9 @@ package actor AgentBrokerService {
             case .corpusSearch(let command):
                 payload = try await corpusSearch(command)
                 shouldExit = false
+            case .memoryMaintain(let command):
+                payload = try await memoryMaintain(command)
+                shouldExit = false
             }
 
             return AgentBrokerResponse.success(
@@ -511,7 +514,13 @@ extension AgentBrokerService {
                 },
                 memory: sessionMemory
             )
+            await sessionMemory.recordImpressions(
+                frameIds: result.hits.filter { $0.horizon == .working }.map(\.frameID)
+            )
         }
+        await longTermMemory.recordImpressions(
+            frameIds: result.hits.filter { $0.horizon == .durable }.map(\.frameID)
+        )
 
         var payload: [String: AgentBrokerValue] = [
             "query": .string(query),
@@ -862,12 +871,20 @@ extension AgentBrokerService {
             accessStats: accessStats,
             facts: facts
         )
+        let sessionDisk = SessionReclaim.diskStats(
+            rootURL: sessionRootURL,
+            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
+            liveIDs: Set(activeSessions.keys),
+            nowMs: Self.nowMs()
+        )
         return .object([
             "total_documents": .from(report.totalDocuments),
             "typed_counts": .object(report.typedCounts.mapValues { .from($0) }),
             "expired_frame_ids": .array(report.expiredFrameIds.map(AgentBrokerValue.from)),
             "stale_frame_ids": .array(report.staleFrameIds.map(AgentBrokerValue.from)),
             "low_hit_frame_ids": .array(report.lowHitFrameIds.map(AgentBrokerValue.from)),
+            "quarantine_candidate_ids": .array(report.quarantineCandidateIds.map(AgentBrokerValue.from)),
+            "reclaimable_session_ids": .array(sessionDisk.reclaimableSessionIDs.map { .string($0.uuidString) }),
             "duplicate_pairs": .array(report.duplicatePairs.map { pair in
                 .object([
                     "left_frame_id": .from(pair.leftFrameId),
@@ -1013,6 +1030,12 @@ extension AgentBrokerService {
                 "normalized": .from(identity.normalized),
             ])
         }()
+        let sessionDisk = SessionReclaim.diskStats(
+            rootURL: sessionRootURL,
+            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
+            liveIDs: Set(activeSessions.keys),
+            nowMs: Self.nowMs()
+        )
 
         return .object([
             "frameCount": .from(stats.frameCount),
@@ -1053,6 +1076,7 @@ extension AgentBrokerService {
                 "pendingFramesStoreWide": .from(sessionStats.pendingFramesStoreWide),
                 "countsIncludePending": .from(sessionStats.countsIncludePending),
             ]),
+            "sessions": sessionDisk.asBrokerValue(),
         ])
     }
 
@@ -1130,8 +1154,9 @@ extension AgentBrokerService {
         guard let target = try virtualSessions.peekEndTarget(sessionID: requested) else {
             return sessionEndPayload(.idle)
         }
-        let result = try await virtualSessions.end(sessionID: target)
-        return sessionEndPayload(result)
+        let result = try await virtualSessions.end(sessionID: target, afterFlush: makeHarvestCallback())
+        let reclaimed = await reclaimSessionIfDue(sessionID: target)
+        return sessionEndPayload(result, sessionID: target, reclaimed: reclaimed)
     }
 
     /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
@@ -1144,12 +1169,16 @@ extension AgentBrokerService {
         if activeSessions[sessionID] == nil {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
                 if status == .ended {
+                    let harvest = await harvestPersistedSession(sessionID: sessionID)
+                    let reclaimed = await reclaimSessionIfDue(sessionID: sessionID)
                     return sessionClosePayload(
                         sessionID: sessionID,
                         ended: true,
                         alreadyEnded: true,
                         handoffFrameID: nil,
-                        remainingActive: activeSessions.count
+                        remainingActive: activeSessions.count,
+                        harvest: harvest,
+                        reclaimed: reclaimed
                     )
                 }
             } else {
@@ -1169,13 +1198,16 @@ extension AgentBrokerService {
         )
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
-        let result = try await virtualSessions.end(sessionID: sessionID)
+        let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: makeHarvestCallback())
+        let reclaimed = await reclaimSessionIfDue(sessionID: sessionID)
         return sessionClosePayload(
             sessionID: sessionID,
             ended: result.ended,
             alreadyEnded: false,
             handoffFrameID: frameId,
-            remainingActive: result.activeCount
+            remainingActive: result.activeCount,
+            harvest: loadHarvestReport(sessionID: sessionID),
+            reclaimed: reclaimed
         )
     }
 
@@ -1184,7 +1216,9 @@ extension AgentBrokerService {
         ended: Bool,
         alreadyEnded: Bool,
         handoffFrameID: UInt64?,
-        remainingActive: Int
+        remainingActive: Int,
+        harvest: SessionHarvest.Report = .skipped,
+        reclaimed: Bool = false
     ) -> AgentBrokerValue {
         let display =
             "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions remaining_active=\(remainingActive > 0) count=\(remainingActive)."
@@ -1196,11 +1230,18 @@ extension AgentBrokerService {
             "already_ended": .bool(alreadyEnded),
             "remaining_active": .from(remainingActive > 0),
             "active_session_count": .from(remainingActive),
+            "harvested": .bool(harvest.harvested),
+            "promoted_count": .from(harvest.promotedCount),
+            "reclaim_after_ms": .from(harvest.reclaimAfterMs),
+            "reclaimed": .bool(reclaimed),
             "display_text": .string(display),
         ]
         if let handoffFrameID {
             payload["frame_id"] = .from(handoffFrameID)
             payload["committed"] = .bool(true)
+        }
+        if let error = harvest.error {
+            payload["harvest_error"] = .string(error)
         }
         return .object(payload)
     }
@@ -1377,14 +1418,19 @@ extension AgentBrokerService {
         return candidateCount <= maxTokens ? candidate : ""
     }
 
-    private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {
+    private func sessionEndPayload(
+        _ result: VirtualSessionStore.EndResult,
+        sessionID: UUID? = nil,
+        reclaimed: Bool = false
+    ) -> AgentBrokerValue {
         let remaining = result.activeCount
+        let harvest = sessionID.map { loadHarvestReport(sessionID: $0) } ?? .skipped
         let display: String
         switch result {
         case .idle:
             display = "No live session to end. This session active=false. Other live sessions remaining_active=false count=0."
-        case .ended(let sessionID, _):
-            display = "Session \(sessionID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
+        case .ended(let endedID, _):
+            display = "Session \(endedID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
         }
         return .object([
             "status": .string("ok"),
@@ -1393,6 +1439,213 @@ extension AgentBrokerService {
             "active": .bool(false),
             "remaining_active": .from(result.remainingActive),
             "active_session_count": .from(result.activeCount),
+            "harvested": .bool(harvest.harvested),
+            "promoted_count": .from(harvest.promotedCount),
+            "reclaim_after_ms": .from(harvest.reclaimAfterMs),
+            "reclaimed": .bool(reclaimed),
+            "display_text": .string(display),
+        ])
+    }
+
+    private func makeHarvestCallback() -> @Sendable (VirtualSessionStore.SessionState) async -> SessionHarvest.Report {
+        let longTerm = longTermMemory
+        let settings = promotionSettings
+        let scope = scopeContext
+        return { state in
+            let events = (try? BrokerSessionPersistence.loadEvents(from: state.eventLogURL)) ?? []
+            return await SessionHarvest.run(
+                sessionMemory: state.memory,
+                longTermMemory: longTerm,
+                sessionID: state.id,
+                manifest: state.manifest,
+                events: events,
+                scope: scope,
+                settings: settings,
+                nowMs: AgentBrokerService.nowMs()
+            )
+        }
+    }
+
+    private func loadHarvestReport(sessionID: UUID) -> SessionHarvest.Report {
+        guard let manifest = try? BrokerSessionPersistence.loadManifest(
+            rootURL: sessionRootURL,
+            sessionID: sessionID
+        ) else {
+            return .skipped
+        }
+        let immediate = manifest.reclaimAfterMs == manifest.harvestedAtMs
+        return SessionHarvest.Report(
+            harvested: manifest.harvestedAtMs != nil && manifest.harvestError == nil,
+            promotedCount: manifest.promotedCount,
+            leftoverDocumentCount: immediate ? 0 : 1,
+            leftoverLockedCount: 0,
+            reclaimAfterMs: manifest.reclaimAfterMs,
+            error: manifest.harvestError,
+            alreadyHarvested: manifest.harvestedAtMs != nil
+        )
+    }
+
+    private func harvestPersistedSession(sessionID: UUID) async -> SessionHarvest.Report {
+        guard let manifest = try? BrokerSessionPersistence.loadManifest(
+            rootURL: sessionRootURL,
+            sessionID: sessionID
+        ) else {
+            return .skipped
+        }
+        if manifest.harvestedAtMs != nil, manifest.harvestError == nil {
+            return loadHarvestReport(sessionID: sessionID)
+        }
+        let events = (try? BrokerSessionPersistence.loadEvents(
+            from: URL(fileURLWithPath: manifest.eventLogPath)
+        )) ?? []
+        let storeURL = URL(fileURLWithPath: manifest.storePath)
+        let report: SessionHarvest.Report
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            do {
+                report = try await openAdhocMemory(
+                    at: storeURL,
+                    structuredMemoryEnabled: false,
+                    noEmbedder: noEmbedder
+                ) { memory in
+                    await SessionHarvest.run(
+                        sessionMemory: memory,
+                        longTermMemory: self.longTermMemory,
+                        sessionID: sessionID,
+                        manifest: manifest,
+                        events: events,
+                        scope: self.scopeContext,
+                        settings: self.promotionSettings,
+                        nowMs: Self.nowMs()
+                    )
+                }
+            } catch {
+                report = SessionHarvest.Report(
+                    harvested: false,
+                    promotedCount: 0,
+                    leftoverDocumentCount: 0,
+                    leftoverLockedCount: 0,
+                    reclaimAfterMs: nil,
+                    error: error.localizedDescription,
+                    alreadyHarvested: false
+                )
+            }
+        } else {
+            report = SessionHarvest.Report(
+                harvested: true,
+                promotedCount: 0,
+                leftoverDocumentCount: 0,
+                leftoverLockedCount: 0,
+                reclaimAfterMs: Self.nowMs(),
+                error: nil,
+                alreadyHarvested: false
+            )
+        }
+        _ = try? virtualSessions.persistHarvestToDisk(
+            sessionID: sessionID,
+            report: report,
+            markEnded: true
+        )
+        return report
+    }
+
+    @discardableResult
+    private func reclaimSessionIfDue(sessionID: UUID, force: Bool = false) async -> Bool {
+        guard let manifest = try? BrokerSessionPersistence.loadManifest(
+            rootURL: sessionRootURL,
+            sessionID: sessionID
+        ) else {
+            return false
+        }
+        let now = Self.nowMs()
+        guard SessionReclaim.isReclaimable(manifest: manifest, nowMs: now, force: force) else {
+            return false
+        }
+        do {
+            _ = try SessionReclaim.unlink(
+                manifest: manifest,
+                sessionRootURL: sessionRootURL,
+                nowMs: now
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func memoryMaintain(_ command: BrokerCommand.MemoryMaintain) async throws -> AgentBrokerValue {
+        let apply = command.apply
+        let force = command.forceReclaim
+        let now = Self.nowMs()
+        let manifests = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
+        let liveIDs = Set(activeSessions.keys)
+        var zombiesToEnd = 0
+        var harvests = 0
+        var unlinks = 0
+        var quarantineSoftDeletes = 0
+
+        var zombieIDs = Set<UUID>()
+        for manifest in manifests where SessionReclaim.isZombie(manifest: manifest, liveIDs: liveIDs, nowMs: now) {
+            zombiesToEnd += 1
+            zombieIDs.insert(manifest.sessionID)
+            harvests += 1
+            if apply {
+                _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+            }
+        }
+
+        let afterZombies = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
+        for manifest in afterZombies {
+            if !zombieIDs.contains(manifest.sessionID),
+               manifest.status == .ended,
+               manifest.harvestedAtMs == nil || manifest.harvestError != nil {
+                harvests += 1
+                if apply {
+                    _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+                }
+            }
+            let current = (try? BrokerSessionPersistence.loadManifest(
+                rootURL: sessionRootURL,
+                sessionID: manifest.sessionID
+            )) ?? manifest
+            if SessionReclaim.isReclaimable(manifest: current, nowMs: now, force: force) {
+                unlinks += 1
+                if apply {
+                    if await reclaimSessionIfDue(sessionID: current.sessionID, force: force) {
+                        // counted
+                    }
+                }
+            }
+        }
+
+        let documents = try await longTermMemory.corpusSourceDocuments()
+        let accessStats = await longTermMemory.accessStatsSnapshot()
+        let quarantineIDs = documents.compactMap { document -> UInt64? in
+            MemoryRetention.isQuarantineCandidate(
+                metadata: document.metadata,
+                stats: accessStats[document.frameId],
+                nowMs: now
+            ) ? document.frameId : nil
+        }
+        quarantineSoftDeletes = quarantineIDs.count
+        if apply {
+            for frameId in quarantineIDs {
+                try await longTermMemory.delete(frameId: frameId)
+            }
+            if !quarantineIDs.isEmpty {
+                try await longTermMemory.flush()
+            }
+        }
+
+        let display = apply
+            ? "Maintain apply: zombies=\(zombiesToEnd) harvests=\(harvests) unlinks=\(unlinks) quarantine=\(quarantineSoftDeletes)"
+            : "Maintain dry-run: zombies=\(zombiesToEnd) harvests=\(harvests) unlinks=\(unlinks) quarantine=\(quarantineSoftDeletes)"
+        return .object([
+            "status": .string("ok"),
+            "dry_run": .bool(!apply),
+            "zombies_to_end": .from(zombiesToEnd),
+            "harvests": .from(harvests),
+            "unlinks": .from(unlinks),
+            "quarantine_soft_deletes": .from(quarantineSoftDeletes),
             "display_text": .string(display),
         ])
     }
@@ -1469,6 +1722,13 @@ extension AgentBrokerService {
                 summary: assembled.summary,
                 compactedText: assembled.compactedText
             )
+        }
+        for hit in assembled.short {
+            if hit.horizon == .durable {
+                await longTermMemory.recordAccess(frameId: hit.frameID)
+            } else if let sessionID = hit.sessionID, let session = activeSessions[sessionID] {
+                await session.memory.recordAccess(frameId: hit.frameID)
+            }
         }
         return .object([
             "query": .string(query),
@@ -2021,6 +2281,7 @@ extension AgentBrokerService {
             },
             searchEndedSession: { manifest, query, mode, topK in
                 let sessionURL = URL(fileURLWithPath: manifest.storePath)
+                guard FileManager.default.fileExists(atPath: sessionURL.path) else { return [] }
                 let eventLogURL = URL(fileURLWithPath: manifest.eventLogPath)
                 let execution = try await self.openAdhocMemory(
                     at: sessionURL,

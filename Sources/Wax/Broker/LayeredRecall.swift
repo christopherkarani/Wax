@@ -662,10 +662,22 @@ package enum LayeredRecall {
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
+        let accessStats = await stores.longTermMemory.accessStatsSnapshot()
+        let nowMs = stores.nowMs()
+        let visibleHits = selected.hits.filter { hit in
+            guard hit.horizon == .durable else { return true }
+            return MemoryRetention.isVisibleInDefaultRecall(
+                metadata: hit.metadata,
+                stats: accessStats[hit.frameID],
+                nowMs: nowMs,
+                query: request.query,
+                mode: request.mode
+            )
+        }
         let primary = sessionExecution ?? durableExecution
 
         return RecallResult(
-            hits: selected.hits,
+            hits: visibleHits,
             scope: request.scope,
             identity: identity,
             projectMiss: selected.projectMiss,
@@ -728,7 +740,16 @@ package enum LayeredRecall {
                 frameFilter: nil,
                 timeRange: nil
             )
+            let accessStats = await stores.longTermMemory.accessStatsSnapshot()
+            let nowMs = stores.nowMs()
             for result in execution.hits {
+                guard MemoryRetention.isVisibleInDefaultRecall(
+                    metadata: result.metadata,
+                    stats: accessStats[result.frameId],
+                    nowMs: nowMs,
+                    query: request.query,
+                    mode: request.mode
+                ) else { continue }
                 guard let canonicalFrameID = await stores.canonicalFrameID(
                     result.frameId,
                     stores.longTermMemory
@@ -758,6 +779,8 @@ package enum LayeredRecall {
             let scopedManifests = manifests
                 .filter { manifest in
                     guard manifest.status == .ended else { return false }
+                    guard manifest.reclaimedAtMs == nil else { return false }
+                    guard FileManager.default.fileExists(atPath: manifest.storePath) else { return false }
                     if let sessionID = request.sessionID, manifest.sessionID == sessionID { return false }
                     if let current = request.sessionID, let active = stores.workingLane(current) {
                         if let agentID = active.agentID, manifest.agentID != agentID { return false }

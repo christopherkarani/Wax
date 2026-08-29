@@ -24,6 +24,39 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
     package var lastCompactionAtMs: Int64?
     package var latestSummary: String?
     package var latestHandoff: String?
+    package var endedAtMs: Int64?
+    package var harvestedAtMs: Int64?
+    package var promotedCount: Int
+    package var reclaimAfterMs: Int64?
+    package var reclaimedAtMs: Int64?
+    package var harvestError: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case agentID
+        case runID
+        case project
+        case repo
+        case storePath
+        case eventLogPath
+        case status
+        case brokerLeaseOwnerID
+        case leaseExpiresAtMs
+        case createdAtMs
+        case updatedAtMs
+        case lastCheckpointAtMs
+        case checkpointCount
+        case lastHandoffAtMs
+        case lastCompactionAtMs
+        case latestSummary
+        case latestHandoff
+        case endedAtMs
+        case harvestedAtMs
+        case promotedCount
+        case reclaimAfterMs
+        case reclaimedAtMs
+        case harvestError
+    }
 
     package init(
         sessionID: UUID,
@@ -43,7 +76,13 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         lastHandoffAtMs: Int64? = nil,
         lastCompactionAtMs: Int64? = nil,
         latestSummary: String? = nil,
-        latestHandoff: String? = nil
+        latestHandoff: String? = nil,
+        endedAtMs: Int64? = nil,
+        harvestedAtMs: Int64? = nil,
+        promotedCount: Int = 0,
+        reclaimAfterMs: Int64? = nil,
+        reclaimedAtMs: Int64? = nil,
+        harvestError: String? = nil
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
@@ -63,6 +102,40 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         self.lastCompactionAtMs = lastCompactionAtMs
         self.latestSummary = latestSummary
         self.latestHandoff = latestHandoff
+        self.endedAtMs = endedAtMs
+        self.harvestedAtMs = harvestedAtMs
+        self.promotedCount = promotedCount
+        self.reclaimAfterMs = reclaimAfterMs
+        self.reclaimedAtMs = reclaimedAtMs
+        self.harvestError = harvestError
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(UUID.self, forKey: .sessionID)
+        agentID = try container.decode(String.self, forKey: .agentID)
+        runID = try container.decode(String.self, forKey: .runID)
+        project = try container.decodeIfPresent(String.self, forKey: .project)
+        repo = try container.decodeIfPresent(String.self, forKey: .repo)
+        storePath = try container.decode(String.self, forKey: .storePath)
+        eventLogPath = try container.decode(String.self, forKey: .eventLogPath)
+        status = try container.decode(Status.self, forKey: .status)
+        brokerLeaseOwnerID = try container.decodeIfPresent(String.self, forKey: .brokerLeaseOwnerID)
+        leaseExpiresAtMs = try container.decodeIfPresent(Int64.self, forKey: .leaseExpiresAtMs)
+        createdAtMs = try container.decode(Int64.self, forKey: .createdAtMs)
+        updatedAtMs = try container.decode(Int64.self, forKey: .updatedAtMs)
+        lastCheckpointAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastCheckpointAtMs)
+        checkpointCount = try container.decodeIfPresent(Int.self, forKey: .checkpointCount) ?? 0
+        lastHandoffAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastHandoffAtMs)
+        lastCompactionAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastCompactionAtMs)
+        latestSummary = try container.decodeIfPresent(String.self, forKey: .latestSummary)
+        latestHandoff = try container.decodeIfPresent(String.self, forKey: .latestHandoff)
+        endedAtMs = try container.decodeIfPresent(Int64.self, forKey: .endedAtMs)
+        harvestedAtMs = try container.decodeIfPresent(Int64.self, forKey: .harvestedAtMs)
+        promotedCount = try container.decodeIfPresent(Int.self, forKey: .promotedCount) ?? 0
+        reclaimAfterMs = try container.decodeIfPresent(Int64.self, forKey: .reclaimAfterMs)
+        reclaimedAtMs = try container.decodeIfPresent(Int64.self, forKey: .reclaimedAtMs)
+        harvestError = try container.decodeIfPresent(String.self, forKey: .harvestError)
     }
 }
 
