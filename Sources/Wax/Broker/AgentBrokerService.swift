@@ -1725,7 +1725,7 @@ extension AgentBrokerService {
             if hit.horizon == .durable {
                 await longTermMemory.recordAccess(frameId: hit.frameID)
             } else if let sessionID = hit.sessionID, let session = activeSessions[sessionID] {
-                await session.memory.recordAccess(frameId: hit.sessionID)
+                await session.memory.recordAccess(frameId: hit.frameID)
             }
         }
         return .object([
