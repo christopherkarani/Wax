@@ -57,7 +57,7 @@ Default tools stay small to avoid schema bloat:
 
 | Tool | Description |
 |------|-------------|
-| `wax_remember` | Store memory (`memory_type`: note, task_state, user_preference, decision, lesson, handoff, constraint, fact) |
+| `wax_remember` | Store memory (`memory_type`: note, task_state, user_preference, decision, lesson, handoff, constraint, fact); task_state requires an active session and is always working |
 | `wax_recall` | RAG context recall |
 | `wax_search` | Ranked raw hits |
 | `wax_handoff` / `wax_handoff_latest` | Cross-session handoff |

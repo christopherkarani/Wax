@@ -99,6 +99,15 @@ package enum MemoryMetadataKeys {
     package static let sourceDate = "wax.source_date"
     package static let sourceMemoryID = "wax.source_memory_id"
     package static let sourceManaged = "wax.source_managed"
+    // Copy-first migration provenance. These keys are intentionally namespaced so
+    // a repaired store can be audited without changing source frame identities.
+    package static let migrationSchema = "wax.migration.schema"
+    package static let migrationAction = "wax.migration.action"
+    package static let migrationSourceFrameID = "wax.migration.source_frame_id"
+    package static let migrationSourceContentHash = "wax.migration.source_content_hash"
+    package static let migrationSourceStoreHash = "wax.migration.source_store_hash"
+    package static let migrationOriginalSessionID = "wax.migration.original_session_id"
+    package static let migrationOriginalMemoryType = "wax.migration.original_memory_type"
 }
 
 package enum SecretHeuristics {
@@ -200,6 +209,76 @@ package enum MemorySemantics {
             normalized[MemoryMetadataKeys.expiresAtMs] = String(expiresAtMs)
         }
         return normalized
+    }
+
+    /// Validates the broker write contract and returns normalized metadata.
+    ///
+    /// `task_state` is session-local state. It must never be written without a
+    /// live virtual session and it cannot be promoted into the durable horizon.
+    /// A session task-state write is always represented as `working`; an omitted
+    /// or legacy `ephemeral` durability is upgraded, while an explicit durable
+    /// or locked request is rejected so callers cannot silently lose intent.
+    package static func validatedWriteMetadata(
+        metadata: [String: String],
+        semantics: MemoryWriteSemantics,
+        sessionID: UUID?,
+        scope: String?,
+        activeSession: Bool,
+        inferredScope: MemoryScopeContext?,
+        nowMs: Int64
+    ) throws -> [String: String] {
+        let metadataType = metadata[MemoryMetadataKeys.type].flatMap(MemoryType.init(rawValue:))
+        let resolvedType = semantics.type ?? metadataType ?? defaultMemoryType(
+            sessionID: sessionID,
+            existing: metadata
+        )
+        let metadataDurability = metadata[MemoryMetadataKeys.durability]
+            .flatMap(MemoryDurability.init(rawValue:))
+        let requestedDurability = semantics.lock
+            ? MemoryDurability.locked
+            : semantics.durability ?? metadataDurability
+
+        guard resolvedType == .taskState else {
+            return normalizeWriteMetadata(
+                metadata: metadata,
+                semantics: semantics,
+                sessionID: sessionID,
+                inferredScope: inferredScope,
+                nowMs: nowMs
+            )
+        }
+
+        guard activeSession, let sessionID else {
+            throw BrokerValidationError.invalid(
+                "task_state requires an active session_id; durable task diaries are not supported"
+            )
+        }
+        if scope?.lowercased() == "durable" {
+            throw BrokerValidationError.invalid(
+                "task_state cannot use scope durable; use scope session with an active session_id"
+            )
+        }
+        if semantics.lock ||
+            requestedDurability == .durable ||
+            requestedDurability == .locked ||
+            metadataDurability == .durable ||
+            metadataDurability == .locked {
+            throw BrokerValidationError.invalid(
+                "task_state cannot use durability durable or locked; use working session memory"
+            )
+        }
+
+        var sessionSemantics = semantics
+        sessionSemantics.type = .taskState
+        sessionSemantics.durability = .working
+        sessionSemantics.lock = false
+        return normalizeWriteMetadata(
+            metadata: metadata,
+            semantics: sessionSemantics,
+            sessionID: sessionID,
+            inferredScope: inferredScope,
+            nowMs: nowMs
+        )
     }
 
     package static func approvedPromotionMetadata(
@@ -380,9 +459,13 @@ package enum MemorySemantics {
     }
 
     package static func classifyCandidate(text: String, metadata: [String: String]) -> MemoryType {
+        // Implicit `note` is the default stamp for unclassified session writes.
+        // Treat it like `task_state`: ignore the stored type so text cues such as
+        // "Decision:" can still promote. Explicit types stay trusted.
         if let raw = metadata[MemoryMetadataKeys.type],
            let typed = MemoryType(rawValue: raw),
-           typed != .taskState {
+           typed != .taskState,
+           typed != .note {
             return typed
         }
         let lower = text.lowercased()
@@ -448,13 +531,12 @@ package enum MemorySemantics {
         }
     }
 
-    private static func defaultMemoryType(sessionID: UUID?, existing metadata: [String: String]) -> MemoryType {
+    private static func defaultMemoryType(sessionID _: UUID?, existing metadata: [String: String]) -> MemoryType {
         if let raw = metadata[MemoryMetadataKeys.type], let typed = MemoryType(rawValue: raw) {
             return typed
         }
-        if sessionID != nil || metadata["session_id"] != nil {
-            return .taskState
-        }
+        // Session presence does not imply task_state. Ordinary session notes stay
+        // notes so the task_state safety contract applies only when requested.
         return .note
     }
 
