@@ -91,7 +91,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_open",
-            description: "Open a session in one call: handoff_latest + session_start + optional recall. Returns session_id, handoff, and optional recall.",
+            description: "Open a session in one call. Returns session_id plus a bounded short handoff projection; optional non-empty recall_query adds capped project-scoped recall. Use handoff_latest for the complete handoff and pending tasks.",
             inputSchema: waxSessionOpen
         ),
         Tool(
@@ -562,7 +562,7 @@ enum ToolSchemas {
             ],
             "recall_query": [
                 "type": "string",
-                "description": "Optional query to run project-scoped recall after session_start.",
+                "description": "Optional non-empty query to run capped project-scoped recall after session_start. Omitted or whitespace-only means no recall.",
             ],
             "cwd": [
                 "type": "string",
