@@ -208,3 +208,59 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # bump-version.sh can only hash a local git archive. brew downloads GitHub's
+  # tag tarball, which hashes differently — finalize after the tag exists.
+  homebrew:
+    name: Finalize Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'waxmcp-v') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve release version
+        id: version
+        run: |
+          set -euo pipefail
+          echo "version=${GITHUB_REF_NAME#waxmcp-v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Prefer a PAT that can also push christopherkarani/homebrew-wax.
+          # Falls back to the job token for in-repo formula commits only.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN || github.token }}
+
+      - name: Finalize formula sha256 from GitHub archive
+        run: |
+          set -euo pipefail
+          ./Resources/scripts/finalize-homebrew-formula.sh "${{ steps.version.outputs.version }}"
+
+      - name: Commit vendored formula if changed
+        run: |
+          set -euo pipefail
+          FORMULA="Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
+          if git diff --quiet -- "$FORMULA"; then
+            echo "Vendored Homebrew formula already matches GitHub archive"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$FORMULA"
+          git commit -m "fix(release): Homebrew sha256 for waxmcp-v${{ steps.version.outputs.version }}"
+          git push origin HEAD:main
+
+      - name: Sync christopherkarani/homebrew-wax tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "::warning::secrets.HOMEBREW_TAP_TOKEN not set — skipped homebrew-wax tap sync."
+            echo "Add a PAT (contents:write on christopherkarani/homebrew-wax) as HOMEBREW_TAP_TOKEN to enable it."
+            exit 0
+          fi
+          ./Resources/scripts/finalize-homebrew-formula.sh \
+            "${{ steps.version.outputs.version }}" \
+            --push-tap

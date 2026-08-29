@@ -28,4 +28,8 @@ if grep -q 'inreplace "Sources/WaxVectorSearchMiniLM/MiniLMEmbedder.swift"' "$FO
   fail "Homebrew formula must build the shipped MiniLM defaults without source mutation"
 fi
 
+formula_sha="$(sed -nE 's/.*sha256 "([a-f0-9]+)".*/\1/p' "$FORMULA" | head -n 1)"
+[[ "$formula_sha" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "Homebrew formula sha256 must be 64 lowercase hex chars (got '${formula_sha:-missing}')"
+
 echo "homebrew_formula_tests: ok"
