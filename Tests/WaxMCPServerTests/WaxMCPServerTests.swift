@@ -6087,14 +6087,30 @@ private func containsKeyRecursively(_ key: String, in value: Any) -> Bool {
 
 private func parseJSONText(in result: CallTool.Result) throws -> [String: Any] {
     let text = firstText(in: result)
-    guard let data = text.data(using: .utf8) else {
-        throw NSError(domain: "WaxMCPServerTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 result"])
+    if let dict = decodeJSONObject(text) {
+        return dict
     }
-    let object = try JSONSerialization.jsonObject(with: data)
-    guard let dict = object as? [String: Any] else {
-        throw NSError(domain: "WaxMCPServerTests", code: 3, userInfo: [NSLocalizedDescriptionKey: "Result is not a JSON object"])
+    for content in result.content {
+        if case .resource(let resource, _, _) = content,
+           let resourceText = resource.text,
+           let dict = decodeJSONObject(resourceText) {
+            return dict
+        }
     }
-    return dict
+    let preview = text.isEmpty ? "<empty>" : String(text.prefix(200))
+    throw NSError(
+        domain: "WaxMCPServerTests",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Result is not a JSON object: \(preview)"]
+    )
+}
+
+private func decodeJSONObject(_ text: String) -> [String: Any]? {
+    guard !text.isEmpty, let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) else {
+        return nil
+    }
+    return object as? [String: Any]
 }
 
 private func parseJSONResource(in result: CallTool.Result, uriSuffix: String) throws -> [String: Any] {

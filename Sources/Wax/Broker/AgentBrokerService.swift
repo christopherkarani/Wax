@@ -1284,30 +1284,31 @@ extension AgentBrokerService {
         return result
     }
 
-    /// Select a prefix from the original grapheme sequence rather than
-    /// decoding a sliced BPE token array. Decoding an arbitrary token prefix
-    /// can end in the middle of a multibyte scalar and introduce U+FFFD.
+    /// Bound `text` to `maxTokens` while remaining a grapheme prefix of `text`.
+    ///
+    /// Encode the full string once, then take a proportional character prefix
+    /// and shrink by graphemes if that prefix is still over budget. This avoids
+    /// re-tokenizing every binary-search midpoint on `TokenCounter.shared()`,
+    /// which serializes orchestrator chunking and MCP remember/recall.
     private static func tokenLimitedPrefix(
         _ text: String,
         counter: TokenCounter,
         maxTokens: Int
     ) async -> String {
         guard maxTokens > 0, !text.isEmpty else { return "" }
+        let fullCount = await counter.count(text)
+        if fullCount <= maxTokens { return text }
+
         let characters = Array(text)
-        var lower = 0
-        var upper = characters.count
-        var best = 0
-        while lower <= upper {
-            let middle = lower + (upper - lower) / 2
-            let candidate = String(characters.prefix(middle))
-            if await counter.count(candidate) <= maxTokens {
-                best = middle
-                lower = middle + 1
-            } else {
-                upper = middle - 1
-            }
+        var high = max(1, min(characters.count, (maxTokens * characters.count) / fullCount))
+        var candidate = String(characters.prefix(high))
+        var candidateCount = await counter.count(candidate)
+        while candidateCount > maxTokens && high > 1 {
+            high = max(1, (high * 3) / 4)
+            candidate = String(characters.prefix(high))
+            candidateCount = await counter.count(candidate)
         }
-        return String(characters.prefix(best))
+        return candidateCount <= maxTokens ? candidate : ""
     }
 
     private func sessionEndPayload(_ result: VirtualSessionStore.EndResult) -> AgentBrokerValue {
