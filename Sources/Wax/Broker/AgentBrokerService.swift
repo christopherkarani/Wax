@@ -1155,8 +1155,7 @@ extension AgentBrokerService {
             return sessionEndPayload(.idle)
         }
         let result = try await virtualSessions.end(sessionID: target, afterFlush: makeHarvestCallback())
-        let reclaimed = await reclaimSessionIfDue(sessionID: target)
-        return sessionEndPayload(result, sessionID: target, reclaimed: reclaimed)
+        return sessionEndPayload(result, sessionID: target)
     }
 
     /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
@@ -1170,15 +1169,13 @@ extension AgentBrokerService {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
                 if status == .ended {
                     let harvest = await harvestPersistedSession(sessionID: sessionID)
-                    let reclaimed = await reclaimSessionIfDue(sessionID: sessionID)
                     return sessionClosePayload(
                         sessionID: sessionID,
                         ended: true,
                         alreadyEnded: true,
                         handoffFrameID: nil,
                         remainingActive: activeSessions.count,
-                        harvest: harvest,
-                        reclaimed: reclaimed
+                        harvest: harvest
                     )
                 }
             } else {
@@ -1199,15 +1196,13 @@ extension AgentBrokerService {
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
         let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: makeHarvestCallback())
-        let reclaimed = await reclaimSessionIfDue(sessionID: sessionID)
         return sessionClosePayload(
             sessionID: sessionID,
             ended: result.ended,
             alreadyEnded: false,
             handoffFrameID: frameId,
             remainingActive: result.activeCount,
-            harvest: loadHarvestReport(sessionID: sessionID),
-            reclaimed: reclaimed
+            harvest: loadHarvestReport(sessionID: sessionID)
         )
     }
 

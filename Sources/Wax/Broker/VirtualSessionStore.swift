@@ -828,7 +828,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
                 manifest.harvestedAtMs = nowMs
             }
             manifest.promotedCount = report.promotedCount
-            if let reclaimAfterMs = report.reclaimAfterMs {
+            if report.immediateReclaimEligible {
+                manifest.reclaimAfterMs = manifest.harvestedAtMs
+            } else if let reclaimAfterMs = report.reclaimAfterMs {
                 manifest.reclaimAfterMs = reclaimAfterMs
             }
             return

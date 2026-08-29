@@ -155,7 +155,7 @@ func sessionCloseHarvestsAlwaysPromotableNeedleIntoDurableRecall() async throws 
 }
 
 @Test
-func emptyPromotableSessionUnlinksImmediately() async throws {
+func emptyPromotableSessionIsReclaimedByMaintainWithoutWaiting() async throws {
     let needle = "WAXHVIM-\(UUID().uuidString.prefix(8))"
     try await withHarvestBroker { service, sessionRoot in
         let sessionID = try await startHarvestSession(service, runID: "harvest-immediate")
@@ -167,18 +167,48 @@ func emptyPromotableSessionUnlinksImmediately() async throws {
         )
         let ended = try await endSession(service, sessionID: sessionID)
         #expect(ended["harvested"]?.boolValue == true)
-        #expect(ended["reclaimed"]?.boolValue == true)
-        #expect(!FileManager.default.fileExists(atPath: sessionStoreURL(root: sessionRoot, sessionID: sessionID).path))
+        #expect(ended["reclaimed"]?.boolValue != true)
+        let storePath = sessionStoreURL(root: sessionRoot, sessionID: sessionID).path
+        #expect(FileManager.default.fileExists(atPath: storePath))
 
         let manifest = try BrokerSessionPersistence.loadManifest(
             rootURL: sessionRoot,
             sessionID: UUID(uuidString: sessionID)!
         )
-        #expect(manifest.reclaimedAtMs != nil)
         #expect(manifest.status == .ended)
+        #expect(manifest.reclaimAfterMs == manifest.harvestedAtMs)
+
+        let applied = await service.handle(.init(
+            command: "memory_maintain",
+            arguments: ["apply": .bool(true)]
+        ))
+        #expect(applied.ok == true, "immediate maintain reclaim failed: \(applied.error ?? "nil")")
+        #expect(!FileManager.default.fileExists(atPath: storePath))
 
         let payload = try await projectRecall(service, query: needle)
         #expect(firstHitText(payload).contains(needle))
+    }
+}
+
+@Test
+func closeDoesNotPromoteImplicitMustNotesIntoDurableRecall() async throws {
+    let token = "ENDED-WORKING-\(UUID().uuidString.prefix(8))"
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-implicit-note")
+        let write = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Ended-session working note \(token) must not leak unscoped."),
+                "session_id": .string(sessionID),
+                "project": .string(harvestProject),
+                "repo": .string(harvestProject),
+            ]
+        ))
+        #expect(write.ok == true, "remember failed: \(write.error ?? "nil")")
+        _ = try await endSession(service, sessionID: sessionID)
+
+        let payload = try await projectRecall(service, query: token)
+        #expect(!firstHitText(payload).contains(token))
     }
 }
 

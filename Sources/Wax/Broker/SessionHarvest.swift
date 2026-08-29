@@ -28,6 +28,20 @@ package enum SessionHarvest {
         }
     }
 
+    /// Close harvest trusts explicit types. Implicit notes/task_state still need recall
+    /// even when text cues would make operator `promote` always-write.
+    private static func harvestShouldWrite(
+        proposal: BrokerPromotionProposal,
+        storedType: MemoryType,
+        settings: BrokerPromotionSettings
+    ) -> Bool {
+        guard proposal.shouldWrite else { return false }
+        if storedType == .note || storedType == .taskState {
+            return proposal.recallCount >= settings.minimumRecallCount
+        }
+        return true
+    }
+
     package static func run(
         sessionMemory: MemoryOrchestrator,
         longTermMemory: MemoryOrchestrator,
@@ -69,6 +83,7 @@ package enum SessionHarvest {
                     leftoverDocumentCount += 1
                     continue
                 }
+                let storedType = info.type
                 let proposal = BrokerMemoryInsights.proposePromotion(
                     content: document.text,
                     metadata: document.metadata,
@@ -79,7 +94,7 @@ package enum SessionHarvest {
                     recallSignals: recallSignals[document.frameId],
                     settings: settings
                 )
-                guard proposal.shouldWrite else {
+                guard harvestShouldWrite(proposal: proposal, storedType: storedType, settings: settings) else {
                     leftoverDocumentCount += 1
                     continue
                 }
