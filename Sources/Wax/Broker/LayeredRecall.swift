@@ -2,7 +2,9 @@ import Foundation
 import WaxCore
 
 /// Broker Layered recall: scope/identity, multi-horizon fetch/merge, project filter.
-/// Does not own Ranking scores, Recall assembly packing, MCP payloads, or session rebind.
+/// Feeds recall, layered search, and Compact assembly.
+/// Does not own Ranking scores, Recall assembly packing, Compact assembly packing,
+/// MCP payloads, or session rebind.
 package enum LayeredRecall {
     package enum Horizon: String, Sendable {
         case working
@@ -237,6 +239,13 @@ package enum LayeredRecall {
             _ mode: Memory.RetrievalMode,
             _ topK: Int
         ) async throws -> [EpisodicLaneHit]
+        package var recallEndedSession: @Sendable (
+            _ manifest: BrokerSessionManifest,
+            _ query: String,
+            _ mode: Memory.RetrievalMode,
+            _ topK: Int,
+            _ frameFilter: FrameFilter?
+        ) async throws -> [Hit]
         package var nowMs: @Sendable () -> Int64
 
         package init(
@@ -252,6 +261,13 @@ package enum LayeredRecall {
                 Memory.RetrievalMode,
                 Int
             ) async throws -> [EpisodicLaneHit],
+            recallEndedSession: @escaping @Sendable (
+                BrokerSessionManifest,
+                String,
+                Memory.RetrievalMode,
+                Int,
+                FrameFilter?
+            ) async throws -> [Hit],
             nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
         ) {
             self.longTermMemory = longTermMemory
@@ -261,8 +277,18 @@ package enum LayeredRecall {
             self.canonicalFrameID = canonicalFrameID
             self.endedManifests = endedManifests
             self.searchEndedSession = searchEndedSession
+            self.recallEndedSession = recallEndedSession
             self.nowMs = nowMs
         }
+    }
+
+    package struct HorizonLanes: Sendable {
+        package var working: [Hit]
+        package var episodic: [Hit]
+        package var durable: [Hit]
+        package var identity: Identity
+        package var workingExecution: MemoryOrchestrator.RecallExecution?
+        package var durableExecution: MemoryOrchestrator.RecallExecution?
     }
 
     package static func makeMemoryReference(
@@ -321,6 +347,25 @@ package enum LayeredRecall {
                 return hit.metadata[MemoryMetadataKeys.repo] == repo
             }
             return false
+        }
+    }
+
+    /// Ended virtual session stores eligible for the episodic lane.
+    /// Agent filtering applies only when a current session is in scope.
+    /// Reclaimed tombstones are excluded; callers still skip missing store files.
+    package static func episodicManifests(
+        from manifests: [BrokerSessionManifest],
+        currentSessionID: UUID?,
+        currentAgentID: String?
+    ) -> [BrokerSessionManifest] {
+        manifests.filter { manifest in
+            guard manifest.status == .ended else { return false }
+            guard manifest.reclaimedAtMs == nil else { return false }
+            if let currentSessionID, manifest.sessionID == currentSessionID { return false }
+            if currentSessionID != nil, let currentAgentID, manifest.agentID != currentAgentID {
+                return false
+            }
+            return true
         }
     }
 
@@ -543,10 +588,13 @@ package enum LayeredRecall {
         return items.filter { allowed.contains($0.frameId) }
     }
 
-    package static func recall(
+    package static func fetchLanes(
         request: RecallRequest,
-        stores: Stores
-    ) async throws -> RecallResult {
+        stores: Stores,
+        horizons: HorizonSet = [.working, .durable],
+        canonicalizeFrameIDs: Bool = false,
+        episodicTopK: Int = 2
+    ) async throws -> HorizonLanes {
         let working: WorkingLane? = request.sessionID.flatMap { stores.workingLane($0) }
         let inferred = stores.inferWriteScope(request.sessionID, request.clientCWD)
         let identity = resolveIdentity(
@@ -557,7 +605,7 @@ package enum LayeredRecall {
             inferred: inferred
         )
 
-        let retrievalTopK = Self.retrievalTopK(requested: request.searchTopK, scope: request.scope)
+        let topK = max(1, request.searchTopK)
         let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
             base: request.frameFilter,
             scope: request.scope,
@@ -566,13 +614,13 @@ package enum LayeredRecall {
 
         var sessionHits: [Hit] = []
         var sessionExecution: MemoryOrchestrator.RecallExecution?
-        if let working {
+        if horizons.contains(.working), let working {
             let execution = try await working.memory.recallExecution(
                 query: request.query,
                 mode: request.mode,
                 frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
-                topK: retrievalTopK
+                topK: topK
             )
             sessionExecution = execution
             sessionHits = execution.context.items.map {
@@ -584,7 +632,7 @@ package enum LayeredRecall {
                         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
                         return lhs.frameId > rhs.frameId
                     }
-                sessionHits = documents.prefix(retrievalTopK).map { document in
+                sessionHits = documents.prefix(topK).map { document in
                     Hit(
                         reference: makeMemoryReference(
                             .working,
@@ -615,17 +663,20 @@ package enum LayeredRecall {
                     return copy
                 }
             }
+            if canonicalizeFrameIDs {
+                sessionHits = await canonicalizeHits(sessionHits, memory: working.memory, stores: stores)
+            }
         }
 
         var durableHits: [Hit] = []
         var durableExecution: MemoryOrchestrator.RecallExecution?
-        if request.scope != .session {
+        if request.scope != .session, horizons.contains(.durable) {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
                 mode: request.mode,
                 frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
-                topK: retrievalTopK
+                topK: topK
             )
             durableExecution = execution
             durableHits = execution.context.items.map {
@@ -640,20 +691,67 @@ package enum LayeredRecall {
                     mode: request.mode
                 )
             }
+            if canonicalizeFrameIDs {
+                durableHits = await canonicalizeHits(
+                    durableHits,
+                    memory: stores.longTermMemory,
+                    stores: stores
+                )
+            }
         }
+
+        var episodicHits: [Hit] = []
+        if horizons.contains(.episodic) {
+            let selected = onDiskEpisodicManifests(
+                episodicManifests(
+                    from: try stores.endedManifests(),
+                    currentSessionID: request.sessionID,
+                    currentAgentID: working?.agentID
+                )
+            )
+            for manifest in selected {
+                let hits = try await stores.recallEndedSession(
+                    manifest,
+                    request.query,
+                    request.mode ?? .hybrid(),
+                    max(1, episodicTopK),
+                    scopedFrameFilter
+                )
+                episodicHits.append(contentsOf: hits)
+            }
+        }
+
+        return HorizonLanes(
+            working: sessionHits,
+            episodic: episodicHits,
+            durable: durableHits,
+            identity: identity,
+            workingExecution: sessionExecution,
+            durableExecution: durableExecution
+        )
+    }
+
+    package static func recall(
+        request: RecallRequest,
+        stores: Stores
+    ) async throws -> RecallResult {
+        var fetchRequest = request
+        fetchRequest.searchTopK = retrievalTopK(requested: request.searchTopK, scope: request.scope)
+        let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
+        let identity = lanes.identity
 
         let merged: [Hit]
         if request.scope == .session {
-            merged = Array(sessionHits.prefix(request.limit))
+            merged = Array(lanes.working.prefix(request.limit))
         } else if request.scope == .project {
             // Filter before merge so foreign ranks cannot consume the result budget.
             let scopedSession = Self.filterHitsByProject(
-                sessionHits,
+                lanes.working,
                 project: identity.project,
                 repo: identity.repo
             )
             let scopedDurable = Self.filterHitsByProject(
-                durableHits,
+                lanes.durable,
                 project: identity.project,
                 repo: identity.repo
             )
@@ -664,14 +762,14 @@ package enum LayeredRecall {
             )
         } else {
             merged = mergeHits(
-                sessionHits: sessionHits,
-                durableHits: durableHits,
+                sessionHits: lanes.working,
+                durableHits: lanes.durable,
                 limit: request.limit
             )
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
-        let primary = sessionExecution ?? durableExecution
+        let primary = lanes.workingExecution ?? lanes.durableExecution
 
         return RecallResult(
             hits: selected.hits,
@@ -770,19 +868,15 @@ package enum LayeredRecall {
         }
 
         if request.horizons.contains(.episodic) {
-            let manifests = try stores.endedManifests()
-            let scopedManifests = manifests
-                .filter { manifest in
-                    guard manifest.status == .ended else { return false }
-                    guard manifest.reclaimedAtMs == nil else { return false }
-                    guard FileManager.default.fileExists(atPath: manifest.storePath) else { return false }
-                    if let sessionID = request.sessionID, manifest.sessionID == sessionID { return false }
-                    if let current = request.sessionID, let active = stores.workingLane(current) {
-                        if let agentID = active.agentID, manifest.agentID != agentID { return false }
-                    }
-                    return true
-                }
-                .prefix(6)
+            let currentAgentID = request.sessionID.flatMap { stores.workingLane($0)?.agentID }
+            let scopedManifests = onDiskEpisodicManifests(
+                episodicManifests(
+                    from: try stores.endedManifests(),
+                    currentSessionID: request.sessionID,
+                    currentAgentID: currentAgentID
+                )
+            )
+            .prefix(6)
 
             for manifest in scopedManifests {
                 let laneHits = try await stores.searchEndedSession(
@@ -836,5 +930,33 @@ package enum LayeredRecall {
                 return lhs.reference < rhs.reference
             }.prefix(request.topK)
         )
+    }
+
+    private static func onDiskEpisodicManifests(
+        _ manifests: [BrokerSessionManifest]
+    ) -> [BrokerSessionManifest] {
+        manifests.filter { FileManager.default.fileExists(atPath: $0.storePath) }
+    }
+
+    private static func canonicalizeHits(
+        _ hits: [Hit],
+        memory: MemoryOrchestrator,
+        stores: Stores
+    ) async -> [Hit] {
+        var canonicalized: [Hit] = []
+        canonicalized.reserveCapacity(hits.count)
+        for hit in hits {
+            var copy = hit
+            if let canonical = await stores.canonicalFrameID(hit.frameID, memory) {
+                copy.frameID = canonical
+                copy.reference = makeMemoryReference(
+                    hit.horizon,
+                    sessionID: hit.sessionID,
+                    frameID: canonical
+                )
+            }
+            canonicalized.append(copy)
+        }
+        return canonicalized
     }
 }
