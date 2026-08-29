@@ -1073,7 +1073,9 @@ package extension MemoryOrchestrator {
             sourceURL,
             withItemAt: candidateURL,
             backupItemName: backupName,
-            options: []
+            // Keep the prior live store until finalization verifies the
+            // published candidate; rollback relies on this copy.
+            options: [.withoutDeletingBackupItem]
         )
 
         let backupURL = sourceURL.deletingLastPathComponent().appendingPathComponent(backupName)
