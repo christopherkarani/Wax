@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 @Test
 func accessFrequencyScoringIsEnabledByDefaultAtPublicConfig() {
@@ -188,11 +189,7 @@ func accessFrequencyStatsPersistAndReloadAtOrchestratorSeam() async throws {
 
         let memory = try await MemoryOrchestrator(at: url, config: config)
         let remembered = try await memory.remember("access-frequency-persistence-token")
-        _ = try await memory.search(
-            query: "access-frequency-persistence-token",
-            mode: .textOnly,
-            topK: 1
-        )
+        await memory.recordAccess(frameId: remembered.frameId)
         try await memory.flush()
         try await memory.close()
 
@@ -212,23 +209,16 @@ func accessFrequencyOverlappingFlushesPublishNewestRevision() async throws {
 
         let memory = try await MemoryOrchestrator(at: url, config: config)
         let remembered = try await memory.remember("access-frequency-overlap-token")
-        _ = try await memory.search(
-            query: "access-frequency-overlap-token",
-            mode: .textOnly,
-            topK: 1
-        )
+        await memory.recordAccess(frameId: remembered.frameId)
 
         // Hold the first snapshot after it has been captured. The second
-        // search creates a newer revision while the first flush is suspended;
-        // clearing the hold lets the second flush race the older continuation.
+        // explicit use creates a newer revision while the first flush is
+        // suspended; clearing the hold lets the second flush race the older
+        // continuation.
         await memory.setAccessStatsPersistenceHoldForTesting(.milliseconds(250))
         let firstFlush = Task { try await memory.flush() }
         try await Task.sleep(for: .milliseconds(40))
-        _ = try await memory.search(
-            query: "access-frequency-overlap-token",
-            mode: .textOnly,
-            topK: 1
-        )
+        await memory.recordAccess(frameId: remembered.frameId)
         await memory.setAccessStatsPersistenceHoldForTesting(nil)
         let secondFlush = Task { try await memory.flush() }
 
@@ -240,6 +230,106 @@ func accessFrequencyOverlappingFlushesPublishNewestRevision() async throws {
         let stats = await reopened.accessStatsSnapshot()
         #expect(stats[remembered.frameId]?.accessCount == 2)
         try await reopened.close()
+    }
+}
+
+@Test
+func accessFrequencyRecallDoesNotRecordOrPersistAccessStats() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.rag.deterministicNowMs = 1_700_000_000_000
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember("access-frequency-recall-nonmutating-token")
+        try await memory.flush()
+
+        let recall1 = try await memory.recall(query: "access-frequency-recall-nonmutating-token")
+        let recall2 = try await memory.recall(query: "access-frequency-recall-nonmutating-token")
+        #expect(recall1 == recall2)
+        #expect(await memory.accessStatsSnapshot().isEmpty)
+
+        _ = try await memory.search(
+            query: "access-frequency-recall-nonmutating-token",
+            mode: .textOnly,
+            topK: 1
+        )
+        try await memory.flush()
+        #expect(await memory.accessStatsSnapshot().isEmpty)
+        try await memory.close()
+
+        let wax = try await Wax.open(at: url)
+        let metas = await wax.frameMetas()
+        #expect(metas.contains { $0.id == remembered.frameId && $0.role == .document })
+        #expect(!metas.contains { $0.kind == "wax.internal.access_stats" })
+        #expect(metas.filter { $0.role == .document }.count == 1)
+        try await wax.close()
+    }
+}
+
+@Test
+func accessFrequencyExplicitUseChangesLaterSearchWithoutMutatingThatSearch() async throws {
+    try await TempFiles.withTempFile { url in
+        let nowMs: Int64 = 1_700_000_000_000
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.rag.deterministicNowMs = nowMs
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember("access-frequency-explicit-use-token")
+        try await memory.flush()
+
+        let beforeUse = try await memory.search(
+            query: "access-frequency-explicit-use-token",
+            mode: .textOnly,
+            topK: 1
+        )
+        #expect(beforeUse.allSatisfy { !$0.explanations.contains("recently used") })
+
+        await memory.recordAccess(frameId: remembered.frameId)
+        let afterUse = try await memory.search(
+            query: "access-frequency-explicit-use-token",
+            mode: .textOnly,
+            topK: 1
+        )
+        let afterUseAgain = try await memory.search(
+            query: "access-frequency-explicit-use-token",
+            mode: .textOnly,
+            topK: 1
+        )
+        #expect(afterUse.contains { $0.explanations.contains("recently used") })
+        #expect(afterUse.map(\.score) == afterUseAgain.map(\.score))
+        #expect(afterUse.map(\.explanations) == afterUseAgain.map(\.explanations))
+        #expect(await memory.accessStatsSnapshot()[remembered.frameId]?.accessCount == 1)
+        try await memory.close()
+    }
+}
+
+@Test
+func accessFrequencyChunkHitsInheritDocumentAccessStats() async throws {
+    try await TempFiles.withTempFile { url in
+        let nowMs: Int64 = 1_700_000_000_000
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.rag.deterministicNowMs = nowMs
+        config.chunking = .tokenCount(targetTokens: 4, overlapTokens: 0)
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember(
+            "access-frequency chunk inherit document ranking token sequence"
+        )
+        try await memory.flush()
+        await memory.recordAccess(frameId: remembered.frameId)
+
+        let hits = try await memory.search(
+            query: "access-frequency chunk inherit",
+            mode: .textOnly,
+            topK: 5
+        )
+        #expect(!hits.isEmpty)
+        #expect(hits.contains { $0.frameId != remembered.frameId })
+        #expect(hits.contains { $0.explanations.contains("recently used") })
+        try await memory.close()
     }
 }
 

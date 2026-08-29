@@ -66,7 +66,11 @@ package struct FastRAGContextBuilder: Sendable {
             ?? scoringMetadata.values.map(\.timestamp).max()
             ?? 0
         let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
-            await accessStatsManager.getStats(frameIds: response.results.map { $0.frameId })
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: response.results.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
         } else {
             [:]
         }

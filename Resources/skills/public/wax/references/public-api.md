@@ -24,7 +24,7 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
 
 ### Memory.EmbeddingSource
 

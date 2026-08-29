@@ -1176,9 +1176,9 @@ package actor MemoryOrchestrator {
         )
     }
 
-    /// Shared recall implementation: builds the RAG context and records frame accesses.
-    /// All package recall() overloads funnel through here so that `ragConfigForRecall()` and
-    /// `recordAccessesIfEnabled` cannot diverge between overloads in future edits.
+    /// Shared recall implementation: builds the RAG context from the access-stat
+    /// snapshot taken before this call. Recall does not record access, so identical
+    /// queries stay byte-identical. Stats accrue from explicit get/promote.
     private func buildRecallContext(
         query: String,
         embedding: [Float]?,
@@ -1209,7 +1209,11 @@ package actor MemoryOrchestrator {
             config: recallConfig
         )
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: context.items.map(\.frameId))
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: context.items.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
         } else {
             [:]
         }
@@ -1226,7 +1230,6 @@ package actor MemoryOrchestrator {
             }
             return item
         }
-        await recordAccessesIfEnabled(frameIds: context.items.map(\.frameId), nowMs: recallNowMs)
         return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
@@ -1322,7 +1325,11 @@ package actor MemoryOrchestrator {
 
         let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await accessStatsManager.getStats(frameIds: response.results.map(\.frameId))
+            await AccessFrequencyRanker.statsForRanking(
+                frameIds: response.results.map(\.frameId),
+                manager: accessStatsManager,
+                wax: wax
+            )
         } else {
             [:]
         }
@@ -1350,7 +1357,6 @@ package actor MemoryOrchestrator {
                 explanations: dedupedExplanations(result.explanations + accessReasons)
             )
         }
-        await recordAccessesIfEnabled(frameIds: hits.map(\.frameId), nowMs: searchNowMs)
         return SearchExecution(
             hits: hits,
             requestedMode: mode,
@@ -1463,6 +1469,13 @@ package actor MemoryOrchestrator {
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
         await accessStatsManager.snapshot()
+    }
+
+    /// Records an explicit use of a frame (get/promote). Search and recall rank
+    /// against the stored snapshot but do not mutate it.
+    package func recordAccess(frameId: UInt64) async {
+        let nowMs = config.rag.deterministicNowMs ?? nowProvider()
+        await recordAccessesIfEnabled(frameIds: [frameId], nowMs: nowMs)
     }
 
     private func dedupedExplanations(_ reasons: [String]) -> [String] {
@@ -2635,7 +2648,7 @@ package actor MemoryOrchestrator {
                 )
             }
         }
-        // A search may have recorded newer accesses while the WAL writes
+        // A get/promote may have recorded newer accesses while the WAL writes
         // above awaited. Only acknowledge the revision we actually persisted;
         // a newer revision remains dirty for the next flush.
         _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)

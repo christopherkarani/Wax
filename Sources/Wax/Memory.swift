@@ -6,6 +6,10 @@ public actor Memory {
         public var enableTextSearch: Bool
         public var enableVectorSearch: Bool
         public var enableStructuredMemory: Bool
+        /// When true (default), retrieval ranking applies a bounded offset from
+        /// stored access stats. Search and recall do not record access; stats
+        /// accrue from explicit get/promote. Access stats persist as a system
+        /// frame, not a user-visible content frame.
         public var enableAccessStatsScoring: Bool
         public var enableAsyncEnrichment: Bool
         public var ingestConcurrency: Int

@@ -114,13 +114,14 @@ struct DeterministicRecallTests {
     @Test
     func injectedNowDrivesAccessRecencyExplanationWithinOneRequest() async throws {
         try await TempFiles.withTempFile { url in
+            let remembered: MemoryOrchestrator.RememberResult
             do {
                 let ingest = try await MemoryOrchestrator(
                     at: url,
                     config: TestHelpers.defaultMemoryConfig(),
                     embedder: DeterministicTextEmbedder()
                 )
-                try await ingest.remember("Waxfile delta tracks rollout status across regions.")
+                remembered = try await ingest.remember("Waxfile delta tracks rollout status across regions.")
                 try await ingest.flush()
                 try await ingest.close()
             }
@@ -144,8 +145,9 @@ struct DeterministicRecallTests {
                 )
             }
 
-            // First pass records access stats stamped with the injected clock.
-            _ = try await runSearch()
+            // Explicit use stamps access stats with the injected clock. Search
+            // itself does not record, so consecutive searches stay deterministic.
+            await orchestrator.recordAccess(frameId: remembered.frameId)
 
             // Same injected now: the previous access is <24h old, so the documented
             // "recently used" reason appears.

@@ -744,6 +744,7 @@ extension AgentBrokerService {
             content = sourceDocument.text
             sourceMetadata = sourceDocument.metadata
             sourceFrameId = sourceDocument.frameId
+            await session.memory.recordAccess(frameId: sourceDocument.frameId)
         }
 
         let baseMetadata = command.metadata.merging(sourceMetadata) { current, _ in current }
@@ -1922,6 +1923,7 @@ extension AgentBrokerService {
         switch reference.horizon {
         case .durable:
             let document = try await requireDocument(frameID: reference.frameID, memory: longTermMemory)
+            await longTermMemory.recordAccess(frameId: document.frameId)
             return LayeredMemoryHit(
                 reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: reference.frameID),
                 horizon: .durable,
@@ -1943,6 +1945,7 @@ extension AgentBrokerService {
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
             let loader: (MemoryOrchestrator) async throws -> LayeredMemoryHit = { memory in
                 let document = try await self.requireDocument(frameID: reference.frameID, memory: memory)
+                await memory.recordAccess(frameId: document.frameId)
                 return LayeredMemoryHit(
                     reference: Self.makeMemoryReference(reference.horizon, sessionID: sessionID, frameID: reference.frameID),
                     horizon: reference.horizon,

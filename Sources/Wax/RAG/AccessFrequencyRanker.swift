@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 /// Bounded access-aware reranking for already-retrieved candidates.
 ///
@@ -78,6 +79,30 @@ package enum AccessFrequencyRanker {
         combined.reserveCapacity(results.count)
         combined.append(contentsOf: results.dropFirst(cappedWindow))
         return combined
+    }
+
+    /// Maps stored access stats onto search/recall hits. Chunk hits inherit a
+    /// parent document's stats so explicit get/promote of a document can still
+    /// rerank later retrieval of its chunks.
+    package static func statsForRanking(
+        frameIds: [UInt64],
+        manager: AccessStatsManager,
+        wax: Wax
+    ) async -> [UInt64: FrameAccessStats] {
+        let direct = await manager.getStats(frameIds: frameIds)
+        let missing = frameIds.filter { direct[$0] == nil }
+        guard !missing.isEmpty else { return direct }
+        let metas = await wax.frameMetas(frameIds: missing)
+        let parentIds = metas.values.compactMap(\.parentId)
+        guard !parentIds.isEmpty else { return direct }
+        let parentStats = await manager.getStats(frameIds: parentIds)
+        var resolved = direct
+        for frameId in missing {
+            if let parentId = metas[frameId]?.parentId, let inherited = parentStats[parentId] {
+                resolved[frameId] = inherited
+            }
+        }
+        return resolved
     }
 
     /// Computes a bounded, decay-aware adjustment from one access record.
