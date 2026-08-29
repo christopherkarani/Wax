@@ -411,12 +411,18 @@ package actor MemoryOrchestrator {
                 break
             }
         }
-        if let identity = embedder?.identity,
-           let binding = existingMemoryBinding,
-           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
-            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
-            try? await wax.close()
-            throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+        if let binding = existingMemoryBinding, !binding.isEmpty, let embedder {
+            guard let identity = embedder.identity else {
+                try? await wax.close()
+                throw WaxError.io(
+                    "memory binding requires an identifiable embedder provider"
+                )
+            }
+            guard MemoryBindingCompatibility.isCompatible(binding, with: identity) else {
+                let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+                try? await wax.close()
+                throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+            }
         }
 
         self.config = resolvedConfig
@@ -2244,12 +2250,16 @@ package actor MemoryOrchestrator {
         }
         let binding = await wax.memoryBinding()
         guard !isClosed else { return }
-        if let identity = provider.identity,
-           let binding,
-           !MemoryBindingCompatibility.isCompatible(binding, with: identity) {
-            let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
-            markUnavailable("memory binding mismatch with embedder identity (\(mismatch))")
-            return
+        if let binding, !binding.isEmpty {
+            guard let identity = provider.identity else {
+                markUnavailable("memory binding requires an identifiable embedder provider")
+                return
+            }
+            guard MemoryBindingCompatibility.isCompatible(binding, with: identity) else {
+                let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+                markUnavailable("memory binding mismatch with embedder identity (\(mismatch))")
+                return
+            }
         }
         if config.enableVectorSearch {
             do {

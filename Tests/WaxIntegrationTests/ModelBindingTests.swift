@@ -35,6 +35,17 @@ private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
     }
 }
 
+private struct UnidentifiedBindingTestEmbedder: EmbeddingProvider, Sendable {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        return Array(repeating: 0.25, count: dimensions)
+    }
+}
+
 @Test func modelBindingIsPersistedOnFirstEmbeddingIngest() async throws {
     try await TempFiles.withTempFile { url in
         var config = TestHelpers.defaultMemoryConfig(vector: true)
@@ -79,6 +90,27 @@ private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
             }
         } catch {
             #expect(Bool(false))
+        }
+    }
+}
+
+@Test func modelBindingMissingProviderIdentityFailsClosedOnOpen() async throws {
+    try await TempFiles.withTempFile { url in
+        let writerEmbedder = BindingTestEmbedder(provider: "Local", model: "v1", dimensions: 4, normalized: true)
+        var config = TestHelpers.defaultMemoryConfig(vector: true)
+        config.chunking = .tokenCount(targetTokens: 8, overlapTokens: 0)
+
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: writerEmbedder)
+        try await writer.remember("Persist vector data before reopening without an identity.")
+        try await writer.flush()
+        try await writer.close()
+
+        await #expect(throws: WaxError.self) {
+            _ = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: UnidentifiedBindingTestEmbedder()
+            )
         }
     }
 }

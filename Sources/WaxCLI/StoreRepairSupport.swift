@@ -320,11 +320,22 @@ enum StoreRepairSupport {
     }
 
     static func finalizePromotion(_ promotion: Promotion) throws {
-        if let backup = promotion.backup {
-            guard FileManager.default.fileExists(atPath: backup.path) else { return }
-            try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
-            try FileManager.default.removeItem(at: backup)
+        guard let backup = promotion.backup else { return }
+        guard FileManager.default.fileExists(atPath: backup.path) else { return }
+
+        // Retain the rollback copy unless the destination is still the exact
+        // inode that was verified and published by this promotion. A pathname
+        // race after verification must fail closed rather than deleting the
+        // only known-good prior output.
+        guard !isSymbolicLink(at: promotion.destination),
+              let expected = promotion.publishedIdentity,
+              identity(of: promotion.destination) == expected else {
+            throw CLIError(
+                "repair promotion destination changed before backup cleanup"
+            )
         }
+        try ensureRegularFileIfPresent(at: backup, label: "promotion backup", command: "store repair")
+        try FileManager.default.removeItem(at: backup)
     }
 
     static func rollbackPromotion(_ promotion: Promotion) throws {

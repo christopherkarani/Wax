@@ -262,7 +262,20 @@ package extension MemoryOrchestrator {
             destinationWalSize / 2
         )
         do {
-            for frame in sourceFrames {
+            for (index, frame) in sourceFrames.enumerated() {
+                if shouldBatchFrameWrites {
+                    let pendingBytes = (await rewritten.walStats()).pendingBytes
+                    let nextPayloadSize = frameWalBytes.payloadSizes[index]
+                    if pendingBytes > 0,
+                       !(await rewritten.canAppendWALPayload(payloadSize: nextPayloadSize)) {
+                        // Preflight the complete WAL record (including wrap
+                        // padding) before appending it. A post-write
+                        // threshold check is too late for a large metadata
+                        // record that follows a partially full batch.
+                        try await rewritten.commit()
+                    }
+                }
+
                 let isLiveFrame = frame.status == .active && frame.supersededBy == nil
                 let content: Data
                 let compression: CanonicalEncoding
@@ -333,14 +346,14 @@ package extension MemoryOrchestrator {
                 overwrite: options.overwriteDestination
             )
             try await Self.verifyRewriteOutput(at: destinationURL, deep: options.verifyDeep)
+            if let promotion {
+                try Self.finalizeRewritePromotion(promotion)
+            }
         } catch {
             if let promotion {
                 try? Self.rollbackRewritePromotion(promotion)
             }
             throw error
-        }
-        if let backup = promotion?.backupURL {
-            try? fileManager.removeItem(at: backup)
         }
 
         let destinationSizes = try Self.fileSizes(at: destinationURL)
@@ -683,10 +696,12 @@ package extension MemoryOrchestrator {
     private static func rewriteFrameWalBytes(
         frames: [FrameMeta],
         dropNonLivePayloads: Bool
-    ) throws -> (largest: UInt64, total: UInt64) {
+    ) throws -> (largest: UInt64, total: UInt64, payloadSizes: [Int]) {
         let zeroChecksum = Data(repeating: 0, count: 32)
         var largest: UInt64 = 0
         var total: UInt64 = 0
+        var payloadSizes: [Int] = []
+        payloadSizes.reserveCapacity(frames.count)
 
         for frame in frames {
             let isLiveFrame = frame.status == .active && frame.supersededBy == nil
@@ -709,6 +724,15 @@ package extension MemoryOrchestrator {
                 storedChecksum: zeroChecksum
             )
             let recordBytes = try WALSizing.putFrameRecordBytes(put)
+            let walHeaderSize = UInt64(Constants.walRecordHeaderSize)
+            guard recordBytes >= walHeaderSize,
+                  recordBytes - walHeaderSize <= UInt64(Int.max) else {
+                throw WaxError.capacityExceeded(
+                    limit: UInt64(Int.max),
+                    requested: recordBytes
+                )
+            }
+            payloadSizes.append(Int(recordBytes - walHeaderSize))
             largest = max(largest, recordBytes)
             let (nextTotal, overflowed) = total.addingReportingOverflow(recordBytes)
             total = overflowed ? UInt64.max : nextTotal
@@ -719,7 +743,8 @@ package extension MemoryOrchestrator {
         let (conservativeTotal, overflowed) = total.addingReportingOverflow(perFrameOverhead.partialValue)
         return (
             largest: largest,
-            total: overflowed || perFrameOverhead.overflow ? UInt64.max : conservativeTotal
+            total: overflowed || perFrameOverhead.overflow ? UInt64.max : conservativeTotal,
+            payloadSizes: payloadSizes
         )
     }
 
@@ -832,6 +857,28 @@ package extension MemoryOrchestrator {
             }
             try fileManager.moveItem(at: backupURL, to: promotion.destinationURL)
         }
+    }
+
+    private static func finalizeRewritePromotion(_ promotion: RewritePromotion) throws {
+        guard let backupURL = promotion.backupURL else { return }
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: backupURL.path) else { return }
+
+        // Keep the rollback copy until the published destination is still the
+        // inode that passed verification. If another writer replaced the
+        // pathname after promotion, fail closed and retain the backup for
+        // operator recovery.
+        guard isRegularFile(at: promotion.destinationURL),
+              let expected = promotion.publishedIdentity,
+              fileIdentity(at: promotion.destinationURL) == expected else {
+            throw WaxError.io(
+                "rewriteLiveSet promotion destination changed before backup cleanup"
+            )
+        }
+        guard isRegularFile(at: backupURL) else {
+            throw WaxError.io("rewriteLiveSet promotion backup is no longer a regular file")
+        }
+        try fileManager.removeItem(at: backupURL)
     }
 
     private static func verifyRewriteOutput(at url: URL, deep: Bool) async throws {

@@ -210,6 +210,58 @@ func rewriteLiveSetBatchesWhenAggregateFrameWalExceedsSourceRing() async throws 
 }
 
 @Test
+func rewriteLiveSetPreflightsLargeNextFrameBeforeAppending() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wax")
+        defer { try? FileManager.default.removeItem(at: destinationURL) }
+
+        let sourceWalSize = 8 * 1024 * 1024
+        let firstMetadata = String(repeating: "a", count: 3 * 1024 * 1024)
+        let secondMetadata = String(repeating: "b", count: 4 * 1024 * 1024)
+        let thirdMetadata = String(repeating: "c", count: 2 * 1024 * 1024)
+        let wax = try await Wax.create(at: sourceURL, walSize: UInt64(sourceWalSize))
+        _ = try await wax.put(
+            Data("first large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "first large metadata frame",
+                metadata: Metadata(["large": firstMetadata])
+            )
+        )
+        try await wax.commit()
+        _ = try await wax.put(
+            Data("second large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "second large metadata frame",
+                metadata: Metadata(["large": secondMetadata])
+            )
+        )
+        try await wax.commit()
+        _ = try await wax.put(
+            Data("third large metadata frame".utf8),
+            options: FrameMetaSubset(
+                searchText: "third large metadata frame",
+                metadata: Metadata(["large": thirdMetadata])
+            )
+        )
+        try await wax.commit()
+        try await wax.close()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let orchestrator = try await MemoryOrchestrator(at: sourceURL, config: config)
+        _ = try await orchestrator.rewriteLiveSet(to: destinationURL)
+        try await orchestrator.close()
+
+        let rewritten = try await Wax.open(at: destinationURL)
+        #expect((await rewritten.frameMetas()).count == 3)
+        try await rewritten.verify(deep: true)
+        try await rewritten.close()
+    }
+}
+
+@Test
 func rewriteLiveSetChoosesWalSizeFromPayloadNotSourceRing() async throws {
     try await TempFiles.withTempFile { sourceURL in
         let destinationURL = FileManager.default.temporaryDirectory

@@ -108,8 +108,9 @@ private func seedUniqueTokenCorpus(
             command: "remember",
             arguments: [
                 "content": .string(text),
+                "session_id": .string(sessionIDString),
                 "memory_type": .string("task_state"),
-                "durability": .string("durable"),
+                "durability": .string("working"),
                 "project": .string("ishi-qa"),
                 "repo": .string("ishi-qa"),
             ]
