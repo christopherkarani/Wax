@@ -203,32 +203,33 @@ func sessionOpenWithoutRecallQueryDoesNotWaitForLoadingEmbedder() async throws {
         readiness: readiness,
         factoryOverride: factory
     )
-    defer {
-        Task {
-            await gate.open()
-            try? await service.close()
-        }
+    do {
+        let started = ContinuousClock.now
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "rv",
+                    "agent_id": "dx-open-nowait",
+                    "run_id": "dx-open-nowait-run",
+                ]
+            ),
+            broker: service
+        )
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed < .seconds(5))
+        #expect(result.isError != true)
+        let payload = try parseDXJSON(in: result)
+        #expect((payload["session_id"] as? String)?.isEmpty == false)
+        #expect(payload["recall"] == nil)
+        #expect(await gate.isClosed)
+        await gate.open()
+        try await service.close()
+    } catch {
+        await gate.open()
+        try? await service.close()
+        throw error
     }
-
-    let started = ContinuousClock.now
-    let result = await WaxMCPTools.handleCall(
-        params: .init(
-            name: "session_open",
-            arguments: [
-                "project": "rv",
-                "agent_id": "dx-open-nowait",
-                "run_id": "dx-open-nowait-run",
-            ]
-        ),
-        broker: service
-    )
-    let elapsed = ContinuousClock.now - started
-    #expect(elapsed < .seconds(5))
-    #expect(result.isError != true)
-    let payload = try parseDXJSON(in: result)
-    #expect((payload["session_id"] as? String)?.isEmpty == false)
-    #expect(payload["recall"] == nil)
-    #expect(await gate.isClosed)
 }
 
 @Test
@@ -255,36 +256,36 @@ func sessionOpenRecallQueryWaitsForLoadingEmbedderThenUsesHybrid() async throws 
         readiness: readiness,
         factoryOverride: factory
     )
-    defer {
-        Task {
-            await gate.open()
-            try? await service.close()
-        }
+    do {
+        async let opened = WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "rv",
+                    "agent_id": "dx-open-wait",
+                    "run_id": "dx-open-wait-run",
+                    "recall_query": "session open nested hybrid recall",
+                ]
+            ),
+            broker: service
+        )
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(await gate.isClosed)
+        await gate.open()
+
+        let result = await opened
+        #expect(result.isError != true)
+        let payload = try parseDXJSON(in: result)
+        let recall = try #require(payload["recall"] as? [String: Any])
+        #expect((recall["requested_mode"] as? String)?.hasPrefix("hybrid") == true)
+        #expect((recall["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
+        #expect((recall["query_embedding_state"] as? String) == "available")
+        try await service.close()
+    } catch {
+        await gate.open()
+        try? await service.close()
+        throw error
     }
-
-    async let opened = WaxMCPTools.handleCall(
-        params: .init(
-            name: "session_open",
-            arguments: [
-                "project": "rv",
-                "agent_id": "dx-open-wait",
-                "run_id": "dx-open-wait-run",
-                "recall_query": "session open nested hybrid recall",
-            ]
-        ),
-        broker: service
-    )
-    try await Task.sleep(for: .milliseconds(80))
-    #expect(await gate.isClosed)
-    await gate.open()
-
-    let result = await opened
-    #expect(result.isError != true)
-    let payload = try parseDXJSON(in: result)
-    let recall = try #require(payload["recall"] as? [String: Any])
-    #expect((recall["requested_mode"] as? String)?.hasPrefix("hybrid") == true)
-    #expect((recall["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
-    #expect((recall["query_embedding_state"] as? String) == "available")
 }
 
 @Test
@@ -435,8 +436,10 @@ func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
     let memorySearchStart = try #require(source.range(of: "func memorySearch(_ command: BrokerCommand.MemorySearch)"))
     let recallBody = source[recallStart.lowerBound..<searchStart.lowerBound]
     let searchBody = source[searchStart.lowerBound..<memorySearchStart.lowerBound]
-    #expect(!recallBody.contains("awaitQueryEmbedderIfNeeded"))
-    #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded"))
+    #expect(!recallBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
+    #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
+    #expect(recallBody.contains("awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))"))
+    #expect(searchBody.contains("awaitQueryEmbedderIfNeeded(memory: memory)"))
     #expect(source.contains("isQueryEmbedderWaitRequest(request)"))
 }
 

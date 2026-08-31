@@ -482,6 +482,14 @@ extension AgentBrokerService {
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
+        // Session stores attach on their own follow task. After MiniLM is ready,
+        // wait for that attach here so a session-scoped first recall is hybrid.
+        // Skip when long-term is still loading so a timeout does not become a
+        // second 30s hold on commandMutex.
+        if let sessionID = parsedFilters.sessionId,
+           await longTermMemory.isQueryEmbedderReady() {
+            await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
+        }
         let result = try await LayeredRecall.recall(request: request, stores: layeredRecallStores())
 
         var lines: [String] = []
@@ -617,6 +625,9 @@ extension AgentBrokerService {
         let topK = command.topK
         let parsedFilters = command.filters
         let memory = try await memory(for: parsedFilters.sessionId)
+        if parsedFilters.sessionId != nil, await longTermMemory.isQueryEmbedderReady() {
+            await awaitQueryEmbedderIfNeeded(memory: memory)
+        }
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
@@ -1366,6 +1377,11 @@ extension AgentBrokerService {
 
         var recallPayload: AgentBrokerValue?
         if let recallQuery, !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let sessionID,
+               let uuid = UUID(uuidString: sessionID),
+               await longTermMemory.isQueryEmbedderReady() {
+                await awaitQueryEmbedderIfNeeded(memory: try await memory(for: uuid))
+            }
             var recallArgs: [String: AgentBrokerValue] = [
                 "query": .string(recallQuery),
                 "scope": .string("project"),
