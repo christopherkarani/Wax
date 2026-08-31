@@ -127,6 +127,167 @@ func vectorOnlyWithoutEmbedderStillThrows() async throws {
 }
 
 @Test
+func retrievalDowngradeWarningMapsEmbeddingStates() {
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "text",
+            queryEmbeddingState: "timeout"
+        ) == "WARNING: hybrid requested, embedder timeout, used text"
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "text",
+            queryEmbeddingState: "circuit_open"
+        ) == "WARNING: hybrid requested, embedder circuit open, used text"
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "text",
+            queryEmbeddingState: "failed"
+        ) == "WARNING: hybrid requested, embedder failed, used text"
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "text",
+            queryEmbeddingState: "vector_disabled"
+        ) == "WARNING: hybrid requested, vector search disabled, used text"
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "text",
+            queryEmbeddingState: "no_embedder"
+        ) == "WARNING: hybrid requested, embedder missing, used text"
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "text",
+            effectiveMode: "text",
+            queryEmbeddingState: "no_embedder"
+        ) == nil
+    )
+    #expect(
+        AgentBrokerService.retrievalDowngradeWarning(
+            requestedMode: "hybrid(alpha=0.500)",
+            effectiveMode: "hybrid(alpha=0.500)",
+            queryEmbeddingState: "available"
+        ) == nil
+    )
+}
+
+@Test
+func sessionOpenWithoutRecallQueryDoesNotWaitForLoadingEmbedder() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-dx-open-nowait-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+
+    let gate = DXGate()
+    let readiness = EmbeddingReadiness()
+    let factory: @Sendable () async throws -> any EmbeddingProvider = {
+        await gate.wait()
+        return DXDeterministicEmbedder()
+    }
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "minilm",
+        requireVector: false,
+        readiness: readiness,
+        factoryOverride: factory
+    )
+    defer {
+        Task {
+            await gate.open()
+            try? await service.close()
+        }
+    }
+
+    let started = ContinuousClock.now
+    let result = await WaxMCPTools.handleCall(
+        params: .init(
+            name: "session_open",
+            arguments: [
+                "project": "rv",
+                "agent_id": "dx-open-nowait",
+                "run_id": "dx-open-nowait-run",
+            ]
+        ),
+        broker: service
+    )
+    let elapsed = ContinuousClock.now - started
+    #expect(elapsed < .seconds(5))
+    #expect(result.isError != true)
+    let payload = try parseDXJSON(in: result)
+    #expect((payload["session_id"] as? String)?.isEmpty == false)
+    #expect(payload["recall"] == nil)
+    #expect(await gate.isClosed)
+}
+
+@Test
+func sessionOpenRecallQueryWaitsForLoadingEmbedderThenUsesHybrid() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-dx-open-wait-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+
+    let gate = DXGate()
+    let readiness = EmbeddingReadiness()
+    let factory: @Sendable () async throws -> any EmbeddingProvider = {
+        await gate.wait()
+        return DXDeterministicEmbedder()
+    }
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: false,
+        embedderChoice: "minilm",
+        requireVector: false,
+        readiness: readiness,
+        factoryOverride: factory
+    )
+    defer {
+        Task {
+            await gate.open()
+            try? await service.close()
+        }
+    }
+
+    async let opened = WaxMCPTools.handleCall(
+        params: .init(
+            name: "session_open",
+            arguments: [
+                "project": "rv",
+                "agent_id": "dx-open-wait",
+                "run_id": "dx-open-wait-run",
+                "recall_query": "session open nested hybrid recall",
+            ]
+        ),
+        broker: service
+    )
+    try await Task.sleep(for: .milliseconds(80))
+    #expect(await gate.isClosed)
+    await gate.open()
+
+    let result = await opened
+    #expect(result.isError != true)
+    let payload = try parseDXJSON(in: result)
+    let recall = try #require(payload["recall"] as? [String: Any])
+    #expect((recall["requested_mode"] as? String)?.hasPrefix("hybrid") == true)
+    #expect((recall["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
+    #expect((recall["query_embedding_state"] as? String) == "available")
+}
+
+@Test
 func sessionOpenRecallQuerySurfacesDowngradeWarningAtTopLevel() async throws {
     try await withDXBroker(noEmbedder: true) { service, _ in
         let result = await WaxMCPTools.handleCall(
@@ -246,7 +407,7 @@ func omittedClientCwdRecallDoesNotBindProcessProjectIdentity() async throws {
 }
 
 @Test
-func injectClientCWDIfNeededDoesNotWriteProcessDirectory() throws {
+func waxMCPToolsDoesNotInjectProcessWorkingDirectoryAsCwd() throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -255,10 +416,28 @@ func injectClientCWDIfNeededDoesNotWriteProcessDirectory() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/WaxMCPServer/WaxMCPTools.swift"),
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "static func injectClientCWDIfNeeded"))
-    let end = try #require(source[start.upperBound...].range(of: "static func injectClientSessionIfNeeded"))
-    let body = source[start.lowerBound..<end.lowerBound]
-    #expect(!body.contains("FileManager.default.currentDirectoryPath"))
+    #expect(!source.contains("arguments[\"cwd\"] = .string(FileManager.default.currentDirectoryPath)"))
+    #expect(!source.contains("injectClientCWDIfNeeded"))
+}
+
+@Test
+func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        encoding: .utf8
+    )
+    let recallStart = try #require(source.range(of: "func recall(_ command: BrokerCommand.Recall)"))
+    let searchStart = try #require(source.range(of: "func search(_ command: BrokerCommand.Search)"))
+    let memorySearchStart = try #require(source.range(of: "func memorySearch(_ command: BrokerCommand.MemorySearch)"))
+    let recallBody = source[recallStart.lowerBound..<searchStart.lowerBound]
+    let searchBody = source[searchStart.lowerBound..<memorySearchStart.lowerBound]
+    #expect(!recallBody.contains("awaitQueryEmbedderIfNeeded"))
+    #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded"))
+    #expect(source.contains("isQueryEmbedderWaitRequest(request)"))
 }
 
 @Test

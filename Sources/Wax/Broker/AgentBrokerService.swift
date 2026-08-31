@@ -155,6 +155,8 @@ package actor AgentBrokerService {
         }
         // Wait for MiniLM outside commandMutex so a cold first recall does not
         // stall unrelated commands the way remember already uses rememberMutex.
+        // Do not wait again inside recall/search — a timeout here must not
+        // become a second 30s hold on the serialized path.
         if Self.isQueryEmbedderWaitRequest(request) {
             await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
         }
@@ -165,11 +167,20 @@ package actor AgentBrokerService {
     }
 
     private static func isQueryEmbedderWaitRequest(_ request: AgentBrokerRequest) -> Bool {
-        switch request.command {
-        case "recall", "search", "session_open":
-            true
+        guard let command = try? BrokerCommand.decode(
+            command: request.command,
+            arguments: request.arguments
+        ) else {
+            return false
+        }
+        switch command {
+        case .recall, .search:
+            return true
+        case .sessionOpen(let open):
+            let query = open.recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return !query.isEmpty
         default:
-            false
+            return false
         }
     }
 
@@ -471,10 +482,6 @@ extension AgentBrokerService {
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
-        await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
-        if let sessionID = parsedFilters.sessionId {
-            await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
-        }
         let result = try await LayeredRecall.recall(request: request, stores: layeredRecallStores())
 
         var lines: [String] = []
@@ -610,7 +617,6 @@ extension AgentBrokerService {
         let topK = command.topK
         let parsedFilters = command.filters
         let memory = try await memory(for: parsedFilters.sessionId)
-        await awaitQueryEmbedderIfNeeded(memory: memory)
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
@@ -1140,12 +1146,16 @@ extension AgentBrokerService {
         let usedText = effectiveMode == "text" || effectiveMode.hasPrefix("text")
         guard requestedHybrid, usedText else { return nil }
         let reason: String
-        switch queryEmbeddingState {
-        case "timeout":
+        switch RAGContext.QueryEmbeddingState(rawValue: queryEmbeddingState) {
+        case .timeout:
             reason = "embedder timeout"
-        case "circuit_open":
+        case .circuitOpen:
             reason = "embedder circuit open"
-        default:
+        case .failed:
+            reason = "embedder failed"
+        case .vectorDisabled:
+            reason = "vector search disabled"
+        case .noEmbedder, .notRequested, .available, .none:
             reason = "embedder missing"
         }
         return "WARNING: hybrid requested, \(reason), used text"
