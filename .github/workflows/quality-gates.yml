@@ -6,6 +6,16 @@ on:
     branches: [main]
 
 jobs:
+  public-repo-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Run public repository hygiene gate
+        run: bash Resources/scripts/quality/public_repo_hygiene.sh
+
   hermes-plugin:
     runs-on: ubuntu-latest
     steps:

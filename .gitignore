@@ -14,7 +14,7 @@ DerivedData/
 .wax-repo/
 *.profraw
 *.profdata
-.claude/agents/
+.claude/
 .vscode/
 .worktrees/
 *.d
@@ -29,6 +29,13 @@ output/
 .linux-scratch/
 .gemini/
 .sisyphus/
+.opencode/
+.pi/
+.ryk/
+.skynex/
+.qwen/
+.playwright-mcp/
+.grok/
 /memvid-main/
 /memvid/
 *.log
@@ -39,29 +46,33 @@ output/
 Resources/website/node_modules/
 Resources/website/.docusaurus/
 Resources/website/build/
+website/node_modules/
 *.xcresult
 
-# Internal tooling (not public-facing)
+# Internal / agent-only (not public-facing)
 CLAUDE.md
 AUDIT_REPORT.md
+CONTEXT.md
+WAX_TECHNICAL_ANALYSIS.md
 /skills/
-/scripts/
+spec/
 docs/plans/
 docs/product/
 docs/superpowers/
 docs/framework-audit-*.md
 Resources/docs/plans/
+Resources/docs/wax-mcp-reliability-plan.md
 Resources/skills/internal/
-WAX_TECHNICAL_ANALYSIS.md
 issue*_full.png
 issue*_snapshot.md
 *screenshot*.png
+Resources/docs/assets/wax-banner-*.png
+Resources/docs/assets/wax-github-banner.png
+Resources/docs/assets/wax-github-image.png
 Package.resolved
 **/Package.resolved
 .build-codex/
-.playwright-mcp/
-.qwen/
-.skynex/production-gate.json
-.skynex/audit.log
 Resources/npm/waxmcp/dist/
-.grok/
+Resources/npm/waxmcp/*.tgz
+npm/waxmcp/dist/
+*.tgz

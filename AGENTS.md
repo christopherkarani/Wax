@@ -14,7 +14,10 @@ Do not commit or track:
 - screenshots, issue snapshots, browser captures, or temporary debugging images
 - loose root-level analysis reports that are not part of the official docs
 - customer, investor, pricing, launch, or unreleased product planning material
-- `.grok/`, `Resources/npm/waxmcp/dist/`, `__pycache__/`, `*.pyc`
+- `.grok/`, `.ryk/`, `.skynex/`, `.pi/`, `.opencode/`, agent config dirs
+- `spec/`, `CONTEXT.md`, `AUDIT_REPORT.md`, internal reliability/execution plans
+- `Resources/npm/waxmcp/dist/`, `*.tgz`, `website/node_modules/`, `__pycache__/`, `*.pyc`
+- draft marketing banners (`wax-banner-*.png`, `wax-github-*.png`); keep the shipping `wax-banner.png`
 
 Use external/private notes for working plans. If a public plan is genuinely part
 of the product documentation, place it under an official docs surface and make
@@ -23,11 +26,10 @@ sure it is written as user-facing documentation, not as an internal task list.
 Before committing, run:
 
 ```bash
-git ls-files | rg '(^tasks/|^marketing/|issue[0-9]+_|snapshot|screenshot|TECHNICAL_ANALYSIS|audit-.*ledger|lessons\.md|todo\.md|\.grok/|waxmcp/dist)'
+bash Resources/scripts/quality/public_repo_hygiene.sh
 ```
 
-The command should return no matches unless the file is intentionally public and
-has been reviewed as part of the docs or release surface.
+The command should exit 0. CI runs the same gate on pull requests and `main`.
 
 `Agents.md` and `AGENTS.md` are the same file on this volume (case-insensitive).
 Edit one path.
