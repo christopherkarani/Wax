@@ -119,6 +119,9 @@ struct WaxMCPServerCommand: ParsableCommand {
             requireVector: false,
             embedderTuning: embedderTuning
         )
+        // Owned daemon prewarms the embedder in a background Task unless --no-embedder
+        // (AgentBrokerClient no longer passes --skip-prewarm). First recall still waits
+        // up to 30s if MiniLM is still loading.
         let brokerStarted = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
         let structuredMemoryEnabled = memoryConfig.enableStructuredMemory
         defer {

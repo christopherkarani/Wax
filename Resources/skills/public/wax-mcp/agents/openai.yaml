@@ -1,4 +1,4 @@
 interface:
   display_name: "Wax MCP Memory"
   short_description: "Use Wax MCP tools for durable agent memory"
-  default_prompt: "Use $wax-mcp for session lifecycle, remember/recall, handoffs, and structured memory. Call handoff_latest then session_start at session start; handoff then session_end at session end."
+  default_prompt: "Use $wax-mcp for session lifecycle, remember/recall, handoffs, and structured memory. Call session_open at session start; session_close at session end. Do not use handoff_latest plus session_start as the default open."

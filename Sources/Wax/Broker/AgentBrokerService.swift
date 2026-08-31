@@ -153,9 +153,23 @@ package actor AgentBrokerService {
                 }
             }
         }
+        // Wait for MiniLM outside commandMutex so a cold first recall does not
+        // stall unrelated commands the way remember already uses rememberMutex.
+        if Self.isQueryEmbedderWaitRequest(request) {
+            await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
+        }
         let mutex = Self.isRememberRequest(request) ? rememberMutex : commandMutex
         return await mutex.withLock { [self] in
             await handleSerialized(request)
+        }
+    }
+
+    private static func isQueryEmbedderWaitRequest(_ request: AgentBrokerRequest) -> Bool {
+        switch request.command {
+        case "recall", "search", "session_open":
+            true
+        default:
+            false
         }
     }
 
@@ -457,6 +471,10 @@ extension AgentBrokerService {
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
+        await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
+        if let sessionID = parsedFilters.sessionId {
+            await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
+        }
         let result = try await LayeredRecall.recall(request: request, stores: layeredRecallStores())
 
         var lines: [String] = []
@@ -530,6 +548,13 @@ extension AgentBrokerService {
             "results": .array(results),
             "display_text": .string(lines.joined(separator: "\n")),
         ]
+        if let warning = Self.retrievalDowngradeWarning(
+            requestedMode: result.requestedModeSummary,
+            effectiveMode: result.effectiveModeSummary,
+            queryEmbeddingState: result.queryEmbeddingState
+        ) {
+            payload["warning"] = .string(warning)
+        }
         if let scopeMissMessage = result.scopeMissMessage {
             payload["scope_miss_message"] = .string(scopeMissMessage)
         }
@@ -585,6 +610,7 @@ extension AgentBrokerService {
         let topK = command.topK
         let parsedFilters = command.filters
         let memory = try await memory(for: parsedFilters.sessionId)
+        await awaitQueryEmbedderIfNeeded(memory: memory)
         let execution = try await memory.searchExecution(
             query: query,
             mode: mode,
@@ -613,7 +639,7 @@ extension AgentBrokerService {
             )
         }
         let text = rows.isEmpty ? "No results." : rows.map(\.debugJSONString).joined(separator: "\n")
-        return .object([
+        var payload: [String: AgentBrokerValue] = [
             "query": .string(query),
             "topK": .from(topK),
             "requested_mode": .string(execution.requestedMode.diagnosticsSummary),
@@ -624,7 +650,15 @@ extension AgentBrokerService {
             "time_range_applied": .from(parsedFilters.timeRange != nil),
             "results": .array(rows),
             "display_text": .string(text),
-        ])
+        ]
+        if let warning = Self.retrievalDowngradeWarning(
+            requestedMode: execution.requestedMode.diagnosticsSummary,
+            effectiveMode: execution.effectiveMode.diagnosticsSummary,
+            queryEmbeddingState: execution.queryEmbeddingState.rawValue
+        ) {
+            payload["warning"] = .string(warning)
+        }
+        return .object(payload)
     }
 
     func memorySearch(_ command: BrokerCommand.MemorySearch) async throws -> AgentBrokerValue {
@@ -1073,6 +1107,7 @@ extension AgentBrokerService {
 
     package func prewarmEmbedder() async {
         guard !noEmbedder else { return }
+        await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
         _ = try? await longTermMemory.searchExecution(
             query: "wax",
             mode: .hybrid(alpha: 0.5),
@@ -1080,6 +1115,40 @@ extension AgentBrokerService {
             frameFilter: nil,
             timeRange: nil
         )
+        guard await longTermMemory.isQueryEmbedderReady() else { return }
+        _ = try? await longTermMemory.backfillUnembedded()
+    }
+
+    /// Suspends while MiniLM (or the configured provider) is `.loading`, matching remember.
+    /// Missing providers and wait timeouts do not throw — callers degrade to text + warning.
+    func awaitQueryEmbedderIfNeeded(memory: MemoryOrchestrator) async {
+        guard !noEmbedder else { return }
+        let stats = await memory.runtimeStats()
+        guard stats.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() else {
+            return
+        }
+        try? await Self.awaitRememberReady(memory: memory, timeout: .seconds(30))
+    }
+
+    /// Compact JSON warning when hybrid was requested but the query ran as text.
+    package static func retrievalDowngradeWarning(
+        requestedMode: String,
+        effectiveMode: String,
+        queryEmbeddingState: String
+    ) -> String? {
+        let requestedHybrid = requestedMode.hasPrefix("hybrid")
+        let usedText = effectiveMode == "text" || effectiveMode.hasPrefix("text")
+        guard requestedHybrid, usedText else { return nil }
+        let reason: String
+        switch queryEmbeddingState {
+        case "timeout":
+            reason = "embedder timeout"
+        case "circuit_open":
+            reason = "embedder circuit open"
+        default:
+            reason = "embedder missing"
+        }
+        return "WARNING: hybrid requested, \(reason), used text"
     }
 
     func flush() async throws -> AgentBrokerValue {
@@ -1107,12 +1176,12 @@ extension AgentBrokerService {
         let explicitRepo = command.repo
         var inferredScope = requestedCWD.map {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
-        } ?? scopeContext
+        } ?? MemoryScopeContext()
         if explicitProject != nil || explicitRepo != nil {
             inferredScope = MemoryScopeContext(
                 cwdPath: inferredScope.cwdPath,
                 repoRootPath: inferredScope.repoRootPath,
-                repoName: explicitRepo ?? inferredScope.repoName,
+                repoName: explicitRepo ?? explicitProject ?? inferredScope.repoName,
                 projectName: explicitProject ?? inferredScope.projectName
             )
         }
@@ -1274,7 +1343,7 @@ extension AgentBrokerService {
             }
         }
 
-        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? scopeContext
+        let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? MemoryScopeContext()
         let resolvedProject: String?
         let resolvedRepo: String?
         if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
@@ -1308,6 +1377,9 @@ extension AgentBrokerService {
         ]
         if let recallPayload {
             payload["recall"] = recallPayload
+            if let warning = recallPayload.objectValue?["warning"] {
+                payload["warning"] = warning
+            }
         }
         return .object(payload)
     }
@@ -2231,7 +2303,6 @@ extension AgentBrokerService {
 
     func layeredRecallStores() -> LayeredRecall.Stores {
         let sessionsSnapshot = activeSessions
-        let defaultScope = scopeContext
         let noEmbedderFlag = noEmbedder
         let sessionRoot = sessionRootURL
 
@@ -2252,8 +2323,8 @@ extension AgentBrokerService {
             inferWriteScope: { sessionID, clientCWD in
                 if let sessionID, let state = sessionsSnapshot[sessionID] {
                     return LayeredRecall.Identity(
-                        project: state.manifest.project ?? defaultScope.projectName,
-                        repo: state.manifest.repo ?? defaultScope.repoName
+                        project: state.manifest.project,
+                        repo: state.manifest.repo
                     )
                 }
                 if let clientCWD {
@@ -2263,10 +2334,7 @@ extension AgentBrokerService {
                         repo: inferred.repoName
                     )
                 }
-                return LayeredRecall.Identity(
-                    project: defaultScope.projectName,
-                    repo: defaultScope.repoName
-                )
+                return LayeredRecall.Identity(project: nil, repo: nil)
             },
             preview: { text in
                 Wax.dehighlightedPreviewText(text ?? "")
@@ -2668,16 +2736,16 @@ extension AgentBrokerService {
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
         if let sessionID, let session = activeSessions[sessionID] {
             return MemoryScopeContext(
-                cwdPath: clientCWD ?? scopeContext.cwdPath,
-                repoRootPath: scopeContext.repoRootPath,
-                repoName: session.manifest.repo ?? scopeContext.repoName,
-                projectName: session.manifest.project ?? scopeContext.projectName
+                cwdPath: clientCWD,
+                repoRootPath: nil,
+                repoName: session.manifest.repo,
+                projectName: session.manifest.project
             )
         }
         if let clientCWD {
             return MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
         }
-        return scopeContext
+        return MemoryScopeContext()
     }
 
     func agentFacingPreview(_ text: String?) -> String {

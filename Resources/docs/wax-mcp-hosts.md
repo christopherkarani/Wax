@@ -86,7 +86,7 @@ claude mcp add wax -t http -s user -- http://127.0.0.1:3000/mcp
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 ```
 
-Confirm: `claude mcp get wax` and a new Claude session that can see `handoff_latest`.
+Confirm: `claude mcp get wax` and a new Claude session that can see `session_open`.
 
 ---
 
@@ -107,7 +107,7 @@ cp -a ~/.local/share/waxmcp/skills/wax-mcp ~/.codex/skills/wax-mcp
 
 If the host still ignores skills, paste `references/project-rules.md` into the **project** `AGENTS.md` — not into `~/.codex/AGENTS.md`. The user-global file is behavior-only.
 
-Restart Codex. Confirm `handoff_latest` is in the tool list.
+Restart Codex. Confirm `session_open` is in the tool list.
 
 ---
 
@@ -198,7 +198,7 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
 Same rules on every host (from the paste block):
 
-1. Prefer `session_open` (`project`, stable `agent_id`/`run_id`, optional `recall_query`) — or `handoff_latest` → `session_start` (keep `session_id`)
+1. Call `session_open` (`project`, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
 2. Tactical writes: `remember` **with** `session_id` or `scope: session` (`task_state` / `working`) when a plan locks, a path fails, or you are about to stop
 3. Strategic writes: `remember` with `scope: durable` (or without `session_id`) for decision / lesson / constraint / preference / fact
 4. `recall` defaults to `scope: project` (hard-filters; empty lane is an explicit miss). Pass `scope: global` only for cross-project reads. With `session_id`, recall merges that session with durable under project scope. Prefer `mode: "text"` for exact names.
@@ -208,7 +208,7 @@ Same rules on every host (from the paste block):
 
 - Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid/vector can rank old embedder-test frames first.
 - `memory_get` IDs look like `durable:1695` or `episodic:<session-uuid>:0`. A bare frame number fails.
-- Do not invent a `session_id`. Use the value from `session_start` / `session_resume`.
+- Do not invent a `session_id`. Use the value from `session_open` / `session_start` / `session_resume`.
 - Do not manage `--store-path` or `flush` in normal agent flows.
 - If tools vanish after a burst of bad calls, check that HTTP `:3000` is still up before restarting the broker. The host MCP client can circuit-break while the server is healthy.
 
@@ -220,6 +220,6 @@ Ask the agent: “Load Wax, start a session, and tell me the latest handoff.”
 
 Pass if it:
 
-1. Calls `handoff_latest` then `session_start`
+1. Calls `session_open` (not `handoff_latest` then `session_start` as the default open)
 2. Does not ask you to restate prior context that the handoff already contains
 3. Can `stats` and reports vector search on (or honestly says it is off)

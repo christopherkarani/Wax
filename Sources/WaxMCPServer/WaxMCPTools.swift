@@ -185,8 +185,10 @@ private extension WaxMCPTools {
     }
 
     static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {
-        guard clientCWDCommands.contains(name), arguments["cwd"] == nil else { return }
-        arguments["cwd"] = .string(FileManager.default.currentDirectoryPath)
+        // Leave omitted `cwd` omitted. Stamping the MCP process working directory
+        // made durable writes inherit the broker repo (e.g. wax.repo=Wax).
+        guard clientCWDCommands.contains(name) else { return }
+        _ = arguments
     }
 
     static func injectClientSessionIfNeeded(
