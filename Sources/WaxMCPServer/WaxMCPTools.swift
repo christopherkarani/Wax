@@ -83,7 +83,8 @@ enum WaxMCPTools {
             if let oversize = contentLimitError(name: params.name, arguments: forwarded) {
                 return oversize
             }
-            injectClientCWDIfNeeded(name: params.name, arguments: &forwarded)
+            // Do not stamp the MCP process working directory as `cwd`. Omitted cwd
+            // must stay omitted so durable writes do not inherit the broker repo.
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
 
@@ -157,11 +158,6 @@ private extension WaxMCPTools {
     static let compactPresentationKeys: Set<String> = [
         "display_text", "storePath", "store_path", "event_log_path",
     ]
-    static let clientCWDCommands: Set<String> = [
-        "session_start", "session_open", "remember", "memory_append", "knowledge_capture",
-        "markdown_export", "recall",
-    ]
-
     static func contentLimitError(name: String, arguments: [String: Value]) -> CallTool.Result? {
         guard case .string(let content)? = arguments["content"] else { return nil }
         let maxBytes = AgentBrokerService.maxContentBytes
@@ -182,11 +178,6 @@ private extension WaxMCPTools {
             throw ToolValidationError.invalid("verbosity must be one of: compact, verbose")
         }
         return trimmed
-    }
-
-    static func injectClientCWDIfNeeded(name: String, arguments: inout [String: Value]) {
-        guard clientCWDCommands.contains(name), arguments["cwd"] == nil else { return }
-        arguments["cwd"] = .string(FileManager.default.currentDirectoryPath)
     }
 
     static func injectClientSessionIfNeeded(

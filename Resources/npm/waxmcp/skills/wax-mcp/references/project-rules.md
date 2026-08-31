@@ -13,13 +13,13 @@ Agent Quick Start details.
 Wax is the shared memory layer. Chat dies; Wax does not. Skip one-line Q&A. Use on any multi-step coding, debug, or research task.
 
 Open every multi-step session:
-1. Prefer `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Or call `handoff_latest` first then `session_start` once. Keep `session_id`. Do not invent one.
+1. Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open.
 2. Call `recall` with default `scope: project` (hard-filters to resolved project; unlabeled/foreign frames excluded). Empty lane returns an explicit miss — pass `scope: global` only for cross-project reads. `recall` with `session_id` merges that session with durable memory under project scope.
 
 Workflow rules:
 - Use `remember` to store decisions, discoveries, and short factual notes. Prefer `scope: session` (requires top-level `session_id`) or `scope: durable` (forbids `session_id`). Do not put `session_id` inside `metadata`.
 - Use `recall` for assembled context and `search` for raw ranked hits.
-- Prefer `mode: "hybrid"` when semantic retrieval helps. Use `mode: "text"` when I want a fast or deterministic lexical lookup.
+- Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
 - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
 - Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat. Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or operator `memory-maintain` in the agent loop.
 - Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
@@ -56,7 +56,7 @@ SOUL.md is identity. Append this section. Do not turn the whole soul into a tool
 
 You have Wax. Chat is not memory.
 
-On every multi-step task: prefer `session_open` (`project`, `agent_id`, `run_id`) or `handoff_latest` → `session_start` → keep `session_id`.
+On every multi-step task: call `session_open` (`project`, `agent_id`, `run_id`, optional `recall_query`). Keep `session_id`.
 
 Write as you go:
 - This task: `remember` with `scope: session`, `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
