@@ -31,12 +31,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "recall",
-            description: "Preferred read path: assemble RAG context for a query. Call after handoff_latest/session_start when answering from memory. Passing session_id merges that session with durable long-term memory.",
+            description: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Passing session_id merges that session with durable long-term memory.",
             inputSchema: waxRecall
         ),
         Tool(
             name: "search",
-            description: "Raw ranked search hits (not assembled RAG). Prefer mode hybrid for semantic retrieval; use mode text for lexical/deterministic lookup.",
+            description: "Raw ranked search hits (not assembled RAG). Prefer mode hybrid when the embedder is ready; otherwise use mode text.",
             inputSchema: waxSearch
         ),
         Tool(
@@ -71,7 +71,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_start",
-            description: "Create a broker-managed virtual session and return session_id. Call after handoff_latest at session start; keep session_id for later tools. The same agent_id+run_id reuses the active session instead of minting a sibling.",
+            description: "Create or reuse a broker-managed virtual session and return session_id. Prefer session_open. The same agent_id+run_id reuses the active session instead of minting a sibling.",
             inputSchema: waxSessionStart
         ),
         Tool(
@@ -91,7 +91,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_open",
-            description: "Open a session in one call. Returns session_id plus a bounded short handoff projection; optional non-empty recall_query adds capped project-scoped recall. Use handoff_latest for the complete handoff and pending tasks.",
+            description: "One-shot session open plus optional recall. Returns session_id plus a bounded short handoff projection; optional non-empty recall_query adds capped project-scoped recall. Prefer this over handoff_latest then session_start. Use handoff_latest only when you need the complete handoff.",
             inputSchema: waxSessionOpen
         ),
         Tool(
@@ -101,7 +101,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "handoff_latest",
-            description: "Call first at session start: fetch the latest handoff note (optional project) before session_start.",
+            description: "Fetch the latest handoff note (optional project). Not the default session open — prefer session_open.",
             inputSchema: waxHandoffLatest
         ),
         Tool(

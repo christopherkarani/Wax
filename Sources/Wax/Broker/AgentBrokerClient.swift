@@ -131,7 +131,6 @@ package enum AgentBrokerClient {
             "--embedder", configuration.embedderChoice,
             "--socket-path", configuration.socketPath,
             "--idle-timeout-secs", String(idleTimeoutSeconds),
-            "--skip-prewarm",
         ]
         process.arguments?.append(contentsOf: configuration.embedderTuning.daemonArguments())
         if configuration.noEmbedder {

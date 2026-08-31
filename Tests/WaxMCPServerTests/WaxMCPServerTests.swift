@@ -460,6 +460,7 @@ func toolsListContainsExpectedTools() {
 func agentInstructionsDescribeSessionLifecycle() {
     let text = MCPAgentInstructions.text(version: "9.9.9")
     #expect(text.contains("server v9.9.9"))
+    #expect(text.contains("session_open"))
     #expect(text.contains("handoff_latest"))
     #expect(text.contains("session_start"))
     #expect(text.contains("session_end"))
@@ -467,6 +468,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("remaining_active"))
     #expect(text.contains("active_session_count"))
     #expect(text.contains("Do not manage SESSION_STORE"))
+    #expect(!text.contains("or call handoff_latest first"))
+    #expect(text.contains("Call session_open"))
 }
 
 @Test
@@ -474,10 +477,16 @@ func coreToolDescriptionsIncludeOperatorHints() {
     let tools = Dictionary(
         uniqueKeysWithValues: ToolSchemas.allTools.map { ($0.name, $0.description ?? "") }
     )
-    #expect(tools["handoff_latest"]?.contains("session start") == true)
-    #expect(tools["session_start"]?.contains("handoff_latest") == true)
+    #expect(tools["handoff_latest"]?.contains("Call first at session start") != true)
+    #expect(tools["handoff_latest"]?.localizedCaseInsensitiveContains("latest handoff") == true)
+    #expect(tools["session_start"]?.contains("Prefer `session_open`") == true
+            || tools["session_start"]?.contains("Prefer session_open") == true)
+    #expect(tools["session_open"]?.localizedCaseInsensitiveContains("one-shot") == true
+            || tools["session_open"]?.localizedCaseInsensitiveContains("one call") == true)
+    #expect(tools["session_open"]?.contains("handoff_latest then") != true)
     #expect(tools["remember"]?.contains("session_id") == true)
     #expect(tools["recall"]?.contains("Preferred read path") == true)
+    #expect(tools["recall"]?.contains("session_open") == true)
     #expect(tools["handoff"]?.contains("end-of-session") == true)
 }
 
@@ -866,6 +875,7 @@ func brokerBackedF152RecallAndSearchSupportFilters() async throws {
                 "query": .string(queryToken),
                 "mode": .string("text"),
                 "limit": .int(10),
+                "scope": .string("global"),
                 "filters": filters,
             ]
         ))
@@ -1818,7 +1828,7 @@ func toolsRememberRecallSearchFlushStatsHappyPath() async throws {
         #expect(rememberResult.isError != true)
 
         let recallResult = await WaxMCPTools.handleCall(
-            params: .init(name: "recall", arguments: ["query": "actors", "limit": 3]),
+            params: .init(name: "recall", arguments: ["query": "actors", "limit": 3, "scope": "global"]),
             broker: service
         )
         #expect(recallResult.isError != true)
@@ -2330,7 +2340,7 @@ func rememberDefaultAutoCommitMakesDataImmediatelyRecallable() async throws {
         #expect((statsJSON["pendingFrames"] as? Int ?? -1) == 0)
 
         let recallResult = await WaxMCPTools.handleCall(
-            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(5)]),
+            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(5), "scope": .string("global")]),
             broker: service
         )
         #expect(recallResult.isError != true)
@@ -2439,7 +2449,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
         #expect(!firstText(in: filteredSearch).contains(blockedNeedle))
 
         let baselineRecall = await WaxMCPTools.handleCall(
-            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(10)]),
+            params: .init(name: "recall", arguments: ["query": .string(queryToken), "limit": .int(10), "scope": .string("global")]),
             broker: service
         )
         #expect(baselineRecall.isError != true)
@@ -2451,6 +2461,7 @@ func recallAndSearchSupportMetadataExactFilters() async throws {
                 arguments: [
                     "query": .string(queryToken),
                     "limit": .int(10),
+                    "scope": .string("global"),
                     "filters": .object([
                         "metadata": .object([
                             "exact": .object(["group": .string("allowed")]),
@@ -3178,6 +3189,9 @@ func vectorFallbackIsSurfacedInSearchAndStats() async throws {
         #expect((payload["requested_mode"] as? String) == "hybrid(alpha=0.500)")
         #expect((payload["effective_mode"] as? String) == "text")
         #expect((payload["query_embedding_state"] as? String) == "timeout")
+        let warning = try #require(payload["warning"] as? String)
+        #expect(warning.contains("hybrid requested"))
+        #expect(warning.contains("used text"))
         let results = try requireArray(payload, key: "results")
         #expect(!results.isEmpty)
         let firstResult = try requireObject(results[0])
@@ -3224,7 +3238,7 @@ func recallJSONResourceIncludesStructuredResults() async throws {
         let recall = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
-                arguments: ["query": "payload marker", "limit": 3]
+                arguments: ["query": "payload marker", "limit": 3, "scope": "global"]
             ),
             broker: service
         )
@@ -3502,6 +3516,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
         let recall = await WaxMCPTools.handleCall(
             params: .init(name: "recall", arguments: [
                 "query": .string("actors"),
+                "scope": .string("global"),
             ]),
             broker: service
         )
@@ -3635,6 +3650,7 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
             params: .init(name: "recall", arguments: [
                 "query": .string("release notes preference"),
                 "limit": .int(3),
+                "scope": .string("global"),
             ]),
             broker: service
         )
@@ -7171,6 +7187,7 @@ struct WaxMCPProcessTests {
             arguments: [
                 "query": "SESSION_ONLY_XYZ",
                 "session_id": sessionID,
+                "scope": "global",
                 "limit": 10,
             ],
             timeout: 20
@@ -8161,7 +8178,7 @@ struct WaxMCPProcessTests {
         let recallResp = try await harness.callTool(
             id: 3,
             name: "recall",
-            arguments: ["query": "Swift concurrency", "limit": 3],
+            arguments: ["query": "Swift concurrency", "limit": 3, "scope": "global"],
             timeout: 30
         )
         #expect(recallResp.contains("result"))

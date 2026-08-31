@@ -20,9 +20,8 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 ## Session Lifecycle (required)
 
 1. **Start**
-   - Call `handoff_latest` first (optionally with `project`) to load prior context.
-   - Call `session_start` once. Pass stable `agent_id` and `run_id` so a retry reuses the same session.
-   - Keep the returned `session_id` for the rest of the session.
+   - Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one.
+   - Do not call `handoff_latest` then `session_start` as the default open. Those tools remain callable for compatibility.
 2. **Work**
    - Before answering from memory, call `recall` (default) or `search` (raw hits). `recall` with `session_id` merges that session with durable long-term memory.
    - When you learn something durable, call `remember` with concise factual text.
@@ -30,9 +29,9 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
    - Never put `session_id` inside `metadata`.
    - `task_state` is session-local working state: it requires an active session and rejects durable or locked writes. Repair legacy records with `task_state_migrate` into a complete distinct-store copy after a dry run; choose quarantine (default) or drop for orphaned records.
 3. **End**
-   - Call `handoff` with `content`, optional `project`, optional `pending_tasks`, optional `session_id`.
+   - Prefer `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end.
    - Keep `content` to a concise state summary. Put unfinished work only in `pending_tasks`; do not copy pending tasks into content or store transcripts.
-   - Prefer `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or call `session_end` (pass `session_id` when multiple sessions may be active).
+   - Or call `handoff` then `session_end` (pass `session_id` when multiple sessions may be active).
    - Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or `memory-maintain` in the agent loop; `wax-cli memory-maintain` is operator-only.
    - `session_end` `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
 
@@ -47,8 +46,7 @@ This is not the Swift framework skill. For embedding Wax in Swift apps, use the
 
 Search mode guidance:
 
-- Prefer `mode: "hybrid"` when semantic recall helps.
-- Use `mode: "text"` for fast or deterministic lexical lookup.
+- Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
 
 Response guidance:
 
@@ -75,8 +73,8 @@ Write quality rules:
 
 - Do not manage `SESSION_STORE`, `--store-path`, `flush`, or `memory-maintain` in normal agent flows.
   The broker owns long-term memory and virtual session stores. `wax-cli memory-maintain` is operator-only.
-- Do not skip `handoff_latest` at session start and re-ask the user for prior context.
-- Do not invent a `session_id`; only use values returned by `session_start` / `session_resume`.
+- Do not skip `session_open` at session start and re-ask the user for prior context.
+- Do not invent a `session_id`; only use values returned by `session_open` / `session_start` / `session_resume`.
 - Do not put `session_id` inside `metadata`.
 - Do not treat `search` as the default when `recall` is enough.
 - Do not use structured fact tools for transient debug notes.
@@ -129,8 +127,10 @@ replacing the soul.
 
 | Tool | When |
 |------|------|
-| `handoff_latest` | Session start continuity |
-| `session_start` / `session_end` | Broker session lifecycle |
+| `session_open` | Default one-shot open + optional recall |
+| `handoff_latest` | Fetch latest handoff (compatibility; not the default open) |
+| `session_start` / `session_end` | Broker session lifecycle (prefer `session_open` / `session_close`) |
+| `session_close` | Atomic handoff then end |
 | `session_resume` | Resume a known session after restart |
 | `remember` | Store durable free-text memory |
 | `recall` | Default read / RAG assembly |

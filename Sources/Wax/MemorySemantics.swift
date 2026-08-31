@@ -191,10 +191,14 @@ package enum MemorySemantics {
             normalized["session_id"] = sessionID.uuidString
         }
 
-        if let project = normalizedOrNil(semantics.project) ?? normalizedOrNil(normalized[MemoryMetadataKeys.project]) ?? normalizedOrNil(inferredScope?.projectName) {
+        let explicitProject = normalizedOrNil(semantics.project)
+            ?? normalizedOrNil(normalized[MemoryMetadataKeys.project])
+        let explicitRepo = normalizedOrNil(semantics.repo)
+            ?? normalizedOrNil(normalized[MemoryMetadataKeys.repo])
+        if let project = explicitProject ?? normalizedOrNil(inferredScope?.projectName) {
             normalized[MemoryMetadataKeys.project] = project
         }
-        if let repo = normalizedOrNil(semantics.repo) ?? normalizedOrNil(normalized[MemoryMetadataKeys.repo]) ?? normalizedOrNil(inferredScope?.repoName) {
+        if let repo = explicitRepo ?? explicitProject ?? normalizedOrNil(inferredScope?.repoName) {
             normalized[MemoryMetadataKeys.repo] = repo
         }
         if let confidence = semantics.confidence {

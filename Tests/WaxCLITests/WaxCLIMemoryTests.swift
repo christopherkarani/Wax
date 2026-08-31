@@ -904,13 +904,17 @@ struct WaxCLIMemoryTests {
     }
 
     @Test func projectRulesPlaybookMentionsLifecycle() {
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("handoff_latest"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_start"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_open"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_close"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("task_state"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("compact_context"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("memory-maintain"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("Call `session_open`"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("Or call `handoff_latest` first then `session_start`"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("## Memory (Wax)"))
+        #expect(WaxMCPAgentPlaybook.soulRules.contains("call `session_open`"))
+        #expect(!WaxMCPAgentPlaybook.soulRules.contains("or `handoff_latest` → `session_start`"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
     }
 
@@ -938,6 +942,19 @@ struct WaxCLIMemoryTests {
         #expect(readmeText.contains(WaxMCPAgentPlaybook.soulRules))
         #expect(readmeText.contains("Paste into AGENTS.md / CLAUDE.md / Cursor rules"))
         #expect(readmeText.contains("Paste into Hermes / OpenClaw SOUL.md"))
+
+        let publicOpenAI = try String(
+            contentsOf: repoRoot.appendingPathComponent("Resources/skills/public/wax-mcp/agents/openai.yaml"),
+            encoding: .utf8
+        )
+        let npmOpenAI = try String(
+            contentsOf: repoRoot.appendingPathComponent("Resources/npm/waxmcp/skills/wax-mcp/agents/openai.yaml"),
+            encoding: .utf8
+        )
+        #expect(publicOpenAI == npmOpenAI)
+        #expect(publicOpenAI.contains("session_open"))
+        #expect(publicOpenAI.contains("session_close"))
+        #expect(!publicOpenAI.contains("Call handoff_latest then session_start"))
     }
 
     @Test func embedderRuntimeOptionsOverrideEnvironment() throws {
