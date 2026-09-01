@@ -71,7 +71,8 @@ package enum RecallAssembly {
                     text,
                     maxTokens: clamped.expansionMaxTokens,
                     remaining: remaining,
-                    tokenizer: tokenizer
+                    tokenizer: tokenizer,
+                    shrinkToRemaining: false
                 ) else { continue }
                 items.append(
                     item(
@@ -103,7 +104,8 @@ package enum RecallAssembly {
                     text,
                     maxTokens: clamped.surrogateMaxTokens,
                     remaining: remaining,
-                    tokenizer: tokenizer
+                    tokenizer: tokenizer,
+                    shrinkToRemaining: true
                 ) else { continue }
                 items.append(
                     item(
@@ -133,7 +135,8 @@ package enum RecallAssembly {
                     payload.snippetText,
                     maxTokens: clamped.snippetMaxTokens,
                     remaining: remaining,
-                    tokenizer: tokenizer
+                    tokenizer: tokenizer,
+                    shrinkToRemaining: true
                 ) else { continue }
                 items.append(
                     item(
@@ -165,16 +168,20 @@ package enum RecallAssembly {
         return c
     }
 
-    /// Truncate to the per-item cap only. Skip (do not shrink to remaining) when
-    /// the capped item still exceeds the leftover budget.
+    /// Expansion (`shrinkToRemaining: false`): cap at `maxTokens` and skip when
+    /// that still exceeds leftover, so a later smaller expansion can fill.
+    /// Surrogates/snippets (`true`): cap at `min(maxTokens, remaining)`, matching
+    /// the previous FastRAG `countAndTruncateBatch` leftover contract.
     private static func budgetedText(
         _ text: String,
         maxTokens: Int,
         remaining: Int,
-        tokenizer: Tokenizer
+        tokenizer: Tokenizer,
+        shrinkToRemaining: Bool
     ) async -> (text: String, tokens: Int)? {
         guard maxTokens > 0, remaining > 0, !text.isEmpty else { return nil }
-        let capped = await tokenizer.truncate(text, maxTokens)
+        let cap = shrinkToRemaining ? min(maxTokens, remaining) : maxTokens
+        let capped = await tokenizer.truncate(text, cap)
         let tokens = await tokenizer.count(capped)
         guard !capped.isEmpty, tokens <= remaining else { return nil }
         return (capped, tokens)
