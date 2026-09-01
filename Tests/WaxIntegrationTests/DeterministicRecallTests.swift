@@ -59,6 +59,116 @@ struct DeterministicRecallTests {
     }
 
     @Test
+    func semanticRecencyUsesDeterministicNowNotWallClock() async throws {
+        try await TempFiles.withTempFile { url in
+            let createdAtMs = Int64(Date().timeIntervalSince1970 * 1000) - Self.dayMs
+            do {
+                let ingest = try await MemoryOrchestrator(
+                    at: url,
+                    config: TestHelpers.defaultMemoryConfig(),
+                    embedder: DeterministicTextEmbedder()
+                )
+                try await ingest.remember(
+                    "Waxfile epsilon records the ranking-now pin for recency.",
+                    metadata: [
+                        MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                        MemoryMetadataKeys.createdAtMs: String(createdAtMs),
+                    ]
+                )
+                try await ingest.flush()
+                try await ingest.close()
+            }
+
+            // 120 days after created-at: the 90-day working-note penalty applies and
+            // "recent" is gone. Wall clock would still treat this frame as recent.
+            let agedNowMs = createdAtMs + 120 * Self.dayMs
+            var config = TestHelpers.defaultMemoryConfig()
+            config.rag.deterministicNowMs = agedNowMs
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicTextEmbedder()
+            )
+
+            func runSearch() async throws -> [MemoryOrchestrator.MemorySearchHit] {
+                try await orchestrator.search(
+                    query: "waxfile",
+                    mode: .hybrid(alpha: 0.5),
+                    topK: 5,
+                    frameFilter: nil
+                )
+            }
+
+            let hits1 = try await runSearch()
+            let hits2 = try await runSearch()
+            #expect(!hits1.isEmpty)
+            #expect(hits1.map(\.frameId) == hits2.map(\.frameId))
+            #expect(hits1.map(\.score) == hits2.map(\.score))
+            #expect(hits1.map(\.explanations) == hits2.map(\.explanations))
+
+            let wallNowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let recencyHit = try #require(hits1.first { hit in
+                hit.metadata[MemoryMetadataKeys.createdAtMs] == String(createdAtMs)
+            })
+            let atInjected = MemorySemantics.rankingReasons(
+                metadata: recencyHit.metadata,
+                scope: nil,
+                nowMs: agedNowMs
+            )
+            let atWall = MemorySemantics.rankingReasons(
+                metadata: recencyHit.metadata,
+                scope: nil,
+                nowMs: wallNowMs
+            )
+            #expect(!atInjected.reasons.contains("recent"))
+            #expect(atWall.reasons.contains("recent"))
+            #expect(!recencyHit.explanations.contains("recent"))
+
+            try await orchestrator.close()
+        }
+    }
+
+    @Test
+    func productSearchUsesOneNowProviderTickForRankingAndAccess() async throws {
+        try await TempFiles.withTempFile { url in
+            do {
+                let ingest = try await MemoryOrchestrator(
+                    at: url,
+                    config: TestHelpers.defaultMemoryConfig(),
+                    embedder: DeterministicTextEmbedder()
+                )
+                try await ingest.remember(
+                    "Waxfile zeta pins a single ranking-now tick per search."
+                )
+                try await ingest.flush()
+                try await ingest.close()
+            }
+
+            let clock = IncrementingClock(Self.fixedNowMs)
+            var config = TestHelpers.defaultMemoryConfig()
+            config.enableAccessStatsScoring = true
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicTextEmbedder(),
+                nowMsProvider: { clock.next() }
+            )
+
+            let callsBeforeSearch = clock.callCount
+            let hits = try await orchestrator.search(
+                query: "waxfile",
+                mode: .hybrid(alpha: 0.5),
+                topK: 5,
+                frameFilter: nil
+            )
+            #expect(!hits.isEmpty)
+            #expect(clock.callCount - callsBeforeSearch == 1)
+
+            try await orchestrator.close()
+        }
+    }
+
+    @Test
     func documentAgeRecencyBoostFlipsRankingAcrossNinetyDayBoundary() {
         let nowA = Self.fixedNowMs
         let day = Self.dayMs
@@ -163,6 +273,31 @@ struct DeterministicRecallTests {
             #expect(coldHits.allSatisfy { !$0.explanations.contains("recently used") })
 
             try await orchestrator.close()
+        }
+    }
+}
+
+/// Each `next()` returns a distinct millisecond so a double nowProvider()
+/// call in one search cannot hide behind a frozen clock.
+private final class IncrementingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64
+    private var calls = 0
+
+    init(_ start: Int64) {
+        value = start
+    }
+
+    var callCount: Int {
+        lock.withLock { calls }
+    }
+
+    func next() -> Int64 {
+        lock.withLock {
+            calls += 1
+            let current = value
+            value += 1
+            return current
         }
     }
 }

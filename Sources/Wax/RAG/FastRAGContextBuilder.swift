@@ -47,6 +47,7 @@ package struct FastRAGContextBuilder: Sendable {
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            nowMs: clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000),
             scopeContext: scopeContext,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
