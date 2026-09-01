@@ -1318,6 +1318,7 @@ package actor MemoryOrchestrator {
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
+            nowMs: config.rag.deterministicNowMs ?? nowProvider(),
             scopeContext: config.defaultScopeContext,
             previewMaxBytes: config.rag.previewMaxBytes
         )

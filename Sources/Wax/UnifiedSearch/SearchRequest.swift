@@ -14,6 +14,9 @@ package struct SearchRequest: Sendable, Equatable {
     package var timeRange: SearchTimeRange?
     package var frameFilter: FrameFilter?
     package var asOfMs: Int64
+    /// Evaluation time for semantic recency, expiry, and ranking explanations.
+    /// Distinct from `asOfMs` (structured-fact visibility cutoff).
+    package var nowMs: Int64
     package var structuredMemory: StructuredMemorySearchOptions
     package var scopeContext: MemoryScopeContext?
 
@@ -38,6 +41,7 @@ package struct SearchRequest: Sendable, Equatable {
         timeRange: SearchTimeRange? = nil,
         frameFilter: FrameFilter? = nil,
         asOfMs: Int64 = Int64.max,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
         structuredMemory: StructuredMemorySearchOptions = .init(),
         scopeContext: MemoryScopeContext? = nil,
         rrfK: Int = 60,
@@ -58,6 +62,7 @@ package struct SearchRequest: Sendable, Equatable {
         self.timeRange = timeRange
         self.frameFilter = frameFilter
         self.asOfMs = asOfMs
+        self.nowMs = nowMs
         self.structuredMemory = structuredMemory
         self.scopeContext = scopeContext
         self.rrfK = rrfK
