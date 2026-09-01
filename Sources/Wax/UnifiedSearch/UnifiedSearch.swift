@@ -82,6 +82,15 @@ extension Wax {
         enum ResolvedVectorEngine {
             case loaded(LoadedVectorSearchEngine)
             case override(any VectorSearchEngine)
+
+            func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
+                switch self {
+                case .loaded(let engine):
+                    return try await engine.search(vector: vector, topK: topK)
+                case .override(let engine):
+                    return try await engine.search(vector: vector, topK: topK)
+                }
+            }
         }
 
         let resolvedVectorEngine: ResolvedVectorEngine? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
@@ -183,16 +192,10 @@ extension Wax {
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
             guard includeVector, let resolvedVectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
-            let vectorToSearch = embedding
             if let timeout = request.vectorSearchTimeout {
                 do {
                     return try await AsyncTimeout.run(timeout: timeout, operation: "vector search") {
-                        switch resolvedVectorEngine {
-                        case .loaded(let engine):
-                            return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
-                        case .override(let engine):
-                            return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
-                        }
+                        try await resolvedVectorEngine.search(vector: embedding, topK: candidateLimit)
                     }
                 } catch let error as AsyncTimeout.TimeoutError {
                     // Hybrid/text modes can degrade to non-vector lanes; vectorOnly should fail hard.
@@ -207,12 +210,7 @@ extension Wax {
                     return []
                 }
             } else {
-                switch resolvedVectorEngine {
-                case .loaded(let engine):
-                    return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
-                case .override(let engine):
-                    return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
-                }
+                return try await resolvedVectorEngine.search(vector: embedding, topK: candidateLimit)
             }
         }()
 
