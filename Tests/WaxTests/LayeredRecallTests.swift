@@ -116,11 +116,28 @@ func layeredRecallFrameFilterInjectsProjectMetadataForScopedRetrieval() {
 @Test
 func layeredRecallMakeMemoryReferenceFormatsHorizons() {
     let sessionID = UUID()
-    #expect(LayeredRecall.makeMemoryReference(.durable, sessionID: nil, frameID: 42) == "durable:42")
+    #expect(LayeredRecall.makeMemoryReference(.durable, frameID: 42) == "durable:42")
     #expect(
         LayeredRecall.makeMemoryReference(.working, sessionID: sessionID, frameID: 7)
             == "working:\(sessionID.uuidString):7"
     )
+}
+
+@Test
+func layeredRecallHitMapsRAGItemKindAndSourcesWithoutStringRoundTrip() {
+    let item = RAGContext.Item(
+        kind: .snippet,
+        frameId: 11,
+        score: 1,
+        sources: [.text],
+        text: "hello"
+    )
+    let durable = LayeredRecall.hit(from: item, horizon: .durable)
+    #expect(durable.kind == .snippet)
+    #expect(durable.sources == [.text])
+    let working = LayeredRecall.hit(from: item, horizon: .working, sessionID: UUID())
+    #expect(working.kind == .snippet)
+    #expect(working.sources == [.text])
 }
 
 private func layeredHit(
@@ -130,10 +147,17 @@ private func layeredHit(
     horizon: LayeredRecall.Horizon,
     metadata: [String: String] = [:]
 ) -> LayeredRecall.Hit {
-    LayeredRecall.Hit(
-        reference: LayeredRecall.makeMemoryReference(horizon, sessionID: nil, frameID: frameID),
-        horizon: horizon,
-        frameID: frameID,
+    let id: MemoryID
+    switch horizon {
+    case .durable:
+        id = .durable(frameID: frameID)
+    case .working:
+        id = .working(sessionID: UUID(), frameID: frameID)
+    case .episodic:
+        id = .episodic(sessionID: UUID(), frameID: frameID)
+    }
+    return LayeredRecall.Hit(
+        id: id,
         score: score,
         text: text,
         preview: text,

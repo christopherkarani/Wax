@@ -72,7 +72,7 @@ func compactAssemblyPackEmptyLanesYieldDefaultSummary() async {
 func compactAssemblyPackDedupesByReference() async {
     let first = compactHit(frameID: 1, text: "one", horizon: .durable, score: 0.9)
     var duplicate = compactHit(frameID: 1, text: "one-dup", horizon: .durable, score: 0.2)
-    duplicate.reference = first.reference
+    duplicate.id = first.id
 
     let packed = await CompactAssembly.pack(
         query: "q",
@@ -160,10 +160,17 @@ private func compactHit(
     horizon: LayeredRecall.Horizon,
     score: Float = 1
 ) -> LayeredRecall.Hit {
-    LayeredRecall.Hit(
-        reference: LayeredRecall.makeMemoryReference(horizon, sessionID: nil, frameID: frameID),
-        horizon: horizon,
-        frameID: frameID,
+    let id: MemoryID
+    switch horizon {
+    case .durable:
+        id = .durable(frameID: frameID)
+    case .working:
+        id = .working(sessionID: UUID(), frameID: frameID)
+    case .episodic:
+        id = .episodic(sessionID: UUID(), frameID: frameID)
+    }
+    return LayeredRecall.Hit(
+        id: id,
         score: score,
         text: text,
         preview: text,
