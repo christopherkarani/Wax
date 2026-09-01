@@ -98,11 +98,6 @@ package struct FastRAGContextBuilder: Sendable {
         // requested result count.
         let contextResults = Array(rankedResults.prefix(max(0, clamped.searchTopK)))
 
-        var items: [RAGContext.Item] = []
-        var usedTokens = 0
-        var expandedFrameId: UInt64?
-        var surrogateSourceFrameIds: Set<UInt64> = []
-
         // Pre-compute query signals for tier selection if enabled
         let querySignals: QuerySignals? = clamped.enableQueryAwareTierSelection
             ? queryAnalyzer.analyze(query: query)
@@ -136,48 +131,32 @@ package struct FastRAGContextBuilder: Sendable {
         let nowMs = clamped.deterministicNowMs
             ?? sourceFrameMetasTask.values.map(\.timestamp).max()
 
-        // 2) Expansion: first result with valid UTF-8 frame content
+        var expansionTextByFrame: [UInt64: String] = [:]
+        var expandedSourceFrameId: UInt64?
         if clamped.expansionMaxTokens > 0, clamped.expansionMaxBytes > 0 {
             for result in contextResults {
                 if let expanded = try await expansionText(
                     frameId: result.frameId,
                     wax: wax,
-                    counter: counter,
-                    maxTokens: clamped.expansionMaxTokens,
                     maxBytes: clamped.expansionMaxBytes
                 ) {
-                    let expandedTokens = await counter.countBatch([expanded])[0]
-                    usedTokens += expandedTokens
-                    expandedFrameId = result.frameId
-                    items.append(
-                        .init(
-                            kind: .expanded,
-                            frameId: result.frameId,
-                            score: result.score,
-                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
-                            text: expanded,
-                            metadata: result.metadata,
-                            explanations: enrichedExplanations(
-                                result.explanations,
-                                frameId: result.frameId,
-                                metadata: result.metadata,
-                                accessStatsMap: accessStatsMap,
-                                nowMs: nowMs
-                            )
-                        )
-                    )
+                    expansionTextByFrame[result.frameId] = expanded
+                    expandedSourceFrameId = result.frameId
                     break
                 }
             }
         }
 
-        // 3) Surrogates (denseCached mode) - Optimized with batch token operations
+        var surrogateBySource: [UInt64: (frameId: UInt64, text: String)] = [:]
         if clamped.mode == .denseCached,
-           clamped.maxContextTokens > usedTokens,
+           clamped.maxContextTokens > 0,
            clamped.maxSurrogates > 0,
            clamped.surrogateMaxTokens > 0 {
-            var remainingTokens = clamped.maxContextTokens - usedTokens
-
+            let estimatedExpansionTokens = expansionTextByFrame.isEmpty ? 0 : min(
+                clamped.expansionMaxTokens,
+                clamped.maxContextTokens
+            )
+            let remainingTokens = max(0, clamped.maxContextTokens - estimatedExpansionTokens)
             let estimatedTokensPerSurrogate = max(1, clamped.surrogateMaxTokens / 2)
             let estimatedMaxSurrogates = max(1, remainingTokens / estimatedTokensPerSurrogate)
             let maxToLoad = min(
@@ -188,6 +167,7 @@ package struct FastRAGContextBuilder: Sendable {
 
             // Batch resolve surrogate ids in a single actor hop to avoid TaskGroup churn.
             let surrogateMap = surrogateMapTask
+            let expandedFrameId = expandedSourceFrameId
 
             // Keep only the top candidates, preserving response order.
             var orderedSurrogateIds: [UInt64] = []
@@ -223,16 +203,11 @@ package struct FastRAGContextBuilder: Sendable {
                 }
             }()
 
-            // Build tier selector based on config
             let tierSelector = SurrogateTierSelector(
                 policy: clamped.tierSelectionPolicy,
                 scorer: ImportanceScorer()
             )
-
-            // Get only source frame metas needed for timestamp access.
             let frameMetaMap = sourceFrameMetasTask
-
-            // Parallel tier selection and tier extraction, preserving response order.
             let surrogateWorkItems = contextResults
                 .compactMap { result -> (result: SearchResponse.Result, surrogateFrameId: UInt64)? in
                     if let expandedFrameId, result.frameId == expandedFrameId { return nil }
@@ -277,65 +252,23 @@ package struct FastRAGContextBuilder: Sendable {
                 }
             }
 
-            let finalizedSurrogates = surrogateCandidates.compactMap { $0 }
-
-            if !finalizedSurrogates.isEmpty {
-                // Use optimized combined count and truncate operation
-                let texts = finalizedSurrogates.map { $0.text }
-                let maxTokensPerText = min(clamped.surrogateMaxTokens, remainingTokens)
-                let processedResults = await counter.countAndTruncateBatch(texts, maxTokens: maxTokensPerText)
-
-                for (index, (result, surrogateFrameId, _)) in finalizedSurrogates.enumerated() {
-                    let (tokens, capped) = processedResults[index]
-
-                    guard !capped.isEmpty && tokens <= remainingTokens else { continue }
-
-                    items.append(
-                        .init(
-                            kind: .surrogate,
-                            frameId: surrogateFrameId,
-                            score: result.score,
-                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
-                            text: capped,
-                            metadata: result.metadata,
-                            explanations: enrichedExplanations(
-                                result.explanations,
-                                frameId: result.frameId,
-                                metadata: result.metadata,
-                                accessStatsMap: accessStatsMap,
-                                nowMs: nowMs
-                            )
-                        )
-                    )
-                    surrogateSourceFrameIds.insert(result.frameId)
-                    remainingTokens -= tokens
-                    if remainingTokens == 0 { break }
-                }
+            for (result, surrogateFrameId, text) in surrogateCandidates.compactMap({ $0 }) {
+                surrogateBySource[result.frameId] = (surrogateFrameId, text)
             }
-
-            usedTokens = clamped.maxContextTokens - remainingTokens
         }
 
-        // 4) Snippets - Optimized with batch token operations
-        if clamped.maxContextTokens > usedTokens {
-            var remainingTokens = clamped.maxContextTokens - usedTokens
-            var snippetCount = 0
-
-            // Collect all snippet candidates
+        var snippetTextByFrame: [UInt64: String] = [:]
+        if clamped.maxContextTokens > 0, clamped.snippetMaxTokens > 0, clamped.maxSnippets > 0 {
             var snippetCandidates: [(result: SearchResponse.Result, preview: String)] = []
             snippetCandidates.reserveCapacity(min(clamped.maxSnippets, 32))
-
             for result in contextResults {
-                if let expandedFrameId, result.frameId == expandedFrameId { continue }
-                if surrogateSourceFrameIds.contains(result.frameId) { continue }
-                guard snippetCount < clamped.maxSnippets else { break }
+                if expansionTextByFrame[result.frameId] != nil { continue }
+                if surrogateBySource[result.frameId] != nil { continue }
+                guard snippetCandidates.count < clamped.maxSnippets else { break }
                 guard let preview = result.previewText, !preview.isEmpty else { continue }
-
                 snippetCandidates.append((result, preview))
-                snippetCount += 1
             }
 
-            // Always use batch processing for consistency and better performance
             if !snippetCandidates.isEmpty {
                 let snippetFallbackMaxBytes = min(
                     clamped.expansionMaxBytes,
@@ -352,8 +285,6 @@ package struct FastRAGContextBuilder: Sendable {
                                 if let expanded = try await expansionText(
                                     frameId: result.frameId,
                                     wax: wax,
-                                    counter: counter,
-                                    maxTokens: clamped.snippetMaxTokens,
                                     maxBytes: snippetFallbackMaxBytes
                                 ),
                                 !expanded.isEmpty {
@@ -375,41 +306,39 @@ package struct FastRAGContextBuilder: Sendable {
                     }
                 }
 
-                let maxTokensPerSnippet = min(clamped.snippetMaxTokens, remainingTokens)
-                
-                // Use optimized combined count and truncate operation
-                let processedResults = await counter.countAndTruncateBatch(previews, maxTokens: maxTokensPerSnippet)
-
                 for (index, (result, _)) in snippetCandidates.enumerated() {
-                    let (tokens, capped) = processedResults[index]
-
-                    guard !capped.isEmpty && tokens <= remainingTokens else { continue }
-
-                    items.append(
-                        .init(
-                            kind: .snippet,
-                            frameId: result.frameId,
-                            score: result.score,
-                            sources: result.sources.isEmpty ? [.unknown] : result.sources,
-                            text: capped,
-                            metadata: result.metadata,
-                            explanations: enrichedExplanations(
-                                result.explanations,
-                                frameId: result.frameId,
-                                metadata: result.metadata,
-                                accessStatsMap: accessStatsMap,
-                                nowMs: nowMs
-                            )
-                        )
-                    )
-                    remainingTokens -= tokens
-                    if remainingTokens == 0 { break }
+                    snippetTextByFrame[result.frameId] = previews[index]
                 }
             }
-            usedTokens = clamped.maxContextTokens - remainingTokens
         }
 
-        return RAGContext(query: query, items: items, totalTokens: usedTokens)
+        var payloads: [RecallAssembly.Payload] = []
+        payloads.reserveCapacity(contextResults.count)
+        for result in contextResults {
+            let surrogate = surrogateBySource[result.frameId]
+            payloads.append(
+                RecallAssembly.Payload(
+                    hit: result,
+                    expansionText: expansionTextByFrame[result.frameId],
+                    surrogateText: surrogate?.text,
+                    snippetText: snippetTextByFrame[result.frameId] ?? result.previewText ?? "",
+                    surrogateFrameId: surrogate?.frameId,
+                    accessStats: accessStatsMap[result.frameId]
+                )
+            )
+        }
+
+        let tokenizer = RecallAssembly.Tokenizer(
+            count: { text in await counter.count(text) },
+            truncate: { text, maxTokens in await counter.truncate(text, maxTokens: maxTokens) }
+        )
+        return await RecallAssembly.pack(
+            query: query,
+            payloads: payloads,
+            config: clamped,
+            tokenizer: tokenizer,
+            nowMs: nowMs
+        )
     }
 
     // MARK: - Helpers
@@ -429,32 +358,6 @@ package struct FastRAGContextBuilder: Sendable {
         c.answerRerankWindow = max(0, c.answerRerankWindow)
         c.answerDistractorPenalty = min(1, max(0, c.answerDistractorPenalty))
         return c
-    }
-
-    private func enrichedExplanations(
-        _ existing: [String],
-        frameId: UInt64,
-        metadata: [String: String],
-        accessStatsMap: [UInt64: FrameAccessStats],
-        nowMs: Int64?
-    ) -> [String] {
-        // Unknown "now" skips access-reason enrichment: a zero sentinel would mark
-        // every frame with access stats as "recently used".
-        let accessReasons = nowMs.map {
-            MemorySemantics.accessReasons(
-                stats: accessStatsMap[frameId],
-                metadata: metadata,
-                nowMs: $0
-            ).reasons
-        } ?? []
-        var seen = Set<String>()
-        var combined: [String] = []
-        for reason in existing + accessReasons {
-            let normalized = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
-            combined.append(normalized)
-        }
-        return combined
     }
 
     static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent, analyzer: QueryAnalyzer) -> Bool {
@@ -619,11 +522,9 @@ package struct FastRAGContextBuilder: Sendable {
     private func expansionText(
         frameId: UInt64,
         wax: Wax,
-        counter: TokenCounter,
-        maxTokens: Int,
         maxBytes: Int
     ) async throws -> String? {
-        guard maxTokens > 0, maxBytes > 0 else { return nil }
+        guard maxBytes > 0 else { return nil }
 
         // Fetch meta and payload sequentially to avoid Swift 6 async let actor isolation double-free crash.
         let meta = try await wax.frameMetaIncludingPending(frameId: frameId)
@@ -647,8 +548,7 @@ package struct FastRAGContextBuilder: Sendable {
         )
         guard let text = String(data: data, encoding: .utf8),
               !text.isEmpty else { return nil }
-        let truncated = await counter.truncate(text, maxTokens: maxTokens)
-        return truncated.isEmpty ? nil : truncated
+        return text
     }
 
     static func validateExpansionPayloadSize(
