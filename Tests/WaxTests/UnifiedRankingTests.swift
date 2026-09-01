@@ -104,6 +104,34 @@ struct UnifiedRankingTests {
         #expect(ranked[0].score > ranked[1].score)
     }
 
+    @Test
+    func identifierExactMatchRerankUsesSharedDehighlightHelper() {
+        let neighbor = SearchResponse.Result(
+            frameId: 1,
+            score: 1.2,
+            previewText: "nearby prose about agent brokers",
+            sources: [.text]
+        )
+        // Highlight markers sit inside identifier glue; ranking must strip
+        // them or the contiguous identifier needle never matches.
+        let exact = SearchResponse.Result(
+            frameId: 2,
+            score: 0.4,
+            previewText: "id=build.[agent]_v2 in the rollout note",
+            sources: [.text]
+        )
+
+        let ranked = UnifiedRanking.identifierExactMatchRerank(
+            results: [neighbor, exact],
+            query: "build.agent_v2",
+            maxWindow: 10
+        )
+
+        #expect(UnifiedRanking.dehighlightedPreviewText(exact.previewText ?? "").contains("build.agent_v2"))
+        #expect(ranked.map(\.frameId) == [2, 1])
+        #expect(ranked[0].explanations.contains("exact identifier match"))
+    }
+
     private func noteResult(frameId: UInt64, createdAtMs: Int64) -> SearchResponse.Result {
         SearchResponse.Result(
             frameId: frameId,

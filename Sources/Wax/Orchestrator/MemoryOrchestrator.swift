@@ -1309,6 +1309,9 @@ package actor MemoryOrchestrator {
         } else {
             searchTopK = topK * 3
         }
+        // One ranking-now for this search: UnifiedSearch recency and later
+        // access ranking must not tick the wall clock twice.
+        let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
         let request = SearchRequest(
             query: trimmed,
             embedding: queryEmbedding.embedding,
@@ -1318,13 +1321,12 @@ package actor MemoryOrchestrator {
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
-            nowMs: config.rag.deterministicNowMs ?? nowProvider(),
+            nowMs: searchNowMs,
             scopeContext: config.defaultScopeContext,
             previewMaxBytes: config.rag.previewMaxBytes
         )
         let response = try await session.search(request)
 
-        let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
         let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
             await AccessFrequencyRanker.statsForRanking(
                 frameIds: response.results.map(\.frameId),

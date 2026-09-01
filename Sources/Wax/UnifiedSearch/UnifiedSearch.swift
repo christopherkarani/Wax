@@ -874,9 +874,7 @@ extension Wax {
     }
 
     package static func dehighlightedPreviewText(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "[", with: "")
-            .replacingOccurrences(of: "]", with: "")
+        UnifiedRanking.dehighlightedPreviewText(text)
     }
 
     private static func structuredEntityCandidates(

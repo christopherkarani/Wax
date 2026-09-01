@@ -129,6 +129,46 @@ struct DeterministicRecallTests {
     }
 
     @Test
+    func productSearchUsesOneNowProviderTickForRankingAndAccess() async throws {
+        try await TempFiles.withTempFile { url in
+            do {
+                let ingest = try await MemoryOrchestrator(
+                    at: url,
+                    config: TestHelpers.defaultMemoryConfig(),
+                    embedder: DeterministicTextEmbedder()
+                )
+                try await ingest.remember(
+                    "Waxfile zeta pins a single ranking-now tick per search."
+                )
+                try await ingest.flush()
+                try await ingest.close()
+            }
+
+            let clock = IncrementingClock(Self.fixedNowMs)
+            var config = TestHelpers.defaultMemoryConfig()
+            config.enableAccessStatsScoring = true
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: DeterministicTextEmbedder(),
+                nowMsProvider: { clock.next() }
+            )
+
+            let callsBeforeSearch = clock.callCount
+            let hits = try await orchestrator.search(
+                query: "waxfile",
+                mode: .hybrid(alpha: 0.5),
+                topK: 5,
+                frameFilter: nil
+            )
+            #expect(!hits.isEmpty)
+            #expect(clock.callCount - callsBeforeSearch == 1)
+
+            try await orchestrator.close()
+        }
+    }
+
+    @Test
     func documentAgeRecencyBoostFlipsRankingAcrossNinetyDayBoundary() {
         let nowA = Self.fixedNowMs
         let day = Self.dayMs
@@ -233,6 +273,31 @@ struct DeterministicRecallTests {
             #expect(coldHits.allSatisfy { !$0.explanations.contains("recently used") })
 
             try await orchestrator.close()
+        }
+    }
+}
+
+/// Each `next()` returns a distinct millisecond so a double nowProvider()
+/// call in one search cannot hide behind a frozen clock.
+private final class IncrementingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64
+    private var calls = 0
+
+    init(_ start: Int64) {
+        value = start
+    }
+
+    var callCount: Int {
+        lock.withLock { calls }
+    }
+
+    func next() -> Int64 {
+        lock.withLock {
+            calls += 1
+            let current = value
+            value += 1
+            return current
         }
     }
 }

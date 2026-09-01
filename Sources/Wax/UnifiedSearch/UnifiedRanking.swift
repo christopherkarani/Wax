@@ -534,16 +534,16 @@ package enum UnifiedRanking {
         return true
     }
 
-    /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.
-    /// Includes "allergic", "draft memo", "tentative", "pending approval" because UnifiedSearch
-    /// needs wider filtering for search result quality. Omits "no authoritative" (only relevant
-    /// for answer-focused context assembly where confidence-undermining language matters).
-    private static func dehighlightedPreviewText(_ text: String) -> String {
+    package static func dehighlightedPreviewText(_ text: String) -> String {
         text
             .replacingOccurrences(of: "[", with: "")
             .replacingOccurrences(of: "]", with: "")
     }
 
+    /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.
+    /// Includes "allergic", "draft memo", "tentative", "pending approval" because UnifiedSearch
+    /// needs wider filtering for search result quality. Omits "no authoritative" (only relevant
+    /// for answer-focused context assembly where confidence-undermining language matters).
     private static func looksDistractorLike(_ text: String) -> Bool {
         text.contains("weekly report")
             || text.contains("checklist")
