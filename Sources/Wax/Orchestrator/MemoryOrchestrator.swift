@@ -1196,7 +1196,9 @@ package actor MemoryOrchestrator {
             recallConfig.searchMode = searchMode
         }
         let resolvedTimeRange = timeRange ?? extractTemporalTimeRange(from: query, anchorMs: recallConfig.deterministicNowMs)
-        let context = try await ragBuilder.build(
+        // Access reasons are attached once during pack. Do not re-fetch stats
+        // or re-append the same strings here.
+        return try await ragBuilder.build(
             query: query,
             embedding: embedding,
             vectorEnginePreference: preference,
@@ -1208,29 +1210,6 @@ package actor MemoryOrchestrator {
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
-        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
-            await AccessFrequencyRanker.statsForRanking(
-                frameIds: context.items.map(\.frameId),
-                manager: accessStatsManager,
-                wax: wax
-            )
-        } else {
-            [:]
-        }
-        let recallNowMs = recallConfig.deterministicNowMs ?? nowProvider()
-        let enrichedItems = context.items.map { item in
-            var item = item
-            let accessReasons = MemorySemantics.accessReasons(
-                stats: accessStatsMap[item.frameId],
-                metadata: item.metadata,
-                nowMs: recallNowMs
-            ).reasons
-            if !accessReasons.isEmpty {
-                item.explanations = dedupedExplanations(item.explanations + accessReasons)
-            }
-            return item
-        }
-        return RAGContext(query: context.query, items: enrichedItems, totalTokens: context.totalTokens)
     }
 
     /// Performs direct search without context assembly.
