@@ -339,7 +339,7 @@ extension AgentBrokerService {
 
     typealias MemoryHorizon = LayeredRecall.Horizon
     typealias LayeredMemoryHit = LayeredRecall.Hit
-    typealias MemoryReference = LayeredRecall.MemoryReference
+    typealias MemoryReference = MemoryID
 
     struct MarkdownProjectionReport {
         var memoryMarkdownPath: String
@@ -356,9 +356,7 @@ extension AgentBrokerService {
         }
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
-            semantics: command.writeSemantics,
-            sessionID: sessionID,
-            scope: command.writeScope?.rawValue,
+            destination: command.destination,
             activeSession: sessionID != nil,
             inferredScope: writeScope(for: sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
@@ -510,17 +508,17 @@ extension AgentBrokerService {
         }
         lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
         for (index, hit) in result.hits.enumerated() {
-            let kind = hit.kind ?? "snippet"
+            let kind = Self.itemKindLabel(hit.kind)
             lines.append("\(index + 1). [\(kind)] frame=\(hit.frameID) score=\(String(format: "%.4f", hit.score)) \(hit.text)")
         }
 
         let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
             .object([
                 "rank": .from(index + 1),
-                "kind": .string(hit.kind ?? "snippet"),
+                "kind": .string(Self.itemKindLabel(hit.kind)),
                 "frameId": .from(hit.frameID),
                 "score": .double(Double(hit.score)),
-                "sources": .array(hit.sources.map(AgentBrokerValue.string)),
+                "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "text": .string(hit.text),
                 "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
                 "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
@@ -867,11 +865,15 @@ extension AgentBrokerService {
                 suggestedDurability: proposal.suggestedDurability,
                 suggestedConfidence: proposal.confidence
             )
+            let destination = try RememberDestination.decode(
+                sessionID: nil,
+                writeScope: .durable,
+                semantics: writeSemantics,
+                metadata: normalizedMetadata
+            )
             normalizedMetadata = try MemorySemantics.validatedWriteMetadata(
                 metadata: normalizedMetadata,
-                semantics: writeSemantics,
-                sessionID: nil,
-                scope: "durable",
+                destination: destination,
                 activeSession: false,
                 inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
                 nowMs: Self.nowMs()
@@ -945,9 +947,7 @@ extension AgentBrokerService {
         }
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
-            semantics: command.writeSemantics,
-            sessionID: command.sessionID,
-            scope: command.writeScope?.rawValue,
+            destination: command.destination,
             activeSession: command.sessionID != nil,
             inferredScope: writeScope(for: command.sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
@@ -2440,24 +2440,17 @@ extension AgentBrokerService {
                         ) ?? item.frameId
                         hits.append(
                             LayeredRecall.Hit(
-                                reference: LayeredRecall.makeMemoryReference(
-                                    .episodic,
-                                    sessionID: manifest.sessionID,
-                                    frameID: canonicalFrameID
-                                ),
-                                horizon: .episodic,
-                                sessionID: manifest.sessionID,
+                                id: .episodic(sessionID: manifest.sessionID, frameID: canonicalFrameID),
                                 agentID: manifest.agentID,
                                 runID: manifest.runID,
-                                frameID: canonicalFrameID,
                                 score: item.score,
                                 text: item.text,
                                 preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
                                 metadata: item.metadata,
                                 explanations: ["recent session episode"] + item.explanations,
                                 timestampMs: manifest.updatedAtMs,
-                                kind: "\(item.kind)",
-                                sources: item.sources.map(\.rawValue)
+                                kind: item.kind,
+                                sources: item.sources
                             )
                         )
                     }
@@ -2469,17 +2462,12 @@ extension AgentBrokerService {
     }
 
     func layeredMemoryGet(reference: MemoryReference) async throws -> LayeredMemoryHit {
-        switch reference.horizon {
-        case .durable:
-            let document = try await requireDocument(frameID: reference.frameID, memory: longTermMemory)
+        switch reference {
+        case .durable(let frameID):
+            let document = try await requireDocument(frameID: frameID, memory: longTermMemory)
             await longTermMemory.recordAccess(frameId: document.frameId)
             return LayeredMemoryHit(
-                reference: Self.makeMemoryReference(.durable, sessionID: nil, frameID: reference.frameID),
-                horizon: .durable,
-                sessionID: nil,
-                agentID: nil,
-                runID: nil,
-                frameID: document.frameId,
+                id: .durable(frameID: frameID),
                 score: 0,
                 text: document.text,
                 preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
@@ -2487,21 +2475,15 @@ extension AgentBrokerService {
                 explanations: ["durable memory"],
                 timestampMs: document.timestampMs
             )
-        case .working, .episodic:
-            guard let sessionID = reference.sessionID else {
-                throw BrokerValidationError.invalid("session-backed memory references require a session_id")
-            }
+        case .working(let sessionID, let frameID), .episodic(let sessionID, let frameID):
             let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
             let loader: (MemoryOrchestrator) async throws -> LayeredMemoryHit = { memory in
-                let document = try await self.requireDocument(frameID: reference.frameID, memory: memory)
+                let document = try await self.requireDocument(frameID: frameID, memory: memory)
                 await memory.recordAccess(frameId: document.frameId)
                 return LayeredMemoryHit(
-                    reference: Self.makeMemoryReference(reference.horizon, sessionID: sessionID, frameID: reference.frameID),
-                    horizon: reference.horizon,
-                    sessionID: sessionID,
+                    id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
                     agentID: manifest.agentID,
                     runID: manifest.runID,
-                    frameID: document.frameId,
                     score: 0,
                     text: document.text,
                     preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
@@ -3069,26 +3051,17 @@ extension AgentBrokerService {
     }
 
     func parseMemoryReference(_ raw: String) throws -> MemoryReference {
-        let parts = raw.split(separator: ":").map(String.init)
-        guard parts.count >= 2 else {
-            throw BrokerValidationError.invalid("memory_id must be in the form '<horizon>:<frame>' or '<horizon>:<session_id>:<frame>'")
-        }
-        guard let horizon = MemoryHorizon(rawValue: parts[0]) else {
-            throw BrokerValidationError.invalid("memory_id horizon must be one of: working, episodic, durable")
-        }
-        switch horizon {
-        case .durable:
-            guard parts.count == 2, let frameID = UInt64(parts[1]) else {
-                throw BrokerValidationError.invalid("durable memory_id must be 'durable:<frame_id>'")
-            }
-            return MemoryReference(horizon: .durable, sessionID: nil, frameID: frameID)
-        case .working, .episodic:
-            guard parts.count == 3,
-                  let sessionID = UUID(uuidString: parts[1]),
-                  let frameID = UInt64(parts[2]) else {
-                throw BrokerValidationError.invalid("session memory_id must be '\(horizon.rawValue):<session_id>:<frame_id>'")
-            }
-            return MemoryReference(horizon: horizon, sessionID: sessionID, frameID: frameID)
+        try MemoryID.parse(raw)
+    }
+
+    static func itemKindLabel(_ kind: RAGContext.ItemKind) -> String {
+        switch kind {
+        case .expanded:
+            return "expanded"
+        case .surrogate:
+            return "surrogate"
+        case .snippet:
+            return "snippet"
         }
     }
 
@@ -3186,7 +3159,11 @@ extension AgentBrokerService {
         return trimmed
     }
 
-    static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID?, frameID: UInt64) -> String {
+    static func makeMemoryReference(frameID: UInt64) -> String {
+        LayeredRecall.makeMemoryReference(frameID: frameID)
+    }
+
+    static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID, frameID: UInt64) -> String {
         LayeredRecall.makeMemoryReference(horizon, sessionID: sessionID, frameID: frameID)
     }
 

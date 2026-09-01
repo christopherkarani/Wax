@@ -209,6 +209,41 @@ func memoryOrchestratorVectorRecallWithEmbeddingUsesVectorResults() async throws
 }
 
 @Test
+func memoryOrchestratorQueryAwareProviderUsesEmbedQueryOnRecall() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = false
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+        config.rag = FastRAGConfig(
+            maxContextTokens: 80,
+            expansionMaxTokens: 30,
+            snippetMaxTokens: 15,
+            maxSnippets: 10,
+            searchTopK: 25,
+            searchMode: .vectorOnly
+        )
+
+        let embedder = RecordingQueryAwareEmbedder()
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+        try await orchestrator.remember("Swift concurrency uses actors and tasks.")
+        try await orchestrator.flush()
+
+        let ingestEmbeds = await embedder.embedCallCount
+        let ingestQueries = await embedder.embedQueryCallCount
+        #expect(ingestEmbeds >= 1)
+        #expect(ingestQueries == 0)
+
+        let ctx = try await orchestrator.recall(query: "Swift concurrency uses actors and tasks.")
+        #expect(!ctx.items.isEmpty)
+        #expect(await embedder.embedQueryCallCount == 1)
+        #expect(await embedder.embedCallCount == ingestEmbeds)
+
+        try await orchestrator.close()
+    }
+}
+
+@Test
 func memoryOrchestratorReopenVectorSearchWithoutEmbedderAllowsRecallWithEmbedding() async throws {
     try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
@@ -472,6 +507,37 @@ struct MemoryOrchestratorIngestFastPathTests {
             }
             try await orchestrator.close()
         }
+    }
+}
+
+private actor RecordingQueryAwareEmbedder: QueryAwareEmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "QueryAwareRecorder",
+        dimensions: 2,
+        normalized: true
+    )
+
+    private(set) var embedCallCount = 0
+    private(set) var embedQueryCallCount = 0
+
+    func embed(_ text: String) async throws -> [Float] {
+        embedCallCount += 1
+        return Self.vector(for: text, query: false)
+    }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        embedQueryCallCount += 1
+        return Self.vector(for: text, query: true)
+    }
+
+    private static func vector(for text: String, query: Bool) -> [Float] {
+        let a = Float(text.utf8.count % 97) / 97.0
+        let b = Float(text.unicodeScalars.count % 89) / 89.0
+        let offset: Float = query ? 0.01 : 0
+        return VectorMath.normalizeL2([a + offset, b])
     }
 }
 

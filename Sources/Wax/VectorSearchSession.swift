@@ -6,7 +6,7 @@ package actor WaxVectorSearchSession {
     private typealias ConcreteVectorEngine = LoadedVectorSearchEngine
 
     package let wax: Wax
-    package let engine: any VectorSearchEngine
+    package var engine: any VectorSearchEngine { concreteEngine.erased }
     package let metric: VectorMetric
     package let dimensions: Int
     private let concreteEngine: ConcreteVectorEngine
@@ -29,7 +29,6 @@ package actor WaxVectorSearchSession {
             preference: preference
         )
         self.concreteEngine = loadedEngine
-        self.engine = loadedEngine.erased
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
         self.lastPendingEmbeddingSequence = snapshot.latestSequence

@@ -42,7 +42,7 @@ actor UnifiedSearchEngineCache {
 
     private struct CachedVector {
         var key: VectorSourceKey
-        var engine: any VectorSearchEngine
+        var engine: LoadedVectorSearchEngine
     }
 
     private var textByWax: [ObjectIdentifier: CachedText] = [:]
@@ -109,7 +109,7 @@ actor UnifiedSearchEngineCache {
         for wax: Wax,
         queryEmbeddingDimensions: Int,
         preference: VectorEnginePreference = .auto
-    ) async throws -> (any VectorSearchEngine)? {
+    ) async throws -> LoadedVectorSearchEngine? {
         guard queryEmbeddingDimensions > 0 else { return nil }
         let pendingSnapshot = await wax.pendingEmbeddingMutations(since: nil)
         guard let descriptor = try await vectorLoadDescriptor(
@@ -133,8 +133,8 @@ actor UnifiedSearchEngineCache {
             preference: preference
         )
         incrementVectorDeserializations(for: waxId)
-        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded.erased)
-        return loaded.erased
+        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded)
+        return loaded
     }
 
     private func incrementTextDeserializations(for waxId: ObjectIdentifier) {
