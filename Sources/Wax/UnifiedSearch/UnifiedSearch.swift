@@ -4,9 +4,11 @@ import WaxTextSearch
 import WaxVectorSearch
 
 struct UnifiedSearchEngineOverrides {
-    var textEngine: FTS5SearchEngine?
-    var vectorEngine: (any VectorSearchEngine)?
-    var structuredEngine: FTS5SearchEngine?
+    var textEngine: FTS5SearchEngine? = nil
+    /// Test injection. Production search uses `loadedVectorEngine` or the cache enum.
+    var vectorEngine: (any VectorSearchEngine)? = nil
+    var loadedVectorEngine: LoadedVectorSearchEngine? = nil
+    var structuredEngine: FTS5SearchEngine? = nil
 }
 
 package extension Wax {
@@ -77,15 +79,24 @@ extension Wax {
             nil
         }
 
-        let vectorEngine: (any VectorSearchEngine)? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
+        enum ResolvedVectorEngine {
+            case loaded(LoadedVectorSearchEngine)
+            case override(any VectorSearchEngine)
+        }
+
+        let resolvedVectorEngine: ResolvedVectorEngine? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
             if let override = engineOverrides?.vectorEngine {
-                override
+                .override(override)
+            } else if let loaded = engineOverrides?.loadedVectorEngine {
+                .loaded(loaded)
+            } else if let loaded = try await cache.vectorEngine(
+                for: self,
+                queryEmbeddingDimensions: embedding.count,
+                preference: request.vectorEnginePreference
+            ) {
+                .loaded(loaded)
             } else {
-                try await cache.vectorEngine(
-                    for: self,
-                    queryEmbeddingDimensions: embedding.count,
-                    preference: request.vectorEnginePreference
-                )
+                nil
             }
         } else {
             nil
@@ -171,19 +182,17 @@ extension Wax {
         }()
 
         async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
-            guard includeVector, let vectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
-            var queryEmbedding = embedding
-            #if canImport(Metal)
-            let isMetalEngine = vectorEngine is MetalVectorEngine
-            if isMetalEngine, !VectorMath.isNormalizedL2(queryEmbedding) {
-                queryEmbedding = VectorMath.normalizeL2(queryEmbedding)
-            }
-            #endif
-            let vectorToSearch = queryEmbedding
+            guard includeVector, let resolvedVectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
+            let vectorToSearch = embedding
             if let timeout = request.vectorSearchTimeout {
                 do {
                     return try await AsyncTimeout.run(timeout: timeout, operation: "vector search") {
-                        try await vectorEngine.search(vector: vectorToSearch, topK: candidateLimit)
+                        switch resolvedVectorEngine {
+                        case .loaded(let engine):
+                            return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
+                        case .override(let engine):
+                            return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
+                        }
                     }
                 } catch let error as AsyncTimeout.TimeoutError {
                     // Hybrid/text modes can degrade to non-vector lanes; vectorOnly should fail hard.
@@ -198,7 +207,12 @@ extension Wax {
                     return []
                 }
             } else {
-                return try await vectorEngine.search(vector: vectorToSearch, topK: candidateLimit)
+                switch resolvedVectorEngine {
+                case .loaded(let engine):
+                    return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
+                case .override(let engine):
+                    return try await engine.search(vector: vectorToSearch, topK: candidateLimit)
+                }
             }
         }()
 
