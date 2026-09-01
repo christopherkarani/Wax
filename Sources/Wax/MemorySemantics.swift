@@ -80,6 +80,301 @@ package struct MemoryWriteSemantics: Sendable, Equatable {
     }
 }
 
+/// Closed session vs durable remember write after wire decode.
+package enum RememberDestination: Sendable, Equatable {
+    case session(sessionID: UUID, write: SessionRememberWrite)
+    case durable(write: DurableRememberWrite)
+
+    package var sessionID: UUID? {
+        switch self {
+        case .session(let sessionID, _):
+            return sessionID
+        case .durable:
+            return nil
+        }
+    }
+
+    package var writeSemantics: MemoryWriteSemantics {
+        switch self {
+        case .session(_, let write):
+            return write.writeSemantics
+        case .durable(let write):
+            return write.writeSemantics
+        }
+    }
+
+    /// Maps MCP remember fields into a destination that cannot name illegal combos.
+    package static func decode(
+        sessionID: UUID?,
+        writeScope: RememberWriteScope?,
+        semantics: MemoryWriteSemantics,
+        metadata: [String: String]
+    ) throws -> RememberDestination {
+        let metadataType = metadata[MemoryMetadataKeys.type].flatMap(MemoryType.init(rawValue:))
+        let resolvedType = semantics.type ?? metadataType ?? .note
+        let metadataDurability = metadata[MemoryMetadataKeys.durability]
+            .flatMap(MemoryDurability.init(rawValue:))
+        let requestedDurability = semantics.lock
+            ? MemoryDurability.locked
+            : semantics.durability ?? metadataDurability
+        let fields = RememberWriteFields(
+            project: semantics.project,
+            repo: semantics.repo,
+            confidence: semantics.confidence,
+            expiresInDays: semantics.expiresInDays,
+            reviewed: semantics.reviewed
+        )
+
+        if resolvedType == .taskState {
+            if writeScope == .durable {
+                throw BrokerValidationError.invalid(
+                    "task_state cannot use scope durable; use scope session with an active session_id"
+                )
+            }
+            guard let sessionID else {
+                throw BrokerValidationError.invalid(
+                    "task_state requires an active session_id; durable task diaries are not supported"
+                )
+            }
+            if semantics.lock
+                || requestedDurability == .durable
+                || requestedDurability == .locked
+                || metadataDurability == .durable
+                || metadataDurability == .locked {
+                throw BrokerValidationError.invalid(
+                    "task_state cannot use durability durable or locked; use working session memory"
+                )
+            }
+            return .session(sessionID: sessionID, write: .taskState(fields: fields))
+        }
+
+        if writeScope == .durable, sessionID != nil {
+            throw BrokerValidationError.invalid("scope durable forbids session_id")
+        }
+        if writeScope == .session, sessionID == nil {
+            throw BrokerValidationError.invalid("scope session requires session_id")
+        }
+
+        if let sessionID, writeScope != .durable {
+            let sessionDurability: SessionRememberDurability
+            switch requestedDurability {
+            case .durable, .locked:
+                throw BrokerValidationError.invalid(
+                    "session writes cannot use durability durable or locked; use working session memory"
+                )
+            case .ephemeral:
+                sessionDurability = .ephemeral
+            case .working, .none:
+                sessionDurability = .working
+            }
+            let sessionType = try SessionRememberType(memoryType: resolvedType)
+            return .session(
+                sessionID: sessionID,
+                write: .typed(type: sessionType, durability: sessionDurability, fields: fields)
+            )
+        }
+
+        let durableType = try DurableRememberType(memoryType: resolvedType)
+        let durableDurability: DurableRememberDurability
+        if semantics.lock || requestedDurability == .locked {
+            durableDurability = .locked
+        } else if requestedDurability == .durable {
+            durableDurability = .durable
+        } else if requestedDurability == nil {
+            switch MemorySemantics.defaultDurability(for: resolvedType) {
+            case .locked:
+                durableDurability = .locked
+            case .durable, .working, .ephemeral:
+                durableDurability = .durable
+            }
+        } else {
+            durableDurability = .durable
+        }
+        return .durable(
+            write: DurableRememberWrite(type: durableType, durability: durableDurability, fields: fields)
+        )
+    }
+}
+
+package enum RememberWriteScope: String, Sendable, Equatable {
+    case session
+    case durable
+}
+
+package enum SessionRememberWrite: Sendable, Equatable {
+    /// Session-local working state; durability is always `working`.
+    case taskState(fields: RememberWriteFields)
+    case typed(type: SessionRememberType, durability: SessionRememberDurability, fields: RememberWriteFields)
+
+    package var writeSemantics: MemoryWriteSemantics {
+        switch self {
+        case .taskState(let fields):
+            return MemoryWriteSemantics(
+                type: .taskState,
+                durability: .working,
+                project: fields.project,
+                repo: fields.repo,
+                confidence: fields.confidence,
+                expiresInDays: fields.expiresInDays,
+                reviewed: fields.reviewed,
+                lock: false
+            )
+        case .typed(let type, let durability, let fields):
+            return MemoryWriteSemantics(
+                type: type.memoryType,
+                durability: durability.memoryDurability,
+                project: fields.project,
+                repo: fields.repo,
+                confidence: fields.confidence,
+                expiresInDays: fields.expiresInDays,
+                reviewed: fields.reviewed,
+                lock: false
+            )
+        }
+    }
+}
+
+package enum SessionRememberType: Sendable, Equatable {
+    case note
+    case userPreference
+    case decision
+    case lesson
+    case handoff
+    case constraint
+    case fact
+
+    package var memoryType: MemoryType {
+        switch self {
+        case .note: return .note
+        case .userPreference: return .userPreference
+        case .decision: return .decision
+        case .lesson: return .lesson
+        case .handoff: return .handoff
+        case .constraint: return .constraint
+        case .fact: return .fact
+        }
+    }
+
+    package init(memoryType: MemoryType) throws {
+        switch memoryType {
+        case .taskState:
+            throw BrokerValidationError.invalid(
+                "task_state cannot be a typed session write; use SessionRememberWrite.taskState"
+            )
+        case .note: self = .note
+        case .userPreference: self = .userPreference
+        case .decision: self = .decision
+        case .lesson: self = .lesson
+        case .handoff: self = .handoff
+        case .constraint: self = .constraint
+        case .fact: self = .fact
+        }
+    }
+}
+
+package enum SessionRememberDurability: Sendable, Equatable {
+    case ephemeral
+    case working
+
+    package var memoryDurability: MemoryDurability {
+        switch self {
+        case .ephemeral: return .ephemeral
+        case .working: return .working
+        }
+    }
+}
+
+package enum DurableRememberType: Sendable, Equatable {
+    case note
+    case userPreference
+    case decision
+    case lesson
+    case handoff
+    case constraint
+    case fact
+
+    package var memoryType: MemoryType {
+        switch self {
+        case .note: return .note
+        case .userPreference: return .userPreference
+        case .decision: return .decision
+        case .lesson: return .lesson
+        case .handoff: return .handoff
+        case .constraint: return .constraint
+        case .fact: return .fact
+        }
+    }
+
+    package init(memoryType: MemoryType) throws {
+        switch memoryType {
+        case .taskState:
+            throw BrokerValidationError.invalid(
+                "task_state requires an active session_id; durable task diaries are not supported"
+            )
+        case .note: self = .note
+        case .userPreference: self = .userPreference
+        case .decision: self = .decision
+        case .lesson: self = .lesson
+        case .handoff: self = .handoff
+        case .constraint: self = .constraint
+        case .fact: self = .fact
+        }
+    }
+}
+
+package enum DurableRememberDurability: Sendable, Equatable {
+    case durable
+    case locked
+
+    package var memoryDurability: MemoryDurability {
+        switch self {
+        case .durable: return .durable
+        case .locked: return .locked
+        }
+    }
+}
+
+package struct RememberWriteFields: Sendable, Equatable {
+    package var project: String?
+    package var repo: String?
+    package var confidence: Float?
+    package var expiresInDays: Int?
+    package var reviewed: Bool
+
+    package init(
+        project: String? = nil,
+        repo: String? = nil,
+        confidence: Float? = nil,
+        expiresInDays: Int? = nil,
+        reviewed: Bool = false
+    ) {
+        self.project = project
+        self.repo = repo
+        self.confidence = confidence
+        self.expiresInDays = expiresInDays
+        self.reviewed = reviewed
+    }
+}
+
+package struct DurableRememberWrite: Sendable, Equatable {
+    package var type: DurableRememberType
+    package var durability: DurableRememberDurability
+    package var fields: RememberWriteFields
+
+    package var writeSemantics: MemoryWriteSemantics {
+        MemoryWriteSemantics(
+            type: type.memoryType,
+            durability: durability.memoryDurability,
+            project: fields.project,
+            repo: fields.repo,
+            confidence: fields.confidence,
+            expiresInDays: fields.expiresInDays,
+            reviewed: fields.reviewed,
+            lock: durability == .locked
+        )
+    }
+}
+
 package enum MemoryMetadataKeys {
     package static let type = "wax.memory_type"
     package static let durability = "wax.durability"
@@ -214,6 +509,32 @@ package enum MemorySemantics {
             normalized[MemoryMetadataKeys.expiresAtMs] = String(expiresAtMs)
         }
         return normalized
+    }
+
+    /// Validates a closed remember destination and returns normalized metadata.
+    package static func validatedWriteMetadata(
+        metadata: [String: String],
+        destination: RememberDestination,
+        activeSession: Bool,
+        inferredScope: MemoryScopeContext?,
+        nowMs: Int64
+    ) throws -> [String: String] {
+        let scope: String
+        switch destination {
+        case .session:
+            scope = "session"
+        case .durable:
+            scope = "durable"
+        }
+        return try validatedWriteMetadata(
+            metadata: metadata,
+            semantics: destination.writeSemantics,
+            sessionID: destination.sessionID,
+            scope: scope,
+            activeSession: activeSession,
+            inferredScope: inferredScope,
+            nowMs: nowMs
+        )
     }
 
     /// Validates the broker write contract and returns normalized metadata.

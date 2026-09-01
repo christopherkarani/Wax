@@ -38,18 +38,20 @@ package enum BrokerCommand: Sendable, Equatable {
     case corpusSearch(CorpusSearch)
     case memoryMaintain(MemoryMaintain)
 
-    package enum RememberWriteScope: String, Sendable, Equatable {
-        case session
-        case durable
-    }
-
     package struct Remember: Sendable, Equatable {
         package var content: String
-        package var sessionID: UUID?
-        package var writeScope: RememberWriteScope?
+        package var destination: RememberDestination
         package var metadata: [String: String]
-        package var writeSemantics: MemoryWriteSemantics
         package var cwd: String?
+
+        package var sessionID: UUID? { destination.sessionID }
+        package var writeSemantics: MemoryWriteSemantics { destination.writeSemantics }
+        package var writeScope: RememberWriteScope {
+            switch destination {
+            case .session: return .session
+            case .durable: return .durable
+            }
+        }
     }
 
     package struct ParsedSearchFilters: Sendable, Equatable {
@@ -159,10 +161,8 @@ package enum BrokerCommand: Sendable, Equatable {
 
     package struct KnowledgeCapture: Sendable, Equatable {
         package var content: String
-        package var sessionID: UUID?
-        package var writeScope: RememberWriteScope?
+        package var destination: RememberDestination
         package var metadata: [String: String]
-        package var writeSemantics: MemoryWriteSemantics
         package var cwd: String?
         package var subject: String?
         package var kind: String?
@@ -170,6 +170,15 @@ package enum BrokerCommand: Sendable, Equatable {
         package var predicate: String?
         /// Raw wire object; handler parses to ``FactValue``.
         package var object: AgentBrokerValue?
+
+        package var sessionID: UUID? { destination.sessionID }
+        package var writeSemantics: MemoryWriteSemantics { destination.writeSemantics }
+        package var writeScope: RememberWriteScope {
+            switch destination {
+            case .session: return .session
+            case .durable: return .durable
+            }
+        }
     }
 
     package struct SessionClose: Sendable, Equatable {
@@ -357,12 +366,17 @@ extension BrokerCommand.Remember {
         if rawMetadata["session_id"] != nil {
             throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
         }
-        return Self(
-            content: content,
+        let writeSemantics = try BrokerCommand.parseWriteSemantics(args)
+        let destination = try RememberDestination.decode(
             sessionID: sessionID,
             writeScope: writeScope,
+            semantics: writeSemantics,
+            metadata: rawMetadata
+        )
+        return Self(
+            content: content,
+            destination: destination,
             metadata: rawMetadata,
-            writeSemantics: try BrokerCommand.parseWriteSemantics(args),
             cwd: try args.optionalString("cwd")
         )
     }
@@ -614,15 +628,19 @@ extension BrokerCommand.KnowledgeCapture {
         if metadata["session_id"] != nil {
             throw BrokerValidationError.invalid("metadata.session_id is reserved; use top-level session_id")
         }
+        let destination = try RememberDestination.decode(
+            sessionID: sessionID,
+            writeScope: writeScope,
+            semantics: writeSemantics,
+            metadata: metadata
+        )
         return Self(
             content: try args.requiredStringPreservingWhitespace(
                 "content",
                 maxBytes: BrokerLimits.maxContentBytes
             ),
-            sessionID: sessionID,
-            writeScope: writeScope,
+            destination: destination,
             metadata: metadata,
-            writeSemantics: writeSemantics,
             cwd: try args.optionalString("cwd"),
             subject: try args.optionalString("subject"),
             kind: try args.optionalString("kind"),

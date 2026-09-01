@@ -49,7 +49,6 @@ package actor WaxSession {
     package let config: Config
 
     private let textEngine: FTS5SearchEngine?
-    private var vectorEngine: (any VectorSearchEngine)?
     private var concreteVectorEngine: ConcreteVectorEngine?
     private var lastPendingEmbeddingSequence: UInt64?
     /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
@@ -77,7 +76,6 @@ package actor WaxSession {
             }
 
             let resolvedConcreteVectorEngine: ConcreteVectorEngine?
-            let resolvedVectorEngine: (any VectorSearchEngine)?
             let resolvedLastPendingEmbeddingSequence: UInt64?
 
             if config.enableVectorSearch {
@@ -90,23 +88,19 @@ package actor WaxSession {
                         preference: config.vectorEnginePreference
                     )
                     resolvedConcreteVectorEngine = loadedVectorEngine
-                    resolvedVectorEngine = loadedVectorEngine.erased
                     let snapshot = await wax.pendingEmbeddingMutations(since: nil)
                     resolvedLastPendingEmbeddingSequence = snapshot.latestSequence
                 } else {
                     resolvedConcreteVectorEngine = nil
-                    resolvedVectorEngine = nil
                     resolvedLastPendingEmbeddingSequence = nil
                 }
             } else {
                 resolvedConcreteVectorEngine = nil
-                resolvedVectorEngine = nil
                 resolvedLastPendingEmbeddingSequence = nil
             }
 
             self.textEngine = resolvedTextEngine
             self.concreteVectorEngine = resolvedConcreteVectorEngine
-            self.vectorEngine = resolvedVectorEngine
             self.lastPendingEmbeddingSequence = resolvedLastPendingEmbeddingSequence
         } catch {
             if let leaseId = acquiredWriterLeaseId {
@@ -144,7 +138,6 @@ package actor WaxSession {
             preference: config.vectorEnginePreference
         )
         concreteVectorEngine = loaded
-        vectorEngine = loaded.erased
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
         lastPendingEmbeddingSequence = snapshot.latestSequence
     }
@@ -155,7 +148,7 @@ package actor WaxSession {
         let searchVectorEngine = try await vectorEngineForSearch(request)
         let overrides = UnifiedSearchEngineOverrides(
             textEngine: textEngine,
-            vectorEngine: searchVectorEngine,
+            loadedVectorEngine: searchVectorEngine,
             structuredEngine: textEngine
         )
         return try await wax.search(request, engineOverrides: overrides)
@@ -520,8 +513,8 @@ package actor WaxSession {
         pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
 
-    private func vectorEngineForSearch(_ request: SearchRequest) async throws -> (any VectorSearchEngine)? {
-        guard config.enableVectorSearch, let vectorEngine else {
+    private func vectorEngineForSearch(_ request: SearchRequest) async throws -> ConcreteVectorEngine? {
+        guard config.enableVectorSearch, let concreteVectorEngine else {
             return nil
         }
 
@@ -532,8 +525,8 @@ package actor WaxSession {
             break
         }
 
-        guard case .readWrite = mode, let concreteVectorEngine else {
-            return vectorEngine
+        guard case .readWrite = mode else {
+            return concreteVectorEngine
         }
 
         lastPendingEmbeddingSequence = try await WaxVectorSearchSession.syncPendingEmbeddings(
@@ -541,7 +534,7 @@ package actor WaxSession {
             into: concreteVectorEngine,
             watermark: lastPendingEmbeddingSequence
         )
-        return concreteVectorEngine.erased
+        return concreteVectorEngine
     }
 
     private static func resolveVectorDimensions(for wax: Wax, config: Config) async throws -> Int? {
