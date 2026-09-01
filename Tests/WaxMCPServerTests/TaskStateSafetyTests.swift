@@ -59,6 +59,7 @@ func taskStateWritesRequireSessionAndWorkingDurability() async throws {
             ]
         ))
         #expect(!durable.ok)
+        #expect((durable.error ?? "").contains("task_state"))
 
         let locked = await service.handle(.init(
             command: "remember",
@@ -70,6 +71,7 @@ func taskStateWritesRequireSessionAndWorkingDurability() async throws {
             ]
         ))
         #expect(!locked.ok)
+        #expect((locked.error ?? "").contains("task_state"))
 
         let scopeDurable = await service.handle(.init(
             command: "remember",
@@ -81,6 +83,7 @@ func taskStateWritesRequireSessionAndWorkingDurability() async throws {
             ]
         ))
         #expect(!scopeDurable.ok)
+        #expect((scopeDurable.error ?? "").contains("scope durable forbids session_id"))
 
         let valid = await service.handle(.init(
             command: "remember",
@@ -162,6 +165,7 @@ func knowledgeCaptureTaskStateUsesSessionLane() async throws {
             ]
         ))
         #expect(!rejected.ok)
+        #expect((rejected.error ?? "").contains("task_state"))
 
         let started = await service.handle(.init(command: "session_start"))
         let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)

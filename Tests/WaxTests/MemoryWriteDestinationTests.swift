@@ -16,7 +16,10 @@ func rememberDestinationSessionTaskStateForcesWorking() throws {
         return
     }
     #expect(decodedSessionID == sessionID)
-    #expect(write == .taskState)
+    guard case .taskState = write else {
+        Issue.record("expected taskState write")
+        return
+    }
     #expect(destination.writeSemantics.type == .taskState)
     #expect(destination.writeSemantics.durability == .working)
     #expect(destination.writeSemantics.lock == false)
@@ -42,7 +45,7 @@ func rememberDestinationRejectsTaskStateWithoutSession() {
         )
         Issue.record("expected throw")
     } catch let error as BrokerValidationError {
-        #expect(String(describing: error).contains("task_state"))
+        #expect(String(describing: error).contains("task_state requires an active session_id"))
     } catch {
         Issue.record("unexpected error \(error)")
     }
@@ -60,7 +63,7 @@ func rememberDestinationRejectsTaskStateDurableLockedAndDurableScope() {
         )
         Issue.record("expected throw")
     } catch let error as BrokerValidationError {
-        #expect(String(describing: error).contains("task_state"))
+        #expect(String(describing: error).contains("task_state cannot use durability durable or locked"))
     } catch {
         Issue.record("unexpected error \(error)")
     }
@@ -74,7 +77,7 @@ func rememberDestinationRejectsTaskStateDurableLockedAndDurableScope() {
         )
         Issue.record("expected throw")
     } catch let error as BrokerValidationError {
-        #expect(String(describing: error).contains("task_state"))
+        #expect(String(describing: error).contains("task_state cannot use durability durable or locked"))
     } catch {
         Issue.record("unexpected error \(error)")
     }
@@ -88,7 +91,7 @@ func rememberDestinationRejectsTaskStateDurableLockedAndDurableScope() {
         )
         Issue.record("expected throw")
     } catch let error as BrokerValidationError {
-        #expect(String(describing: error).contains("task_state"))
+        #expect(String(describing: error).contains("task_state cannot use scope durable"))
     } catch {
         Issue.record("unexpected error \(error)")
     }
@@ -147,7 +150,7 @@ func rememberWireDecodeMapsClosedDestination() throws {
         Issue.record("expected remember")
         return
     }
-    #expect(remember.destination == .session(sessionID: sessionID, write: .taskState))
+    #expect(remember.destination == .session(sessionID: sessionID, write: .taskState(fields: RememberWriteFields())))
     #expect(remember.sessionID == sessionID)
     #expect(remember.writeScope == .session)
     #expect(remember.writeSemantics.type == .taskState)

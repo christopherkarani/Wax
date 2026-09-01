@@ -865,11 +865,15 @@ extension AgentBrokerService {
                 suggestedDurability: proposal.suggestedDurability,
                 suggestedConfidence: proposal.confidence
             )
+            let destination = try RememberDestination.decode(
+                sessionID: nil,
+                writeScope: .durable,
+                semantics: writeSemantics,
+                metadata: normalizedMetadata
+            )
             normalizedMetadata = try MemorySemantics.validatedWriteMetadata(
                 metadata: normalizedMetadata,
-                semantics: writeSemantics,
-                sessionID: nil,
-                scope: "durable",
+                destination: destination,
                 activeSession: false,
                 inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
                 nowMs: Self.nowMs()

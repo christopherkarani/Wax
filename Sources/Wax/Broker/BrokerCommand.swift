@@ -38,20 +38,20 @@ package enum BrokerCommand: Sendable, Equatable {
     case corpusSearch(CorpusSearch)
     case memoryMaintain(MemoryMaintain)
 
-    package enum RememberWriteScope: String, Sendable, Equatable {
-        case session
-        case durable
-    }
-
     package struct Remember: Sendable, Equatable {
         package var content: String
         package var destination: RememberDestination
-        package var writeScope: RememberWriteScope?
         package var metadata: [String: String]
         package var cwd: String?
 
         package var sessionID: UUID? { destination.sessionID }
         package var writeSemantics: MemoryWriteSemantics { destination.writeSemantics }
+        package var writeScope: RememberWriteScope {
+            switch destination {
+            case .session: return .session
+            case .durable: return .durable
+            }
+        }
     }
 
     package struct ParsedSearchFilters: Sendable, Equatable {
@@ -162,7 +162,6 @@ package enum BrokerCommand: Sendable, Equatable {
     package struct KnowledgeCapture: Sendable, Equatable {
         package var content: String
         package var destination: RememberDestination
-        package var writeScope: RememberWriteScope?
         package var metadata: [String: String]
         package var cwd: String?
         package var subject: String?
@@ -174,6 +173,12 @@ package enum BrokerCommand: Sendable, Equatable {
 
         package var sessionID: UUID? { destination.sessionID }
         package var writeSemantics: MemoryWriteSemantics { destination.writeSemantics }
+        package var writeScope: RememberWriteScope {
+            switch destination {
+            case .session: return .session
+            case .durable: return .durable
+            }
+        }
     }
 
     package struct SessionClose: Sendable, Equatable {
@@ -371,7 +376,6 @@ extension BrokerCommand.Remember {
         return Self(
             content: content,
             destination: destination,
-            writeScope: writeScope,
             metadata: rawMetadata,
             cwd: try args.optionalString("cwd")
         )
@@ -636,7 +640,6 @@ extension BrokerCommand.KnowledgeCapture {
                 maxBytes: BrokerLimits.maxContentBytes
             ),
             destination: destination,
-            writeScope: writeScope,
             metadata: metadata,
             cwd: try args.optionalString("cwd"),
             subject: try args.optionalString("subject"),

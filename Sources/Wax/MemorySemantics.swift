@@ -106,7 +106,7 @@ package enum RememberDestination: Sendable, Equatable {
     /// Maps MCP remember fields into a destination that cannot name illegal combos.
     package static func decode(
         sessionID: UUID?,
-        writeScope: BrokerCommand.RememberWriteScope?,
+        writeScope: RememberWriteScope?,
         semantics: MemoryWriteSemantics,
         metadata: [String: String]
     ) throws -> RememberDestination {
@@ -117,6 +117,13 @@ package enum RememberDestination: Sendable, Equatable {
         let requestedDurability = semantics.lock
             ? MemoryDurability.locked
             : semantics.durability ?? metadataDurability
+        let fields = RememberWriteFields(
+            project: semantics.project,
+            repo: semantics.repo,
+            confidence: semantics.confidence,
+            expiresInDays: semantics.expiresInDays,
+            reviewed: semantics.reviewed
+        )
 
         if resolvedType == .taskState {
             if writeScope == .durable {
@@ -138,7 +145,7 @@ package enum RememberDestination: Sendable, Equatable {
                     "task_state cannot use durability durable or locked; use working session memory"
                 )
             }
-            return .session(sessionID: sessionID, write: .taskState)
+            return .session(sessionID: sessionID, write: .taskState(fields: fields))
         }
 
         if writeScope == .durable, sessionID != nil {
@@ -147,14 +154,6 @@ package enum RememberDestination: Sendable, Equatable {
         if writeScope == .session, sessionID == nil {
             throw BrokerValidationError.invalid("scope session requires session_id")
         }
-
-        let fields = RememberWriteFields(
-            project: semantics.project,
-            repo: semantics.repo,
-            confidence: semantics.confidence,
-            expiresInDays: semantics.expiresInDays,
-            reviewed: semantics.reviewed
-        )
 
         if let sessionID, writeScope != .durable {
             let sessionDurability: SessionRememberDurability
@@ -197,15 +196,29 @@ package enum RememberDestination: Sendable, Equatable {
     }
 }
 
+package enum RememberWriteScope: String, Sendable, Equatable {
+    case session
+    case durable
+}
+
 package enum SessionRememberWrite: Sendable, Equatable {
     /// Session-local working state; durability is always `working`.
-    case taskState
+    case taskState(fields: RememberWriteFields)
     case typed(type: SessionRememberType, durability: SessionRememberDurability, fields: RememberWriteFields)
 
     package var writeSemantics: MemoryWriteSemantics {
         switch self {
-        case .taskState:
-            return MemoryWriteSemantics(type: .taskState, durability: .working, lock: false)
+        case .taskState(let fields):
+            return MemoryWriteSemantics(
+                type: .taskState,
+                durability: .working,
+                project: fields.project,
+                repo: fields.repo,
+                confidence: fields.confidence,
+                expiresInDays: fields.expiresInDays,
+                reviewed: fields.reviewed,
+                lock: false
+            )
         case .typed(let type, let durability, let fields):
             return MemoryWriteSemantics(
                 type: type.memoryType,
@@ -246,7 +259,7 @@ package enum SessionRememberType: Sendable, Equatable {
         switch memoryType {
         case .taskState:
             throw BrokerValidationError.invalid(
-                "task_state requires an active session_id; durable task diaries are not supported"
+                "task_state cannot be a typed session write; use SessionRememberWrite.taskState"
             )
         case .note: self = .note
         case .userPreference: self = .userPreference

@@ -113,6 +113,22 @@ package enum SessionHarvest {
                     leftoverDocumentCount += 1
                     continue
                 }
+                let destination: RememberDestination
+                do {
+                    destination = try RememberDestination.decode(
+                        sessionID: nil,
+                        writeScope: .durable,
+                        semantics: MemoryWriteSemantics(),
+                        metadata: metadata
+                    )
+                } catch {
+                    leftoverDocumentCount += 1
+                    continue
+                }
+                guard case .durable = destination else {
+                    leftoverDocumentCount += 1
+                    continue
+                }
                 do {
                     let written = try await longTermMemory.remember(document.text, metadata: metadata)
                     if let sourceStats = sessionStats[document.frameId] {
