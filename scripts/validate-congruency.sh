@@ -111,7 +111,9 @@ if [[ "$HOMEBREW_VERSION" != "$CANONICAL" ]]; then
   MISMATCHES+=("homebrew:$HOMEBREW_VERSION")
 fi
 
-if [[ "$OPENCODE_VERSION" != "$CANONICAL" ]]; then
+# `.pi/` is gitignored after public-repo hygiene. Skip OpenCode unless a
+# local checkout still has the private extension package.
+if [[ -f "$OPENCODE_PKG/package.json" && "$OPENCODE_VERSION" != "$CANONICAL" ]]; then
   CONGRUENT=false
   MISMATCHES+=("opencode:$OPENCODE_VERSION")
 fi
@@ -179,7 +181,12 @@ else
       printf "  %-20s │ %-10s │ %s\n" "Surface" "Version" "Status"
       printf "  %-20s ├ %-10s ┼ %s\n" "$(printf '%*s' 20 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')" "$(printf '%*s' 8 '' | tr ' ' '-')"
 
-      for surface in "npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "cli:$CLI_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION" "opencode:$OPENCODE_VERSION" "hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}"; do
+      surfaces=("npm:$NPM_VERSION" "swift:$SWIFT_VERSION" "cli:$CLI_VERSION" "openclaw:$OPENCLAW_VERSION" "openclaw-dep:$OPENCLAW_DEP" "homebrew:$HOMEBREW_VERSION")
+      if [[ -f "$OPENCODE_PKG/package.json" ]]; then
+        surfaces+=("opencode:$OPENCODE_VERSION")
+      fi
+      surfaces+=("hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}")
+      for surface in "${surfaces[@]}"; do
         name="${surface%%:*}"
         version="${surface#*:}"
         if [[ "$version" == "$CANONICAL" ]]; then

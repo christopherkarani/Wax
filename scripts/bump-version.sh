@@ -14,7 +14,7 @@ set -euo pipefail
 #   5. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw waxmcp dependency)
 #   6. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew URL)
 #   7. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew SHA256)
-#   8. .pi/extensions/wax-agents/package.json (OpenCode/pi extension)
+#   8. .pi/extensions/wax-agents/package.json (optional local OpenCode/pi copy)
 #   9. Resources/hermes/README.md (Hermes MCP config reference)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -190,13 +190,18 @@ echo "📦 Target version: $TARGET_VERSION"
 echo ""
 
 # ── Idempotency check ───────────────────────────────────────────────────────
+OPCODE_REQUIRED=false
+if [[ -f "$OPENCODE_PKG/package.json" ]]; then
+  OPCODE_REQUIRED=true
+fi
+
 if [[ "$CURRENT_NPM" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_SWIFT" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_CLI" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_OPENCLAW_DEP" == "$TARGET_VERSION" ]] && \
    [[ "$CURRENT_HOMEBREW" == "$TARGET_VERSION" ]] && \
-   [[ "$CURRENT_OPCODE" == "$TARGET_VERSION" ]] && \
+   { [[ "$OPCODE_REQUIRED" == false ]] || [[ "$CURRENT_OPCODE" == "$TARGET_VERSION" ]]; } && \
    [[ "$CURRENT_HERMES" == "$TARGET_VERSION" ]]; then
   echo "✅ All surfaces already at $TARGET_VERSION — nothing to do."
   exit 0
@@ -215,7 +220,9 @@ printf "  %-50s ├ %-10s ┼ %-10s\n" "$(printf '%*s' 50 '' | tr ' ' '-')" "$(p
 [[ "$CURRENT_OPENCLAW_DEP" != "$TARGET_VERSION" ]] && print_row "openclaw plugin (waxmcp dep)" "$CURRENT_OPENCLAW_DEP" "$TARGET_VERSION"
 [[ "$CURRENT_HOMEBREW" != "$TARGET_VERSION" ]] && print_row "homebrew formula (url)" "$CURRENT_HOMEBREW" "$TARGET_VERSION"
 print_row "homebrew formula (sha256)" "${CURRENT_HOMEBREW_SHA:0:16}..." "(recompute)"
-[[ "$CURRENT_OPCODE" != "$TARGET_VERSION" ]] && print_row ".pi/extensions/wax-agents" "$CURRENT_OPCODE" "$TARGET_VERSION"
+if [[ "$OPCODE_REQUIRED" == true && "$CURRENT_OPCODE" != "$TARGET_VERSION" ]]; then
+  print_row ".pi/extensions/wax-agents" "$CURRENT_OPCODE" "$TARGET_VERSION"
+fi
 [[ "$CURRENT_HERMES" != "$TARGET_VERSION" ]] && print_row "hermes plugin" "$CURRENT_HERMES" "$TARGET_VERSION"
 
 echo ""
@@ -250,8 +257,8 @@ if [[ "$CURRENT_OPENCLAW" != "$TARGET_VERSION" ]] || [[ "$CURRENT_OPENCLAW_DEP" 
   info "OpenClaw plugin → $TARGET_VERSION (self + waxmcp dep)"
 fi
 
-# Surface 7: OpenCode extension
-if [[ "$CURRENT_OPCODE" != "$TARGET_VERSION" ]]; then
+# Surface 7: OpenCode extension (private `.pi/` copy; skip when absent)
+if [[ "$OPCODE_REQUIRED" == true && "$CURRENT_OPCODE" != "$TARGET_VERSION" ]]; then
   cd "$OPENCODE_PKG"
   npm version "$TARGET_VERSION" --no-git-tag-version --allow-same-version >/dev/null
   cd "$ROOT"
