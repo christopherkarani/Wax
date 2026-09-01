@@ -356,9 +356,7 @@ extension AgentBrokerService {
         }
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
-            semantics: command.writeSemantics,
-            sessionID: sessionID,
-            scope: command.writeScope?.rawValue,
+            destination: command.destination,
             activeSession: sessionID != nil,
             inferredScope: writeScope(for: sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
@@ -945,9 +943,7 @@ extension AgentBrokerService {
         }
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
-            semantics: command.writeSemantics,
-            sessionID: command.sessionID,
-            scope: command.writeScope?.rawValue,
+            destination: command.destination,
             activeSession: command.sessionID != nil,
             inferredScope: writeScope(for: command.sessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
