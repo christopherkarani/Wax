@@ -116,7 +116,7 @@ func layeredRecallFrameFilterInjectsProjectMetadataForScopedRetrieval() {
 @Test
 func layeredRecallMakeMemoryReferenceFormatsHorizons() {
     let sessionID = UUID()
-    #expect(LayeredRecall.makeMemoryReference(.durable, frameID: 42) == "durable:42")
+    #expect(LayeredRecall.makeMemoryReference(frameID: 42) == "durable:42")
     #expect(
         LayeredRecall.makeMemoryReference(.working, sessionID: sessionID, frameID: 7)
             == "working:\(sessionID.uuidString):7"
@@ -132,7 +132,7 @@ func layeredRecallHitMapsRAGItemKindAndSourcesWithoutStringRoundTrip() {
         sources: [.text],
         text: "hello"
     )
-    let durable = LayeredRecall.hit(from: item, horizon: .durable)
+    let durable = LayeredRecall.hit(from: item)
     #expect(durable.kind == .snippet)
     #expect(durable.sources == [.text])
     let working = LayeredRecall.hit(from: item, horizon: .working, sessionID: UUID())

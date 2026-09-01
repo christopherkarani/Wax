@@ -3054,13 +3054,13 @@ extension AgentBrokerService {
         try MemoryID.parse(raw)
     }
 
-    static func itemKindLabel(_ kind: RAGContext.ItemKind?) -> String {
+    static func itemKindLabel(_ kind: RAGContext.ItemKind) -> String {
         switch kind {
         case .expanded:
             return "expanded"
         case .surrogate:
             return "surrogate"
-        case .snippet, .none:
+        case .snippet:
             return "snippet"
         }
     }
@@ -3159,8 +3159,8 @@ extension AgentBrokerService {
         return trimmed
     }
 
-    static func makeMemoryReference(_ horizon: MemoryHorizon, frameID: UInt64) -> String {
-        LayeredRecall.makeMemoryReference(horizon, frameID: frameID)
+    static func makeMemoryReference(frameID: UInt64) -> String {
+        LayeredRecall.makeMemoryReference(frameID: frameID)
     }
 
     static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID, frameID: UInt64) -> String {

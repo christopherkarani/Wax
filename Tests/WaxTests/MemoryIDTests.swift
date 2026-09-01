@@ -54,3 +54,13 @@ func memoryIDWireNeverEmitsUnknownSessionToken() {
     #expect(!MemoryID.episodic(sessionID: sessionID, frameID: 1).wire.contains("unknown"))
     #expect(!MemoryID.durable(frameID: 9).wire.contains("unknown"))
 }
+
+@Test
+func memoryIDParseRejectsUnknownSessionToken() {
+    #expect(throws: BrokerValidationError.self) {
+        try MemoryID.parse("working:unknown:1")
+    }
+    #expect(throws: BrokerValidationError.self) {
+        try MemoryID.parse("episodic:unknown:1")
+    }
+}

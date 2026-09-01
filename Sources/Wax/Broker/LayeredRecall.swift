@@ -38,7 +38,7 @@ package enum LayeredRecall {
         package var metadata: [String: String]
         package var explanations: [String]
         package var timestampMs: Int64
-        package var kind: RAGContext.ItemKind?
+        package var kind: RAGContext.ItemKind
         package var sources: [RAGContext.Source]
 
         package var reference: String { id.wire }
@@ -56,7 +56,7 @@ package enum LayeredRecall {
             metadata: [String: String],
             explanations: [String],
             timestampMs: Int64,
-            kind: RAGContext.ItemKind? = nil,
+            kind: RAGContext.ItemKind = .snippet,
             sources: [RAGContext.Source] = []
         ) {
             self.id = id
@@ -280,7 +280,7 @@ package enum LayeredRecall {
         id.wire
     }
 
-    package static func makeMemoryReference(_ horizon: Horizon, frameID: UInt64) -> String {
+    package static func makeMemoryReference(frameID: UInt64) -> String {
         MemoryID.durable(frameID: frameID).wire
     }
 
@@ -496,7 +496,7 @@ package enum LayeredRecall {
         hit(from: item, id: MemoryID.make(horizon: horizon, sessionID: sessionID, frameID: item.frameId))
     }
 
-    package static func hit(from item: RAGContext.Item, horizon: Horizon) -> Hit {
+    package static func hit(from item: RAGContext.Item) -> Hit {
         hit(from: item, id: .durable(frameID: item.frameId))
     }
 
@@ -523,10 +523,10 @@ package enum LayeredRecall {
         let sessionHits = sessionItems.map {
             hit(from: $0, horizon: .working, sessionID: UUID())
         }
-        let durableHits = durableItems.map { hit(from: $0, horizon: .durable) }
+        let durableHits = durableItems.map { hit(from: $0) }
         return mergeHits(sessionHits: sessionHits, durableHits: durableHits, limit: limit).map { hit in
             RAGContext.Item(
-                kind: hit.kind ?? .snippet,
+                kind: hit.kind,
                 frameId: hit.frameID,
                 score: hit.score,
                 sources: hit.sources.isEmpty ? [.unknown] : hit.sources,
@@ -542,7 +542,7 @@ package enum LayeredRecall {
         project: String?,
         repo: String?
     ) -> [RAGContext.Item] {
-        let hits = items.map { hit(from: $0, horizon: .durable) }
+        let hits = items.map { hit(from: $0) }
         let filtered = filterHitsByProject(hits, project: project, repo: repo)
         let allowed = Set(filtered.map(\.frameID))
         return items.filter { allowed.contains($0.frameId) }
@@ -633,7 +633,7 @@ package enum LayeredRecall {
             )
             durableExecution = execution
             durableHits = execution.context.items.map {
-                hit(from: $0, horizon: .durable)
+                hit(from: $0)
             }
             let nowMs = stores.nowMs()
             durableHits = durableHits.filter { hit in

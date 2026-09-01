@@ -77,7 +77,7 @@ extension AgentBrokerService {
             managed: document.metadata[MemoryMetadataKeys.sourceManaged] != "false",
             sourceKind: kind.rawValue,
             frameID: document.frameId,
-            memoryID: Self.makeMemoryReference(.durable, frameID: document.frameId),
+            memoryID: Self.makeMemoryReference(frameID: document.frameId),
             hash: Self.stableHash(document.text),
             sessionID: document.metadata[MemoryMetadataKeys.promotedFromSession] ?? document.metadata["session_id"],
             sourceFrameID: document.metadata[MemoryMetadataKeys.promotedFromFrame].flatMap(UInt64.init),
@@ -421,7 +421,7 @@ extension AgentBrokerService {
         guard marker.hash == previousHash else { return false }
 
         if let markerMemoryID = marker.memoryID {
-            let canonicalMemoryID = Self.makeMemoryReference(.durable, frameID: document.frameId)
+            let canonicalMemoryID = Self.makeMemoryReference(frameID: document.frameId)
             let storedMemoryID = document.metadata[MemoryMetadataKeys.sourceMemoryID]
             guard markerMemoryID == canonicalMemoryID || markerMemoryID == storedMemoryID else { return false }
         }
