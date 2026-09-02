@@ -117,6 +117,31 @@ private func sessionStoreURL(root: URL, sessionID: String) -> URL {
     root.appendingPathComponent("\(sessionID).wax")
 }
 
+private func liveHarvestState(
+    _ service: AgentBrokerService,
+    sessionID: String
+) async throws -> VirtualSessionStore.SessionState {
+    let uuid = try #require(UUID(uuidString: sessionID))
+    return try #require(await service.activeSessions[uuid])
+}
+
+private func harvestLiveSession(
+    _ service: AgentBrokerService,
+    sessionID: String
+) async throws -> SessionHarvest.Report {
+    let state = try await liveHarvestState(service, sessionID: sessionID)
+    let events = (try? BrokerSessionPersistence.loadEvents(from: state.eventLogURL)) ?? []
+    return await SessionHarvest.run(
+        sessionMemory: state.memory,
+        longTermMemory: service.longTermMemory,
+        sessionID: state.id,
+        manifest: state.manifest,
+        events: events,
+        scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
+        nowMs: VirtualSessionStore.nowMs()
+    )
+}
+
 @Test
 func sessionCloseHarvestsAlwaysPromotableNeedleIntoDurableRecall() async throws {
     let needle = "WAXHVST-\(UUID().uuidString.prefix(8))"
@@ -573,20 +598,18 @@ func maintainApplySoftDeletesAgedWorkingNotes() async throws {
     let needle = "WAXQUAR-\(UUID().uuidString.prefix(8))"
     let created = Int64(Date().timeIntervalSince1970 * 1000) - 31 * 24 * 60 * 60 * 1000
     try await withHarvestBroker { service, _ in
-        let write = await service.handle(.init(
-            command: "remember",
-            arguments: [
-                "content": .string("Working scratch \(needle) should be quarantined after 30 days."),
-                "memory_type": .string("note"),
-                "durability": .string("working"),
-                "project": .string(harvestProject),
-                "repo": .string(harvestProject),
-                "metadata": .object([
-                    MemoryMetadataKeys.createdAtMs: .string(String(created)),
-                ]),
+        // Unscoped broker remember remaps working → durable; maintain scans library rows.
+        _ = try await service.longTermMemory.remember(
+            "Working scratch \(needle) should be quarantined after 30 days.",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                MemoryMetadataKeys.project: harvestProject,
+                MemoryMetadataKeys.repo: harvestProject,
+                MemoryMetadataKeys.createdAtMs: String(created),
             ]
-        ))
-        #expect(write.ok == true, "working remember failed: \(write.error ?? "nil")")
+        )
+        try await service.longTermMemory.flush()
         let before = try await projectRecall(service, query: needle)
         #expect(firstHitText(before).contains(needle))
 
@@ -700,4 +723,126 @@ func applyHarvestPersistsPromotionsWhenHarvestedWithError() {
     #expect(manifest.harvestError == "remember failed")
     #expect(manifest.reclaimAfterMs == 99)
     #expect(!report.immediateReclaimEligible)
+}
+
+@Test
+func harvestReportListsPromotedDurableDecision() async throws {
+    let needle = "WAXHVPR-\(UUID().uuidString.prefix(8))"
+    let content = "Decision: keep \(needle) as the harvest gold token."
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-promoted-report")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: content,
+            memoryType: "decision"
+        )
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.harvested)
+        #expect(report.promotedCount == report.promoted.count)
+        #expect(report.promoted.count == 1)
+        let entry = try #require(report.promoted.first)
+        #expect(entry.memoryID.hasPrefix("durable:"))
+        #expect(entry.type == "decision")
+        #expect(entry.preview.contains(needle))
+        #expect(entry.preview.count <= content.count)
+    }
+}
+
+@Test
+func harvestReportLabelsWorkingNoteWithoutRecallsAsNoteLowRecall() async throws {
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-note-low-recall")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: "Working leftover that stays unpromoted without recalls.",
+            memoryType: "note"
+        )
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.leftoverCount >= 1)
+        #expect(report.leftoverCount == report.leftoverDocumentCount)
+        #expect(report.leftoverReasons.contains("note_low_recall"))
+        #expect(report.promoted.isEmpty)
+        #expect(report.promotedCount == 0)
+    }
+}
+
+@Test
+func harvestReportLabelsLockedSessionDocumentAsLocked() async throws {
+    let needle = "WAXHVLK-\(UUID().uuidString.prefix(8))"
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-locked-leftover")
+        let state = try await liveHarvestState(service, sessionID: sessionID)
+        _ = try await state.memory.remember(
+            "Decision: locked leftover \(needle) stays in the session store.",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.locked.rawValue,
+                MemoryMetadataKeys.project: harvestProject,
+                MemoryMetadataKeys.repo: harvestProject,
+            ]
+        )
+        try await state.memory.flush()
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.leftoverCount >= 1)
+        #expect(report.leftoverLockedCount >= 1)
+        #expect(report.leftoverReasons.contains("locked"))
+        #expect(report.promoted.isEmpty)
+    }
+}
+
+@Test
+func harvestReportLabelsSecretLikeLeftoverAsSecret() async throws {
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-secret-leftover")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: "Decision: rotate access key AKIAIOSFODNN7EXAMPLE before harvest.",
+            memoryType: "decision"
+        )
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.leftoverCount >= 1)
+        #expect(report.leftoverReasons.contains("secret"))
+        #expect(report.promoted.isEmpty)
+        #expect(report.promotedCount == 0)
+    }
+}
+
+@Test
+func harvestReportLabelsExactDurableDuplicateAsDup() async throws {
+    let needle = "WAXHVDP-\(UUID().uuidString.prefix(8))"
+    let content = "Decision: keep \(needle) as the canonical harvest token."
+    try await withHarvestBroker { service, _ in
+        let durable = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(content),
+                "memory_type": .string("decision"),
+                "durability": .string("durable"),
+                "project": .string(harvestProject),
+                "repo": .string(harvestProject),
+            ]
+        ))
+        #expect(durable.ok == true, "durable remember failed: \(durable.error ?? "nil")")
+
+        let sessionID = try await startHarvestSession(service, runID: "harvest-dup-leftover")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: content,
+            memoryType: "decision"
+        )
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.leftoverCount >= 1)
+        #expect(report.leftoverReasons.contains("dup"))
+        #expect(report.promoted.isEmpty)
+        #expect(report.promotedCount == 0)
+    }
 }

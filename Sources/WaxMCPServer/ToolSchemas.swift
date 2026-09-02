@@ -506,6 +506,7 @@ enum ToolSchemas {
             "project": ["type": "string", "description": "Optional project stamped onto the new session manifest (overrides cwd inference)."],
             "repo": ["type": "string", "description": "Optional repo stamped onto the new session manifest (overrides cwd inference)."],
             "cwd": ["type": "string", "description": "Optional client working directory used to infer project/repo when not explicit."],
+            "conversation_id": ["type": "string", "description": "Optional host conversation identifier. A unique active match can be resumed; omitted or whitespace-only is ignored."],
             "verbosity": responseVerbositySchema,
         ],
         required: []
@@ -579,6 +580,10 @@ enum ToolSchemas {
             "cwd": [
                 "type": "string",
                 "description": "Optional client working directory used to infer project/repo when not explicit.",
+            ],
+            "conversation_id": [
+                "type": "string",
+                "description": "Optional host conversation identifier. A unique active match can be resumed; omitted or whitespace-only is ignored.",
             ],
             "verbosity": responseVerbositySchema,
         ],
