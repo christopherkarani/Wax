@@ -1381,6 +1381,14 @@ extension AgentBrokerService {
         let startPayload: AgentBrokerValue
         if exactPair == nil,
            priorUnique == nil,
+           let hintedSessionID = command.sessionID,
+           activeSessions[hintedSessionID] != nil
+        {
+            startPayload = try await sessionResume(
+                .init(sessionID: hintedSessionID, agentID: nil, runID: nil)
+            )
+        } else if exactPair == nil,
+           priorUnique == nil,
            let conversationID,
            let match = try BrokerSessionPersistence.findActive(
             conversationID: conversationID,

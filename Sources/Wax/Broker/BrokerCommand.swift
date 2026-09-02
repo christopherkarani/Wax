@@ -197,6 +197,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var recallQuery: String?
         package var cwd: String?
         package var conversationID: String? = nil
+        package var sessionID: UUID? = nil
     }
 
     package struct CompactContext: Sendable, Equatable {
@@ -680,7 +681,8 @@ extension BrokerCommand.SessionOpen {
             runID: try args.optionalString("run_id"),
             recallQuery: try args.optionalString("recall_query"),
             cwd: try args.optionalString("cwd"),
-            conversationID: BrokerCommand.normalizedOrNil(try args.optionalString("conversation_id"))
+            conversationID: BrokerCommand.normalizedOrNil(try args.optionalString("conversation_id")),
+            sessionID: try BrokerCommand.parseOptionalSessionID(args)
         )
     }
 }

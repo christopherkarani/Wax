@@ -83,7 +83,7 @@ package enum AgentBrokerCommandSurface {
         Entry(canonicalName: "session_resume", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "verbosity"]),
         Entry(canonicalName: "session_end", acceptedArgumentKeys: ["session_id", "verbosity"]),
         Entry(canonicalName: "session_close", acceptedArgumentKeys: ["session_id", "content", "project", "pending_tasks", "verbosity"]),
-        Entry(canonicalName: "session_open", acceptedArgumentKeys: ["project", "repo", "agent_id", "run_id", "recall_query", "cwd", "conversation_id", "verbosity"]),
+        Entry(canonicalName: "session_open", acceptedArgumentKeys: ["project", "repo", "agent_id", "run_id", "recall_query", "cwd", "conversation_id", "session_id", "verbosity"]),
         Entry(canonicalName: "handoff", acceptedArgumentKeys: ["content", "session_id", "project", "pending_tasks", "verbosity"]),
         Entry(canonicalName: "handoff_latest", acceptedArgumentKeys: ["project", "verbosity"]),
         Entry(canonicalName: "compact_context", acceptedArgumentKeys: ["query", "session_id", "token_budget", "max_items", "mode", "alpha"]),
