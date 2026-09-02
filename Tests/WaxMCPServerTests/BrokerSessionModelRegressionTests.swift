@@ -585,20 +585,20 @@ func filterBeforeMergeKeepsProjectHitWhenForeignRanksFillLimit() {
     )
 
     // Wrong order (filter after merge/limit): home frame is starved out.
-    let starved = AgentBrokerService.recallItems(
-        AgentBrokerService.mergeRecallItems(sessionItems: [], durableItems: foreign + [home], limit: 3),
-        matchingProject: "HomeLand",
+    let starved = LayeredRecall.filterRecallItemsByProject(
+        LayeredRecall.mergeRecallItems(sessionItems: [], durableItems: foreign + [home], limit: 3),
+        project: "HomeLand",
         repo: nil
     )
     #expect(starved.isEmpty)
 
     // Correct order (filter before merge/limit): home frame survives.
-    let filtered = AgentBrokerService.recallItems(
+    let filtered = LayeredRecall.filterRecallItemsByProject(
         foreign + [home],
-        matchingProject: "HomeLand",
+        project: "HomeLand",
         repo: nil
     )
-    let kept = AgentBrokerService.mergeRecallItems(
+    let kept = LayeredRecall.mergeRecallItems(
         sessionItems: [],
         durableItems: filtered,
         limit: 3
@@ -612,10 +612,10 @@ func frameFilterByAddingProjectScopeMergesMetadataEntries() {
     let base = FrameFilter(
         metadataFilter: MetadataFilter(requiredEntries: ["topic": "keep"])
     )
-    let scoped = AgentBrokerService.frameFilterByAddingProjectScope(
-        base,
-        project: "HomeLand",
-        repo: nil
+    let scoped = LayeredRecall.frameFilterForScopedRetrieval(
+        base: base,
+        scope: .project,
+        identity: LayeredRecall.Identity(project: "HomeLand", repo: nil)
     )
     #expect(scoped?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "HomeLand")
     #expect(scoped?.metadataFilter?.requiredEntries["topic"] == "keep")

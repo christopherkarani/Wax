@@ -217,20 +217,7 @@ package enum LayeredRecall {
         package var inferWriteScope: @Sendable (_ sessionID: UUID?, _ clientCWD: String?) -> Identity
         package var preview: @Sendable (String?) -> String
         package var canonicalFrameID: @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?
-        package var endedManifests: @Sendable () throws -> [BrokerSessionManifest]
-        package var searchEndedSession: @Sendable (
-            _ manifest: BrokerSessionManifest,
-            _ query: String,
-            _ mode: Memory.RetrievalMode,
-            _ topK: Int
-        ) async throws -> [EpisodicLaneHit]
-        package var recallEndedSession: @Sendable (
-            _ manifest: BrokerSessionManifest,
-            _ query: String,
-            _ mode: Memory.RetrievalMode,
-            _ topK: Int,
-            _ frameFilter: FrameFilter?
-        ) async throws -> [Hit]
+        package var endedSessions: any EndedSessionStore
         package var nowMs: @Sendable () -> Int64
 
         package init(
@@ -239,20 +226,7 @@ package enum LayeredRecall {
             inferWriteScope: @escaping @Sendable (UUID?, String?) -> Identity,
             preview: @escaping @Sendable (String?) -> String,
             canonicalFrameID: @escaping @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?,
-            endedManifests: @escaping @Sendable () throws -> [BrokerSessionManifest],
-            searchEndedSession: @escaping @Sendable (
-                BrokerSessionManifest,
-                String,
-                Memory.RetrievalMode,
-                Int
-            ) async throws -> [EpisodicLaneHit],
-            recallEndedSession: @escaping @Sendable (
-                BrokerSessionManifest,
-                String,
-                Memory.RetrievalMode,
-                Int,
-                FrameFilter?
-            ) async throws -> [Hit],
+            endedSessions: any EndedSessionStore,
             nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
         ) {
             self.longTermMemory = longTermMemory
@@ -260,9 +234,7 @@ package enum LayeredRecall {
             self.inferWriteScope = inferWriteScope
             self.preview = preview
             self.canonicalFrameID = canonicalFrameID
-            self.endedManifests = endedManifests
-            self.searchEndedSession = searchEndedSession
-            self.recallEndedSession = recallEndedSession
+            self.endedSessions = endedSessions
             self.nowMs = nowMs
         }
     }
@@ -336,7 +308,8 @@ package enum LayeredRecall {
 
     /// Ended virtual session stores eligible for the episodic lane.
     /// Agent filtering applies only when a current session is in scope.
-    /// Reclaimed tombstones are excluded; callers still skip missing store files.
+    /// Reclaimed tombstones are excluded. Missing store files are skipped by the
+    /// ended-session adapter, not here.
     package static func episodicManifests(
         from manifests: [BrokerSessionManifest],
         currentSessionID: UUID?,
@@ -655,20 +628,20 @@ package enum LayeredRecall {
 
         var episodicHits: [Hit] = []
         if horizons.contains(.episodic) {
-            let selected = onDiskEpisodicManifests(
-                episodicManifests(
-                    from: try stores.endedManifests(),
-                    currentSessionID: request.sessionID,
-                    currentAgentID: working?.agentID
-                )
+            let selected = episodicManifests(
+                from: try stores.endedSessions.listManifests(),
+                currentSessionID: request.sessionID,
+                currentAgentID: working?.agentID
             )
             for manifest in selected {
-                let hits = try await stores.recallEndedSession(
-                    manifest,
-                    request.query,
-                    request.mode ?? .hybrid(),
-                    max(1, episodicTopK),
-                    scopedFrameFilter
+                let hits = try await stores.endedSessions.recall(
+                    EndedSessionRecallQuery(
+                        manifest: manifest,
+                        query: request.query,
+                        mode: request.mode ?? .hybrid(),
+                        topK: max(1, episodicTopK),
+                        frameFilter: scopedFrameFilter
+                    )
                 )
                 episodicHits.append(contentsOf: hits)
             }
@@ -812,21 +785,21 @@ package enum LayeredRecall {
 
         if request.horizons.contains(.episodic) {
             let currentAgentID = request.sessionID.flatMap { stores.workingLane($0)?.agentID }
-            let scopedManifests = onDiskEpisodicManifests(
-                episodicManifests(
-                    from: try stores.endedManifests(),
-                    currentSessionID: request.sessionID,
-                    currentAgentID: currentAgentID
-                )
+            let scopedManifests = episodicManifests(
+                from: try stores.endedSessions.listManifests(),
+                currentSessionID: request.sessionID,
+                currentAgentID: currentAgentID
             )
             .prefix(6)
 
             for manifest in scopedManifests {
-                let laneHits = try await stores.searchEndedSession(
-                    manifest,
-                    request.query,
-                    request.mode,
-                    max(1, min(3, request.topK))
+                let laneHits = try await stores.endedSessions.search(
+                    EndedSessionSearchQuery(
+                        manifest: manifest,
+                        query: request.query,
+                        mode: request.mode,
+                        topK: max(1, min(3, request.topK))
+                    )
                 )
                 let ageMs: Int64 = max(0, stores.nowMs() - manifest.updatedAtMs)
                 let recencyBoost: Float = ageMs < Int64(7 * 24 * 60 * 60 * 1000) ? 0.15 : 0.05
@@ -866,12 +839,6 @@ package enum LayeredRecall {
                 return lhs.reference < rhs.reference
             }.prefix(request.topK)
         )
-    }
-
-    private static func onDiskEpisodicManifests(
-        _ manifests: [BrokerSessionManifest]
-    ) -> [BrokerSessionManifest] {
-        manifests.filter { FileManager.default.fileExists(atPath: $0.storePath) }
     }
 
     private static func canonicalizeHits(
