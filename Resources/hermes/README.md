@@ -105,7 +105,7 @@ mcp_servers:
     enabled: true
     timeout: 120
     tools:
-      include: [remember, recall, search, handoff, handoff_latest, session_start, session_end]
+      include: [session_open, remember, recall, session_close, stats, memory_get, compact_context, session_resume]
       resources: false
       prompts: false
 ```

@@ -12,8 +12,10 @@ description: >
 ## Overview
 Use this skill to design and implement correct Wax-based on-device memory flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
 
-If you need the agent memory operator playbook for MCP tools (`remember`, `recall`,
-`handoff`, `session_start`), use the `wax-mcp` skill instead of this one.
+If you need the agent memory operator playbook for MCP tools, use the `wax-mcp`
+skill and follow the live server instructions (`session_open` / `remember` /
+`recall` / `session_close`). Do not treat `handoff_latest` then `session_start`
+as the default open.
 
 ## Choose The API Surface
 1. Use `Memory` (public actor) for text memory and retrieval.

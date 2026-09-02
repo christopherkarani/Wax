@@ -420,7 +420,64 @@ private final class UnixStatsResponder: @unchecked Sendable {
 
 @Test
 func toolsListContainsExpectedTools() {
-    let names = Set(ToolSchemas.allTools.map(\.name))
+    let expected: Set<String> = [
+        "session_open",
+        "remember",
+        "recall",
+        "session_close",
+        "stats",
+        "memory_get",
+        "compact_context",
+        "session_resume",
+    ]
+    let names = Set(
+        ToolSchemas.tools(
+            structuredMemoryEnabled: true,
+            profile: .fromEnvironment([:])
+        ).map(\.name)
+    )
+    #expect(MCPToolProfile.dailyNames == [
+        "session_open",
+        "remember",
+        "recall",
+        "session_close",
+        "stats",
+        "memory_get",
+        "compact_context",
+        "session_resume",
+    ])
+    #expect(names == expected)
+    #expect(names.count == 8)
+    #expect(!names.contains("memory_append"))
+    #expect(!names.contains("promote"))
+    #expect(!names.contains("memory_promote"))
+    #expect(!names.contains("search"))
+    #expect(!names.contains("flush"))
+    #expect(!names.contains("memory_maintain"))
+    #expect(!names.contains("sessions_prune"))
+}
+
+@Test
+func mcpToolProfileFromEnvironmentSelectsDailyAndFull() {
+    #expect(MCPToolProfile.fromEnvironment([:]) == .daily)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "daily"]) == .daily)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "full"]) == .full)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "FULL"]) == .full)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": " full "]) == .full)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "aliases"]) == .daily)
+    let fullNames = Set(
+        ToolSchemas.tools(
+            structuredMemoryEnabled: true,
+            profile: .fromEnvironment(["WAX_MCP_TOOLS": "full"])
+        ).map(\.name)
+    )
+    #expect(fullNames.contains("memory_append"))
+    #expect(fullNames.contains("promote"))
+}
+
+@Test
+func toolsListFullProfileContainsAliases() {
+    let names = Set(ToolSchemas.tools(structuredMemoryEnabled: true, profile: .full).map(\.name))
     #expect(names.contains("memory_append"))
     #expect(names.contains("memory_search"))
     #expect(names.contains("memory_get"))
@@ -452,8 +509,12 @@ func toolsListContainsExpectedTools() {
     #expect(names.contains("fact_retract"))
     #expect(names.contains("facts_query"))
     #expect(names.contains("entity_resolve"))
-    // Verify no duplicate tool names
-    #expect(names.count == ToolSchemas.allTools.count)
+    #expect(names.count == ToolSchemas.allPublishedTools.count)
+}
+
+@Test
+func dailyToolNamesAreSubsetOfPublicCatalog() {
+    #expect(MCPToolProfile.dailyNameSet.isSubset(of: AgentBrokerCommandSurface.publicCommandNames))
 }
 
 @Test
@@ -470,12 +531,21 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("Do not manage SESSION_STORE"))
     #expect(!text.contains("or call handoff_latest first"))
     #expect(text.contains("Call session_open"))
+    for name in MCPToolProfile.dailyNames {
+        #expect(text.contains(name), "instructions must name daily tool \(name)")
+    }
+    #expect(text.contains("memory_type selects the horizon"))
+    #expect(text.contains("do not call memory_promote"))
+    #expect(!text.contains("session_synthesize then memory_promote"))
+    #expect(text.contains("exactly one live session"))
+    #expect(text.contains("agent_id+resolved project rebinds"))
+    #expect(text.contains("durable types stay durable even if session_id is present"))
 }
 
 @Test
 func coreToolDescriptionsIncludeOperatorHints() {
     let tools = Dictionary(
-        uniqueKeysWithValues: ToolSchemas.allTools.map { ($0.name, $0.description ?? "") }
+        uniqueKeysWithValues: ToolSchemas.allPublishedTools.map { ($0.name, $0.description ?? "") }
     )
     #expect(tools["handoff_latest"]?.contains("Call first at session start") != true)
     #expect(tools["handoff_latest"]?.localizedCaseInsensitiveContains("latest handoff") == true)
@@ -492,8 +562,8 @@ func coreToolDescriptionsIncludeOperatorHints() {
 
 @Test
 func toolsListHonorsStructuredMemoryFlag() {
-    let withStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: true).map(\.name))
-    let withoutStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: false).map(\.name))
+    let withStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: true, profile: .full).map(\.name))
+    let withoutStructuredMemory = Set(ToolSchemas.tools(structuredMemoryEnabled: false, profile: .full).map(\.name))
     #expect(withStructuredMemory.contains("facts_query"))
     #expect(!withoutStructuredMemory.contains("facts_query"))
     #expect(withStructuredMemory.contains("entity_upsert"))
@@ -504,7 +574,7 @@ func toolsListHonorsStructuredMemoryFlag() {
 
 @Test
 func toolSchemasStayWithinCommandCatalogSurface() {
-    let tools = ToolSchemas.allTools
+    let tools = ToolSchemas.allPublishedTools
     let toolNames = Set(tools.map(\.name))
     #expect(toolNames == AgentBrokerCommandSurface.publicCommandNames)
 
@@ -520,7 +590,7 @@ func toolSchemasStayWithinCommandCatalogSurface() {
 
 @Test
 func toolSchemaRegression() {
-    let tools = ToolSchemas.allTools
+    let tools = ToolSchemas.allPublishedTools
 
     // No duplicate tool names
     let names = tools.map(\.name)
@@ -2816,6 +2886,26 @@ func toolsBlockStructuredMemoryOnlyToolsWhenDisabled() async throws {
         )
         #expect(knowledgeCapture.isError == true)
         #expect(firstText(in: knowledgeCapture).contains("structured memory"))
+    }
+}
+
+@Test
+func memoryAppendRemainsCallableWhenUnlisted() async throws {
+    try await withAgentBrokerService { service, _ in
+        let daily = Set(ToolSchemas.tools(structuredMemoryEnabled: true, profile: .daily).map(\.name))
+        #expect(!daily.contains("memory_append"))
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "memory_append",
+                arguments: [
+                    "content": "ALIAS-CANARY unlisted memory_append still writes",
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError != true)
+        let payload = try parseJSONText(in: result)
+        #expect(payload["status"] as? String == "ok")
     }
 }
 
@@ -6536,7 +6626,8 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         storeURL: URL? = nil,
         extraArguments: [String] = [],
         isolateSessionRootEnv: Bool = true,
-        currentDirectory: URL? = nil
+        currentDirectory: URL? = nil,
+        extraEnvironment: [String: String] = [:]
     ) throws {
         prepareWaxMCPTestProcessIO()
         let root = URL(fileURLWithPath: #filePath)
@@ -6576,6 +6667,10 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             environment.removeValue(forKey: "WAX_SESSION_ROOT")
         }
         environment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
+        environment.removeValue(forKey: "WAX_MCP_TOOLS")
+        for (key, value) in extraEnvironment {
+            environment[key] = value
+        }
         process.environment = environment
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -7016,8 +7111,45 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     }
 }
 
+private func toolNamesListedInMCPResponse(_ line: String) throws -> Set<String> {
+    let data = try #require(line.data(using: .utf8))
+    let envelope = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let result = try #require(envelope["result"] as? [String: Any])
+    let tools = try #require(result["tools"] as? [[String: Any]])
+    return Set(tools.compactMap { $0["name"] as? String })
+}
+
 @Suite("Wax MCP Process Tests", .serialized)
 struct WaxMCPProcessTests {
+    @Test(.timeLimit(.minutes(1)))
+    func defaultProcessToolsListContainsRememberAndHidesMemoryAppend() async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        let bootstrap = try await harness.bootstrap(
+            clientName: "wax-mcp-daily-catalog-list-test",
+            includeToolsList: true
+        )
+        let toolsList = try #require(bootstrap.toolsList)
+        let names = try toolNamesListedInMCPResponse(toolsList)
+        let expected: Set<String> = [
+            "session_open",
+            "remember",
+            "recall",
+            "session_close",
+            "stats",
+            "memory_get",
+            "compact_context",
+            "session_resume",
+        ]
+        #expect(names == expected)
+        #expect(toolsList.contains(#""name":"remember""#))
+        #expect(!toolsList.contains(#""name":"memory_append""#))
+        #expect(!names.contains("memory_append"))
+        #expect(!names.contains("promote"))
+    }
+
     @Test
     func processHarnessUsesShortBrokerSocketPaths() throws {
         let harness = try MCPServerProcessHarness()

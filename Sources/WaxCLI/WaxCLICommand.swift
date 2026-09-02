@@ -153,6 +153,12 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("dry-run"), help: "Print commands without executing")
         var dryRun = false
 
+        @Option(
+            name: .customLong("write-host-rule"),
+            help: "Write the generated host-rule playbook to PATH. Omitted means no write."
+        )
+        var writeHostRule: String?
+
         @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
 
         mutating func run() throws {
@@ -239,9 +245,14 @@ extension WaxCLI.MCP {
                 }
                 print("claude \(removeArguments.joined(separator: " "))")
                 print("claude \(redactedArgumentsForDisplay(addArguments).joined(separator: " "))")
+                if let writeHostRule {
+                    print("# Would write host-rule playbook to \(Pathing.expandPath(writeHostRule))")
+                }
                 printWaxMCPSkillGuidance(skillInstall, dryRun: true)
                 return
             }
+
+            try WaxMCPHostRuleWriter.writeIfRequested(path: writeHostRule)
 
             // Remove the existing registration before re-adding. Exit code 1 is expected
             // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
@@ -751,6 +762,23 @@ struct MCPRuntimeValidation: Equatable {
     var warnings: [String] = []
 }
 
+enum WaxMCPHostRuleWriter {
+    /// Writes the generated host-rule blob only when `path` is non-empty.
+    /// Never overwrites a default machine path by implication.
+    static func writeIfRequested(path: String?) throws {
+        guard let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        let url = URL(fileURLWithPath: Pathing.expandPath(path))
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try WaxMCPAgentPlaybook.projectRules.write(to: url, atomically: true, encoding: .utf8)
+        print("Wrote host-rule playbook to \(url.path)")
+    }
+}
+
 enum WaxMCPAgentPlaybook {
     /// Pasteable AGENTS.md / CLAUDE.md / Cursor rules. Keep in lockstep with
     /// `Resources/skills/public/wax-mcp/references/project-rules.md`.
@@ -758,11 +786,11 @@ enum WaxMCPAgentPlaybook {
         Wax is the shared memory layer. Chat dies; Wax does not. Skip one-line Q&A. Use on any multi-step coding, debug, or research task.
 
         Open every multi-step session:
-        1. Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open.
+        1. Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open. The same `agent_id`+`run_id` resumes the active session. The same `agent_id`+resolved project rebinds if exactly one live session; stamp a new `run_id`; `rebound: true`. Multiple actives mint a new session — do not guess.
         2. Call `recall` with default `scope: project` (hard-filters to resolved project; unlabeled/foreign frames excluded). Empty lane returns an explicit miss — pass `scope: global` only for cross-project reads. `recall` with `session_id` merges that session with durable memory under project scope.
 
         Workflow rules:
-        - Use `remember` to store decisions, discoveries, and short factual notes. Prefer `scope: session` (requires top-level `session_id`) or `scope: durable` (forbids `session_id`). Do not put `session_id` inside `metadata`.
+        - Use `remember` to store decisions, discoveries, and short factual notes. `memory_type` selects the horizon; explicit `scope` overrides. Do not put `session_id` inside `metadata`.
         - Use `recall` for assembled context and `search` for raw ranked hits.
         - Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
         - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
@@ -771,7 +799,10 @@ enum WaxMCPAgentPlaybook {
         - Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
         - `task_state` is session-local working state: it requires an active top-level `session_id` and rejects `scope: durable`, `durability: durable`, and `locked`. To repair legacy durable task-state frames, run `task_state_migrate` with a distinct `destination_path`; it copies the complete store before changing only task-state trees. Use `dry_run: true` first and choose `orphan_policy: quarantine` (default) or `drop`.
 
-        Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`.
+        Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`.
+        Daily `tools/list` is those eight. Aliases stay callable. Set `WAX_MCP_TOOLS=full` for the rest. Follow the MCP server `instructions` when present; this paste is a fallback.
+
+        Write horizon: `memory_type` selects the horizon. `task_state` or `handoff` need top-level `session_id`. Durable types (`decision` | `lesson` | `fact` | `constraint` | `user_preference`) stay durable even if `session_id` is present. `note` is session if `session_id` is present, else durable. Explicit `scope` overrides.
 
         Tactical (this task) — write immediately, not at the end:
         - `remember` with `scope: session`, top-level `session_id`, `memory_type: task_state`, `durability: working`
@@ -779,7 +810,7 @@ enum WaxMCPAgentPlaybook {
         - Read with `recall` plus `session_id`
 
         Strategic (survives this session):
-        - `remember` with `scope: durable` (no `session_id`), `durability: durable`, `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact`
+        - `remember` with `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact` (durable even if `session_id` is present). Optional explicit `scope: durable`.
         - When: the user corrects you, you make an architecture or product decision, a pitfall will waste the next agent time, a standing preference appears, or a repo fact is stable
 
         Both horizons on a long task: `compact_context`.
@@ -798,12 +829,12 @@ enum WaxMCPAgentPlaybook {
 
         You have Wax. Chat is not memory.
 
-        On every multi-step task: call `session_open` (`project`, `agent_id`, `run_id`, optional `recall_query`). Keep `session_id`.
+        On every multi-step task: call `session_open` (`project`, `agent_id`, `run_id`, optional `recall_query`). Keep `session_id`. Follow the MCP server instructions when present.
 
         Write as you go:
         - This task: `remember` with `scope: session`, `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
         - `task_state` requires an active session and is always working; never request durable or locked task state. Repair legacy records with `task_state_migrate` into a distinct complete-store copy after a dry run.
-        - Long-term: `remember` with `scope: durable` (no `session_id`), type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (corrections, decisions, standing prefs, stable repo facts).
+        - Long-term: `remember` with type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (durable even if `session_id` is present; corrections, decisions, standing prefs, stable repo facts).
 
         Read: `recall` defaults to project scope (no foreign/unlabeled frames). Need cross-project → `scope: global`. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
 

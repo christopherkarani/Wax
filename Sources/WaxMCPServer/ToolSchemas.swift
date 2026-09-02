@@ -7,7 +7,14 @@ enum ToolSchemas {
         tools(structuredMemoryEnabled: true)
     }
 
-    static func tools(structuredMemoryEnabled: Bool) -> [Tool] {
+    static var allPublishedTools: [Tool] {
+        tools(structuredMemoryEnabled: true, profile: .full)
+    }
+
+    static func tools(
+        structuredMemoryEnabled: Bool,
+        profile: MCPToolProfile = .fromEnvironment()
+    ) -> [Tool] {
         var tools: [Tool] = [
         Tool(
             name: "memory_append",
@@ -162,7 +169,7 @@ enum ToolSchemas {
             structuredMemoryEnabled || !AgentBrokerCommandSurface.requiresStructuredMemory(tool.name)
         })
 
-        return tools
+        return profile.listed(tools)
     }
 
     static let waxRemember: Value = objectSchema(

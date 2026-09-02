@@ -916,6 +916,32 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.soulRules.contains("call `session_open`"))
         #expect(!WaxMCPAgentPlaybook.soulRules.contains("or `handoff_latest` → `session_start`"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("memory_get"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_resume"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("WAX_MCP_TOOLS=full"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("Write horizon"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("exactly one live session"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("`agent_id`+resolved project rebinds"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("`memory_type` selects the horizon"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("stay durable even if `session_id` is present"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("Prefer `scope: session`"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("omit `session_id`"))
+    }
+
+    @Test func writeHostRuleIsOptInAndWritesPlaybook() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-host-rule-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("wax.md")
+
+        try WaxMCPHostRuleWriter.writeIfRequested(path: nil)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+
+        try WaxMCPHostRuleWriter.writeIfRequested(path: target.path)
+        let text = try String(contentsOf: target, encoding: .utf8)
+        #expect(text == WaxMCPAgentPlaybook.projectRules)
+        #expect(text.contains("session_open"))
     }
 
     @Test func projectRulesPlaybookStaysInLockstepWithDocs() throws {

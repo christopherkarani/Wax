@@ -51,12 +51,13 @@ enum WaxMCPTools {
     static func handleCall(
         params: CallTool.Parameters,
         broker: AgentBrokerService,
-        structuredMemoryEnabled: Bool = true
+        structuredMemoryEnabled: Bool = true,
+        sessionHint: MCPClientSessionHint? = nil
     ) async -> CallTool.Result {
         await executeCall(
             params: params,
             structuredMemoryEnabled: structuredMemoryEnabled,
-            sessionHint: nil
+            sessionHint: sessionHint
         ) { request in
             await broker.handle(request)
         }
@@ -185,10 +186,37 @@ private extension WaxMCPTools {
         arguments: inout [String: Value],
         sessionHint: MCPClientSessionHint?
     ) {
-        guard name == "stats", arguments["session_id"] == nil else { return }
-        if let sessionID = sessionHint?.current() {
+        guard arguments["session_id"] == nil else { return }
+        guard let sessionID = sessionHint?.current() else { return }
+        switch name {
+        case "stats", "recall":
             arguments["session_id"] = .string(sessionID)
+        case "remember":
+            guard rememberShouldInheritSession(arguments) else { return }
+            arguments["session_id"] = .string(sessionID)
+        default:
+            break
         }
+    }
+
+    /// Session-horizon writes only. Durable types must omit session_id until
+    /// RememberDestination is type-first; inheriting the connection UUID would
+    /// mis-file decisions into the session store.
+    static func rememberShouldInheritSession(_ arguments: [String: Value]) -> Bool {
+        if case .string(let scope)? = arguments["scope"] {
+            let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmed == "session" { return true }
+            if trimmed == "durable" { return false }
+        }
+        if case .string(let type)? = arguments["memory_type"] {
+            switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "task_state", "handoff":
+                return true
+            default:
+                return false
+            }
+        }
+        return false
     }
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
