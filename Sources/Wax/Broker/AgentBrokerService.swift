@@ -129,6 +129,9 @@ package actor AgentBrokerService {
             }
             throw error
         }
+        _ = try? await memoryMaintain(
+            BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false)
+        )
     }
 
     package func close() async throws {
