@@ -5626,7 +5626,7 @@ func sessionOpenDefaultsToBoundedHandoffWithoutRecall() async throws {
 
         #expect(opened.isError != true)
         let payload = try parseJSONText(in: opened)
-        #expect(Set(payload.keys) == Set(["session_id", "handoff"]))
+        #expect(Set(payload.keys).isSuperset(of: ["session_id", "handoff", "rebound", "share_prompt"]))
         #expect(payload["session_id"] as? String != nil)
         #expect(payload["recall"] == nil)
         let handoff = try requireObject(payload, key: "handoff")
