@@ -4,7 +4,8 @@ import Testing
 import WaxCore
 
 private let evaluationClockNowMs: Int64 = 1_700_000_000_000
-private let evaluationClockDayMs: Int64 = 24 * 60 * 60 * 1000
+private let evaluationClockHourMs: Int64 = 60 * 60 * 1000
+private let evaluationClockDayMs: Int64 = 24 * evaluationClockHourMs
 
 struct EvaluationClockTests {
 
@@ -25,22 +26,23 @@ struct EvaluationClockTests {
     }
 
     @Test
-    func upsertEntityUsesInjectedNow() async throws {
-        try await withOrchestrator(structuredMemory: true) { orchestrator in
+    func upsertEntityInvokesInjectedNow() async throws {
+        let clock = RecordingNowMs(value: evaluationClockNowMs)
+        try await withOrchestrator(
+            structuredMemory: true,
+            nowMsProvider: { clock.now() }
+        ) { orchestrator in
+            let before = clock.calls
             let key = EntityKey("person:evaluation-clock")
             _ = try await orchestrator.upsertEntity(
                 key: key,
                 kind: "person",
                 aliases: ["Evaluation Clock"]
             )
+            #expect(clock.calls > before)
             let match = try #require(try await orchestrator.entity(forKey: key))
             #expect(match.key == key)
             #expect(match.kind == "person")
-
-            let source = try orchestratorSource()
-            let upsertBody = try #require(functionBody(named: "upsertEntity", in: source))
-            #expect(upsertBody.contains("nowProvider()"))
-            #expect(upsertBody.contains("Date()") == false)
         }
     }
 
@@ -81,7 +83,7 @@ struct EvaluationClockTests {
     }
 
     @Test
-    func fastRAGBuildUsesSingleDeterministicNowMs() async throws {
+    func fastRAGBuildUsesDeterministicNowMsNotWallClock() async throws {
         try await withOrchestrator(structuredMemory: false) { orchestrator in
             _ = try await orchestrator.rememberHandoff(
                 content: "Waxfile ranking-clock pin for recency explanations."
@@ -94,31 +96,85 @@ struct EvaluationClockTests {
     }
 
     @Test
-    func fastRAGContextBuilderSourceHasNoDateAndOneNowMs() throws {
-        let source = try fastRAGSource()
-        #expect(source.contains("Date()") == false)
-        #expect(source.contains("let nowMs = clamped.deterministicNowMs"))
-        #expect(source.contains("nowMs: nowMs ?? 0"))
-        #expect(source.contains("nowMs: nowMs"))
-        #expect(source.contains("AccessFrequencyRanker.rerank"))
-        #expect(source.contains("RecallAssembly.pack"))
-        #expect(source.contains("accessScoringNowMs") == false)
+    func fastRAGBuildUsesDeterministicNowMsNotZeroSentinel() async throws {
+        let agedNowMs = evaluationClockNowMs + 20 * evaluationClockDayMs
+        try await withOrchestrator(
+            structuredMemory: false,
+            deterministicNowMs: agedNowMs
+        ) { orchestrator in
+            _ = try await orchestrator.rememberHandoff(
+                content: "Waxfile ranking-clock pin for recency explanations."
+            )
+            let recall = try await orchestrator.recall(query: "Waxfile ranking-clock")
+            let item = try #require(recall.items.first)
+            #expect(item.explanations.contains("stale handoff"))
+            #expect(item.explanations.contains("recent handoff") == false)
+        }
     }
 
     @Test
-    func remainingOrchestratorDateIsOnlyNowMsProviderDefault() throws {
-        let source = try orchestratorSource()
-        let dateCallCount = source.components(separatedBy: "Date()").count - 1
-        #expect(dateCallCount == 1)
-        #expect(source.contains(
-            "nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }"
-        ))
-        let handoffBody = try #require(functionBody(named: "rememberHandoffSerialized", in: source))
-        #expect(handoffBody.contains("nowProvider()"))
-        #expect(handoffBody.contains("Date()") == false)
-        let nextBody = try #require(functionBody(named: "nextStructuredSystemMs", in: source))
-        #expect(nextBody.contains("nowProvider()"))
-        #expect(nextBody.contains("Date()") == false)
+    func fastRAGAccessRerankAndPackUseInjectedNowMs() async throws {
+        try await withOrchestrator(
+            structuredMemory: false,
+            enableAccessStatsScoring: true
+        ) { orchestrator in
+            let frameId = try await orchestrator.rememberHandoff(
+                content: "Waxfile access-clock pin for recently used explanations."
+            )
+            await orchestrator.seedAccessStats(
+                frameId: frameId,
+                from: FrameAccessStats(
+                    frameId: frameId,
+                    nowMs: evaluationClockNowMs - evaluationClockHourMs
+                )
+            )
+            let recall = try await orchestrator.recall(query: "Waxfile access-clock")
+            let item = try #require(recall.items.first { $0.frameId == frameId })
+            #expect(item.explanations.contains("recently used"))
+        }
+
+        let staleAccessNowMs = evaluationClockNowMs + 48 * evaluationClockHourMs
+        try await withOrchestrator(
+            structuredMemory: false,
+            enableAccessStatsScoring: true,
+            deterministicNowMs: staleAccessNowMs
+        ) { orchestrator in
+            let frameId = try await orchestrator.rememberHandoff(
+                content: "Waxfile access-clock pin for recently used explanations."
+            )
+            await orchestrator.seedAccessStats(
+                frameId: frameId,
+                from: FrameAccessStats(
+                    frameId: frameId,
+                    nowMs: evaluationClockNowMs - evaluationClockHourMs
+                )
+            )
+            let recall = try await orchestrator.recall(query: "Waxfile access-clock")
+            let item = try #require(recall.items.first { $0.frameId == frameId })
+            #expect(item.explanations.contains("recently used") == false)
+        }
+    }
+
+    @Test
+    func fastRAGNilDeterministicNowMsDoesNotUseWallClock() async throws {
+        try await withOrchestrator(structuredMemory: false) { orchestrator in
+            _ = try await orchestrator.rememberHandoff(
+                content: "Waxfile ranking-clock pin for recency explanations."
+            )
+            let config = FastRAGConfig(searchMode: .textOnly)
+            #expect(config.deterministicNowMs == nil)
+            let context = try await FastRAGContextBuilder().build(
+                query: "Waxfile ranking-clock",
+                wax: orchestrator.wax,
+                session: orchestrator.session,
+                config: config
+            )
+            let item = try #require(context.items.first)
+            // Wall clock (~2026) would mark a 2023 handoff stale. SearchRequest.nowMs
+            // is non-optional, so the nil-clock path passes 0, which looks recent.
+            #expect(item.explanations.contains("recent handoff"))
+            #expect(item.explanations.contains("stale handoff") == false)
+        }
     }
 
     @Test
@@ -148,11 +204,50 @@ struct EvaluationClockTests {
             nowMs: createdAtMs
         )
         #expect(atCreated.reasons.contains("recent handoff"))
+
+        let unexpired = [
+            MemoryMetadataKeys.type: MemoryType.handoff.rawValue,
+            MemoryMetadataKeys.durability: MemoryDurability.ephemeral.rawValue,
+            MemoryMetadataKeys.createdAtMs: String(createdAtMs),
+        ]
+        let aged = MemorySemantics.rankingReasons(
+            metadata: unexpired,
+            scope: nil,
+            nowMs: createdAtMs + 20 * evaluationClockDayMs
+        )
+        #expect(aged.reasons.contains("stale handoff"))
+        #expect(aged.reasons.contains("recent handoff") == false)
+    }
+}
+
+private final class RecordingNowMs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _calls = 0
+    let value: Int64
+
+    init(value: Int64) {
+        self.value = value
+    }
+
+    var calls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _calls
+    }
+
+    func now() -> Int64 {
+        lock.lock()
+        _calls += 1
+        lock.unlock()
+        return value
     }
 }
 
 private func withOrchestrator(
     structuredMemory: Bool,
+    enableAccessStatsScoring: Bool = false,
+    deterministicNowMs: Int64 = evaluationClockNowMs,
+    nowMsProvider: (@Sendable () -> Int64)? = nil,
     _ body: (MemoryOrchestrator) async throws -> Void
 ) async throws {
     let url = FileManager.default.temporaryDirectory
@@ -162,14 +257,15 @@ private func withOrchestrator(
     config.enableTextSearch = true
     config.enableVectorSearch = false
     config.enableStructuredMemory = structuredMemory
-    config.enableAccessStatsScoring = false
+    config.enableAccessStatsScoring = enableAccessStatsScoring
     config.rag.searchMode = .textOnly
-    config.rag.deterministicNowMs = evaluationClockNowMs
+    config.rag.deterministicNowMs = deterministicNowMs
+    let provider = nowMsProvider ?? { evaluationClockNowMs }
 
     let orchestrator = try await MemoryOrchestrator(
         at: url,
         config: config,
-        nowMsProvider: { evaluationClockNowMs }
+        nowMsProvider: provider
     )
     do {
         try await body(orchestrator)
@@ -180,46 +276,4 @@ private func withOrchestrator(
         try? FileManager.default.removeItem(at: url)
         throw error
     }
-}
-
-private func repoRoot() -> URL {
-    URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-}
-
-private func fastRAGSource() throws -> String {
-    try String(
-        contentsOf: repoRoot().appendingPathComponent("Sources/Wax/RAG/FastRAGContextBuilder.swift"),
-        encoding: .utf8
-    )
-}
-
-private func orchestratorSource() throws -> String {
-    try String(
-        contentsOf: repoRoot().appendingPathComponent("Sources/Wax/Orchestrator/MemoryOrchestrator.swift"),
-        encoding: .utf8
-    )
-}
-
-private func functionBody(named name: String, in source: String) -> String? {
-    guard let nameRange = source.range(of: "func \(name)(") else { return nil }
-    let fromName = source[nameRange.lowerBound...]
-    guard let openBrace = fromName.firstIndex(of: "{") else { return nil }
-    var depth = 0
-    var index = openBrace
-    while index < fromName.endIndex {
-        let character = fromName[index]
-        if character == "{" {
-            depth += 1
-        } else if character == "}" {
-            depth -= 1
-            if depth == 0 {
-                return String(fromName[openBrace...index])
-            }
-        }
-        index = fromName.index(after: index)
-    }
-    return nil
 }
