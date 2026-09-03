@@ -68,6 +68,33 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func rememberDecisionWithSessionIDLandsDurable() throws {
+        let sessionID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let decoded = try BrokerCommand.decode(
+            command: "remember",
+            arguments: [
+                "content": .string("type-first decision"),
+                "session_id": .string(sessionID.uuidString),
+                "memory_type": .string("decision"),
+            ]
+        )
+        guard case .remember(let remember) = decoded else {
+            Issue.record("expected remember")
+            return
+        }
+        guard case .durable(let write) = remember.destination else {
+            Issue.record("expected durable destination")
+            return
+        }
+        #expect(write.type == .decision)
+        #expect(write.durability == .durable)
+        #expect(remember.sessionID == nil)
+        #expect(remember.writeScope == .durable)
+        #expect(remember.writeSemantics.type == .decision)
+        #expect(remember.writeSemantics.durability == .durable)
+    }
+
+    @Test
     func recallDefaultsAndModeRules() throws {
         let decoded = try BrokerCommand.decode(
             command: "recall",
