@@ -43,9 +43,7 @@ private func identityStores(memory: MemoryOrchestrator) -> LayeredRecall.Stores 
         inferWriteScope: { _, _ in LayeredRecall.Identity() },
         preview: { text in String((text ?? "").prefix(180)) },
         canonicalFrameID: { frameID, _ in frameID },
-        endedManifests: { [] },
-        searchEndedSession: { _, _, _, _ in [] },
-        recallEndedSession: { _, _, _, _, _ in [] }
+        endedSessions: InMemoryEndedSessionStore()
     )
 }
 

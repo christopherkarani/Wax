@@ -166,7 +166,7 @@ mcp_servers:
     connect_timeout: 60
 ```
 
-Install the operator skill, then append the SOUL.md fence from `references/project-rules.md` to `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`). Do not replace the rest of the soul.
+Install the operator skill, then paste the SOUL.md fence from `references/project-rules.md` into `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`). Append if missing; replace an existing `## Memory (Wax)` section. Do not replace the rest of the soul.
 
 ```bash
 cp -a ~/.local/share/waxmcp/skills/wax-mcp ~/.hermes/skills/mcp/wax-mcp
@@ -188,7 +188,7 @@ Do not add a second stdio `wax` server. Do not put `wax-memory` in `plugins.enab
    args:    --store-path /Users/<you>/.wax/memory.wax --embedder minilm
    ```
 
-3. Paste the AGENTS.md fence from `Resources/skills/public/wax-mcp/references/project-rules.md` into the project `AGENTS.md` or `CLAUDE.md`. Hermes / OpenClaw: append the SOUL.md fence to `SOUL.md` instead of replacing the soul.
+3. Paste the AGENTS.md fence from `Resources/skills/public/wax-mcp/references/project-rules.md` into the project `AGENTS.md` or `CLAUDE.md`. Hermes / OpenClaw: paste the SOUL.md fence into `SOUL.md` (append if missing; replace an existing `## Memory (Wax)` section).
 
 That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
@@ -198,11 +198,11 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
 Same rules on every host (from the paste block):
 
-1. Call `session_open` (`project`, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
-2. Tactical writes: `remember` **with** `session_id` or `scope: session` (`task_state` / `working`) when a plan locks, a path fails, or you are about to stop
-3. Strategic writes: `remember` with `scope: durable` (no `session_id`) for decision / lesson / constraint / user_preference / fact
-4. `recall` defaults to `scope: project` (hard-filters; empty lane is an explicit miss). Pass `scope: global` only for cross-project reads. With `session_id`, recall merges that session with durable under project scope. Prefer `mode: "text"` for exact names.
-5. Close with `session_close` (or `handoff` then `session_end`). Do not end between turns of one host chat.
+1. Call `session_open` (`project`, stable `agent_id`/`run_id`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
+2. Before the first answer: `recall` with `session_id` and `mode: text` for this job, plus `scope: global` for facts about the person.
+3. Lasting writes: `remember` with top-level `session_id` and `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. Write one-line corrections too.
+4. This job only: `task_state` with `session_id` (plan lock, failed path, landmine, before spawn or stop).
+5. Close with `session_close` (`session_id`, short `content`, `pending_tasks`) when the job ends. Do not end between turns of one host chat.
 
 ### Pitfalls that show up on a real store
 

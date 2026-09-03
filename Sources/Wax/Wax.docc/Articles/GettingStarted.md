@@ -164,4 +164,4 @@ Wax ships an MCP server for agent memory. Install:
 npx -y waxmcp@latest mcp install --scope user
 ```
 
-See the [README](https://github.com/christopherkarani/Wax#agent-quick-start) and `Resources/docs/wax-mcp-setup.md` for the operator workflow (`session_start`, `remember`, `recall`, `handoff`, …).
+See the [README](https://github.com/christopherkarani/Wax#agent-quick-start) and `Resources/docs/wax-mcp-setup.md` for the operator workflow (`session_open`, `remember`, `recall`, `session_close`, …).

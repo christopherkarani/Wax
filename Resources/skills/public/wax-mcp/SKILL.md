@@ -39,8 +39,8 @@ Then wire the **host**, not a new prompt:
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
 | Codex | HTTP URL in `~/.codex/config.toml` + copy this skill to `~/.codex/skills/wax-mcp` |
 | Cursor | HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
-| Hermes | HTTP + `memory.provider: wax-memory` + copy this skill + append the SOUL.md stanza to `~/.hermes/SOUL.md` |
-| OpenClaw | HTTP + memory plugin + append the SOUL.md stanza to workspace `SOUL.md` |
+| Hermes | HTTP + `memory.provider: wax-memory` + copy this skill + paste the SOUL.md stanza into `~/.hermes/SOUL.md` (replace existing `## Memory (Wax)`) |
+| OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into workspace `SOUL.md` (replace existing `## Memory (Wax)`) |
 | Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
 
 Optional: `wax-cli mcp install --write-host-rule PATH` writes the generated
