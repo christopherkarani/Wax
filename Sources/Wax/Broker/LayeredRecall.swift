@@ -627,6 +627,12 @@ package enum LayeredRecall {
         )
 
         let topK = max(1, request.searchTopK)
+        let rankingScope = MemoryScopeContext(
+            repoName: identity.repo,
+            projectName: identity.project
+        )
+        // Keep identity out of working/durable retrieval so overfetch can return
+        // foreign hits; `selectHits` still hard-filters. Episodic keeps the helper.
         let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
             base: request.frameFilter,
             scope: request.scope,
@@ -639,9 +645,10 @@ package enum LayeredRecall {
             let execution = try await working.memory.recallExecution(
                 query: request.query,
                 mode: request.mode,
-                frameFilter: scopedFrameFilter,
+                frameFilter: request.frameFilter,
                 timeRange: request.timeRange,
-                topK: topK
+                topK: topK,
+                scopeContext: rankingScope
             )
             sessionExecution = execution
             sessionHits = execution.context.items.map {
@@ -688,9 +695,10 @@ package enum LayeredRecall {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
                 mode: request.mode,
-                frameFilter: scopedFrameFilter,
+                frameFilter: request.frameFilter,
                 timeRange: request.timeRange,
-                topK: topK
+                topK: topK,
+                scopeContext: rankingScope
             )
             durableExecution = execution
             durableHits = execution.context.items.map {
@@ -758,21 +766,12 @@ package enum LayeredRecall {
         if request.scope == .session {
             merged = Array(lanes.working.prefix(request.limit))
         } else if request.scope == .project {
-            // Filter before merge so foreign ranks cannot consume the result budget.
-            let scopedSession = Self.filterHitsByProject(
-                lanes.working,
-                project: identity.project,
-                repo: identity.repo
-            )
-            let scopedDurable = Self.filterHitsByProject(
-                lanes.durable,
-                project: identity.project,
-                repo: identity.repo
-            )
+            // Merge unfiltered overfetch so `selectHits` can report louder foreign drops.
+            let mergeLimit = max(request.limit, lanes.working.count + lanes.durable.count)
             merged = mergeHits(
-                sessionHits: scopedSession,
-                durableHits: scopedDurable,
-                limit: request.limit
+                sessionHits: lanes.working,
+                durableHits: lanes.durable,
+                limit: mergeLimit
             )
         } else {
             merged = mergeHits(
@@ -783,10 +782,11 @@ package enum LayeredRecall {
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
+        let keptHits = Array(selected.hits.prefix(request.limit))
         let primary = lanes.workingExecution ?? lanes.durableExecution
 
         return RecallResult(
-            hits: selected.hits,
+            hits: keptHits,
             scope: request.scope,
             identity: identity,
             projectMiss: selected.projectMiss,
