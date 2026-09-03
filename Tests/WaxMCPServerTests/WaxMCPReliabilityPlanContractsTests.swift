@@ -763,10 +763,10 @@ func frameFilterByAddingProjectScopeInjectsWaxProject() {
         includeDeleted: true,
         metadataFilter: MetadataFilter(requiredEntries: ["custom": "1"], requiredLabels: ["keep"])
     )
-    let merged = AgentBrokerService.frameFilterByAddingProjectScope(
-        base,
-        project: "AlphaLand",
-        repo: "IgnoredWhenProjectSet"
+    let merged = LayeredRecall.frameFilterForScopedRetrieval(
+        base: base,
+        scope: .project,
+        identity: LayeredRecall.Identity(project: "AlphaLand", repo: "IgnoredWhenProjectSet")
     )
     #expect(merged?.includeDeleted == true)
     #expect(merged?.metadataFilter?.requiredLabels == ["keep"])
@@ -774,12 +774,18 @@ func frameFilterByAddingProjectScopeInjectsWaxProject() {
     #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "AlphaLand")
     #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == nil)
 
-    let repoOnly = AgentBrokerService.frameFilterByAddingProjectScope(
-        nil,
-        project: nil,
-        repo: "RepoOnly"
+    let repoOnly = LayeredRecall.frameFilterForScopedRetrieval(
+        base: nil,
+        scope: .project,
+        identity: LayeredRecall.Identity(project: nil, repo: "RepoOnly")
     )
     #expect(repoOnly?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == "RepoOnly")
-    #expect(AgentBrokerService.frameFilterByAddingProjectScope(base, project: nil, repo: nil) == base)
+    #expect(
+        LayeredRecall.frameFilterForScopedRetrieval(
+            base: base,
+            scope: .project,
+            identity: LayeredRecall.Identity(project: nil, repo: nil)
+        ) == base
+    )
 }
 #endif

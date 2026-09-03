@@ -20,6 +20,7 @@ package actor AgentBrokerService {
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
+    let endedSessions: DiskEndedSessionStore
     private let commandMutex = AsyncMutex()
     // A remember may wait for deferred embedding readiness. Keep that wait
     // from blocking unrelated reads while still serializing concurrent writes.
@@ -84,6 +85,16 @@ package actor AgentBrokerService {
         self.embeddingRequest = request
         self.readiness = readiness
         self.factoryOverride = factoryOverride
+        self.endedSessions = DiskEndedSessionStore(
+            sessionRootURL: sessionRootURL,
+            noEmbedder: noEmbedder,
+            embedderChoice: embedderChoice,
+            enableAccessStatsScoring: enableAccessStatsScoring,
+            scopeContext: scopeContext,
+            embedderTuning: embedderTuning,
+            readiness: readiness,
+            factoryOverride: factoryOverride
+        )
         let capturedAccessStats = enableAccessStatsScoring
         let capturedScope = scopeContext
         let capturedRequest = request
@@ -651,49 +662,6 @@ extension AgentBrokerService {
             payload["scope_dropped"] = dropped
         }
         return .object(payload)
-    }
-
-    package static func filterRecallItemsByProject(
-        _ items: [RAGContext.Item],
-        project: String?,
-        repo: String?
-    ) -> [RAGContext.Item] {
-        LayeredRecall.filterRecallItemsByProject(items, project: project, repo: repo)
-    }
-
-    /// Returns items whose `wax.project` or `wax.repo` metadata matches the given identity.
-    package static func recallItems(
-        _ items: [RAGContext.Item],
-        matchingProject project: String?,
-        repo: String?
-    ) -> [RAGContext.Item] {
-        filterRecallItemsByProject(items, project: project, repo: repo)
-    }
-
-    /// Merges project/repo hard-filter into an existing frame filter so unified search
-    /// over-fetches and excludes foreign frames before top-K is finalized.
-    package static func frameFilterByAddingProjectScope(
-        _ base: FrameFilter?,
-        project: String?,
-        repo: String?
-    ) -> FrameFilter? {
-        LayeredRecall.frameFilterForScopedRetrieval(
-            base: base,
-            scope: .project,
-            identity: LayeredRecall.Identity(project: project, repo: repo)
-        )
-    }
-
-    package static func mergeRecallItems(
-        sessionItems: [RAGContext.Item],
-        durableItems: [RAGContext.Item],
-        limit: Int
-    ) -> [RAGContext.Item] {
-        LayeredRecall.mergeRecallItems(
-            sessionItems: sessionItems,
-            durableItems: durableItems,
-            limit: limit
-        )
     }
 
     func search(_ command: BrokerCommand.Search) async throws -> AgentBrokerValue {
@@ -1795,20 +1763,20 @@ extension AgentBrokerService {
         let report: SessionHarvest.Report
         if FileManager.default.fileExists(atPath: storeURL.path) {
             do {
-                report = try await openAdhocMemory(
-                    at: storeURL,
-                    structuredMemoryEnabled: false,
-                    noEmbedder: noEmbedder
-                ) { memory in
+                let longTerm = longTermMemory
+                let scope = scopeContext
+                let settings = promotionSettings
+                let now = Self.nowMs()
+                report = try await endedSessions.withMemory(at: storeURL) { memory in
                     await SessionHarvest.run(
                         sessionMemory: memory,
-                        longTermMemory: self.longTermMemory,
+                        longTermMemory: longTerm,
                         sessionID: sessionID,
                         manifest: manifest,
                         events: events,
-                        scope: self.scopeContext,
-                        settings: self.promotionSettings,
-                        nowMs: Self.nowMs()
+                        scope: scope,
+                        settings: settings,
+                        nowMs: now
                     )
                 }
             } catch {
@@ -2255,9 +2223,8 @@ extension AgentBrokerService {
         } else {
             buildSummary = nil
         }
-        let execution = try await openAdhocMemory(
+        let execution = try await endedSessions.withMemory(
             at: corpusStoreURL,
-            structuredMemoryEnabled: false,
             noEmbedder: corpusNoEmbedder
         ) { memory in
             try await memory.searchExecution(
@@ -2541,8 +2508,6 @@ extension AgentBrokerService {
 
     func layeredRecallStores() -> LayeredRecall.Stores {
         let sessionsSnapshot = activeSessions
-        let noEmbedderFlag = noEmbedder
-        let sessionRoot = sessionRootURL
 
         return LayeredRecall.Stores(
             longTermMemory: longTermMemory,
@@ -2580,95 +2545,7 @@ extension AgentBrokerService {
             canonicalFrameID: { frameID, memory in
                 await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
             },
-            endedManifests: {
-                try BrokerSessionPersistence.listManifests(rootURL: sessionRoot)
-            },
-            searchEndedSession: { manifest, query, mode, topK in
-                let sessionURL = URL(fileURLWithPath: manifest.storePath)
-                guard FileManager.default.fileExists(atPath: sessionURL.path) else { return [] }
-                let eventLogURL = URL(fileURLWithPath: manifest.eventLogPath)
-                let execution = try await self.openAdhocMemory(
-                    at: sessionURL,
-                    structuredMemoryEnabled: false,
-                    noEmbedder: noEmbedderFlag
-                ) { memory in
-                    try await memory.searchExecution(
-                        query: query,
-                        mode: mode,
-                        topK: topK,
-                        frameFilter: nil,
-                        timeRange: nil
-                    )
-                }
-                let signals = BrokerSessionPersistence.recallSignals(
-                    from: try BrokerSessionPersistence.loadEvents(from: eventLogURL)
-                )
-                var laneHits: [LayeredRecall.EpisodicLaneHit] = []
-                for hit in execution.hits {
-                    let canonicalFrameID = try await self.openAdhocMemory(
-                        at: sessionURL,
-                        structuredMemoryEnabled: false,
-                        noEmbedder: noEmbedderFlag,
-                        body: { memory in
-                            await self.bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory)
-                        }
-                    )
-                    let signal = canonicalFrameID.flatMap { signals[$0] } ?? signals[hit.frameId]
-                    laneHits.append(
-                        LayeredRecall.EpisodicLaneHit(
-                            frameID: hit.frameId,
-                            score: hit.score,
-                            previewText: hit.previewText,
-                            metadata: hit.metadata,
-                            explanations: hit.explanations,
-                            canonicalFrameID: canonicalFrameID,
-                            recallCount: signal.map(\.recallCount),
-                            uniqueQueryCount: signal.map(\.uniqueQueryCount)
-                        )
-                    )
-                }
-                return laneHits
-            },
-            recallEndedSession: { manifest, query, mode, topK, frameFilter in
-                let sessionURL = URL(fileURLWithPath: manifest.storePath)
-                return try await self.openAdhocMemory(
-                    at: sessionURL,
-                    structuredMemoryEnabled: false,
-                    noEmbedder: noEmbedderFlag
-                ) { memory in
-                    let items = try await memory.recallExecution(
-                        query: query,
-                        mode: mode,
-                        frameFilter: frameFilter,
-                        timeRange: nil,
-                        topK: topK
-                    ).context.items
-                    var hits: [LayeredRecall.Hit] = []
-                    hits.reserveCapacity(items.count)
-                    for item in items {
-                        let canonicalFrameID = await self.bestEffortCanonicalDocumentFrameID(
-                            for: item.frameId,
-                            memory: memory
-                        ) ?? item.frameId
-                        hits.append(
-                            LayeredRecall.Hit(
-                                id: .episodic(sessionID: manifest.sessionID, frameID: canonicalFrameID),
-                                agentID: manifest.agentID,
-                                runID: manifest.runID,
-                                score: item.score,
-                                text: item.text,
-                                preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
-                                metadata: item.metadata,
-                                explanations: ["recent session episode"] + item.explanations,
-                                timestampMs: manifest.updatedAtMs,
-                                kind: item.kind,
-                                sources: item.sources
-                            )
-                        )
-                    }
-                    return hits
-                }
-            },
+            endedSessions: endedSessions,
             nowMs: { Self.nowMs() }
         )
     }
@@ -2688,14 +2565,13 @@ extension AgentBrokerService {
                 timestampMs: document.timestampMs
             )
         case .working(let sessionID, let frameID), .episodic(let sessionID, let frameID):
-            let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
-            let loader: (MemoryOrchestrator) async throws -> LayeredMemoryHit = { memory in
-                let document = try await self.requireDocument(frameID: frameID, memory: memory)
-                await memory.recordAccess(frameId: document.frameId)
+            if let state = activeSessions[sessionID] {
+                let document = try await requireDocument(frameID: frameID, memory: state.memory)
+                await state.memory.recordAccess(frameId: document.frameId)
                 return LayeredMemoryHit(
                     id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
-                    agentID: manifest.agentID,
-                    runID: manifest.runID,
+                    agentID: state.manifest.agentID,
+                    runID: state.manifest.runID,
                     score: 0,
                     text: document.text,
                     preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
@@ -2704,14 +2580,19 @@ extension AgentBrokerService {
                     timestampMs: document.timestampMs
                 )
             }
-            if let state = activeSessions[sessionID] {
-                return try await loader(state.memory)
-            }
-            return try await openAdhocMemory(
-                at: URL(fileURLWithPath: manifest.storePath),
-                structuredMemoryEnabled: false,
-                noEmbedder: noEmbedder,
-                body: loader
+            let document = try await endedSessions.document(
+                EndedSessionDocumentQuery(sessionID: sessionID, frameID: frameID)
+            )
+            return LayeredMemoryHit(
+                id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
+                agentID: document.agentID,
+                runID: document.runID,
+                score: 0,
+                text: document.text,
+                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                metadata: document.metadata,
+                explanations: [reference.horizon == .working ? "current session" : "recent session episode"],
+                timestampMs: document.timestampMs
             )
         }
     }
@@ -2917,40 +2798,6 @@ extension AgentBrokerService {
 
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
         try await virtualSessions.openExistingSessionMemory(at: url)
-    }
-
-    func openAdhocMemory<T: Sendable>(
-        at url: URL,
-        structuredMemoryEnabled: Bool,
-        noEmbedder: Bool,
-        body: (MemoryOrchestrator) async throws -> T
-    ) async throws -> T {
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = structuredMemoryEnabled
-        config.enableAccessStatsScoring = enableAccessStatsScoring
-        config.defaultScopeContext = scopeContext
-        let request = try HostEmbeddingReadiness.request(
-            noEmbedder: noEmbedder,
-            requireVector: false,
-            embedderChoice: embedderChoice,
-            options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
-        )
-        let memory = try await EmbeddingReadinessBinding.openOrchestrator(
-            at: url,
-            config: config,
-            request: request,
-            waxOptions: CommandLineEmbedderFactory.waxOptions(),
-            readiness: readiness,
-            factoryOverride: noEmbedder ? nil : factoryOverride
-        )
-        do {
-            let result = try await body(memory)
-            try await memory.close()
-            return result
-        } catch {
-            try? await memory.close()
-            throw error
-        }
     }
 
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
