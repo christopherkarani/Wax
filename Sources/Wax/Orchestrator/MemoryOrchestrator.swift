@@ -1157,14 +1157,16 @@ package actor MemoryOrchestrator {
         mode: SearchMode? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
-        topK: Int? = nil
+        topK: Int? = nil,
+        scopeContext: MemoryScopeContext? = nil
     ) async throws -> RecallExecution {
         try await executeRecall(
             query: query,
             frameFilter: frameFilter,
             timeRange: timeRange,
             topK: topK,
-            requestedMode: mode
+            requestedMode: mode,
+            scopeContext: scopeContext
         )
     }
 
@@ -1177,7 +1179,8 @@ package actor MemoryOrchestrator {
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         searchTopK: Int? = nil,
-        searchMode: SearchMode? = nil
+        searchMode: SearchMode? = nil,
+        scopeContext: MemoryScopeContext? = nil
     ) async throws -> RAGContext {
         let preference = config.vectorEnginePreference
         var recallConfig = ragConfigForRecall()
@@ -1198,7 +1201,7 @@ package actor MemoryOrchestrator {
             session: session,
             frameFilter: frameFilter,
             timeRange: resolvedTimeRange,
-            scopeContext: config.defaultScopeContext,
+            scopeContext: scopeContext ?? config.defaultScopeContext,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
@@ -1787,7 +1790,8 @@ package actor MemoryOrchestrator {
         frameFilter: FrameFilter?,
         timeRange: SearchTimeRange?,
         topK: Int?,
-        requestedMode: SearchMode?
+        requestedMode: SearchMode?,
+        scopeContext: MemoryScopeContext? = nil
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1831,7 +1835,8 @@ package actor MemoryOrchestrator {
             frameFilter: frameFilter,
             timeRange: timeRange,
             searchTopK: topK,
-            searchMode: effectiveSearchMode
+            searchMode: effectiveSearchMode,
+            scopeContext: scopeContext
         )
 
         return RecallExecution(

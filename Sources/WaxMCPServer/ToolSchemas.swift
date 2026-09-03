@@ -496,6 +496,10 @@ enum ToolSchemas {
                 "minimum": 1,
                 "maximum": 200,
             ],
+            "expand": [
+                "type": "boolean",
+                "description": "When true, include full text for every hit. Default: false (top 3 include text; remaining hits keep preview).",
+            ],
         ],
         required: ["query"]
     )

@@ -81,6 +81,7 @@ package struct BrokerMemoryHealth: Sendable, Equatable {
     package var staleFrameIds: [UInt64]
     package var lowHitFrameIds: [UInt64]
     package var duplicatePairs: [BrokerHealthDuplicatePair]
+    package var unsupersededDuplicateDecisions: [BrokerHealthDuplicatePair]
     package var contradictionSummaries: [String]
     package var quarantineCandidateIds: [UInt64]
     package var reclaimableSessionIds: [UUID]
@@ -327,6 +328,10 @@ package enum BrokerMemoryInsights {
         }
 
         let duplicatePairs = duplicateCandidates(in: documents)
+        let decisionDuplicates = unsupersededDuplicateDecisions(
+            in: documents,
+            nowMs: nowMs
+        )
         let contradictionSummaries = contradictionHints(from: facts)
 
         return BrokerMemoryHealth(
@@ -336,6 +341,7 @@ package enum BrokerMemoryInsights {
             staleFrameIds: stale.sorted(),
             lowHitFrameIds: lowHit.sorted(),
             duplicatePairs: duplicatePairs,
+            unsupersededDuplicateDecisions: decisionDuplicates,
             contradictionSummaries: contradictionSummaries,
             quarantineCandidateIds: quarantine.sorted(),
             reclaimableSessionIds: []
@@ -359,6 +365,44 @@ package enum BrokerMemoryInsights {
                     BrokerHealthDuplicatePair(
                         leftFrameId: lhs.frameId,
                         rightFrameId: rhs.frameId,
+                        similarity: similarity
+                    )
+                )
+            }
+        }
+        return pairs.sorted { lhs, rhs in
+            if lhs.similarity != rhs.similarity { return lhs.similarity > rhs.similarity }
+            if lhs.leftFrameId != rhs.leftFrameId { return lhs.leftFrameId < rhs.leftFrameId }
+            return lhs.rightFrameId < rhs.rightFrameId
+        }
+    }
+
+    private static func unsupersededDuplicateDecisions(
+        in documents: [MemoryOrchestrator.CorpusSourceDocument],
+        nowMs: Int64,
+        comparisonLimit: Int = 140
+    ) -> [BrokerHealthDuplicatePair] {
+        let decisions: [(document: MemoryOrchestrator.CorpusSourceDocument, project: String)] = documents.compactMap { document in
+            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
+            guard info.type == .decision else { return nil }
+            guard info.durability == .durable || info.durability == .locked else { return nil }
+            guard let project = info.project else { return nil }
+            return (document, project)
+        }
+        let limited = Array(decisions.prefix(comparisonLimit))
+        guard limited.count > 1 else { return [] }
+        var pairs: [BrokerHealthDuplicatePair] = []
+        for lhsIndex in limited.indices {
+            for rhsIndex in limited.indices where rhsIndex > lhsIndex {
+                let lhs = limited[lhsIndex]
+                let rhs = limited[rhsIndex]
+                guard lhs.project == rhs.project else { continue }
+                let similarity = MemorySemantics.similarity(lhs: lhs.document.text, rhs: rhs.document.text)
+                guard similarity >= 0.88 else { continue }
+                pairs.append(
+                    BrokerHealthDuplicatePair(
+                        leftFrameId: lhs.document.frameId,
+                        rightFrameId: rhs.document.frameId,
                         similarity: similarity
                     )
                 )

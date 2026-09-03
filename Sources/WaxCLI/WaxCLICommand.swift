@@ -790,7 +790,7 @@ enum WaxMCPAgentPlaybook {
         2. Call `recall` with default `scope: project` (hard-filters to resolved project; unlabeled/foreign frames excluded). Empty lane returns an explicit miss — pass `scope: global` only for cross-project reads. `recall` with `session_id` merges that session with durable memory under project scope.
 
         Workflow rules:
-        - Use `remember` to store decisions, discoveries, and short factual notes. `memory_type` selects the horizon; explicit `scope` overrides. Durable types must omit `session_id`. Do not put `session_id` inside `metadata`.
+        - Use `remember` to store decisions, discoveries, and short factual notes. `memory_type` selects the horizon; explicit `scope` overrides. Durable types stay durable even if `session_id` is present. Do not put `session_id` inside `metadata`.
         - Use `recall` for assembled context and `search` for raw ranked hits.
         - Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
         - Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
@@ -802,7 +802,7 @@ enum WaxMCPAgentPlaybook {
         Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`.
         Daily `tools/list` is those eight. Aliases stay callable. Set `WAX_MCP_TOOLS=full` for the rest. Follow the MCP server `instructions` when present; this paste is a fallback.
 
-        Write horizon: `memory_type` selects the horizon. `task_state` or `handoff` need top-level `session_id`. Durable types (`decision` | `lesson` | `fact` | `constraint` | `user_preference`) must omit `session_id` — passing it files them into the session store. `note` is session if `session_id` is present, else durable. Explicit `scope` overrides (`scope: durable` forbids `session_id`).
+        Write horizon: `memory_type` selects the horizon. `task_state` or `handoff` need top-level `session_id`. Durable types (`decision` | `lesson` | `fact` | `constraint` | `user_preference`) stay durable even if `session_id` is present; a wire `session_id` still stamps session project/repo. `note` is session if `session_id` is present, else durable. Explicit `scope` overrides (`scope: durable` forbids `session_id`).
 
         Tactical (this task) — write immediately, not at the end:
         - `remember` with `scope: session`, top-level `session_id`, `memory_type: task_state`, `durability: working`
@@ -810,7 +810,7 @@ enum WaxMCPAgentPlaybook {
         - Read with `recall` plus `session_id`
 
         Strategic (survives this session):
-        - `remember` with `scope: durable` (no `session_id`), `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact`
+        - `remember` with `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact` (durable even if `session_id` is present). Optional explicit `scope: durable`.
         - When: the user corrects you, you make an architecture or product decision, a pitfall will waste the next agent time, a standing preference appears, or a repo fact is stable
 
         Both horizons on a long task: `compact_context`.
@@ -834,7 +834,7 @@ enum WaxMCPAgentPlaybook {
         Write as you go:
         - This task: `remember` with `scope: session`, `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
         - `task_state` requires an active session and is always working; never request durable or locked task state. Repair legacy records with `task_state_migrate` into a distinct complete-store copy after a dry run.
-        - Long-term: `remember` with `scope: durable` (no `session_id`) and type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (corrections, decisions, standing prefs, stable repo facts).
+        - Long-term: `remember` with type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (durable even if `session_id` is present; corrections, decisions, standing prefs, stable repo facts). Optional `scope: durable`.
 
         Read: `recall` defaults to project scope (no foreign/unlabeled frames). Need cross-project → `scope: global`. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
 

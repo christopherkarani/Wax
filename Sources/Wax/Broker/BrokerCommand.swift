@@ -43,6 +43,9 @@ package enum BrokerCommand: Sendable, Equatable {
         package var destination: RememberDestination
         package var metadata: [String: String]
         package var cwd: String?
+        /// Wire `session_id`. Durable types may still carry this for project stamp
+        /// even though `destination.sessionID` is nil.
+        package var clientSessionID: UUID? = nil
 
         package var sessionID: UUID? { destination.sessionID }
         package var writeSemantics: MemoryWriteSemantics { destination.writeSemantics }
@@ -71,6 +74,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var explicitProject: String?
         package var explicitRepo: String?
         package var clientCWD: String?
+        package var verbosity: String = "compact"
     }
 
     package struct Search: Sendable, Equatable {
@@ -261,6 +265,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var rebuild: Bool
         package var mode: SearchMode
         package var topK: Int
+        package var expand: Bool = false
     }
 
     /// Validates the argument surface and decodes a typed command.
@@ -380,7 +385,8 @@ extension BrokerCommand.Remember {
             content: content,
             destination: destination,
             metadata: rawMetadata,
-            cwd: try args.optionalString("cwd")
+            cwd: try args.optionalString("cwd"),
+            clientSessionID: sessionID
         )
     }
 }
@@ -415,7 +421,8 @@ extension BrokerCommand.Recall {
             filters: filters,
             explicitProject: try args.optionalString("project"),
             explicitRepo: try args.optionalString("repo"),
-            clientCWD: try args.optionalString("cwd")
+            clientCWD: try args.optionalString("cwd"),
+            verbosity: try BrokerCommand.parseResponseVerbosity(args)
         )
     }
 }
@@ -812,7 +819,8 @@ extension BrokerCommand.CorpusSearch {
                 modeRaw: modeRaw,
                 alpha: try args.optionalDouble("alpha")
             ),
-            topK: topK
+            topK: topK,
+            expand: try args.optionalBool("expand") ?? false
         )
     }
 }
@@ -856,6 +864,15 @@ extension BrokerCommand {
             throw BrokerValidationError.invalid("scope must be one of: project, session, global")
         }
         return scope
+    }
+
+    package static func parseResponseVerbosity(_ args: BrokerArguments) throws -> String {
+        guard let raw = try args.optionalString("verbosity") else { return "compact" }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "compact" || trimmed == "verbose" else {
+            throw BrokerValidationError.invalid("verbosity must be one of: compact, verbose")
+        }
+        return trimmed
     }
 
     package static func parseRecallMode(_ args: BrokerArguments) throws -> SearchMode? {

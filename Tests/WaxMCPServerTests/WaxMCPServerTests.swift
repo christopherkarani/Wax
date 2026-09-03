@@ -551,8 +551,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("The same agent_id+run_id resumes"))
     #expect(text.contains("exactly one live session"))
     #expect(text.contains("agent_id+resolved project rebinds"))
-    #expect(text.contains("durable types must omit session_id"))
-    #expect(!text.contains("durable types stay durable even if session_id is present"))
+    #expect(text.contains("durable types stay durable even if session_id is present"))
+    #expect(!text.contains("durable types must omit session_id"))
     #expect(text.contains("remember inherits session_id only for task_state, handoff, or scope=session"))
 }
 
@@ -3755,13 +3755,30 @@ func rememberSearchAndRecallExposeTypedExplainableMemory() async throws {
                 "query": .string("release notes preference"),
                 "limit": .int(3),
                 "scope": .string("global"),
+                "verbosity": .string("verbose"),
             ]),
             broker: service
         )
         #expect(recall.isError != true)
-        let recallJSON = try parseJSONResource(in: recall, uriSuffix: "recall-summary")
-        let recallFirst = ((recallJSON["results"] as? [[String: Any]]) ?? []).first
-        let recallExplanations = recallFirst?["explanations"] as? [String] ?? []
+        guard case .object(let recallJSON) = try #require(recall.structuredContent) else {
+            Issue.record("Expected verbose recall structured content")
+            return
+        }
+        guard case .array(let results)? = recallJSON["results"] else {
+            Issue.record("Expected verbose recall results array")
+            return
+        }
+        let recallFirst = results.compactMap { value -> [String: Value]? in
+            if case .object(let object) = value { return object }
+            return nil
+        }.first
+        let recallExplanations: [String] = {
+            guard case .array(let values)? = recallFirst?["explanations"] else { return [] }
+            return values.compactMap { value in
+                if case .string(let text) = value { return text }
+                return nil
+            }
+        }()
         #expect(recallExplanations.contains("user preference"))
     }
 }

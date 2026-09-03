@@ -155,7 +155,12 @@ package enum RememberDestination: Sendable, Equatable {
             throw BrokerValidationError.invalid("scope session requires session_id")
         }
 
-        if let sessionID, writeScope != .durable {
+        // Type selects horizon. session_id does not hijack durable types;
+        // explicit scope=session still forces a session write where legal.
+        let typeSelectsSession = resolvedType == .note
+            || resolvedType == .handoff
+            || resolvedType == .taskState
+        if let sessionID, writeScope == .session || typeSelectsSession {
             let sessionDurability: SessionRememberDurability
             switch requestedDurability {
             case .durable, .locked:

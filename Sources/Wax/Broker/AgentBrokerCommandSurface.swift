@@ -77,7 +77,7 @@ package enum AgentBrokerCommandSurface {
             "content", "session_id", "scope", "metadata", "memory_type", "durability", "project", "repo",
             "confidence", "reviewed", "locked", "subject", "kind", "aliases", "predicate", "object", "cwd",
         ], requiresStructuredMemory: true),
-        Entry(canonicalName: "corpus_search", acceptedArgumentKeys: ["query", "rebuild", "recursive", "mode", "alpha", "topK"]),
+        Entry(canonicalName: "corpus_search", acceptedArgumentKeys: ["query", "rebuild", "recursive", "mode", "alpha", "topK", "expand"]),
         Entry(canonicalName: "stats", acceptedArgumentKeys: ["session_id", "verbosity"]),
         Entry(canonicalName: "session_start", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "cwd", "project", "repo", "conversation_id", "verbosity"]),
         Entry(canonicalName: "session_resume", acceptedArgumentKeys: ["session_id", "agent_id", "run_id", "verbosity"]),
