@@ -51,6 +51,7 @@ func layeredRecallSelectHitsGlobalSkipsProjectFilter() {
     #expect(selected.projectMiss == false)
     #expect(selected.hits.count == 1)
     #expect(selected.scopeMissMessage == nil)
+    #expect(selected.scopeDropped.count == 0)
 }
 
 @Test
@@ -72,6 +73,150 @@ func layeredRecallSelectHitsProjectFiltersAndReportsMiss() {
     #expect(selected.hits.isEmpty)
     #expect(selected.projectMiss == true)
     #expect(selected.scopeMissMessage == "no frames for project wax")
+    #expect(selected.scopeDropped.count == 0)
+}
+
+@Test
+func layeredRecallSelectHitsProjectAnnouncesDroppedHigherForeignHits() throws {
+    let merged = [
+        layeredHit(
+            frameID: 1,
+            score: 1.0,
+            text: "foreign high note",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.project: "other",
+                MemoryMetadataKeys.repo: "other-repo",
+            ]
+        ),
+        layeredHit(
+            frameID: 10,
+            score: 0.5,
+            text: "wax project note",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.project: "wax",
+                MemoryMetadataKeys.repo: "Wax",
+            ]
+        ),
+        layeredHit(
+            frameID: 3,
+            score: 0.5,
+            text: "foreign equal note",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.project: "other",
+                MemoryMetadataKeys.repo: "other-repo",
+            ]
+        ),
+        layeredHit(
+            frameID: 2,
+            score: 0.25,
+            text: "foreign low note",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.project: "other",
+                MemoryMetadataKeys.repo: "other-repo",
+            ]
+        ),
+    ]
+    let selected = LayeredRecall.selectHits(
+        merged: merged,
+        scope: .project,
+        identity: LayeredRecall.Identity(project: "wax", repo: nil)
+    )
+    #expect(selected.projectMiss == false)
+    #expect(selected.hits.count == 1)
+    #expect(selected.hits.allSatisfy { $0.metadata[MemoryMetadataKeys.project] == "wax" })
+    #expect(selected.scopeDropped.count >= 1)
+    let top = try #require(selected.scopeDropped.top.first)
+    #expect(top.project == "other")
+    #expect(top.repo == "other-repo")
+    #expect(top.score == 1.0)
+    #expect(top.preview == "foreign high note")
+    #expect(selected.scopeDropped.top.contains { $0.preview == "foreign equal note" })
+    #expect(selected.scopeDropped.top.contains { $0.preview == "foreign low note" } == false)
+    #expect(selected.scopeDropped.hint == "pass scope=global for cross-project — do not auto-widen")
+}
+
+@Test
+func layeredRecallSelectHitsSessionSkipsProjectFilter() {
+    let merged = [
+        layeredHit(
+            frameID: 1,
+            score: 1.0,
+            text: "other project note",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "other"]
+        ),
+        layeredHit(
+            frameID: 10,
+            score: 0.5,
+            text: "wax project note",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "wax"]
+        ),
+    ]
+    let selected = LayeredRecall.selectHits(
+        merged: merged,
+        scope: .session,
+        identity: LayeredRecall.Identity(project: "wax", repo: nil)
+    )
+    #expect(selected.projectMiss == false)
+    #expect(selected.hits.count == 2)
+    #expect(selected.scopeMissMessage == nil)
+    #expect(selected.scopeDropped.count == 0)
+}
+
+@Test
+func layeredRecallSelectHitsProjectDroppedTopCapsAtThreeSortedByScoreThenFrameID() {
+    let merged = [
+        layeredHit(
+            frameID: 5,
+            score: 1.0,
+            text: "foreign-5",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "other"]
+        ),
+        layeredHit(
+            frameID: 2,
+            score: 1.0,
+            text: "foreign-2",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "other"]
+        ),
+        layeredHit(
+            frameID: 8,
+            score: 0.75,
+            text: "foreign-8",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "other"]
+        ),
+        layeredHit(
+            frameID: 1,
+            score: 0.5,
+            text: "foreign-1",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "other"]
+        ),
+        layeredHit(
+            frameID: 100,
+            score: 0.25,
+            text: "wax kept",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.project: "wax"]
+        ),
+    ]
+    let selected = LayeredRecall.selectHits(
+        merged: merged,
+        scope: .project,
+        identity: LayeredRecall.Identity(project: "wax", repo: nil)
+    )
+    #expect(selected.projectMiss == false)
+    #expect(selected.hits.map(\.text) == ["wax kept"])
+    #expect(selected.scopeDropped.count == 4)
+    #expect(selected.scopeDropped.top.map(\.preview) == ["foreign-2", "foreign-5", "foreign-8"])
+    #expect(selected.scopeDropped.top.map(\.score) == [1.0, 1.0, 0.75])
 }
 
 @Test

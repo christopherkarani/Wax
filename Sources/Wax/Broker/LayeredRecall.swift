@@ -166,12 +166,41 @@ package enum LayeredRecall {
         }
     }
 
+    package struct ScopeDropped: Sendable, Equatable {
+        package struct Entry: Sendable, Equatable {
+            package var project: String?
+            package var repo: String?
+            package var score: Float
+            package var preview: String
+
+            package init(project: String?, repo: String?, score: Float, preview: String) {
+                self.project = project
+                self.repo = repo
+                self.score = score
+                self.preview = preview
+            }
+        }
+
+        package var count: Int
+        package var top: [Entry]
+        package var hint: String
+
+        package init(count: Int = 0, top: [Entry] = [], hint: String = "") {
+            self.count = count
+            self.top = top
+            self.hint = hint
+        }
+
+        package static let empty = ScopeDropped()
+    }
+
     package struct RecallResult: Sendable {
         package var hits: [Hit]
         package var scope: Scope
         package var identity: Identity
         package var projectMiss: Bool
         package var scopeMissMessage: String?
+        package var scopeDropped: ScopeDropped = .empty
         package var requestedModeSummary: String
         package var effectiveModeSummary: String
         package var queryEmbeddingState: String
@@ -470,9 +499,9 @@ package enum LayeredRecall {
         merged: [Hit],
         scope: Scope,
         identity: Identity
-    ) -> (hits: [Hit], projectMiss: Bool, scopeMissMessage: String?) {
+    ) -> (hits: [Hit], projectMiss: Bool, scopeMissMessage: String?, scopeDropped: ScopeDropped) {
         if scope == .global || scope == .session {
-            return (merged, false, nil)
+            return (merged, false, nil, .empty)
         }
         // scope == .project
         let filtered = filterHitsByProject(merged, project: identity.project, repo: identity.repo)
@@ -480,16 +509,48 @@ package enum LayeredRecall {
             return (
                 [],
                 true,
-                "no frames for project (unresolved); pass project/repo or scope=global"
+                "no frames for project (unresolved); pass project/repo or scope=global",
+                .empty
             )
         }
         if filtered.isEmpty {
             let label = identity.project.map { "project \($0)" }
                 ?? identity.repo.map { "repo \($0)" }
                 ?? "project"
-            return ([], true, "no frames for \(label)")
+            return ([], true, "no frames for \(label)", .empty)
         }
-        return (filtered, false, nil)
+        return (filtered, false, nil, louderDropped(merged: merged, kept: filtered, identity: identity))
+    }
+
+    /// Foreign hits scoring ≥ the kept top. Empty-lane miss stays `projectMiss`; never auto-widens.
+    private static func louderDropped(
+        merged: [Hit],
+        kept: [Hit],
+        identity: Identity
+    ) -> ScopeDropped {
+        guard let maxKept = kept.map(\.score).max() else { return .empty }
+        let foreign = merged.filter { hit in
+            filterHitsByProject([hit], project: identity.project, repo: identity.repo).isEmpty
+        }
+        let louder = foreign.filter { $0.score >= maxKept }
+        guard !louder.isEmpty else { return .empty }
+        let ranked = louder.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.frameID < rhs.frameID
+        }
+        let top = ranked.prefix(3).map { hit in
+            ScopeDropped.Entry(
+                project: hit.metadata[MemoryMetadataKeys.project],
+                repo: hit.metadata[MemoryMetadataKeys.repo],
+                score: hit.score,
+                preview: hit.preview
+            )
+        }
+        return ScopeDropped(
+            count: louder.count,
+            top: Array(top),
+            hint: "pass scope=global for cross-project — do not auto-widen"
+        )
     }
 
     package static func hit(from item: RAGContext.Item, horizon: Horizon, sessionID: UUID) -> Hit {
@@ -730,6 +791,7 @@ package enum LayeredRecall {
             identity: identity,
             projectMiss: selected.projectMiss,
             scopeMissMessage: selected.scopeMissMessage,
+            scopeDropped: selected.scopeDropped,
             requestedModeSummary: primary?.requestedMode.diagnosticsSummary ?? "n/a",
             effectiveModeSummary: primary?.effectiveMode.diagnosticsSummary ?? "n/a",
             queryEmbeddingState: primary?.queryEmbeddingState.rawValue ?? "n/a",
