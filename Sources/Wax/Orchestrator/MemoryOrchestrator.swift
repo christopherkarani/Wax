@@ -1752,7 +1752,7 @@ package actor MemoryOrchestrator {
         metadata.entries["kind"] = "handoff"
         metadata.entries[MemoryMetadataKeys.type] = MemoryType.handoff.rawValue
         metadata.entries[MemoryMetadataKeys.durability] = MemoryDurability.ephemeral.rawValue
-        metadata.entries[MemoryMetadataKeys.createdAtMs] = String(Int64(Date().timeIntervalSince1970 * 1000))
+        metadata.entries[MemoryMetadataKeys.createdAtMs] = String(nowProvider())
         if let normalizedProject, !normalizedProject.isEmpty {
             metadata.entries["project"] = normalizedProject
             metadata.entries[MemoryMetadataKeys.project] = normalizedProject
@@ -1817,7 +1817,7 @@ package actor MemoryOrchestrator {
         commit: Bool = true
     ) async throws -> EntityRowID {
         try ensureStructuredMemoryEnabled()
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let nowMs = nowProvider()
         let entityID = try await session.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs)
         if commit {
             try await session.commit()
@@ -1864,7 +1864,7 @@ package actor MemoryOrchestrator {
     }
 
     private func nextStructuredSystemMs() throws -> Int64 {
-        let wallNow = Int64(Date().timeIntervalSince1970 * 1000)
+        let wallNow = nowProvider()
         guard wallNow < Int64.max else {
             throw WaxError.encodingError(reason: "structured system timestamp must be less than Int64.max")
         }
