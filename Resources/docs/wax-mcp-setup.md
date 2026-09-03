@@ -85,6 +85,8 @@ swift run --traits MCPServer wax-cli mcp serve
 
 - `WAX_MCP_FEATURE_LICENSE=0` (default): license validation disabled
 - `WAX_MCP_FEATURE_LICENSE=1`: enable `LicenseValidator`
+- `WAX_MCP_TOOLS=daily` (default): `tools/list` is the eight daily verbs
+- `WAX_MCP_TOOLS=full`: list aliases, graph, and admin tools
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=1` (default): enable graph/entity/fact tools
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=0`: disable structured memory graph tools
 - `WAX_MCP_FEATURE_ACCESS_STATS=1` (default): enable access-stat recording + retrieval scoring
@@ -92,12 +94,13 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## MCP tool highlights
 
-- Session lifecycle: `session_start`, `session_end`
-- Session scoping on reads: `recall` and `search` accept `session_id`
-- Explicit session scoping on writes: `remember` and `handoff` accept `session_id`
-- Handoff continuity: `handoff`, `handoff_latest`
-- Cross-session retrieval: `corpus_search` searches broker-managed session history and returns provenance metadata
-- Structured memory graph: `entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`
+- Default open: `session_open` (one-shot session_id + short handoff + optional recall). Do not start with `handoff_latest` then `session_start`.
+- Daily `tools/list`: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`. Set `WAX_MCP_TOOLS=full` for aliases, graph, and admin tools.
+- Session scoping on reads: `recall` accepts `session_id` (merges that session with durable memory)
+- Writes: `remember` — `memory_type` selects the horizon; durable types must omit `session_id`; `task_state` / `handoff` need `session_id`
+- Close: `session_close` harvests; do not call `memory_promote` in the agent loop
+- Cross-session retrieval (full catalog): `corpus_search`
+- Structured memory graph (full catalog): `entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`
 
 ## npx launcher
 

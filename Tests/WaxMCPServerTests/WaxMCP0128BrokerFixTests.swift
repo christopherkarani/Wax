@@ -1,5 +1,6 @@
 #if MCPServer
 import Foundation
+import MCP
 import Testing
 @testable import Wax
 @testable import wax_mcp
@@ -132,6 +133,157 @@ func mcpClientSessionHintIsIsolatedPerInstance() {
     )
     #expect(first.current() == "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
     #expect(second.current() == nil)
+}
+
+@Test
+func hintedSessionInjectsIntoTaskStateRememberAndRecall() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintRepo",
+                    "agent_id": "hint-agent",
+                    "run_id": "hint-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(opened.isError != true)
+        let openPayload = try requireJSONObject(firstTextContent(opened))
+        let sessionID = try #require(openPayload["session_id"] as? String)
+        #expect(hint.current() == sessionID)
+
+        let remembered = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": "HINT-TASK-STATE plan locked for inject test",
+                    "memory_type": "task_state",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(remembered.isError != true)
+        let rememberPayload = try requireJSONObject(firstTextContent(remembered))
+        #expect(rememberPayload["session_id"] as? String == sessionID)
+        #expect(rememberPayload["scope"] as? String == "session")
+        #expect(rememberPayload["memory_type"] as? String == "task_state")
+
+        let recalled = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": "HINT-TASK-STATE plan locked",
+                    "mode": "text",
+                    "limit": 5,
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(recalled.isError != true)
+        let recallPayload = try requireJSONObject(firstTextContent(recalled))
+        let applied = try #require(recallPayload["applied_filters"] as? [String: Any])
+        #expect(applied["session_id"] as? String == sessionID)
+        let results = try #require(recallPayload["results"] as? [[String: Any]])
+        let recalledText = results.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        #expect(recalledText.contains("HINT-TASK-STATE"))
+    }
+}
+
+@Test
+func hintedSessionDoesNotInjectIntoDurableRemember() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintRepo",
+                    "agent_id": "hint-durable",
+                    "run_id": "hint-durable-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(opened.isError != true)
+        #expect(hint.current() != nil)
+
+        let remembered = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": "HINT-DECISION durable must not inherit connection session",
+                    "memory_type": "decision",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(remembered.isError != true)
+        let payload = try requireJSONObject(firstTextContent(remembered))
+        #expect(payload["scope"] as? String == "durable")
+        #expect(payload["session_id"] == nil || payload["session_id"] is NSNull)
+    }
+}
+
+@Test
+func hintedSessionInjectsIntoStatsWithoutParrotingUUID() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let isolated = MCPClientSessionHint()
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintRepo",
+                    "agent_id": "hint-stats",
+                    "run_id": "hint-stats-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(opened.isError != true)
+        let openPayload = try requireJSONObject(firstTextContent(opened))
+        let sessionID = try #require(openPayload["session_id"] as? String)
+        #expect(hint.current() == sessionID)
+        #expect(isolated.current() == nil)
+
+        let hintedStats = await WaxMCPTools.handleCall(
+            params: .init(name: "stats", arguments: [:]),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(hintedStats.isError != true)
+        let hintedPayload = try requireJSONObject(firstTextContent(hintedStats))
+        let hintedSession = try #require(hintedPayload["session"] as? [String: Any])
+        #expect(hintedSession["session_id"] as? String == sessionID)
+
+        let isolatedStats = await WaxMCPTools.handleCall(
+            params: .init(name: "stats", arguments: [:]),
+            broker: service,
+            sessionHint: isolated
+        )
+        #expect(isolatedStats.isError != true)
+        let isolatedPayload = try requireJSONObject(firstTextContent(isolatedStats))
+        let isolatedSession = try #require(isolatedPayload["session"] as? [String: Any])
+        #expect(isolatedSession["session_id"] == nil || isolatedSession["session_id"] is NSNull)
+
+        let unhintedStats = await WaxMCPTools.handleCall(
+            params: .init(name: "stats", arguments: [:]),
+            broker: service
+        )
+        #expect(unhintedStats.isError != true)
+        let unhintedPayload = try requireJSONObject(firstTextContent(unhintedStats))
+        let unhintedSession = try #require(unhintedPayload["session"] as? [String: Any])
+        #expect(unhintedSession["session_id"] == nil || unhintedSession["session_id"] is NSNull)
+    }
 }
 
 @Test
@@ -571,5 +723,20 @@ func waxMCPServerCommandAdvertisesVersionAndHTTPBodyCap() throws {
     #expect(WaxMCPServerCommand.configuration.version == WaxMCPServerMetadata.version)
     let command = try WaxMCPServerCommand.parse([])
     #expect(command.httpMaxBodyBytes == 1_048_576)
+}
+
+private func firstTextContent(_ result: CallTool.Result) -> String {
+    for content in result.content {
+        if case .text(text: let text, annotations: _, _meta: _) = content {
+            return text
+        }
+    }
+    return ""
+}
+
+private func requireJSONObject(_ text: String) throws -> [String: Any] {
+    let data = try #require(text.data(using: .utf8))
+    let object = try JSONSerialization.jsonObject(with: data)
+    return try #require(object as? [String: Any])
 }
 #endif

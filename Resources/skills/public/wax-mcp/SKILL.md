@@ -1,94 +1,30 @@
 ---
 name: wax-mcp
 description: >
-  Operator playbook for the Wax MCP memory server. Use whenever Wax MCP tools are
-  available (remember, recall, search, handoff, session_start/end, structured
-  memory), when installing or configuring waxmcp, or when an agent should keep
-  durable cross-session memory. Prefer this skill over the Swift framework skill
-  unless the task is writing Wax Swift code.
+  Operator playbook pointer for the Wax MCP memory server. Follow the live
+  server instructions. Use when Wax MCP tools are available, or when
+  installing or configuring waxmcp. Prefer this skill over the Swift
+  framework skill unless the task is writing Wax Swift code.
 ---
 
-# Wax MCP (Agent Memory Operator)
+# Wax MCP
 
-## Purpose
+The MCP server `instructions` field is the playbook. Do not restate a second
+lifecycle here.
 
-Teach agents how to **use** the Wax MCP server correctly every session.
+Daily tools: `session_open`, `remember`, `recall`, `session_close`, `stats`,
+`memory_get`, `compact_context`, `session_resume`. Aliases stay callable.
+`WAX_MCP_TOOLS=full` lists the rest.
 
-This is not the Swift framework skill. For embedding Wax in Swift apps, use the
-`wax` skill under `Resources/skills/public/wax`.
+Close harvests. Do not call `memory_promote` or `memory-maintain` in the agent
+loop. Never invent a `session_id` or put it in `metadata`.
 
-## Session Lifecycle (required)
+Pasteable host rules: `references/project-rules.md`.
 
-1. **Start**
-   - Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one.
-   - Do not call `handoff_latest` then `session_start` as the default open. Those tools remain callable for compatibility.
-2. **Work**
-   - Before answering from memory, call `recall` (default) or `search` (raw hits). `recall` with `session_id` merges that session with durable long-term memory.
-   - When you learn something durable, call `remember` with concise factual text.
-   - For session-scoped writes, pass `session_id` as a **top-level** argument.
-   - Never put `session_id` inside `metadata`.
-   - `task_state` is session-local working state: it requires an active session and rejects durable or locked writes. Repair legacy records with `task_state_migrate` into a complete distinct-store copy after a dry run; choose quarantine (default) or drop for orphaned records.
-3. **End**
-   - Prefer `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end.
-   - Keep `content` to a concise state summary. Put unfinished work only in `pending_tasks`; do not copy pending tasks into content or store transcripts.
-   - Or call `handoff` then `session_end` (pass `session_id` when multiple sessions may be active).
-   - Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or `memory-maintain` in the agent loop; `wax-cli memory-maintain` is operator-only.
-   - `session_end` `active` is THIS session (false after end). `remaining_active` / `active_session_count` are other live sessions in the broker.
+This is not the Swift framework skill. For embedding Wax in Swift apps, use
+`Resources/skills/public/wax`.
 
-## Read Path
-
-| Goal | Tool |
-|------|------|
-| Assembled RAG context for the current question | `recall` |
-| Raw ranked hits / debugging retrieval | `search` |
-| Cross-session history with provenance | `corpus_search` |
-| Health / embedder / store stats | `stats` |
-
-Search mode guidance:
-
-- Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
-
-Response guidance:
-
-- Responses default to one compact JSON content block.
-- Pass `verbosity: "verbose"` only when narrative text plus standard MCP `structuredContent` is useful.
-
-## Write Path
-
-| Kind of knowledge | Tool |
-|-------------------|------|
-| Decisions, preferences, discoveries, short facts | `remember` |
-| Stable entities in a knowledge graph | `entity_upsert` / `entity_resolve` |
-| Structured facts that can be retracted later | `fact_assert` / `fact_retract` / `facts_query` |
-| Natural-language knowledge capture (when available) | `knowledge_capture` |
-| Repair legacy durable task state | `task_state_migrate` (complete distinct-store copy, dry-run first) |
-
-Write quality rules:
-
-- Keep content concise, factual, and task-scoped.
-- Prefer corrections: store the corrected fact; retract stale structured facts with `fact_retract`.
-- Do not store secrets, credentials, or large blobs unless the user explicitly asks.
-
-## Anti-Patterns (do not do these)
-
-- Do not manage `SESSION_STORE`, `--store-path`, `flush`, or `memory-maintain` in normal agent flows.
-  The broker owns long-term memory and virtual session stores. `wax-cli memory-maintain` is operator-only.
-- Do not skip `session_open` at session start and re-ask the user for prior context.
-- Do not invent a `session_id`; only use values returned by `session_open` / `session_start` / `session_resume`.
-- Do not put `session_id` inside `metadata`.
-- Do not treat `search` as the default when `recall` is enough.
-- Do not use structured fact tools for transient debug notes.
-
-## Behavior Expectations
-
-- Read handoffs and recall results before asking the user to restate known context.
-- When a cross-session hit matters, cite provenance so the user knows which session store it came from.
-- Use `session_resume` only when continuing a known persisted `session_id` after a restart.
-- Use `compact_context` / `session_synthesize` / promotion tools only when the task needs long-horizon compaction or durable promotion, not as default chatter. Close already harvests promotable facts.
-- Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid can rank old test frames first.
-- `memory_get` IDs are `durable:<frame>` or `episodic:<session_id>:<frame>`. Never a bare frame number.
-
-## Install / Host Setup (for humans and setup agents)
+## Install / Host Setup
 
 Stage binaries once:
 
@@ -107,7 +43,12 @@ Then wire the **host**, not a new prompt:
 | OpenClaw | HTTP + memory plugin + append the SOUL.md stanza to workspace `SOUL.md` |
 | Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
 
-Two or more clients must share **one** HTTP server on `http://127.0.0.1:3000/mcp`. Snippets and smoke test: `Resources/docs/wax-mcp-hosts.md`.
+Optional: `wax-cli mcp install --write-host-rule PATH` writes the generated
+host-rule blob. It never overwrites a host rule unless that flag is set.
+
+Two or more clients must share **one** HTTP server on
+`http://127.0.0.1:3000/mcp`. Snippets and smoke test:
+`Resources/docs/wax-mcp-hosts.md`.
 
 The npm launcher serves MCP. It does **not** implement `mcp install --scope`.
 
@@ -117,28 +58,6 @@ claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 # or from source
 claude install-skill https://github.com/christopherkarani/Wax/tree/main/Resources/skills/public/wax-mcp
 ```
-
-Project rules fallback: paste the AGENTS.md fence from
-`references/project-rules.md` into `CLAUDE.md` or `AGENTS.md` when the host
-does not load skills. Hermes / OpenClaw: append the SOUL.md fence instead of
-replacing the soul.
-
-## Quick Tool Map
-
-| Tool | When |
-|------|------|
-| `session_open` | Default one-shot open + optional recall |
-| `handoff_latest` | Fetch latest handoff (compatibility; not the default open) |
-| `session_start` / `session_end` | Broker session lifecycle (prefer `session_open` / `session_close`) |
-| `session_close` | Atomic handoff then end |
-| `session_resume` | Resume a known session after restart |
-| `remember` | Store durable free-text memory |
-| `recall` | Default read / RAG assembly |
-| `search` | Raw ranked hits |
-| `handoff` | End-of-session summary + pending tasks |
-| `corpus_search` | Cross-session search with provenance |
-| `stats` | Health check |
-| `entity_*` / `fact_*` | Structured knowledge graph |
 
 ## References
 

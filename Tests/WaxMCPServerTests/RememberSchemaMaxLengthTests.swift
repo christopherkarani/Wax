@@ -26,7 +26,10 @@ struct RememberSchemaMaxLengthTests {
     @Test
     func toolsListPublishesContentMaxLength() {
         let schemas = Dictionary(
-            uniqueKeysWithValues: ToolSchemas.tools(structuredMemoryEnabled: true).map { ($0.name, $0.inputSchema) }
+            uniqueKeysWithValues: ToolSchemas.tools(
+                structuredMemoryEnabled: true,
+                profile: .full
+            ).map { ($0.name, $0.inputSchema) }
         )
         for name in ["remember", "memory_append", "knowledge_capture"] {
             #expect(
