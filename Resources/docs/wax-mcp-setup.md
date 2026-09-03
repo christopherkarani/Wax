@@ -97,7 +97,7 @@ swift run --traits MCPServer wax-cli mcp serve
 - Default open: `session_open` (one-shot session_id + short handoff + optional recall). Do not start with `handoff_latest` then `session_start`.
 - Daily `tools/list`: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`. Set `WAX_MCP_TOOLS=full` for aliases, graph, and admin tools.
 - Session scoping on reads: `recall` accepts `session_id` (merges that session with durable memory)
-- Writes: `remember` — `memory_type` selects the horizon; durable types stay durable even if `session_id` is present; `task_state` / `handoff` need `session_id`
+- Writes: `remember` — `memory_type` selects the horizon; durable types must omit `session_id`; `task_state` / `handoff` need `session_id`
 - Close: `session_close` harvests; do not call `memory_promote` in the agent loop
 - Cross-session retrieval (full catalog): `corpus_search`
 - Structured memory graph (full catalog): `entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`

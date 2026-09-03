@@ -40,8 +40,8 @@ enum MCPToolProfile: String, Sendable, Equatable {
         case .full:
             return tools
         case .daily:
-            let allowed = Self.dailyNameSet
-            return tools.filter { allowed.contains($0.name) }
+            let byName = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+            return Self.dailyNames.compactMap { byName[$0] }
         }
     }
 }
