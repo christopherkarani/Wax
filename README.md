@@ -337,8 +337,8 @@ npx -y waxmcp@latest install
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
 | Codex | `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` + copy the skill to `~/.codex/skills/wax-mcp` |
 | Cursor | `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
-| Hermes | HTTP + `memory.provider: wax-memory` + append the SOUL.md stanza to `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`) |
-| OpenClaw | HTTP + memory plugin + append the SOUL.md stanza to the workspace `SOUL.md` |
+| Hermes | HTTP + `memory.provider: wax-memory` + paste the SOUL.md stanza into `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`); replace an existing `## Memory (Wax)` section |
+| OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into the workspace `SOUL.md`; replace an existing `## Memory (Wax)` section |
 | Anything else | HTTP URL + paste the AGENTS.md block into project `AGENTS.md` |
 
 Full snippets, the HTTP start command, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
@@ -357,44 +357,28 @@ Pick the file your host actually loads on every turn.
 Use the project or user `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules`. Same text as `Resources/skills/public/wax-mcp/references/project-rules.md`.
 
 ```text
-Wax is the shared memory layer. Chat dies; Wax does not. Skip one-line Q&A. Use on any multi-step coding, debug, or research task.
+Wax is shared memory. Chat dies; Wax does not.
 
-Open every multi-step session:
-1. Call `session_open` (`project` = repo name, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open. The same `agent_id`+`run_id` resumes the active session. The same `agent_id`+resolved project rebinds if exactly one live session; stamp a new `run_id`; `rebound: true`. Multiple actives mint a new session — do not guess.
-2. Call `recall` with default `scope: project` (hard-filters to resolved project; unlabeled/foreign frames excluded). Empty lane returns an explicit miss — pass `scope: global` only for cross-project reads. `recall` with `session_id` merges that session with durable memory under project scope.
+Learn. Write the moment it would change the next agent's behavior — including a one-line correction or preference:
+- user_preference — how this person works, who they are, standing corrections
+- lesson — we got burned; do not do that again
+- fact — a true thing about this repo or product the next agent needs
+- decision / constraint — a choice that should bind later work
 
-Workflow rules:
-- Use `remember` to store decisions, discoveries, and short factual notes. `memory_type` selects the horizon; explicit `scope` overrides. Durable types stay durable even if `session_id` is present. Do not put `session_id` inside `metadata`.
-- Use `recall` for assembled context and `search` for raw ranked hits.
-- Prefer `mode: "hybrid"` when the embedder is ready; otherwise use `mode: "text"`.
-- Do not manage `SESSION_STORE`, `--store-path`, or `flush` in normal agent flows. The broker owns long-term memory and virtual session stores.
-- Close with `session_close` (`session_id`, `content`, optional `project`/`pending_tasks`) — atomic handoff then end. Or `handoff` then `session_end`. Do not require end between turns of one host chat. Close harvests promotable session facts into durable memory automatically. Do not call `memory_promote` or operator `memory-maintain` in the agent loop.
-- Use `corpus_search` only when you need cross-session retrieval across broker-managed session history with provenance metadata.
-- Use structured memory tools (`entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`) for stable entities and facts, not transient debugging notes.
-- `task_state` is session-local working state: it requires an active top-level `session_id` and rejects `scope: durable`, `durability: durable`, and `locked`. To repair legacy durable task-state frames, run `task_state_migrate` with a distinct `destination_path`; it copies the complete store before changing only task-state trees. Use `dry_run: true` first and choose `orphan_policy: quarantine` (default) or `drop`.
+Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
 
-Canonical verbs: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`.
-Daily `tools/list` is those eight. Aliases stay callable. Set `WAX_MCP_TOOLS=full` for the rest. Follow the MCP server `instructions` when present; this paste is a fallback.
+Open: call `session_open` (`project` = repo, stable `agent_id` / `run_id`). Keep `session_id`. Do not invent one. Same `agent_id`+`run_id` resumes. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
-Write horizon: `memory_type` selects the horizon. `task_state` or `handoff` need top-level `session_id`. Durable types (`decision` | `lesson` | `fact` | `constraint` | `user_preference`) stay durable even if `session_id` is present; a wire `session_id` still stamps session project/repo. `note` is session if `session_id` is present, else durable. Explicit `scope` overrides (`scope: durable` forbids `session_id`).
+Before the first answer:
+1. `recall` with `session_id`, `mode: text`, query = this job
+2. `recall` with `session_id`, `scope: global`, `mode: text`, query = facts about this person / standing corrections
+Empty project recall is a miss, not "I have no memory."
 
-Tactical (this task) — write immediately, not at the end:
-- `remember` with `scope: session`, top-level `session_id`, `memory_type: task_state`, `durability: working`
-- When: you lock a plan, a path fails (what + why), you find a landmine / owner file / required gate, a milestone finishes, or you are about to spawn a subagent / compact / stop
-- Read with `recall` plus `session_id`
+Lasting writes: `remember` with top-level `session_id` and `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. Type keeps them durable and stamps the project so default recall can find them. Person-facts still pass `session_id`; read them later with `scope: global`. Never put `session_id` in `metadata`.
 
-Strategic (survives this session):
-- `remember` with `memory_type` one of `decision` | `lesson` | `constraint` | `user_preference` | `fact` (durable even if `session_id` is present). Optional explicit `scope: durable`.
-- When: the user corrects you, you make an architecture or product decision, a pitfall will waste the next agent time, a standing preference appears, or a repo fact is stable
+This job only (not the default write): `remember` with `session_id`, `memory_type: task_state`, `durability: working` — plan lock, failed path, landmine, before you spawn or stop. Parent writes before spawning; children often have no Wax tools.
 
-Both horizons on a long task: `compact_context`.
-`recall` with `session_id` merges that session with durable long-term memory under project scope. `search` with `session_id` is session-store only.
-
-Share across agents: the parent writes before spawning. Children often have no Wax tools. The parent writes again from their evidence.
-
-Close: `session_close` (`session_id`, `content`, `project`, `pending_tasks`) or `handoff` then `session_end`.
-
-Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or huge logs. Do not manage `SESSION_STORE`, `--store-path`, or `flush`. Do not call `memory-maintain` from the agent loop. Prefer `mode: "text"` for exact names and recent facts. Structured `entity_*` / `fact_*` tools are for stable graph facts, not debug notes.
+Close when the job ends, not between turns: `session_close` with `session_id`, a short state `content`, and `pending_tasks` for unfinished work. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
 
 </details>
@@ -404,23 +388,32 @@ Do not put `session_id` in `metadata`. Do not store secrets, transcripts, or hug
 
 Hermes: `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md`. OpenClaw: the workspace `SOUL.md`.
 
-SOUL.md is identity. **Append** this section. Do not replace the rest of the soul.
+SOUL.md is identity. **Append** this section if missing. If `## Memory (Wax)` already exists, **replace that section**. Do not replace the rest of the soul.
 
 ```text
 ## Memory (Wax)
 
-You have Wax. Chat is not memory.
+You have Wax. Chat is not memory. Learn this person and keep it.
 
-On every multi-step task: call `session_open` (`project`, `agent_id`, `run_id`, optional `recall_query`). Keep `session_id`. Follow the MCP server instructions when present.
+Write the moment it would change how you treat them or the work — including a one-line correction:
+- user_preference — how they work, who they are, standing corrections
+- lesson — we got burned
+- fact — something true that should stick
+- decision / constraint — a choice that should bind later work
 
-Write as you go:
-- This task: `remember` with `scope: session`, `session_id`, `memory_type: task_state`, `durability: working` (plan, failed path, landmine, milestone, before you stop or spawn another agent).
-- `task_state` requires an active session and is always working; never request durable or locked task state. Repair legacy records with `task_state_migrate` into a distinct complete-store copy after a dry run.
-- Long-term: `remember` with type `decision` / `lesson` / `constraint` / `user_preference` / `fact` (durable even if `session_id` is present; corrections, decisions, standing prefs, stable repo facts). Optional `scope: durable`.
+Store one or two sentences. Do not store chats, status, or secrets.
 
-Read: `recall` defaults to project scope (no foreign/unlabeled frames). Need cross-project → `scope: global`. `recall` with `session_id` merges this session with durable memory. Need a budgeted mix → `compact_context`.
+On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation). Keep `session_id`. Do not invent one. Do not open per message. Do not close between turns.
 
-Close with `session_close` (or `handoff` then `session_end`). Harvest is automatic; do not call `memory_promote` or `memory-maintain` in the agent loop. Do not invent a `session_id` or put it in `metadata`. Do not store secrets.
+Before you act:
+1. `recall` with `session_id`, `mode: text`, query = this repo/job
+2. `recall` with `session_id`, `scope: global`, `mode: text`, query = facts about this person
+
+Lasting writes: `remember` with top-level `session_id` and `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`.
+
+This job only: `remember` with `session_id`, `memory_type: task_state`, `durability: working`.
+
+Close with `session_close` (`session_id`, short `content`, `pending_tasks`) when the job ends. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
 
 </details>
@@ -453,15 +446,15 @@ Finally, paste this prompt into your **main (coordinator) bot** — it sets up i
 You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
 
 Your own memory:
-- Starting any multi-step job: call session_open (project set to my name, stable agent_id/run_id, optional recall_query), keep the returned session_id, then recall before you act.
-- While working: remember task state as you go (scope: session with your session_id); store decisions, corrections, preferences, and facts durably (scope: durable).
-- Finishing: session_close with a summary and pending_tasks so your next session resumes cleanly.
+- Starting any multi-step job: call session_open (project set to my name, stable agent_id/run_id), keep the returned session_id, then recall with mode text before you act. Also recall scope global for facts about me.
+- While working: write lessons, user_preference, and facts with session_id the moment they show up (including a one-line correction). Do not pass scope durable. task_state is only for this job (plan, failed path, landmine).
+- Finishing: session_close with a short summary and pending_tasks so your next session resumes cleanly.
 - Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
 
 Roll out to the team:
 1. List every bot we already have. For each one, add the "Your own memory" rules above to its persistent instructions/memory, then verify it can see the wax tools (have it run the wax stats tool) and report back which bots succeeded and which failed.
 2. From now on, whenever you spawn a new bot, include those same rules in its starting instructions before it begins any work.
-3. Save this whole policy durably in wax (scope: durable) so you keep enforcing it across sessions.
+3. Save this whole policy in wax as memory_type user_preference with session_id so you keep enforcing it across sessions.
 ```
 
 Wax stays 100% local: the `.wax` file never leaves your machine, and the loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
