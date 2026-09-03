@@ -431,6 +431,13 @@ extension AgentBrokerService {
             )
         }
         try await memory.flush()
+        await autoSupersedeSimilarDurableFrames(
+            memory: memory,
+            newFrameId: rememberResult.frameId,
+            content: content,
+            metadata: metadata,
+            sessionID: sessionID
+        )
         let after = await memory.runtimeStats()
 
         let scope = sessionID == nil ? "durable" : "session"
@@ -452,6 +459,77 @@ extension AgentBrokerService {
             "searchable": .bool(rememberResult.searchable),
             "display_text": .string("Remembered. \(rememberResult.framesAdded) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."),
         ])
+    }
+
+    private static let autoSupersedeSimilarityThreshold: Float = 0.88
+    private static let autoSupersedeMaxMatches = 32
+    private static let autoSupersedeTypes: Set<MemoryType> = [
+        .decision, .lesson, .constraint, .fact,
+    ]
+
+    /// Same-project Jaccard ≥ 0.88 retires prior unsusperseded durable twins. Locked stays live.
+    private func autoSupersedeSimilarDurableFrames(
+        memory: MemoryOrchestrator,
+        newFrameId: UInt64,
+        content: String,
+        metadata: [String: String],
+        sessionID: UUID?
+    ) async {
+        guard sessionID == nil else { return }
+        let info = MemorySemantics.parse(metadata: metadata, nowMs: Self.nowMs())
+        guard Self.autoSupersedeTypes.contains(info.type) else { return }
+        guard info.durability == .durable || info.durability == .locked else { return }
+        guard let project = info.project else { return }
+
+        let documents: [MemoryOrchestrator.CorpusSourceDocument]
+        do {
+            documents = try await memory.corpusSourceDocuments()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "durable remember supersede scan",
+                fallback: "remember succeeded without auto-supersede"
+            )
+            return
+        }
+
+        var supersededAny = false
+        var matchCount = 0
+        for document in documents {
+            guard matchCount < Self.autoSupersedeMaxMatches else { break }
+            guard document.frameId != newFrameId else { continue }
+            let other = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
+            guard other.type == info.type else { continue }
+            guard other.project == project else { continue }
+            guard other.durability == .durable else { continue }
+            let similarity = MemorySemantics.similarity(lhs: content, rhs: document.text)
+            guard similarity >= Self.autoSupersedeSimilarityThreshold else { continue }
+            do {
+                try await memory.wax.supersede(
+                    supersededId: document.frameId,
+                    supersedingId: newFrameId
+                )
+                supersededAny = true
+                matchCount += 1
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "durable remember supersede",
+                    fallback: "previous similar frame may remain active"
+                )
+            }
+        }
+
+        guard supersededAny else { return }
+        do {
+            try await memory.flush()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "durable remember supersede flush",
+                fallback: "supersede may remain pending until next flush"
+            )
+        }
     }
 
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
