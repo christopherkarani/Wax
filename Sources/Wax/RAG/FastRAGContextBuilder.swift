@@ -26,6 +26,12 @@ package struct FastRAGContextBuilder: Sendable {
     ) async throws -> RAGContext {
         let clamped = clamp(config)
         let counter = try await TokenCounter.shared()
+        // One evaluation clock for this build. Do not invent wall time.
+        // SearchRequest.nowMs is non-optional; 0 is not recency-neutral
+        // (MemorySemantics ageDays uses max(0, now - created), so a missing
+        // clock looks "recent" and does not expire). Ranking callers must set
+        // deterministicNowMs; MemoryOrchestrator.recall always does.
+        let nowMs = clamped.deterministicNowMs
 
         // 1) Run unified search
         // Access-aware ranking needs a little headroom so a stale top result can
@@ -47,7 +53,7 @@ package struct FastRAGContextBuilder: Sendable {
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
-            nowMs: clamped.deterministicNowMs ?? Int64(Date().timeIntervalSince1970 * 1000),
+            nowMs: nowMs ?? 0,
             scopeContext: scopeContext,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
@@ -57,15 +63,6 @@ package struct FastRAGContextBuilder: Sendable {
         } else {
             try await wax.search(request)
         }
-        let scoringMetadata: [UInt64: FrameMeta] = if accessStatsManager != nil,
-                                                        clamped.deterministicNowMs == nil {
-            await wax.frameMetas(frameIds: response.results.map(\.frameId))
-        } else {
-            [:]
-        }
-        let accessScoringNowMs = clamped.deterministicNowMs
-            ?? scoringMetadata.values.map(\.timestamp).max()
-            ?? 0
         let accessStatsMap: [UInt64: FrameAccessStats] = if let accessStatsManager {
             await AccessFrequencyRanker.statsForRanking(
                 frameIds: response.results.map(\.frameId),
@@ -75,15 +72,19 @@ package struct FastRAGContextBuilder: Sendable {
         } else {
             [:]
         }
-        let accessRankedResults = accessStatsManager == nil
-            ? response.results
-            : AccessFrequencyRanker.rerank(
+        let accessRankedResults: [SearchResponse.Result] = if accessStatsManager == nil {
+            response.results
+        } else if let nowMs {
+            AccessFrequencyRanker.rerank(
                 results: response.results,
                 query: query,
                 accessStats: accessStatsMap,
-                nowMs: accessScoringNowMs,
+                nowMs: nowMs,
                 maxWindow: searchTopK
             )
+        } else {
+            response.results
+        }
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking
             ? Self.orderCandidatesForAnswer(
@@ -117,19 +118,6 @@ package struct FastRAGContextBuilder: Sendable {
         let sourceFrameMetasTask: [UInt64: FrameMeta] = shouldPrefetchSurrogates
             ? await wax.frameMetas(frameIds: sourceFrameIds)
             : [:]
-
-        // nowMs resolution order:
-        // 1. deterministicNowMs if explicitly set (always the case when called via MemoryOrchestrator.recall)
-        // 2. max frame timestamp — provides a stable, deterministic "now" for direct callers
-        //    that have not set deterministicNowMs (e.g., tests). Note: this may understate
-        //    recency for stores where all frames are old relative to wall clock.
-        // Both values derive from store state, so tier selection and access-recency
-        // explanations stay deterministic. When neither source exists, nowMs stays nil:
-        // unknown-now produces no access-recency signal (access-reason enrichment is
-        // skipped) instead of a maximal "recently used" signal from a zero sentinel,
-        // and surrogate tiers keep full fidelity rather than a fabricated zero age.
-        let nowMs = clamped.deterministicNowMs
-            ?? sourceFrameMetasTask.values.map(\.timestamp).max()
 
         var expansionTextByFrame: [UInt64: String] = [:]
         var expandedSourceFrameId: UInt64?
