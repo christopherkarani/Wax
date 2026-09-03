@@ -51,4 +51,60 @@ struct SearchPlanTests {
         #expect(empty.includeVector)
         #expect(empty.exactIntentWindow == nil)
     }
+
+    @Test
+    func hybridIncludesBothLanesWithoutExactIntentWindow() {
+        let plan = SearchPlan.make(
+            SearchRequest(query: "hello world", mode: .hybrid(), nowMs: 0)
+        )
+        #expect(plan.includeText)
+        #expect(plan.includeVector)
+        #expect(plan.queryType == .exploratory)
+        #expect(plan.exactIntentWindow == nil)
+        #expect(plan.candidateLimit == 30)
+        #expect(plan.matchPlan != nil)
+    }
+
+    @Test(arguments: [(1, 12), (10, 30), (20, 48)])
+    func exactIntentWindowClampsToTwelveAndFortyEight(topK: Int, window: Int) {
+        let plan = SearchPlan.make(SearchRequest(query: "7f3a91", topK: topK, nowMs: 0))
+        #expect(plan.exactIntentWindow == window)
+        #expect(plan.includeText)
+        #expect(plan.includeVector == false)
+    }
+
+    @Test
+    func callerFilterOverfetchesCandidateLimit() {
+        let allowlist = SearchPlan.make(
+            SearchRequest(
+                query: "hello world",
+                topK: 10,
+                frameFilter: FrameFilter(frameIds: [1]),
+                nowMs: 0
+            )
+        )
+        #expect(allowlist.candidateLimit == 210)
+
+        let metadata = SearchPlan.make(
+            SearchRequest(
+                query: "hello world",
+                topK: 10,
+                frameFilter: FrameFilter(
+                    metadataFilter: MetadataFilter(requiredEntries: ["k": "v"])
+                ),
+                nowMs: 0
+            )
+        )
+        #expect(metadata.candidateLimit == 210)
+
+        let emptyMetadata = SearchPlan.make(
+            SearchRequest(
+                query: "hello world",
+                topK: 10,
+                frameFilter: FrameFilter(metadataFilter: MetadataFilter()),
+                nowMs: 0
+            )
+        )
+        #expect(emptyMetadata.candidateLimit == 30)
+    }
 }
