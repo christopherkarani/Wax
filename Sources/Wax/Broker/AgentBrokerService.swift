@@ -3238,14 +3238,18 @@ extension AgentBrokerService {
                     return text
                 }
             } else if isTrustedCorpusStoreURL(sourceURL) {
-                let fetched = try? await openAdhocMemory(
+                let fetched = try? await endedSessions.withMemory(
                     at: sourceURL,
-                    structuredMemoryEnabled: false,
-                    noEmbedder: true,
-                    body: { memory in
-                        await frameText(frameID: sourceFrameID, memory: memory) ?? ""
+                    noEmbedder: true
+                ) { memory in
+                    if let data = try? await memory.wax.frameContent(frameId: sourceFrameID),
+                       let text = String(data: data, encoding: .utf8),
+                       !text.isEmpty {
+                        return text
                     }
-                )
+                    return (try? await memory.corpusSourceDocuments()
+                        .first(where: { $0.frameId == sourceFrameID })?.text) ?? ""
+                }
                 if let fetched, fetched.isEmpty == false {
                     return fetched
                 }
