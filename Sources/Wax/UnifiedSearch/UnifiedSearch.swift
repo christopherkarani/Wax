@@ -584,14 +584,14 @@ extension Wax {
             filtered = UnifiedRanking.intentAwareRerank(
                 results: filtered,
                 query: trimmedQuery,
-                maxWindow: min(max(Self.boundedMultiply(request.topK, by: 2), 10), 32)
+                maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 2), 10), 32)
             )
         }
         filtered = UnifiedRanking.semanticMemoryRerank(
             results: filtered,
             scopeContext: request.scopeContext,
             nowMs: semanticNowMs,
-            maxWindow: min(max(Self.boundedMultiply(request.topK, by: 3), 12), 48)
+            maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 3), 12), 48)
         )
         if let exactIntentWindow, let trimmedQuery {
             filtered = UnifiedRanking.identifierExactMatchRerank(
@@ -805,12 +805,6 @@ extension Wax {
         }
 
         return sorted.prefix(capped).map { EntityKey($0.key) }
-    }
-
-    private static func boundedMultiply(_ value: Int, by multiplier: Int) -> Int {
-        guard value > 0, multiplier > 0 else { return 0 }
-        guard value <= Int.max / multiplier else { return Int.max }
-        return value * multiplier
     }
 
     private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)

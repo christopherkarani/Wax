@@ -11,7 +11,7 @@ package struct SearchPlan: Sendable, Equatable {
 }
 
 package extension SearchPlan {
-    package static func make(_ request: SearchRequest) -> SearchPlan {
+    static func make(_ request: SearchRequest) -> SearchPlan {
         let trimmedQuery = request.query?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let queryType: QueryType
@@ -64,6 +64,13 @@ package extension SearchPlan {
         )
     }
 
+    /// Overflow-safe `value * multiplier` used for overfetch and rerank windows.
+    static func boundedMultiply(_ value: Int, by multiplier: Int) -> Int {
+        guard value > 0, multiplier > 0 else { return 0 }
+        guard value <= Int.max / multiplier else { return Int.max }
+        return value * multiplier
+    }
+
     private static func candidateLimit(for topK: Int) -> Int {
         guard topK > 0 else { return 0 }
         let expanded = boundedMultiply(topK, by: 3)
@@ -82,12 +89,6 @@ package extension SearchPlan {
         let withSlack = topK > Int.max - 200 ? Int.max : topK + 200
         let overfetchLimit = min(1000, max(multiplied, withSlack))
         return max(baseLimit, overfetchLimit)
-    }
-
-    private static func boundedMultiply(_ value: Int, by multiplier: Int) -> Int {
-        guard value > 0, multiplier > 0 else { return 0 }
-        guard value <= Int.max / multiplier else { return Int.max }
-        return value * multiplier
     }
 
     private static func needsCallerFilterOverfetch(_ filter: FrameFilter) -> Bool {
