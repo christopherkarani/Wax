@@ -1,5 +1,126 @@
 /// Hybrid search fusion helpers used by UnifiedSearch ranking.
 package enum HybridSearch {
+    /// One fused candidate after Reciprocal Rank Fusion.
+    package struct FusionResult: Sendable, Equatable {
+        package var frameId: UInt64
+        package var score: Float
+        package var sources: [SearchResponse.Source]
+        package var diagnostics: SearchResponse.RankingDiagnostics?
+    }
+
+    /// Reciprocal Rank Fusion across weighted lane id lists.
+    /// Sort: fused score desc, best lane rank asc, frameId asc.
+    package static func rrfFusionResults(
+        lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])],
+        k: Int,
+        includeDiagnostics: Bool,
+        diagnosticsTopK: Int
+    ) -> [FusionResult] {
+        let kConstant = max(0, k)
+        struct Accumulator {
+            var score: Float = 0
+            var bestRank: Int = .max
+            var sources: [SearchResponse.Source] = []
+            var laneContributions: [SearchResponse.RankingLaneContribution] = []
+        }
+        let estimatedFrameCount = lists.reduce(into: 0) { partial, list in
+            partial += list.frameIds.count
+        }
+        var byFrame: [UInt64: Accumulator] = [:]
+        byFrame.reserveCapacity(estimatedFrameCount)
+
+        for list in lists {
+            guard list.weight > 0 else { continue }
+            for (rankZeroBased, frameId) in list.frameIds.enumerated() {
+                let rank = rankZeroBased + 1
+                let contribution = list.weight / Float(kConstant + rank)
+                var acc = byFrame[frameId] ?? Accumulator()
+                acc.score += contribution
+                acc.bestRank = min(acc.bestRank, rank)
+                if !acc.sources.contains(list.source) {
+                    acc.sources.append(list.source)
+                }
+                if includeDiagnostics {
+                    acc.laneContributions.append(
+                        .init(
+                            source: list.source,
+                            weight: list.weight,
+                            rank: rank,
+                            rrfScore: contribution
+                        )
+                    )
+                }
+                byFrame[frameId] = acc
+            }
+        }
+
+        var ranked: [RRFFusedCandidate] = []
+        ranked.reserveCapacity(byFrame.count)
+        for (frameId, acc) in byFrame {
+            let contributions = includeDiagnostics
+                ? acc.laneContributions.sorted { lhs, rhs in
+                    if lhs.rrfScore != rhs.rrfScore { return lhs.rrfScore > rhs.rrfScore }
+                    return lhs.source.rawValue < rhs.source.rawValue
+                }
+                : []
+            ranked.append(
+                RRFFusedCandidate(
+                    frameId: frameId,
+                    score: acc.score,
+                    bestRank: acc.bestRank,
+                    sources: acc.sources.sorted { $0.rawValue < $1.rawValue },
+                    laneContributions: contributions
+                )
+            )
+        }
+
+        ranked.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.bestRank != rhs.bestRank { return lhs.bestRank < rhs.bestRank }
+            return lhs.frameId < rhs.frameId
+        }
+
+        let topDiagLimit = max(1, diagnosticsTopK)
+        var fused: [FusionResult] = []
+        fused.reserveCapacity(ranked.count)
+        for index in ranked.indices {
+            let candidate = ranked[index]
+            let diagnostics: SearchResponse.RankingDiagnostics?
+            if includeDiagnostics, index < topDiagLimit {
+                let reason: SearchResponse.RankingTieBreakReason
+                if index == 0 {
+                    reason = .topResult
+                } else {
+                    let previous = ranked[index - 1]
+                    if previous.score != candidate.score {
+                        reason = .fusedScore
+                    } else if previous.bestRank != candidate.bestRank {
+                        reason = .bestLaneRank
+                    } else {
+                        reason = .frameID
+                    }
+                }
+                diagnostics = .init(
+                    bestLaneRank: candidate.bestRank == .max ? nil : candidate.bestRank,
+                    laneContributions: candidate.laneContributions,
+                    tieBreakReason: reason
+                )
+            } else {
+                diagnostics = nil
+            }
+
+            fused.append(
+                FusionResult(
+                    frameId: candidate.frameId,
+                    score: candidate.score,
+                    sources: candidate.sources,
+                    diagnostics: diagnostics
+                )
+            )
+        }
+        return fused
+    }
+
     /// Maps raw RRF (`weight / (k + rank)`) onto `0...1` without changing order.
     /// `totalWeight` is the sum of lane weights that contributed to fusion.
     package static func publishNormalizedRRFScores(
@@ -57,5 +178,12 @@ package enum HybridSearch {
         else { return nil }
         return (textIndex, vectorIndex)
     }
-}
 
+    private struct RRFFusedCandidate {
+        let frameId: UInt64
+        let score: Float
+        let bestRank: Int
+        let sources: [SearchResponse.Source]
+        let laneContributions: [SearchResponse.RankingLaneContribution]
+    }
+}

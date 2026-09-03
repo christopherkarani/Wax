@@ -31,43 +31,22 @@ extension Wax {
         // agree within one search. asOfMs is a structured-fact cutoff, not ranking-now.
         let semanticNowMs = request.nowMs
 
-        let trimmedQuery = request.query?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let queryType: QueryType
-        if let trimmedQuery, !trimmedQuery.isEmpty {
-            queryType = RuleBasedQueryClassifier.classify(trimmedQuery)
-        } else {
-            queryType = .exploratory
-        }
-
-        let weights = AdaptiveFusionConfig.default.weights(for: queryType)
+        let plan = SearchPlan.make(request)
+        let trimmedQuery = plan.trimmedQuery
+        let queryType = plan.queryType
+        let weights = plan.weights
+        let includeText = plan.includeText
+        let includeVector = plan.includeVector
+        let exactIntentWindow = plan.exactIntentWindow
+        let candidateLimit = plan.candidateLimit
         let filter = request.frameFilter ?? FrameFilter()
 
-        let includeText: Bool
-        let includeVector: Bool
-        switch request.mode {
-        case .textOnly:
-            includeText = true
-            includeVector = false
-        case .vectorOnly:
+        if case .vectorOnly = request.mode {
             let hasEmbedding = !(request.embedding?.isEmpty ?? true)
             guard hasEmbedding else {
                 throw WaxError.io("vectorOnly search requires a non-empty query embedding")
             }
-            includeText = false
-            includeVector = true
-        case .hybrid:
-            includeText = true
-            includeVector = true
         }
-
-        // Exact-intent overfetch + rerank are text-lane only. vectorOnly must not
-        // widen the pending window or promote a buried lexical frame.
-        let exactIntentWindow: Int? = (
-            includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isExactIntentQuery) ?? false)
-        ) ? min(max(Self.boundedMultiply(requestedTopK, by: 3), 12), 48) : nil
-
-        let candidateLimit = Self.candidateLimit(for: requestedTopK, filter: filter)
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {
@@ -131,12 +110,12 @@ extension Wax {
             }
             // Empty MATCH plans (stopwords / operators only) must not fall back to
             // the raw user string — FTS5 would interpret AND/OR/NOT/NEAR as syntax.
-            guard let plan = MatchPlan.plan(query: trimmedQuery) else {
+            guard let matchPlan = plan.matchPlan else {
                 return ([], false)
             }
-            let primaryQuery = plan.primaryMatch
-            let fallbackQuery = plan.fallbackMatch
-            let queryTokenCount = plan.tokenCount
+            let primaryQuery = matchPlan.primaryMatch
+            let fallbackQuery = matchPlan.fallbackMatch
+            let queryTokenCount = matchPlan.tokenCount
 
             func merged(
                 base: [TextSearchResult],
@@ -314,7 +293,7 @@ extension Wax {
                 }
             } else {
                 let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
-                let fused = Self.rrfFusionResults(
+                let fused = HybridSearch.rrfFusionResults(
                     lists: [
                         (source: .text, weight: weights.bm25, frameIds: textIds),
                         (source: .structured, weight: structuredWeight, frameIds: structuredIds),
@@ -365,7 +344,7 @@ extension Wax {
                 }
             } else {
                 let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
-                let fused = Self.rrfFusionResults(
+                let fused = HybridSearch.rrfFusionResults(
                     lists: [
                         (source: .vector, weight: weights.vector, frameIds: vectorIds),
                         (source: .structured, weight: structuredWeight, frameIds: structuredIds),
@@ -402,7 +381,7 @@ extension Wax {
             if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
             if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structured, weight: structuredWeight, frameIds: structuredIds)) }
 
-            var fused = Self.rrfFusionResults(
+            var fused = HybridSearch.rrfFusionResults(
                 lists: lists,
                 k: request.rrfK,
                 includeDiagnostics: diagnosticsEnabled,
@@ -605,14 +584,14 @@ extension Wax {
             filtered = UnifiedRanking.intentAwareRerank(
                 results: filtered,
                 query: trimmedQuery,
-                maxWindow: min(max(Self.boundedMultiply(request.topK, by: 2), 10), 32)
+                maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 2), 10), 32)
             )
         }
         filtered = UnifiedRanking.semanticMemoryRerank(
             results: filtered,
             scopeContext: request.scopeContext,
             nowMs: semanticNowMs,
-            maxWindow: min(max(Self.boundedMultiply(request.topK, by: 3), 12), 48)
+            maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 3), 12), 48)
         )
         if let exactIntentWindow, let trimmedQuery {
             filtered = UnifiedRanking.identifierExactMatchRerank(
@@ -766,125 +745,6 @@ extension Wax {
         return results.map { scoredAsORFallbackOnly($0, tokenCount: tokenCount) }
     }
 
-    private struct RRFFusedCandidate {
-        let frameId: UInt64
-        let score: Float
-        let bestRank: Int
-        let sources: [SearchResponse.Source]
-        let laneContributions: [SearchResponse.RankingLaneContribution]
-    }
-
-    private static func rrfFusionResults(
-        lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])],
-        k: Int,
-        includeDiagnostics: Bool,
-        diagnosticsTopK: Int
-    ) -> [(frameId: UInt64, score: Float, sources: [SearchResponse.Source], diagnostics: SearchResponse.RankingDiagnostics?)] {
-        let kConstant = max(0, k)
-        struct Accumulator {
-            var score: Float = 0
-            var bestRank: Int = .max
-            var sources: [SearchResponse.Source] = []
-            var laneContributions: [SearchResponse.RankingLaneContribution] = []
-        }
-        let estimatedFrameCount = lists.reduce(into: 0) { partial, list in
-            partial += list.frameIds.count
-        }
-        var byFrame: [UInt64: Accumulator] = [:]
-        byFrame.reserveCapacity(estimatedFrameCount)
-
-        for list in lists {
-            guard list.weight > 0 else { continue }
-            for (rankZeroBased, frameId) in list.frameIds.enumerated() {
-                let rank = rankZeroBased + 1
-                let contribution = list.weight / Float(kConstant + rank)
-                var acc = byFrame[frameId] ?? Accumulator()
-                acc.score += contribution
-                acc.bestRank = min(acc.bestRank, rank)
-                if !acc.sources.contains(list.source) {
-                    acc.sources.append(list.source)
-                }
-                if includeDiagnostics {
-                    acc.laneContributions.append(
-                        .init(
-                            source: list.source,
-                            weight: list.weight,
-                            rank: rank,
-                            rrfScore: contribution
-                        )
-                    )
-                }
-                byFrame[frameId] = acc
-            }
-        }
-
-        var ranked: [RRFFusedCandidate] = []
-        ranked.reserveCapacity(byFrame.count)
-        for (frameId, acc) in byFrame {
-            let contributions = includeDiagnostics
-                ? acc.laneContributions.sorted { lhs, rhs in
-                    if lhs.rrfScore != rhs.rrfScore { return lhs.rrfScore > rhs.rrfScore }
-                    return lhs.source.rawValue < rhs.source.rawValue
-                }
-                : []
-            ranked.append(
-                RRFFusedCandidate(
-                    frameId: frameId,
-                    score: acc.score,
-                    bestRank: acc.bestRank,
-                    sources: acc.sources.sorted { $0.rawValue < $1.rawValue },
-                    laneContributions: contributions
-                )
-            )
-        }
-
-        ranked.sort { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            if lhs.bestRank != rhs.bestRank { return lhs.bestRank < rhs.bestRank }
-            return lhs.frameId < rhs.frameId
-        }
-
-        let topDiagLimit = max(1, diagnosticsTopK)
-        var fused: [(frameId: UInt64, score: Float, sources: [SearchResponse.Source], diagnostics: SearchResponse.RankingDiagnostics?)] = []
-        fused.reserveCapacity(ranked.count)
-        for index in ranked.indices {
-            let candidate = ranked[index]
-            let diagnostics: SearchResponse.RankingDiagnostics?
-            if includeDiagnostics, index < topDiagLimit {
-                let reason: SearchResponse.RankingTieBreakReason
-                if index == 0 {
-                    reason = .topResult
-                } else {
-                    let previous = ranked[index - 1]
-                    if previous.score != candidate.score {
-                        reason = .fusedScore
-                    } else if previous.bestRank != candidate.bestRank {
-                        reason = .bestLaneRank
-                    } else {
-                        reason = .frameID
-                    }
-                }
-                diagnostics = .init(
-                    bestLaneRank: candidate.bestRank == .max ? nil : candidate.bestRank,
-                    laneContributions: candidate.laneContributions,
-                    tieBreakReason: reason
-                )
-            } else {
-                diagnostics = nil
-            }
-
-            fused.append(
-                (
-                    frameId: candidate.frameId,
-                    score: candidate.score,
-                    sources: candidate.sources,
-                    diagnostics: diagnostics
-                )
-            )
-        }
-        return fused
-    }
-
     package static func dehighlightedPreviewText(_ text: String) -> String {
         UnifiedRanking.dehighlightedPreviewText(text)
     }
@@ -945,40 +805,6 @@ extension Wax {
         }
 
         return sorted.prefix(capped).map { EntityKey($0.key) }
-    }
-
-    private static func candidateLimit(for topK: Int) -> Int {
-        guard topK > 0 else { return 0 }
-        let expanded = boundedMultiply(topK, by: 3)
-        let capped = min(expanded, 1000)
-        // Keep the public request's topK from becoming an unbounded SQLite or
-        // vector-engine limit. FTS independently caps at 10,000; matching the
-        // same ceiling here also makes Int.max requests safe.
-        return min(max(topK, capped), 10_000)
-    }
-
-    private static func candidateLimit(for topK: Int, filter: FrameFilter) -> Int {
-        let baseLimit = candidateLimit(for: topK)
-        guard needsCallerFilterOverfetch(filter) else { return baseLimit }
-
-        let multiplied = boundedMultiply(topK, by: 5)
-        let withSlack = topK > Int.max - 200 ? Int.max : topK + 200
-        let overfetchLimit = min(1000, max(multiplied, withSlack))
-        return max(baseLimit, overfetchLimit)
-    }
-
-    private static func boundedMultiply(_ value: Int, by multiplier: Int) -> Int {
-        guard value > 0, multiplier > 0 else { return 0 }
-        guard value <= Int.max / multiplier else { return Int.max }
-        return value * multiplier
-    }
-
-    private static func needsCallerFilterOverfetch(_ filter: FrameFilter) -> Bool {
-        if filter.frameIds != nil { return true }
-        guard let metadataFilter = filter.metadataFilter else { return false }
-        return !metadataFilter.requiredEntries.isEmpty
-            || !metadataFilter.requiredTags.isEmpty
-            || !metadataFilter.requiredLabels.isEmpty
     }
 
     private static func frameIDsAndSet<S: Sequence>(from frameIDs: S) -> ([UInt64], Set<UInt64>)
