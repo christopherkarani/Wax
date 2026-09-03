@@ -89,6 +89,7 @@ struct BrokerCommandDecodeTests {
         #expect(write.type == .decision)
         #expect(write.durability == .durable)
         #expect(remember.sessionID == nil)
+        #expect(remember.clientSessionID == sessionID)
         #expect(remember.writeScope == .durable)
         #expect(remember.writeSemantics.type == .decision)
         #expect(remember.writeSemantics.durability == .durable)

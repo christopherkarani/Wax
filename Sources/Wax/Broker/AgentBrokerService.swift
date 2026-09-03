@@ -353,21 +353,23 @@ extension AgentBrokerService {
 
     func remember(_ command: BrokerCommand.Remember) async throws -> AgentBrokerValue {
         let sessionID = command.sessionID
+        let stampSessionID = command.clientSessionID ?? sessionID
         // Rebind before writeScope so session manifest project/repo stamp correctly after a broker hop.
-        if let sessionID {
-            _ = try await memory(for: sessionID)
+        // Durable types may still carry a wire session_id for identity even though destination is durable.
+        if let stampSessionID {
+            _ = try await memory(for: stampSessionID)
         }
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
             destination: command.destination,
-            activeSession: sessionID != nil,
-            inferredScope: writeScope(for: sessionID, clientCWD: command.cwd),
+            activeSession: stampSessionID != nil,
+            inferredScope: writeScope(for: stampSessionID, clientCWD: command.cwd),
             nowMs: Self.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
         let memory = try await memory(for: sessionID)
-        if let sessionID {
-            try await refreshSessionManifest(sessionID)
+        if let stampSessionID {
+            try await refreshSessionManifest(stampSessionID)
         }
 
         let before = await memory.runtimeStats()
@@ -593,17 +595,10 @@ extension AgentBrokerService {
             lines.append("\(index + 1). [\(kind)] frame=\(hit.frameID) score=\(String(format: "%.4f", hit.score)) \(hit.text)")
         }
 
+        let nowMs = Self.nowMs()
+        let verbose = command.verbosity == "verbose"
         let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
-            .object([
-                "rank": .from(index + 1),
-                "kind": .string(Self.itemKindLabel(hit.kind)),
-                "frameId": .from(hit.frameID),
-                "score": .double(Double(hit.score)),
-                "sources": .array(hit.sources.map { .string($0.rawValue) }),
-                "text": .string(hit.text),
-                "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
-                "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
-            ])
+            renderRecallHit(hit, rank: index + 1, verbose: verbose, nowMs: nowMs)
         }
         if let sessionID = parsedFilters.sessionId {
             let sessionMemory = try await memory(for: sessionID)
@@ -651,6 +646,9 @@ extension AgentBrokerService {
         }
         if let scopeMissMessage = result.scopeMissMessage {
             payload["scope_miss_message"] = .string(scopeMissMessage)
+        }
+        if let dropped = renderScopeDropped(result.scopeDropped) {
+            payload["scope_dropped"] = dropped
         }
         return .object(payload)
     }
@@ -1018,6 +1016,13 @@ extension AgentBrokerService {
                 ])
             }),
             "contradictions": .array(report.contradictionSummaries.map(AgentBrokerValue.string)),
+            "unsuperseded_duplicate_decisions": .array(report.unsupersededDuplicateDecisions.map { pair in
+                .object([
+                    "left_frame_id": .from(pair.leftFrameId),
+                    "right_frame_id": .from(pair.rightFrameId),
+                    "similarity": .double(Double(pair.similarity)),
+                ])
+            }),
             "display_text": .string("Health: \(report.totalDocuments) docs, \(report.duplicatePairs.count) duplicate pairs, \(report.contradictionSummaries.count) contradiction signals."),
         ])
     }
@@ -2361,15 +2366,21 @@ extension AgentBrokerService {
         )
         let activeSessionsSearched = orderedActiveSessions.count
 
-        let results: [AgentBrokerValue] = merged.enumerated().map { index, hit in
-            .object([
+        var results: [AgentBrokerValue] = []
+        results.reserveCapacity(merged.count)
+        for (index, hit) in merged.enumerated() {
+            var object: [String: AgentBrokerValue] = [
                 "rank": .from(index + 1),
                 "frameId": .from(hit.frameId),
                 "score": .double(Double(hit.score)),
                 "sources": .array(hit.sources.map { .string($0) }),
                 "preview": .string(hit.preview),
                 "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
-            ])
+            ]
+            if command.expand || index < 3 {
+                object["text"] = .string(await corpusHitFullText(hit))
+            }
+            results.append(.object(object))
         }
         let buildValue: AgentBrokerValue = if let buildSummary {
             .object([
@@ -3266,20 +3277,169 @@ extension AgentBrokerService {
         }
     }
 
-    func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
-        .object([
-            "memory_id": .string(hit.reference),
-            "horizon": .string(hit.horizon.rawValue),
-            "session_id": .from(hit.sessionID?.uuidString),
-            "agent_id": .from(hit.agentID),
-            "run_id": .from(hit.runID),
-            "frame_id": .from(hit.frameID),
-            "score": .double(Double(hit.score)),
-            "preview": .string(hit.preview),
-            "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
-            "explanations": .array(hit.explanations.map(AgentBrokerValue.string)),
-            "timestamp_ms": .from(hit.timestampMs),
+    func renderRecallHit(
+        _ hit: LayeredRecall.Hit,
+        rank: Int,
+        verbose: Bool,
+        nowMs: Int64
+    ) -> AgentBrokerValue {
+        var object = compactHitObject(
+            id: hit.reference,
+            text: hit.text,
+            preview: nil,
+            metadata: hit.metadata,
+            score: hit.score,
+            createdAtMs: hit.timestampMs,
+            nowMs: nowMs
+        )
+        object["rank"] = .from(rank)
+        object["kind"] = .string(Self.itemKindLabel(hit.kind))
+        object["frameId"] = .from(hit.frameID)
+        object["sources"] = .array(hit.sources.map { .string($0.rawValue) })
+        if verbose {
+            object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
+            object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
+        } else {
+            let compactMetadata = Self.compactMetadataWithoutHashes(hit.metadata)
+            if !compactMetadata.isEmpty {
+                object["metadata"] = .object(compactMetadata.mapValues(AgentBrokerValue.string))
+            }
+        }
+        return .object(object)
+    }
+
+    func renderScopeDropped(_ dropped: LayeredRecall.ScopeDropped) -> AgentBrokerValue? {
+        guard dropped.count > 0 else { return nil }
+        return .object([
+            "count": .from(dropped.count),
+            "top": .array(dropped.top.map { entry in
+                .object([
+                    "project": .from(entry.project),
+                    "repo": .from(entry.repo),
+                    "score": .double(Double(entry.score)),
+                    "preview": .string(entry.preview),
+                ])
+            }),
+            "hint": .string(dropped.hint),
         ])
+    }
+
+    func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
+        var object = compactHitObject(
+            id: hit.reference,
+            text: hit.text,
+            preview: hit.preview,
+            metadata: hit.metadata,
+            score: hit.score,
+            createdAtMs: hit.timestampMs,
+            nowMs: Self.nowMs()
+        )
+        object["memory_id"] = .string(hit.reference)
+        object["frame_id"] = .from(hit.frameID)
+        return .object(object)
+    }
+
+    func compactHitObject(
+        id: String,
+        text: String,
+        preview: String?,
+        metadata: [String: String],
+        score: Float,
+        createdAtMs: Int64,
+        nowMs: Int64
+    ) -> [String: AgentBrokerValue] {
+        var object: [String: AgentBrokerValue] = [
+            "id": .string(id),
+            "text": .string(text),
+            "score": .double(Double(score)),
+            "age_days": .int(Self.ageDays(createdAtMs: createdAtMs, nowMs: nowMs)),
+        ]
+        if let preview {
+            object["preview"] = .string(preview)
+        }
+        if let project = metadata[MemoryMetadataKeys.project], !project.isEmpty {
+            object["project"] = .string(project)
+        }
+        if let repo = metadata[MemoryMetadataKeys.repo], !repo.isEmpty {
+            object["repo"] = .string(repo)
+        }
+        if let memoryType = metadata[MemoryMetadataKeys.type], !memoryType.isEmpty {
+            object["memory_type"] = .string(memoryType)
+        }
+        return object
+    }
+
+    static func ageDays(createdAtMs: Int64, nowMs: Int64) -> Int64 {
+        guard createdAtMs > 0 else { return 0 }
+        return max(0, (nowMs - createdAtMs) / (1000 * 60 * 60 * 24))
+    }
+
+    static func compactMetadataWithoutHashes(_ metadata: [String: String]) -> [String: String] {
+        metadata.filter { key, _ in
+            !key.localizedCaseInsensitiveContains("hash")
+        }
+    }
+
+    func corpusHitFullText(_ hit: BrokerCorpusMergeHit) async -> String {
+        if let memory = memoryForCorpusHit(hit) {
+            let frameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) ?? hit.frameId
+            if let text = await frameText(frameID: frameID, memory: memory),
+               text.utf8.count >= hit.preview.utf8.count {
+                return text
+            }
+        }
+        if let path = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath], !path.isEmpty {
+            let sourceFrameID = hit.metadata[BrokerCorpusMetadataKeys.sourceFrameID].flatMap(UInt64.init) ?? hit.frameId
+            let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
+            if sourceURL.path == longTermStoreURL.standardizedFileURL.path {
+                if let text = await frameText(frameID: sourceFrameID, memory: longTermMemory) {
+                    return text
+                }
+            } else if let session = activeSessions.values.first(where: {
+                $0.storeURL.standardizedFileURL.path == sourceURL.path
+            }) {
+                if let text = await frameText(frameID: sourceFrameID, memory: session.memory) {
+                    return text
+                }
+            } else {
+                let fetched = try? await openAdhocMemory(
+                    at: sourceURL,
+                    structuredMemoryEnabled: false,
+                    noEmbedder: true,
+                    body: { memory in
+                        await frameText(frameID: sourceFrameID, memory: memory) ?? ""
+                    }
+                )
+                if let fetched, fetched.isEmpty == false {
+                    return fetched
+                }
+            }
+        }
+        return hit.preview
+    }
+
+    func memoryForCorpusHit(_ hit: BrokerCorpusMergeHit) -> MemoryOrchestrator? {
+        switch hit.metadata[BrokerCorpusMetadataKeys.origin] {
+        case "long_term":
+            return longTermMemory
+        case "active_session":
+            guard let raw = hit.metadata["session_id"], let sessionID = UUID(uuidString: raw) else {
+                return nil
+            }
+            return activeSessions[sessionID]?.memory
+        default:
+            return nil
+        }
+    }
+
+    func frameText(frameID: UInt64, memory: MemoryOrchestrator) async -> String? {
+        if let document = try? await memory.corpusSourceDocuments().first(where: { $0.frameId == frameID }) {
+            return document.text
+        }
+        guard let data = try? await memory.wax.frameContent(frameId: frameID) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     func requireDocument(
