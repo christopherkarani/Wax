@@ -50,17 +50,12 @@ private func withVirtualSessionStore<T>(
 private func startSession(
     _ store: VirtualSessionStore,
     agentID: String,
-    runID: String,
-    cwd: String? = nil
+    runID: String? = nil,
+    explicitSessionID: UUID? = nil,
+    scope: MemoryScopeContext = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
 ) async throws -> VirtualSessionStore.LifecycleResult {
-    let scope: MemoryScopeContext
-    if let cwd {
-        scope = MemorySemantics.inferScopeContext(currentDirectoryPath: cwd)
-    } else {
-        scope = MemorySemantics.inferScopeContext()
-    }
-    return try await store.start(
-        explicitSessionID: nil,
+    try await store.start(
+        explicitSessionID: explicitSessionID,
         agentID: agentID,
         runID: runID,
         inferredScope: scope
@@ -140,12 +135,175 @@ struct VirtualSessionStoreTests {
     }
 
     @Test
-    func agentIDAloneDoesNotReuse() async throws {
+    func sameAgentAndProjectWithDifferentRunIDReusesTheUniqueLiveSessionAndStampsRunID() async throws {
+        try await withVirtualSessionStore { store, root in
+            let scope = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
+            let first = try await startSession(
+                store,
+                agentID: "solo-agent",
+                runID: "run-a",
+                scope: scope
+            )
+            let second = try await startSession(
+                store,
+                agentID: "solo-agent",
+                runID: "run-b",
+                scope: scope
+            )
+            #expect(second.state.id == first.state.id)
+            #expect(second.resumed == true)
+            #expect(second.state.manifest.runID == "run-b")
+            let persisted = try BrokerSessionPersistence.loadManifest(
+                rootURL: root,
+                sessionID: first.state.id
+            )
+            #expect(persisted.runID == "run-b")
+            #expect(persisted.sessionID == first.state.id)
+        }
+    }
+
+    @Test
+    func sameAgentAndProjectWithOmittedRunIDReusesTheUniqueLiveSessionAndStampsRunID() async throws {
+        try await withVirtualSessionStore { store, root in
+            let scope = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
+            let first = try await startSession(
+                store,
+                agentID: "omit-agent",
+                runID: "run-a",
+                scope: scope
+            )
+            let second = try await startSession(
+                store,
+                agentID: "omit-agent",
+                runID: nil,
+                scope: scope
+            )
+            #expect(second.state.id == first.state.id)
+            #expect(second.resumed == true)
+            #expect(second.state.manifest.runID != "run-a")
+            #expect(UUID(uuidString: second.state.manifest.runID) != nil)
+            let persisted = try BrokerSessionPersistence.loadManifest(
+                rootURL: root,
+                sessionID: first.state.id
+            )
+            #expect(persisted.runID == second.state.manifest.runID)
+        }
+    }
+
+    @Test
+    func twoLiveSessionsForTheSameAgentAndProjectMintInsteadOfGuessing() async throws {
         try await withVirtualSessionStore { store, _ in
-            let first = try await startSession(store, agentID: "solo-agent", runID: "run-a")
-            let second = try await startSession(store, agentID: "solo-agent", runID: "run-b")
+            let scope = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
+            let first = try await startSession(
+                store,
+                agentID: "multi-agent",
+                runID: "run-a",
+                scope: scope
+            )
+            let secondID = UUID()
+            let second = try await startSession(
+                store,
+                agentID: "multi-agent",
+                runID: "run-b",
+                explicitSessionID: secondID,
+                scope: scope
+            )
+            #expect(second.state.id == secondID)
             #expect(second.state.id != first.state.id)
             #expect(second.resumed == false)
+
+            let third = try await startSession(
+                store,
+                agentID: "multi-agent",
+                runID: "run-c",
+                scope: scope
+            )
+            #expect(third.state.id != first.state.id)
+            #expect(third.state.id != second.state.id)
+            #expect(third.resumed == false)
+            #expect(third.state.manifest.runID == "run-c")
+        }
+    }
+
+    @Test
+    func sameAgentDifferentProjectDoesNotRebind() async throws {
+        try await withVirtualSessionStore { store, _ in
+            let first = try await startSession(
+                store,
+                agentID: "cross-agent",
+                runID: "run-a",
+                scope: MemoryScopeContext(repoName: "repo-a", projectName: "project-a")
+            )
+            let second = try await startSession(
+                store,
+                agentID: "cross-agent",
+                runID: "run-b",
+                scope: MemoryScopeContext(repoName: "repo-b", projectName: "project-b")
+            )
+            #expect(second.state.id != first.state.id)
+            #expect(second.resumed == false)
+            #expect(second.state.manifest.project == "project-b")
+            #expect(first.state.manifest.project == "project-a")
+            #expect(second.state.manifest.runID == "run-b")
+        }
+    }
+
+    @Test
+    func endedSessionDoesNotCountTowardUniqueAgentAndProjectRebind() async throws {
+        try await withVirtualSessionStore { store, _ in
+            let scope = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
+            let first = try await startSession(
+                store,
+                agentID: "ended-rebind-agent",
+                runID: "run-a",
+                scope: scope
+            )
+            _ = try await store.end(sessionID: first.state.id)
+            let second = try await startSession(
+                store,
+                agentID: "ended-rebind-agent",
+                runID: "run-b",
+                scope: scope
+            )
+            #expect(second.state.id != first.state.id)
+            #expect(second.resumed == false)
+            #expect(second.state.manifest.runID == "run-b")
+        }
+    }
+
+    @Test
+    func newRunIDOnANewProcessRebindsTheUniqueActiveAgentAndProjectSession() async throws {
+        try await withVirtualSessionStore(brokerInstanceID: "owner-a") { firstStore, root in
+            let scope = MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
+            let first = try await startSession(
+                firstStore,
+                agentID: "disk-agent",
+                runID: "run-a",
+                scope: scope
+            )
+            let sessionID = first.state.id
+            await firstStore.closeAll()
+
+            try await withVirtualSessionStore(
+                brokerInstanceID: "owner-b",
+                sessionRootURL: root,
+                removeRootOnExit: false
+            ) { secondStore, _ in
+                let reused = try await startSession(
+                    secondStore,
+                    agentID: "disk-agent",
+                    runID: "run-b",
+                    scope: scope
+                )
+                #expect(reused.state.id == sessionID)
+                #expect(reused.resumed == true)
+                #expect(reused.state.manifest.runID == "run-b")
+                let persisted = try BrokerSessionPersistence.loadManifest(
+                    rootURL: root,
+                    sessionID: sessionID
+                )
+                #expect(persisted.runID == "run-b")
+            }
         }
     }
 
@@ -343,7 +501,7 @@ struct VirtualSessionStoreTests {
                     explicitSessionID: started.state.id,
                     agentID: "other-agent",
                     runID: "other-run",
-                    inferredScope: MemorySemantics.inferScopeContext()
+                    inferredScope: MemoryScopeContext(repoName: "WaxTest", projectName: "WaxTest")
                 )
                 Issue.record("existing session_id should require session_resume")
             } catch {

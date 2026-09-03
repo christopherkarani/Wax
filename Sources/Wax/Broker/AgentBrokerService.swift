@@ -129,6 +129,9 @@ package actor AgentBrokerService {
             }
             throw error
         }
+        _ = try? await memoryMaintain(
+            BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false)
+        )
     }
 
     package func close() async throws {
@@ -1213,6 +1216,11 @@ extension AgentBrokerService {
             runID: requestedRunID,
             inferredScope: inferredScope
         )
+        if let conversationID = BrokerCommand.normalizedOrNil(command.conversationID) {
+            try virtualSessions.updateLive(result.state.id) { state in
+                state.manifest.conversationID = conversationID
+            }
+        }
         return renderSessionLifecycleResult(result)
     }
 
@@ -1283,7 +1291,7 @@ extension AgentBrokerService {
             alreadyEnded: false,
             handoffFrameID: frameId,
             remainingActive: result.activeCount,
-            harvest: loadHarvestReport(sessionID: sessionID)
+            harvest: result.harvest
         )
     }
 
@@ -1308,6 +1316,15 @@ extension AgentBrokerService {
             "active_session_count": .from(remainingActive),
             "harvested": .bool(harvest.harvested),
             "promoted_count": .from(harvest.promotedCount),
+            "promoted": .array(harvest.promoted.map { item in
+                .object([
+                    "memory_id": .string(item.memoryID),
+                    "type": .string(item.type),
+                    "preview": .string(item.preview),
+                ])
+            }),
+            "leftover_count": .from(harvest.leftoverCount),
+            "leftover_reasons": .array(harvest.leftoverReasons.map { .string($0) }),
             "reclaim_after_ms": .from(harvest.reclaimAfterMs),
             "reclaimed": .bool(reclaimed),
             "display_text": .string(display),
@@ -1332,34 +1349,98 @@ extension AgentBrokerService {
         let runID = command.runID
         let recallQuery = command.recallQuery
         let cwd = command.cwd
+        let conversationID = BrokerCommand.normalizedOrNil(command.conversationID)
+        let requestedAgentID = BrokerCommand.normalizedOrNil(agentID)
+        let requestedRunID = BrokerCommand.normalizedOrNil(runID)
+
+        var inferredScope = cwd.map {
+            MemorySemantics.inferScopeContext(currentDirectoryPath: $0)
+        } ?? MemoryScopeContext()
+        if project != nil || repo != nil {
+            inferredScope = MemoryScopeContext(
+                cwdPath: inferredScope.cwdPath,
+                repoRootPath: inferredScope.repoRootPath,
+                repoName: repo ?? project ?? inferredScope.repoName,
+                projectName: project ?? inferredScope.projectName
+            )
+        }
+
+        let priorUnique: (sessionID: UUID, runID: String)?
+        if let requestedAgentID,
+           let unique = try virtualSessions.findUniqueActiveLeased(
+            agentID: requestedAgentID,
+            project: inferredScope.projectName
+           )
+        {
+            priorUnique = (unique.sessionID, unique.runID)
+        } else {
+            priorUnique = nil
+        }
+        let exactPair: BrokerSessionManifest?
+        if let requestedAgentID, let requestedRunID {
+            exactPair = try virtualSessions.findActive(agentID: requestedAgentID, runID: requestedRunID)
+        } else {
+            exactPair = nil
+        }
 
         let handoffPayload = try await handoffLatest(.init(project: project))
-        let startPayload = try await sessionStart(
-            .init(
-                sessionID: nil,
-                agentID: agentID,
-                runID: runID,
-                cwd: cwd,
-                project: project,
-                repo: repo
+        let startPayload: AgentBrokerValue
+        if exactPair == nil,
+           priorUnique == nil,
+           let hintedSessionID = command.sessionID,
+           activeSessions[hintedSessionID] != nil
+        {
+            startPayload = try await sessionResume(
+                .init(sessionID: hintedSessionID, agentID: nil, runID: nil)
             )
-        )
+        } else if exactPair == nil,
+           priorUnique == nil,
+           let conversationID,
+           let match = try BrokerSessionPersistence.findActive(
+            conversationID: conversationID,
+            rootURL: sessionRootURL
+           )
+        {
+            startPayload = try await sessionResume(
+                .init(sessionID: match.sessionID, agentID: nil, runID: nil)
+            )
+            if let requestedRunID, match.runID != requestedRunID {
+                try virtualSessions.updateLive(match.sessionID) { state in
+                    state.manifest.runID = requestedRunID
+                    state.manifest.updatedAtMs = Self.nowMs()
+                }
+            }
+        } else {
+            startPayload = try await sessionStart(
+                .init(
+                    sessionID: nil,
+                    agentID: agentID,
+                    runID: runID,
+                    cwd: cwd,
+                    project: project,
+                    repo: repo,
+                    conversationID: conversationID
+                )
+            )
+        }
         let startObject = startPayload.objectValue
         let sessionID = startObject?["session_id"]?.stringValue
 
         // Explicit project must win over cwd inference for both project and repo.
         // Leaving a cwd-inferred repo would advertise a split identity and stamp
         // foreign wax.repo on later remembers.
-        if let project,
-           let sessionID,
-           let uuid = UUID(uuidString: sessionID)
-        {
-            let trimmedProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let sessionID, let uuid = UUID(uuidString: sessionID) {
+            let trimmedProject = project?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !trimmedProject.isEmpty {
+            if !trimmedProject.isEmpty || conversationID != nil {
                 try virtualSessions.updateLive(uuid) { state in
-                    state.manifest.project = trimmedProject
-                    state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
+                    if !trimmedProject.isEmpty {
+                        state.manifest.project = trimmedProject
+                        state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
+                    }
+                    if let conversationID {
+                        state.manifest.conversationID = conversationID
+                    }
                 }
             }
         }
@@ -1394,12 +1475,33 @@ extension AgentBrokerService {
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
+        let returnedSessionID = sessionID.flatMap { UUID(uuidString: $0) }
+        let rebound: Bool
+        if let priorUnique, let returnedSessionID, returnedSessionID == priorUnique.sessionID {
+            rebound = requestedRunID == nil || requestedRunID != priorUnique.runID
+        } else {
+            rebound = false
+        }
+        let sharePrompt: String
+        if let sessionID {
+            sharePrompt =
+                "Keep this session_id (\(sessionID)) on remember, recall, and session_close. Host children do not get Wax tools."
+        } else {
+            sharePrompt =
+                "Keep the returned session_id on remember, recall, and session_close. Host children do not get Wax tools."
+        }
+
         // Keep the bootstrap wire shape deliberately small.  Callers that
         // need project/repo, lease state, or the full handoff can issue the
         // corresponding explicit read after they have the session UUID.
         var payload: [String: AgentBrokerValue] = [
             "session_id": .from(sessionID),
-            "handoff": try await Self.compactSessionOpenHandoff(handoffPayload),
+            "rebound": .bool(rebound),
+            "share_prompt": .string(sharePrompt),
+            "handoff": try await Self.compactSessionOpenHandoff(
+                handoffPayload,
+                recallQuery: recallQuery
+            ),
         ]
         if let recallPayload {
             payload["recall"] = recallPayload
@@ -1410,7 +1512,10 @@ extension AgentBrokerService {
         return .object(payload)
     }
 
-    private static func compactSessionOpenHandoff(_ value: AgentBrokerValue) async throws -> AgentBrokerValue {
+    private static func compactSessionOpenHandoff(
+        _ value: AgentBrokerValue,
+        recallQuery: String?
+    ) async throws -> AgentBrokerValue {
         guard let handoff = value.objectValue,
               handoff["found"]?.boolValue == true
         else {
@@ -1418,6 +1523,24 @@ extension AgentBrokerService {
         }
 
         let originalContent = handoff["content"]?.stringValue ?? ""
+        let trimmedQuery = recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedQuery.isEmpty,
+           MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
+        {
+            return .object([
+                "found": .bool(true),
+                "relevance": .string("low"),
+                "content": .string(""),
+                "pending_tasks": .array([]),
+                "truncated": .bool(false),
+                "content_truncated": .bool(false),
+                "pending_tasks_truncated": .from(0),
+                "pending_tasks_omitted": .from(0),
+                "content_bytes": .from(0),
+                "content_tokens": .from(0),
+            ])
+        }
+
         let byteLimitedContent = utf8Prefix(
             originalContent,
             maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
@@ -1511,7 +1634,7 @@ extension AgentBrokerService {
         switch result {
         case .idle:
             display = "No live session to end. This session active=false. Other live sessions remaining_active=false count=0."
-        case .ended(let endedID, _):
+        case .ended(let endedID, _, _):
             display = "Session \(endedID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
         }
         return .object([

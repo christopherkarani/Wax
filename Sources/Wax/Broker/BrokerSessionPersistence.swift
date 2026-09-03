@@ -30,6 +30,7 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
     package var reclaimAfterMs: Int64?
     package var reclaimedAtMs: Int64?
     package var harvestError: String?
+    package var conversationID: String?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID
@@ -56,6 +57,7 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         case reclaimAfterMs
         case reclaimedAtMs
         case harvestError
+        case conversationID
     }
 
     package init(
@@ -82,7 +84,8 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         promotedCount: Int = 0,
         reclaimAfterMs: Int64? = nil,
         reclaimedAtMs: Int64? = nil,
-        harvestError: String? = nil
+        harvestError: String? = nil,
+        conversationID: String? = nil
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
@@ -108,6 +111,7 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         self.reclaimAfterMs = reclaimAfterMs
         self.reclaimedAtMs = reclaimedAtMs
         self.harvestError = harvestError
+        self.conversationID = conversationID
     }
 
     package init(from decoder: Decoder) throws {
@@ -136,6 +140,7 @@ package struct BrokerSessionManifest: Codable, Sendable, Equatable {
         reclaimAfterMs = try container.decodeIfPresent(Int64.self, forKey: .reclaimAfterMs)
         reclaimedAtMs = try container.decodeIfPresent(Int64.self, forKey: .reclaimedAtMs)
         harvestError = try container.decodeIfPresent(String.self, forKey: .harvestError)
+        conversationID = try container.decodeIfPresent(String.self, forKey: .conversationID)
     }
 }
 
@@ -270,6 +275,16 @@ package enum BrokerSessionPersistence {
             if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
             return lhs.sessionID.uuidString < rhs.sessionID.uuidString
         }
+    }
+
+    package static func findActive(conversationID: String, rootURL: URL) throws -> BrokerSessionManifest? {
+        let trimmed = conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let matches = try listManifests(rootURL: rootURL).filter { manifest in
+            manifest.status == .active && manifest.conversationID == trimmed
+        }
+        guard matches.count == 1 else { return nil }
+        return matches[0]
     }
 
     package static func appendEvent(_ event: BrokerSessionEvent, to url: URL) throws {

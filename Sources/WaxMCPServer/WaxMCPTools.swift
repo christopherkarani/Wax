@@ -189,7 +189,7 @@ private extension WaxMCPTools {
         guard arguments["session_id"] == nil else { return }
         guard let sessionID = sessionHint?.current() else { return }
         switch name {
-        case "stats", "recall":
+        case "stats", "recall", "session_open":
             arguments["session_id"] = .string(sessionID)
         case "remember":
             guard rememberShouldInheritSession(arguments) else { return }

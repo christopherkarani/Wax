@@ -48,13 +48,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package enum EndResult: Sendable {
         case idle
-        case ended(sessionID: UUID, remainingActive: Int)
+        case ended(sessionID: UUID, remainingActive: Int, harvest: SessionHarvest.Report)
 
         package var sessionID: UUID? {
             switch self {
             case .idle:
                 return nil
-            case .ended(let sessionID, _):
+            case .ended(let sessionID, _, _):
                 return sessionID
             }
         }
@@ -76,8 +76,17 @@ package final class VirtualSessionStore: @unchecked Sendable {
             switch self {
             case .idle:
                 return 0
-            case .ended(_, let remainingActive):
+            case .ended(_, let remainingActive, _):
                 return remainingActive
+            }
+        }
+
+        package var harvest: SessionHarvest.Report {
+            switch self {
+            case .idle:
+                return .skipped
+            case .ended(_, _, let harvest):
+                return harvest
             }
         }
     }
@@ -198,6 +207,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
                 agentID: nil,
                 runID: nil
             )
+        }
+
+        if explicitSessionID == nil, let agentID,
+           let unique = try findUniqueActiveLeased(agentID: agentID, project: inferredScope.projectName)
+        {
+            let stampedRunID = runID ?? UUID().uuidString
+            return try await resumeAndStampRunID(sessionID: unique.sessionID, runID: stampedRunID)
         }
 
         var claimedPair: SessionPairKey?
@@ -367,9 +383,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
         // `_live` retains the state for retry, while `endingSessions` removes it
         // from every routable view before the first suspension point.
+        var harvest = SessionHarvest.Report.skipped
         do {
             try await target.state.memory.flush()
-            var harvest = SessionHarvest.Report.skipped
             if let afterFlush {
                 harvest = await afterFlush(target.state)
             }
@@ -426,7 +442,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
             endingSessions.remove(target.id)
             return _live.count - endingSessions.count
         }
-        return .ended(sessionID: target.id, remainingActive: remaining)
+        return .ended(sessionID: target.id, remainingActive: remaining, harvest: harvest)
     }
 
     /// Lookup never infers or mints. Omitted `session_id` is no virtual session.
@@ -521,6 +537,58 @@ package final class VirtualSessionStore: @unchecked Sendable {
             throw BrokerValidationError.invalid("multiple active sessions matched agent_id and run_id")
         }
         return matches.first
+    }
+
+    /// Unique active session for `(agentID, project)`. Zero or 2+ matches return nil
+    /// so callers mint instead of guessing. Ended and in-flight-end sessions do not count.
+    package func findUniqueActiveLeased(agentID: String, project: String?) throws -> BrokerSessionManifest? {
+        let snapshot = locked { () -> (ending: Set<UUID>, live: [BrokerSessionManifest]) in
+            let live = _live.compactMap { id, state -> BrokerSessionManifest? in
+                guard !endingSessions.contains(id) else { return nil }
+                guard state.manifest.agentID == agentID else { return nil }
+                guard state.manifest.project == project else { return nil }
+                return state.manifest
+            }
+            return (endingSessions, live)
+        }
+        var matches: [UUID: BrokerSessionManifest] = [:]
+        for manifest in snapshot.live {
+            matches[manifest.sessionID] = manifest
+        }
+
+        let diskMatches = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL).filter { manifest in
+            manifest.status == .active
+                && manifest.agentID == agentID
+                && manifest.project == project
+                && !snapshot.ending.contains(manifest.sessionID)
+        }
+        for manifest in diskMatches where matches[manifest.sessionID] == nil {
+            matches[manifest.sessionID] = manifest
+        }
+
+        guard matches.count == 1 else { return nil }
+        return matches.values.first
+    }
+
+    private func resumeAndStampRunID(sessionID: UUID, runID: String) async throws -> LifecycleResult {
+        let result = try await resume(
+            explicitSessionID: sessionID,
+            agentID: nil,
+            runID: nil
+        )
+        if result.state.manifest.runID == runID {
+            return result
+        }
+        try updateLive(sessionID) { state in
+            state.manifest.runID = runID
+            state.manifest.updatedAtMs = nowMs()
+        }
+        guard let updated = locked({
+            endingSessions.contains(sessionID) ? nil : _live[sessionID]
+        }) else {
+            throw Self.notActiveError(for: sessionID)
+        }
+        return .resumed(updated, recoveredLease: result.recoveredLease)
     }
 
     package func resolveManifest(

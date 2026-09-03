@@ -2,6 +2,12 @@ import Foundation
 
 package enum SessionHarvest {
     package struct Report: Sendable, Equatable {
+        package struct Promoted: Sendable, Equatable {
+            package var memoryID: String
+            package var type: String
+            package var preview: String
+        }
+
         package var harvested: Bool
         package var promotedCount: Int
         package var leftoverDocumentCount: Int
@@ -9,6 +15,10 @@ package enum SessionHarvest {
         package var reclaimAfterMs: Int64?
         package var error: String?
         package var alreadyHarvested: Bool
+        package var promoted: [Promoted] = []
+        package var leftoverReasons: [String] = []
+
+        package var leftoverCount: Int { leftoverDocumentCount }
 
         package static let skipped = Report(
             harvested: false,
@@ -17,7 +27,9 @@ package enum SessionHarvest {
             leftoverLockedCount: 0,
             reclaimAfterMs: nil,
             error: nil,
-            alreadyHarvested: false
+            alreadyHarvested: false,
+            promoted: [],
+            leftoverReasons: []
         )
 
         package var immediateReclaimEligible: Bool {
@@ -62,7 +74,9 @@ package enum SessionHarvest {
                 leftoverLockedCount: 0,
                 reclaimAfterMs: manifest.reclaimAfterMs,
                 error: nil,
-                alreadyHarvested: true
+                alreadyHarvested: true,
+                promoted: [],
+                leftoverReasons: []
             )
         }
 
@@ -71,16 +85,22 @@ package enum SessionHarvest {
             var longTermDocuments = try await longTermMemory.corpusSourceDocuments()
             let recallSignals = BrokerSessionPersistence.recallSignals(from: events)
             let sessionStats = await sessionMemory.accessStatsSnapshot()
-            var promotedCount = 0
+            var promoted: [Report.Promoted] = []
             var leftoverDocumentCount = 0
             var leftoverLockedCount = 0
+            var leftoverReasons: [String] = []
             var harvestError: String?
+
+            func recordLeftover(_ reason: String) {
+                leftoverDocumentCount += 1
+                leftoverReasons.append(reason)
+            }
 
             for document in documents {
                 let info = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
                 if info.durability == .locked {
                     leftoverLockedCount += 1
-                    leftoverDocumentCount += 1
+                    recordLeftover("locked")
                     continue
                 }
                 let storedType = info.type
@@ -95,7 +115,17 @@ package enum SessionHarvest {
                     settings: settings
                 )
                 guard harvestShouldWrite(proposal: proposal, storedType: storedType, settings: settings) else {
-                    leftoverDocumentCount += 1
+                    let exactDuplicate = !proposal.shouldWrite
+                        && (proposal.duplicateMatches.first?.similarity ?? 0) >= 0.92
+                    if exactDuplicate {
+                        recordLeftover("dup")
+                    } else if (storedType == .note || storedType == .taskState)
+                        && proposal.recallCount < settings.minimumRecallCount
+                    {
+                        recordLeftover("note_low_recall")
+                    } else {
+                        recordLeftover("ineligible")
+                    }
                     continue
                 }
                 var metadata = MemorySemantics.approvedPromotionMetadata(
@@ -110,7 +140,7 @@ package enum SessionHarvest {
                 metadata[MemoryMetadataKeys.tier] = MemoryTier.hot.rawValue
                 metadata.removeValue(forKey: "session_id")
                 if SecretHeuristics.detectSecretLikeContent(document.text, metadata: metadata) != nil {
-                    leftoverDocumentCount += 1
+                    recordLeftover("secret")
                     continue
                 }
                 let destination: RememberDestination
@@ -122,11 +152,11 @@ package enum SessionHarvest {
                         metadata: metadata
                     )
                 } catch {
-                    leftoverDocumentCount += 1
+                    recordLeftover("destination_invalid")
                     continue
                 }
                 guard case .durable = destination else {
-                    leftoverDocumentCount += 1
+                    recordLeftover("not_durable")
                     continue
                 }
                 do {
@@ -144,14 +174,21 @@ package enum SessionHarvest {
                             metadata: metadata
                         )
                     )
-                    promotedCount += 1
+                    promoted.append(
+                        Report.Promoted(
+                            memoryID: MemoryID.durable(frameID: written.frameId).wire,
+                            type: metadata[MemoryMetadataKeys.type] ?? storedType.rawValue,
+                            preview: MemorySemantics.summarizeCandidate(document.text)
+                        )
+                    )
                 } catch {
-                    leftoverDocumentCount += 1
+                    recordLeftover("write_failed")
                     if harvestError == nil {
                         harvestError = error.localizedDescription
                     }
                 }
             }
+            let promotedCount = promoted.count
             do {
                 try await longTermMemory.flush()
             } catch {
@@ -163,7 +200,9 @@ package enum SessionHarvest {
                     leftoverLockedCount: leftoverLockedCount,
                     reclaimAfterMs: nil,
                     error: harvestError,
-                    alreadyHarvested: false
+                    alreadyHarvested: false,
+                    promoted: promoted,
+                    leftoverReasons: leftoverReasons
                 )
             }
 
@@ -176,7 +215,9 @@ package enum SessionHarvest {
                 leftoverLockedCount: leftoverLockedCount,
                 reclaimAfterMs: reclaimAfterMs,
                 error: harvestError,
-                alreadyHarvested: false
+                alreadyHarvested: false,
+                promoted: promoted,
+                leftoverReasons: leftoverReasons
             )
         } catch {
             return Report(
@@ -186,7 +227,9 @@ package enum SessionHarvest {
                 leftoverLockedCount: 0,
                 reclaimAfterMs: nil,
                 error: error.localizedDescription,
-                alreadyHarvested: false
+                alreadyHarvested: false,
+                promoted: [],
+                leftoverReasons: []
             )
         }
     }

@@ -233,6 +233,98 @@ func hintedSessionDoesNotInjectIntoDurableRemember() async throws {
 }
 
 @Test
+func hintedSessionOpenResumesSameUUIDWithoutConflictingExactPair() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintOpenRepo",
+                    "agent_id": "hint-open-agent",
+                    "run_id": "hint-open-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(opened.isError != true)
+        let openPayload = try requireJSONObject(firstTextContent(opened))
+        let sessionID = try #require(openPayload["session_id"] as? String)
+        #expect(hint.current() == sessionID)
+
+        let resumed = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintOpenRepo",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(resumed.isError != true)
+        let resumedPayload = try requireJSONObject(firstTextContent(resumed))
+        #expect(resumedPayload["session_id"] as? String == sessionID)
+        #expect(hint.current() == sessionID)
+    }
+}
+
+@Test
+func hintedSessionOpenDoesNotStealConflictingExactPair() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintOpenRepo",
+                    "agent_id": "hint-open-owner",
+                    "run_id": "hint-open-owner-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(first.isError != true)
+        let firstID = try #require(try requireJSONObject(firstTextContent(first))["session_id"] as? String)
+
+        let other = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintOpenRepo",
+                    "agent_id": "hint-open-other",
+                    "run_id": "hint-open-other-run",
+                ]
+            ),
+            broker: service
+        )
+        #expect(other.isError != true)
+        let otherID = try #require(try requireJSONObject(firstTextContent(other))["session_id"] as? String)
+        #expect(otherID != firstID)
+        #expect(hint.current() == firstID)
+
+        let exact = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintOpenRepo",
+                    "agent_id": "hint-open-other",
+                    "run_id": "hint-open-other-run",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(exact.isError != true)
+        let exactPayload = try requireJSONObject(firstTextContent(exact))
+        #expect(exactPayload["session_id"] as? String == otherID)
+        #expect(exactPayload["session_id"] as? String != firstID)
+    }
+}
+
+@Test
 func hintedSessionInjectsIntoStatsWithoutParrotingUUID() async throws {
     try await withIsolatedBroker { service, _ in
         let hint = MCPClientSessionHint()
