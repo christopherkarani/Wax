@@ -632,8 +632,7 @@ A: Hybrid and vector search require a local embedding model. In Swift, `Memory(a
 
 ## Community & Support
 
-- 💬 **Discussions & Q&A:** [GitHub Discussions](https://github.com/christopherkarani/Wax/discussions)
-- 🐛 **Bug reports:** [GitHub Issues](https://github.com/christopherkarani/Wax/issues)
+- 💬 **Questions & bug reports:** [GitHub Issues](https://github.com/christopherkarani/Wax/issues)
 - ⭐ **Star the repo** to follow releases
 - 📖 **Full documentation:** [iOS developer docs](https://christopherkarani.github.io/Wax/) · [DocC sources](Sources/Wax/Wax.docc)
 
