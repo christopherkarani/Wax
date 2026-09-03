@@ -200,7 +200,7 @@ Same rules on every host (from the paste block):
 
 1. Call `session_open` (`project`, stable `agent_id`/`run_id`, optional `recall_query`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
 2. Tactical writes: `remember` **with** `session_id` or `scope: session` (`task_state` / `working`) when a plan locks, a path fails, or you are about to stop
-3. Strategic writes: `remember` with `memory_type` decision / lesson / constraint / user_preference / fact (durable even if `session_id` is present)
+3. Strategic writes: `remember` with `scope: durable` (no `session_id`) for decision / lesson / constraint / user_preference / fact
 4. `recall` defaults to `scope: project` (hard-filters; empty lane is an explicit miss). Pass `scope: global` only for cross-project reads. With `session_id`, recall merges that session with durable under project scope. Prefer `mode: "text"` for exact names.
 5. Close with `session_close` (or `handoff` then `session_end`). Do not end between turns of one host chat.
 

@@ -447,6 +447,10 @@ func toolsListContainsExpectedTools() {
         "session_resume",
     ])
     #expect(names == expected)
+    #expect(
+        ToolSchemas.tools(structuredMemoryEnabled: true, profile: .daily).map(\.name)
+            == MCPToolProfile.dailyNames
+    )
     #expect(names.count == 8)
     #expect(!names.contains("memory_append"))
     #expect(!names.contains("promote"))
@@ -473,6 +477,13 @@ func mcpToolProfileFromEnvironmentSelectsDailyAndFull() {
     )
     #expect(fullNames.contains("memory_append"))
     #expect(fullNames.contains("promote"))
+}
+
+@Test
+func allToolsIsTheFullPublishedCatalog() {
+    #expect(ToolSchemas.allTools.map(\.name) == ToolSchemas.allPublishedTools.map(\.name))
+    #expect(ToolSchemas.allTools.map(\.name).contains("memory_append"))
+    #expect(ToolSchemas.allTools.map(\.name).contains("remember"))
 }
 
 @Test
@@ -537,9 +548,12 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("memory_type selects the horizon"))
     #expect(text.contains("do not call memory_promote"))
     #expect(!text.contains("session_synthesize then memory_promote"))
+    #expect(text.contains("The same agent_id+run_id resumes"))
     #expect(text.contains("exactly one live session"))
     #expect(text.contains("agent_id+resolved project rebinds"))
-    #expect(text.contains("durable types stay durable even if session_id is present"))
+    #expect(text.contains("durable types must omit session_id"))
+    #expect(!text.contains("durable types stay durable even if session_id is present"))
+    #expect(text.contains("remember inherits session_id only for task_state, handoff, or scope=session"))
 }
 
 @Test
@@ -7148,6 +7162,26 @@ struct WaxMCPProcessTests {
         #expect(!toolsList.contains(#""name":"memory_append""#))
         #expect(!names.contains("memory_append"))
         #expect(!names.contains("promote"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func fullProcessToolsListIncludesMemoryAppend() async throws {
+        let harness = try MCPServerProcessHarness(
+            extraEnvironment: ["WAX_MCP_TOOLS": "full"]
+        )
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        let bootstrap = try await harness.bootstrap(
+            clientName: "wax-mcp-full-catalog-list-test",
+            includeToolsList: true
+        )
+        let toolsList = try #require(bootstrap.toolsList)
+        let names = try toolNamesListedInMCPResponse(toolsList)
+        #expect(names.contains("remember"))
+        #expect(names.contains("memory_append"))
+        #expect(names.contains("promote"))
+        #expect(names.contains("search"))
     }
 
     @Test

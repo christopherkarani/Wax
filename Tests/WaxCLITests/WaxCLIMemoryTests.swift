@@ -920,12 +920,13 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_resume"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("WAX_MCP_TOOLS=full"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("Write horizon"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("The same `agent_id`+`run_id` resumes"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("exactly one live session"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("`agent_id`+resolved project rebinds"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("`memory_type` selects the horizon"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("stay durable even if `session_id` is present"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("Durable types must omit `session_id`"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("stay durable even if"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("Prefer `scope: session`"))
-        #expect(!WaxMCPAgentPlaybook.projectRules.contains("omit `session_id`"))
     }
 
     @Test func writeHostRuleIsOptInAndWritesPlaybook() throws {
@@ -936,6 +937,8 @@ struct WaxCLIMemoryTests {
         let target = dir.appendingPathComponent("wax.md")
 
         try WaxMCPHostRuleWriter.writeIfRequested(path: nil)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        try WaxMCPHostRuleWriter.writeIfRequested(path: "   ")
         #expect(!FileManager.default.fileExists(atPath: target.path))
 
         try WaxMCPHostRuleWriter.writeIfRequested(path: target.path)

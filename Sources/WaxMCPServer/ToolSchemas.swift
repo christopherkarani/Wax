@@ -3,8 +3,9 @@ import MCP
 import Wax
 
 enum ToolSchemas {
+    /// Full public catalog, independent of `WAX_MCP_TOOLS`.
     static var allTools: [Tool] {
-        tools(structuredMemoryEnabled: true)
+        allPublishedTools
     }
 
     static var allPublishedTools: [Tool] {
