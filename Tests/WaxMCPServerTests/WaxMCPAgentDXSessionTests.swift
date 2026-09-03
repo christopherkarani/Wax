@@ -246,9 +246,11 @@ func sessionClosePayloadListsPromotedAndLeftoverReasons() async throws {
         #expect(memoryID.hasPrefix("durable:"))
         #expect(first["type"]?.stringValue == "decision")
         #expect((first["preview"]?.stringValue ?? "").contains(needle))
-        #expect((payload["leftover_count"]?.intValue ?? 0) >= 1)
+        let leftoverCount = try #require(payload["leftover_count"]?.intValue)
+        #expect(leftoverCount >= 1)
         let reasons = payload["leftover_reasons"]?.arrayValue?.compactMap(\.stringValue) ?? []
         #expect(reasons.contains("note_low_recall"))
+        #expect(reasons.count == leftoverCount)
     }
 }
 #endif

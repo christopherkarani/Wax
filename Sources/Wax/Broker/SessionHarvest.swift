@@ -91,11 +91,9 @@ package enum SessionHarvest {
             var leftoverReasons: [String] = []
             var harvestError: String?
 
-            func recordLeftover(_ reason: String? = nil) {
+            func recordLeftover(_ reason: String) {
                 leftoverDocumentCount += 1
-                if let reason {
-                    leftoverReasons.append(reason)
-                }
+                leftoverReasons.append(reason)
             }
 
             for document in documents {
@@ -126,7 +124,7 @@ package enum SessionHarvest {
                     {
                         recordLeftover("note_low_recall")
                     } else {
-                        recordLeftover()
+                        recordLeftover("ineligible")
                     }
                     continue
                 }
@@ -154,11 +152,11 @@ package enum SessionHarvest {
                         metadata: metadata
                     )
                 } catch {
-                    recordLeftover()
+                    recordLeftover("destination_invalid")
                     continue
                 }
                 guard case .durable = destination else {
-                    recordLeftover()
+                    recordLeftover("not_durable")
                     continue
                 }
                 do {
@@ -184,7 +182,7 @@ package enum SessionHarvest {
                         )
                     )
                 } catch {
-                    recordLeftover()
+                    recordLeftover("write_failed")
                     if harvestError == nil {
                         harvestError = error.localizedDescription
                     }

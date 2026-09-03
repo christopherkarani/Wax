@@ -1216,6 +1216,11 @@ extension AgentBrokerService {
             runID: requestedRunID,
             inferredScope: inferredScope
         )
+        if let conversationID = BrokerCommand.normalizedOrNil(command.conversationID) {
+            try virtualSessions.updateLive(result.state.id) { state in
+                state.manifest.conversationID = conversationID
+            }
+        }
         return renderSessionLifecycleResult(result)
     }
 
@@ -1279,20 +1284,14 @@ extension AgentBrokerService {
         )
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
-        let harvestBox = SessionCloseHarvestBox()
-        let harvestCallback = makeHarvestCallback()
-        let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: { state in
-            let report = await harvestCallback(state)
-            harvestBox.report = report
-            return report
-        })
+        let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: makeHarvestCallback())
         return sessionClosePayload(
             sessionID: sessionID,
             ended: result.ended,
             alreadyEnded: false,
             handoffFrameID: frameId,
             remainingActive: result.activeCount,
-            harvest: harvestBox.report
+            harvest: result.harvest
         )
     }
 
@@ -1366,10 +1365,17 @@ extension AgentBrokerService {
             )
         }
 
-        let priorUnique = uniqueLiveAgentProject(
+        let priorUnique: (sessionID: UUID, runID: String)?
+        if let requestedAgentID,
+           let unique = try virtualSessions.findUniqueActiveLeased(
             agentID: requestedAgentID,
             project: inferredScope.projectName
-        )
+           )
+        {
+            priorUnique = (unique.sessionID, unique.runID)
+        } else {
+            priorUnique = nil
+        }
         let exactPair: BrokerSessionManifest?
         if let requestedAgentID, let requestedRunID {
             exactPair = try virtualSessions.findActive(agentID: requestedAgentID, runID: requestedRunID)
@@ -1412,7 +1418,8 @@ extension AgentBrokerService {
                     runID: runID,
                     cwd: cwd,
                     project: project,
-                    repo: repo
+                    repo: repo,
+                    conversationID: conversationID
                 )
             )
         }
@@ -1503,28 +1510,6 @@ extension AgentBrokerService {
             }
         }
         return .object(payload)
-    }
-
-    private func uniqueLiveAgentProject(
-        agentID: String?,
-        project: String?
-    ) -> (sessionID: UUID, runID: String)? {
-        guard let agentID else { return nil }
-        var matches: [UUID: String] = [:]
-        for (id, state) in activeSessions {
-            guard state.manifest.agentID == agentID, state.manifest.project == project else { continue }
-            matches[id] = state.manifest.runID
-        }
-        if let manifests = try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL) {
-            for manifest in manifests where manifest.status == .active
-                && manifest.agentID == agentID
-                && manifest.project == project
-            {
-                matches[manifest.sessionID] = manifest.runID
-            }
-        }
-        guard matches.count == 1, let only = matches.first else { return nil }
-        return (only.key, only.value)
     }
 
     private static func compactSessionOpenHandoff(
@@ -1649,7 +1634,7 @@ extension AgentBrokerService {
         switch result {
         case .idle:
             display = "No live session to end. This session active=false. Other live sessions remaining_active=false count=0."
-        case .ended(let endedID, _):
+        case .ended(let endedID, _, _):
             display = "Session \(endedID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
         }
         return .object([
@@ -3317,10 +3302,6 @@ extension AgentBrokerService {
         }
         return String(hash, radix: 16)
     }
-}
-
-private final class SessionCloseHarvestBox: @unchecked Sendable {
-    var report = SessionHarvest.Report.skipped
 }
 
 private struct BrokerStartupError: LocalizedError {

@@ -141,6 +141,51 @@ func sessionStartDecodeParsesOptionalConversationID() throws {
 }
 
 @Test
+func sessionStartPersistsConversationIDOntoTheLiveManifest() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-conversation-start-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: sessionRootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let service = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let conversationID = "conv-start-persist-\(UUID().uuidString)"
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("conv-start-agent"),
+                "run_id": .string("conv-start-run"),
+                "project": .string("conv-start-project"),
+                "conversation_id": .string(conversationID),
+            ]
+        ))
+        #expect(started.ok == true, "session_start failed: \(started.error ?? "nil")")
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        let uuid = try #require(UUID(uuidString: sessionID))
+        let stamped = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: uuid)
+        #expect(stamped.conversationID == conversationID)
+
+        let match = try BrokerSessionPersistence.findActive(
+            conversationID: conversationID,
+            rootURL: sessionRootURL
+        )
+        #expect(match?.sessionID == uuid)
+        try await service.close()
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}
+
+@Test
 func sessionOpenAndStartStillDecodeWhenConversationIDIsOmitted() throws {
     let open = try BrokerCommand.decode(
         command: "session_open",

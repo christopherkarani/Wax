@@ -48,13 +48,13 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package enum EndResult: Sendable {
         case idle
-        case ended(sessionID: UUID, remainingActive: Int)
+        case ended(sessionID: UUID, remainingActive: Int, harvest: SessionHarvest.Report)
 
         package var sessionID: UUID? {
             switch self {
             case .idle:
                 return nil
-            case .ended(let sessionID, _):
+            case .ended(let sessionID, _, _):
                 return sessionID
             }
         }
@@ -76,8 +76,17 @@ package final class VirtualSessionStore: @unchecked Sendable {
             switch self {
             case .idle:
                 return 0
-            case .ended(_, let remainingActive):
+            case .ended(_, let remainingActive, _):
                 return remainingActive
+            }
+        }
+
+        package var harvest: SessionHarvest.Report {
+            switch self {
+            case .idle:
+                return .skipped
+            case .ended(_, _, let harvest):
+                return harvest
             }
         }
     }
@@ -374,9 +383,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
         // `_live` retains the state for retry, while `endingSessions` removes it
         // from every routable view before the first suspension point.
+        var harvest = SessionHarvest.Report.skipped
         do {
             try await target.state.memory.flush()
-            var harvest = SessionHarvest.Report.skipped
             if let afterFlush {
                 harvest = await afterFlush(target.state)
             }
@@ -433,7 +442,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
             endingSessions.remove(target.id)
             return _live.count - endingSessions.count
         }
-        return .ended(sessionID: target.id, remainingActive: remaining)
+        return .ended(sessionID: target.id, remainingActive: remaining, harvest: harvest)
     }
 
     /// Lookup never infers or mints. Omitted `session_id` is no virtual session.
@@ -530,9 +539,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
         return matches.first
     }
 
-    /// Unique active leased session for `(agentID, project)`. Zero or 2+ matches return nil
+    /// Unique active session for `(agentID, project)`. Zero or 2+ matches return nil
     /// so callers mint instead of guessing. Ended and in-flight-end sessions do not count.
-    private func findUniqueActiveLeased(agentID: String, project: String?) throws -> BrokerSessionManifest? {
+    package func findUniqueActiveLeased(agentID: String, project: String?) throws -> BrokerSessionManifest? {
         let snapshot = locked { () -> (ending: Set<UUID>, live: [BrokerSessionManifest]) in
             let live = _live.compactMap { id, state -> BrokerSessionManifest? in
                 guard !endingSessions.contains(id) else { return nil }
