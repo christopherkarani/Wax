@@ -303,6 +303,8 @@ package enum LayeredRecall {
         package var identity: Identity
         package var workingExecution: MemoryOrchestrator.RecallExecution?
         package var durableExecution: MemoryOrchestrator.RecallExecution?
+        /// Unscoped durable overfetch for `scope_dropped` only. Not used for kept hits.
+        package var dropCandidates: [Hit] = []
     }
 
     package static func makeMemoryReference(_ id: MemoryID) -> String {
@@ -631,8 +633,9 @@ package enum LayeredRecall {
             repoName: identity.repo,
             projectName: identity.project
         )
-        // Keep identity out of working/durable retrieval so overfetch can return
-        // foreign hits; `selectHits` still hard-filters. Episodic keeps the helper.
+        // Primary working/durable retrieval stays project-scoped so foreign hits
+        // cannot crowd out the lane. Unscoped durable overfetch is dropCandidates
+        // only. Episodic keeps the scoped helper.
         let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
             base: request.frameFilter,
             scope: request.scope,
@@ -645,7 +648,7 @@ package enum LayeredRecall {
             let execution = try await working.memory.recallExecution(
                 query: request.query,
                 mode: request.mode,
-                frameFilter: request.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
                 topK: topK,
                 scopeContext: rankingScope
@@ -691,33 +694,38 @@ package enum LayeredRecall {
 
         var durableHits: [Hit] = []
         var durableExecution: MemoryOrchestrator.RecallExecution?
+        var dropCandidates: [Hit] = []
         if request.scope != .session, horizons.contains(.durable) {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
                 mode: request.mode,
-                frameFilter: request.frameFilter,
+                frameFilter: scopedFrameFilter,
                 timeRange: request.timeRange,
                 topK: topK,
                 scopeContext: rankingScope
             )
             durableExecution = execution
-            durableHits = execution.context.items.map {
-                hit(from: $0)
-            }
-            let nowMs = stores.nowMs()
-            durableHits = durableHits.filter { hit in
-                MemoryRetention.isVisibleInDefaultRecall(
-                    metadata: hit.metadata,
-                    nowMs: nowMs,
-                    query: request.query,
-                    mode: request.mode
-                )
-            }
+            durableHits = visibleDurableHits(from: execution, request: request, nowMs: stores.nowMs())
             if canonicalizeFrameIDs {
                 durableHits = await canonicalizeHits(
                     durableHits,
                     memory: stores.longTermMemory,
                     stores: stores
+                )
+            }
+            if request.scope == .project {
+                let dropExecution = try await stores.longTermMemory.recallExecution(
+                    query: request.query,
+                    mode: request.mode,
+                    frameFilter: request.frameFilter,
+                    timeRange: request.timeRange,
+                    topK: topK,
+                    scopeContext: rankingScope
+                )
+                dropCandidates = visibleDurableHits(
+                    from: dropExecution,
+                    request: request,
+                    nowMs: stores.nowMs()
                 )
             }
         }
@@ -749,8 +757,24 @@ package enum LayeredRecall {
             durable: durableHits,
             identity: identity,
             workingExecution: sessionExecution,
-            durableExecution: durableExecution
+            durableExecution: durableExecution,
+            dropCandidates: dropCandidates
         )
+    }
+
+    private static func visibleDurableHits(
+        from execution: MemoryOrchestrator.RecallExecution,
+        request: RecallRequest,
+        nowMs: Int64
+    ) -> [Hit] {
+        execution.context.items.map { hit(from: $0) }.filter { hit in
+            MemoryRetention.isVisibleInDefaultRecall(
+                metadata: hit.metadata,
+                nowMs: nowMs,
+                query: request.query,
+                mode: request.mode
+            )
+        }
     }
 
     package static func recall(
@@ -766,12 +790,21 @@ package enum LayeredRecall {
         if request.scope == .session {
             merged = Array(lanes.working.prefix(request.limit))
         } else if request.scope == .project {
-            // Merge unfiltered overfetch so `selectHits` can report louder foreign drops.
-            let mergeLimit = max(request.limit, lanes.working.count + lanes.durable.count)
+            // Filter before merge so foreign ranks cannot consume the result budget.
+            let scopedSession = Self.filterHitsByProject(
+                lanes.working,
+                project: identity.project,
+                repo: identity.repo
+            )
+            let scopedDurable = Self.filterHitsByProject(
+                lanes.durable,
+                project: identity.project,
+                repo: identity.repo
+            )
             merged = mergeHits(
-                sessionHits: lanes.working,
-                durableHits: lanes.durable,
-                limit: mergeLimit
+                sessionHits: scopedSession,
+                durableHits: scopedDurable,
+                limit: request.limit
             )
         } else {
             merged = mergeHits(
@@ -783,6 +816,16 @@ package enum LayeredRecall {
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
         let keptHits = Array(selected.hits.prefix(request.limit))
+        let scopeDropped: ScopeDropped
+        if request.scope == .project {
+            scopeDropped = louderDropped(
+                merged: lanes.dropCandidates,
+                kept: keptHits,
+                identity: identity
+            )
+        } else {
+            scopeDropped = selected.scopeDropped
+        }
         let primary = lanes.workingExecution ?? lanes.durableExecution
 
         return RecallResult(
@@ -791,7 +834,7 @@ package enum LayeredRecall {
             identity: identity,
             projectMiss: selected.projectMiss,
             scopeMissMessage: selected.scopeMissMessage,
-            scopeDropped: selected.scopeDropped,
+            scopeDropped: scopeDropped,
             requestedModeSummary: primary?.requestedMode.diagnosticsSummary ?? "n/a",
             effectiveModeSummary: primary?.effectiveMode.diagnosticsSummary ?? "n/a",
             queryEmbeddingState: primary?.queryEmbeddingState.rawValue ?? "n/a",

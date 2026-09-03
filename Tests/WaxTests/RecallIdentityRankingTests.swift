@@ -162,4 +162,48 @@ struct RecallIdentityRankingTests {
             #expect(result.scopeDropped.top.contains { $0.project == "Wax" })
         }
     }
+
+    @Test
+    func layeredRecallProjectScopeKeepsHomeHitWhenForeignHitsFillOverfetch() async throws {
+        let token = "WAXCROWD-\(UUID().uuidString.prefix(8))"
+        try await withRecallIdentityMemory { memory in
+            for index in 1...20 {
+                try await memory.remember(
+                    "\(token) \(token) \(token) foreign crowding \(index) \(token) \(token)",
+                    metadata: [
+                        MemoryMetadataKeys.project: "Foreign-\(index)",
+                        MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                        MemoryMetadataKeys.durability: MemoryDurability.locked.rawValue,
+                        MemoryMetadataKeys.confidence: "0.95",
+                    ]
+                )
+            }
+            try await memory.remember(
+                "\(token) home project note",
+                metadata: [
+                    MemoryMetadataKeys.project: "Home",
+                    MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.flush()
+
+            let result = try await LayeredRecall.recall(
+                request: LayeredRecall.RecallRequest(
+                    query: token,
+                    scope: .project,
+                    limit: 5,
+                    searchTopK: 5,
+                    mode: .textOnly,
+                    explicitProject: "Home"
+                ),
+                stores: identityStores(memory: memory)
+            )
+
+            #expect(result.projectMiss == false)
+            #expect(result.hits.contains { $0.metadata[MemoryMetadataKeys.project] == "Home" })
+            #expect(result.hits.allSatisfy { $0.metadata[MemoryMetadataKeys.project] == "Home" })
+            #expect(result.scopeDropped.count >= 1)
+        }
+    }
 }

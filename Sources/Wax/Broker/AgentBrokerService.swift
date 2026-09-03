@@ -469,7 +469,7 @@ extension AgentBrokerService {
         .decision, .lesson, .constraint, .fact,
     ]
 
-    /// Same-project Jaccard ≥ 0.88 retires prior unsusperseded durable twins. Locked stays live.
+    /// Same-project Jaccard ≥ 0.88 retires prior unsuperseded durable twins. Locked stays live.
     private func autoSupersedeSimilarDurableFrames(
         memory: MemoryOrchestrator,
         newFrameId: UInt64,
@@ -3299,11 +3299,6 @@ extension AgentBrokerService {
         if verbose {
             object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
             object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
-        } else {
-            let compactMetadata = Self.compactMetadataWithoutHashes(hit.metadata)
-            if !compactMetadata.isEmpty {
-                object["metadata"] = .object(compactMetadata.mapValues(AgentBrokerValue.string))
-            }
         }
         return .object(object)
     }
@@ -3374,12 +3369,6 @@ extension AgentBrokerService {
         return max(0, (nowMs - createdAtMs) / (1000 * 60 * 60 * 24))
     }
 
-    static func compactMetadataWithoutHashes(_ metadata: [String: String]) -> [String: String] {
-        metadata.filter { key, _ in
-            !key.localizedCaseInsensitiveContains("hash")
-        }
-    }
-
     func corpusHitFullText(_ hit: BrokerCorpusMergeHit) async -> String {
         if let memory = memoryForCorpusHit(hit) {
             let frameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) ?? hit.frameId
@@ -3401,7 +3390,7 @@ extension AgentBrokerService {
                 if let text = await frameText(frameID: sourceFrameID, memory: session.memory) {
                     return text
                 }
-            } else {
+            } else if isTrustedCorpusStoreURL(sourceURL) {
                 let fetched = try? await openAdhocMemory(
                     at: sourceURL,
                     structuredMemoryEnabled: false,
@@ -3432,14 +3421,23 @@ extension AgentBrokerService {
         }
     }
 
+    func isTrustedCorpusStoreURL(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        if path == longTermStoreURL.standardizedFileURL.path {
+            return true
+        }
+        let root = sessionRootURL.standardizedFileURL.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(prefix)
+    }
+
     func frameText(frameID: UInt64, memory: MemoryOrchestrator) async -> String? {
-        if let document = try? await memory.corpusSourceDocuments().first(where: { $0.frameId == frameID }) {
-            return document.text
+        if let data = try? await memory.wax.frameContent(frameId: frameID),
+           let text = String(data: data, encoding: .utf8),
+           !text.isEmpty {
+            return text
         }
-        guard let data = try? await memory.wax.frameContent(frameId: frameID) else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
+        return try? await memory.corpusSourceDocuments().first(where: { $0.frameId == frameID })?.text
     }
 
     func requireDocument(

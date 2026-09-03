@@ -126,6 +126,7 @@ func compactRecallHitsCarryIdTextScopeAndAgeWithoutExplanationsOrHashes() async 
         #expect(hit["age_days"]?.intValue == 0)
         #expect(hit["score"]?.doubleValue != nil)
         #expect(hit["explanations"] == nil)
+        #expect(hit["metadata"] == nil)
         #expect(containsContentHash(.object(hit)) == false)
     }
 }
@@ -170,8 +171,7 @@ func compactMCPRecallJSONOmitsExplanationsAndHashes() async throws {
         #expect(hit["age_days"] as? Int == 0 || (hit["age_days"] as? Int64) == 0)
         #expect(hit["score"] != nil)
         #expect(hit["explanations"] == nil)
-        let metadata = hit["metadata"] as? [String: Any] ?? [:]
-        #expect(metadata["wax.content.hash"] == nil)
+        #expect(hit["metadata"] == nil)
     }
 }
 
@@ -424,6 +424,46 @@ func compactContextHitsShareSlimShapeWithoutExplanationsOrHashes() async throws 
         #expect(hit["score"]?.doubleValue != nil)
         #expect(hit["explanations"] == nil)
         #expect(containsContentHash(.object(hit)) == false)
+    }
+}
+
+@Test
+func rememberDurableDecisionWithSessionIDStampsSessionProject() async throws {
+    try await withAgentDXRecallBroker { service, _ in
+        let project = "dx-stamp-\(UUID().uuidString.prefix(8))"
+        let token = "WAXDXSTAMP-\(UUID().uuidString.prefix(8))"
+        let opened = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string(project),
+                "repo": .string(project),
+                "agent_id": .string("dx-stamp-agent"),
+                "run_id": .string("dx-stamp-run"),
+            ]
+        ))
+        #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(opened.payload), "session_id")
+
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: \(token) stamps session project on a durable type-first write."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("decision"),
+            ]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+        let payload = try requireObject(remembered.payload)
+        #expect(payload["scope"]?.stringValue == "durable")
+        #expect(payload["session_id"]?.stringValue == nil)
+        let frameID = UInt64(try #require(payload["frame_id"]?.intValue))
+
+        let documents = try await service.longTermMemory.corpusSourceDocuments()
+        let document = try #require(documents.first { $0.frameId == frameID })
+        #expect(document.metadata[MemoryMetadataKeys.project] == project)
+        #expect(document.metadata[MemoryMetadataKeys.repo] == project)
+        #expect(document.metadata[MemoryMetadataKeys.type] == MemoryType.decision.rawValue)
+        #expect(document.metadata[MemoryMetadataKeys.durability] == MemoryDurability.durable.rawValue)
     }
 }
 #endif

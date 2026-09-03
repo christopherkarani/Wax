@@ -199,9 +199,9 @@ private extension WaxMCPTools {
         }
     }
 
-    /// Session-horizon writes only. Durable types must omit session_id until
-    /// RememberDestination is type-first; inheriting the connection UUID would
-    /// mis-file decisions into the session store.
+    /// Session-horizon writes only. Durable types stay durable if session_id is
+    /// present, but inheriting the connection UUID would still stamp session
+    /// project onto writes that omitted it on purpose.
     static func rememberShouldInheritSession(_ arguments: [String: Value]) -> Bool {
         if case .string(let scope)? = arguments["scope"] {
             let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

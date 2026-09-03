@@ -924,8 +924,8 @@ struct WaxCLIMemoryTests {
         #expect(WaxMCPAgentPlaybook.projectRules.contains("exactly one live session"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("`agent_id`+resolved project rebinds"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("`memory_type` selects the horizon"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("Durable types must omit `session_id`"))
-        #expect(!WaxMCPAgentPlaybook.projectRules.contains("stay durable even if"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("stay durable even if"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("Durable types must omit `session_id`"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("Prefer `scope: session`"))
     }
 

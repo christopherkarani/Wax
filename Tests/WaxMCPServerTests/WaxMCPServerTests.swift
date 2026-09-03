@@ -551,8 +551,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("The same agent_id+run_id resumes"))
     #expect(text.contains("exactly one live session"))
     #expect(text.contains("agent_id+resolved project rebinds"))
-    #expect(text.contains("durable types must omit session_id"))
-    #expect(!text.contains("durable types stay durable even if session_id is present"))
+    #expect(text.contains("durable types stay durable even if session_id is present"))
+    #expect(!text.contains("durable types must omit session_id"))
     #expect(text.contains("remember inherits session_id only for task_state, handoff, or scope=session"))
 }
 
