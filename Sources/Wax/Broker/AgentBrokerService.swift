@@ -375,11 +375,12 @@ extension AgentBrokerService {
         if let stampSessionID {
             _ = try await memory(for: stampSessionID)
         }
+        let inferredScope = writeScope(for: stampSessionID, clientCWD: command.cwd)
         let metadata = try MemorySemantics.validatedWriteMetadata(
             metadata: command.metadata,
             destination: command.destination,
             activeSession: stampSessionID != nil,
-            inferredScope: writeScope(for: stampSessionID, clientCWD: command.cwd),
+            inferredScope: inferredScope,
             nowMs: Self.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
@@ -403,7 +404,8 @@ extension AgentBrokerService {
             memory: memory,
             content: command.content,
             metadata: metadata,
-            sessionID: sessionID
+            sessionID: sessionID,
+            inferredScope: inferredScope
         )
     }
 
@@ -433,7 +435,8 @@ extension AgentBrokerService {
         memory: MemoryOrchestrator,
         content: String,
         metadata: [String: String],
-        sessionID: UUID?
+        sessionID: UUID?,
+        inferredScope: MemoryScopeContext = MemoryScopeContext()
     ) async throws -> AgentBrokerValue {
         let rememberResult = try await memory.remember(content, metadata: metadata)
         if let sessionID {
@@ -462,7 +465,14 @@ extension AgentBrokerService {
         let memoryID = sessionID.map {
             "working:\($0.uuidString):\(rememberResult.frameId)"
         } ?? "durable:\(rememberResult.frameId)"
-        return .object([
+        let project = metadata[MemoryMetadataKeys.project] ?? inferredScope.projectName
+        let repo = metadata[MemoryMetadataKeys.repo] ?? inferredScope.repoName
+        let unresolvedProject = project?.isEmpty != false
+        var display = "Remembered. \(rememberResult.framesAdded) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."
+        if unresolvedProject {
+            display += " Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
+        }
+        var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "frame_id": .from(rememberResult.frameId),
             "memory_id": .string(memoryID),
@@ -475,8 +485,19 @@ extension AgentBrokerService {
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "deduplicated": .bool(rememberResult.deduplicated),
             "searchable": .bool(rememberResult.searchable),
-            "display_text": .string("Remembered. \(rememberResult.framesAdded) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."),
-        ])
+            "unresolved_project": .bool(unresolvedProject),
+            "display_text": .string(display),
+        ]
+        if let project, !project.isEmpty {
+            payload["project"] = .string(project)
+        }
+        if let repo, !repo.isEmpty {
+            payload["repo"] = .string(repo)
+        }
+        if unresolvedProject {
+            payload["next_action"] = .string("pass project/repo or recall with scope=global")
+        }
+        return .object(payload)
     }
 
     private static let autoSupersedeSimilarityThreshold: Float = 0.88

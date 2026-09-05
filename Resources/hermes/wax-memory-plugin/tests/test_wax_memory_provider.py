@@ -128,6 +128,32 @@ class ConfigResolutionTests(unittest.TestCase):
                 cfg = plugin.load_plugin_config(home)
             self.assertEqual(plugin.resolve_endpoint(cfg), "http://file.example/mcp")
 
+    def test_hermes_yaml_wax_memory_auto_start_used_when_json_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "config.yaml").write_text(
+                "memory:\n  provider: wax-memory\nwax_memory:\n  endpoint: http://127.0.0.1:3000/mcp\n  auto_start: true\n",
+                encoding="utf-8",
+            )
+            cfg = plugin.load_plugin_config(home)
+            self.assertTrue(plugin._truthy(cfg.get("auto_start"), False))
+            self.assertEqual(plugin.resolve_endpoint(cfg), "http://127.0.0.1:3000/mcp")
+            provider = plugin.WaxMemoryProvider(config=cfg)
+            self.assertTrue(provider.auto_start_enabled())
+
+    def test_json_auto_start_overrides_hermes_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "config.yaml").write_text(
+                "wax_memory:\n  auto_start: true\n",
+                encoding="utf-8",
+            )
+            (Path(home) / "wax-memory.json").write_text(
+                json.dumps({"auto_start": False}),
+                encoding="utf-8",
+            )
+            cfg = plugin.load_plugin_config(home)
+            provider = plugin.WaxMemoryProvider(config=cfg)
+            self.assertFalse(provider.auto_start_enabled())
+
 
 class AutoStartTests(unittest.TestCase):
     class Process:

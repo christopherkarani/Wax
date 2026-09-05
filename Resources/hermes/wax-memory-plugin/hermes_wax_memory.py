@@ -111,9 +111,86 @@ def _truthy(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def load_plugin_config(hermes_home: Optional[str] = None) -> Dict[str, Any]:
-    config: Dict[str, Any] = {}
+def _yaml_section_scalars(text: str, section: str) -> Dict[str, Any]:
+    """Read scalar keys under a top-level YAML mapping such as ``wax_memory:``."""
+    values: Dict[str, Any] = {}
+    in_section = False
+    section_indent = 0
+    for raw_line in text.splitlines():
+        stripped_comment = []
+        quote = ""
+        escaped = False
+        for character in raw_line:
+            if escaped:
+                stripped_comment.append(character)
+                escaped = False
+                continue
+            if character == "\\" and quote == '"':
+                stripped_comment.append(character)
+                escaped = True
+                continue
+            if character in {"'", '"'}:
+                if not quote:
+                    quote = character
+                elif quote == character:
+                    quote = ""
+            if character == "#" and not quote:
+                break
+            stripped_comment.append(character)
+        line = "".join(stripped_comment).rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if not in_section:
+            if indent == 0 and (stripped == f"{section}:" or stripped.startswith(f"{section}:")):
+                in_section = True
+                section_indent = indent
+                inline = stripped.split(":", 1)[1].strip()
+                if inline and not inline.startswith(("{", "[")):
+                    # Ignore `wax_memory: true` style scalars; we want a mapping.
+                    if inline.lower() not in {"true", "false", "yes", "no", "on", "off", "null", "~"}:
+                        pass
+            continue
+        if indent <= section_indent:
+            break
+        if ":" not in stripped:
+            continue
+        key, _, raw_value = stripped.partition(":")
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if not key or not raw_value:
+            continue
+        if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in {"'", '"'}:
+            raw_value = raw_value[1:-1]
+        lowered = raw_value.lower()
+        if lowered in {"true", "yes", "on"}:
+            values[key] = True
+        elif lowered in {"false", "no", "off"}:
+            values[key] = False
+        else:
+            values[key] = raw_value
+    return values
+
+
+def load_hermes_yaml_provider_config(hermes_home: Optional[str] = None) -> Dict[str, Any]:
     home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    path = Path(home) / "config.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Hermes config.yaml load failed: %s", exc)
+        return {}
+    return _yaml_section_scalars(text, "wax_memory")
+
+
+def load_plugin_config(hermes_home: Optional[str] = None) -> Dict[str, Any]:
+    home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    # Hermes `config get wax_memory` reads config.yaml. Doctor used to read only
+    # wax-memory.json and report auto_start False while YAML said true.
+    config: Dict[str, Any] = dict(load_hermes_yaml_provider_config(home))
     path = Path(home) / CONFIG_FILENAME
     if path.is_file():
         try:

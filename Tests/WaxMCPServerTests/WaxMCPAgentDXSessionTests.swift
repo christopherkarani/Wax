@@ -841,6 +841,38 @@ func nativeRememberRecallRoundTripUsesProjectInferredFromCWD() async throws {
 }
 
 @Test
+func rememberSurfacesUnresolvedProjectWhenCwdHasNoGitIdentity() async throws {
+    try await withAgentDXBroker { service, _ in
+        let opened = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "agent_id": .string("dx-unresolved-agent"),
+                "run_id": .string("dx-unresolved-run"),
+                "conversation_id": .string("dx-unresolved-conv"),
+            ]
+        ))
+        #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(opened.payload), "session_id")
+        let remembered = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Lesson: unresolved project must be visible on remember."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("lesson"),
+            ]
+        ))
+        #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+        let payload = try requireObject(remembered.payload)
+        #expect(payload["unresolved_project"]?.boolValue == true)
+        #expect(payload["project"]?.stringValue == nil)
+        let next = try requireString(payload, "next_action")
+        #expect(next.contains("scope=global"))
+        let display = try requireString(payload, "display_text")
+        #expect(display.lowercased().contains("unresolved"))
+    }
+}
+
+@Test
 func rememberRecallUsesClientCWDWhenLiveSessionHasNoProject() async throws {
     try await withAgentDXBroker { service, _ in
         let repo = FileManager.default.temporaryDirectory
