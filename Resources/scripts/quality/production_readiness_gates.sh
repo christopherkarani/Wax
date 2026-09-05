@@ -7,14 +7,36 @@ cd "$ROOT_DIR"
 run_and_capture() {
   local log_file="$1"
   shift
+  local status cmd_pid heartbeat_pid
+
+  # Full swift test output includes hundreds of MB of swift-testing
+  # deprecation warnings. Teeing that onto stdout stalls the GitHub
+  # Actions log pipe (local Popen has the same failure). Keep the full
+  # log on disk for skip/pass-rate checks; print only breadcrumbs.
+  echo "GATE_CMD: $*"
+  echo "GATE_LOG: $log_file"
+  : >"$log_file"
 
   set +e
-  "$@" 2>&1 | tee "$log_file"
-  local status=${PIPESTATUS[0]}
+  "$@" >"$log_file" 2>&1 &
+  cmd_pid=$!
+  (
+    while sleep 30; do
+      kill -0 "$cmd_pid" 2>/dev/null || exit 0
+      echo "GATE_STILL_RUNNING bytes=$(wc -c <"$log_file" | tr -d ' ')"
+    done
+  ) &
+  heartbeat_pid=$!
+  wait "$cmd_pid"
+  status=$?
+  kill "$heartbeat_pid" 2>/dev/null || true
+  wait "$heartbeat_pid" 2>/dev/null || true
   set -e
 
+  echo "GATE_DONE status=$status bytes=$(wc -c <"$log_file" | tr -d ' ')"
   if [[ $status -ne 0 ]]; then
     echo "FAIL: command failed with status $status: $*" >&2
+    tail -n 80 "$log_file" >&2 || true
     return "$status"
   fi
 }

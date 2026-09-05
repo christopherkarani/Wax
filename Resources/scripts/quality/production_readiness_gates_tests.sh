@@ -152,6 +152,43 @@ if ! grep -F 'swift test --traits MCPServer list' "$SCRIPT" >/dev/null; then
   echo "FAIL: MCP trait inventory command is missing" >&2
   exit 1
 fi
+if ! grep -F 'swift test --no-parallel --traits MCPServer --skip' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCPServer full gate must run serially" >&2
+  exit 1
+fi
+if grep -E '\| tee "\$log_file"' "$SCRIPT" >/dev/null; then
+  echo "FAIL: run_and_capture must not tee full swift output onto stdout (GitHub Actions log pipe stalls)" >&2
+  exit 1
+fi
+
+QUALITY_GATES="$ROOT_DIR/.github/workflows/quality-gates.yml"
+if ! grep -Fq 'cancel-in-progress: true' "$QUALITY_GATES"; then
+  echo "FAIL: quality-gates.yml must cancel superseded in-progress runs" >&2
+  exit 1
+fi
+
+SPAM_CMD="$TMP_DIR/spam-swift.sh"
+cat >"$SPAM_CMD" <<'EOF'
+#!/bin/bash
+echo "/tmp/x.swift:1:2: warning: 'Test' is deprecated: Swift Testing is now included in the Swift 6 toolchain. [#DeprecatedDeclaration]"
+echo "Executed 1 test, with 0 failures"
+EOF
+chmod +x "$SPAM_CMD"
+SPAM_LOG="$TMP_DIR/spam-capture.log"
+SPAM_STDOUT="$TMP_DIR/spam-stdout.txt"
+run_and_capture "$SPAM_LOG" bash "$SPAM_CMD" >"$SPAM_STDOUT"
+if ! grep -Fq "DeprecatedDeclaration" "$SPAM_LOG"; then
+  echo "FAIL: run_and_capture must keep full command output in the log file" >&2
+  exit 1
+fi
+if grep -Fq "DeprecatedDeclaration" "$SPAM_STDOUT"; then
+  echo "FAIL: run_and_capture must not stream swift-testing deprecation warnings to stdout" >&2
+  exit 1
+fi
+if ! grep -Fq "GATE_CMD:" "$SPAM_STDOUT"; then
+  echo "FAIL: run_and_capture must print a short command breadcrumb on stdout" >&2
+  exit 1
+fi
 
 CAPTURED_COMMANDS="$TMP_DIR/captured-gate-commands.txt"
 
