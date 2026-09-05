@@ -152,8 +152,16 @@ if ! grep -F 'swift test --traits MCPServer list' "$SCRIPT" >/dev/null; then
   echo "FAIL: MCP trait inventory command is missing" >&2
   exit 1
 fi
-if ! grep -F 'swift test --no-parallel --traits MCPServer --skip' "$SCRIPT" >/dev/null; then
-  echo "FAIL: MCPServer full gate must run serially" >&2
+if grep -F 'swift test --no-parallel --traits MCPServer --skip' "$SCRIPT" >/dev/null; then
+  echo "FAIL: do not re-run the whole package serially under MCPServer" >&2
+  exit 1
+fi
+if ! grep -F 'swift test --parallel --traits MCPServer --filter wax_mcpTests' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCPServer unit tests must run in parallel filtered to wax_mcpTests" >&2
+  exit 1
+fi
+if ! grep -E 'swift test --no-parallel --traits MCPServer --filter .*WaxMCPProcessTests' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCPServer process tests must run serially under --filter WaxMCPProcessTests" >&2
   exit 1
 fi
 if grep -E '\| tee "\$log_file"' "$SCRIPT" >/dev/null; then
@@ -188,6 +196,25 @@ fi
 if ! grep -Fq "GATE_CMD:" "$SPAM_STDOUT"; then
   echo "FAIL: run_and_capture must print a short command breadcrumb on stdout" >&2
   exit 1
+fi
+
+TIMEOUT_LOG="$TMP_DIR/timeout-capture.log"
+TIMEOUT_STDOUT="$TMP_DIR/timeout-stdout.txt"
+set +e
+GATE_CMD_TIMEOUT_SECS=2 run_and_capture "$TIMEOUT_LOG" sleep 20 >"$TIMEOUT_STDOUT"
+timeout_status=$?
+set -e
+if [[ $timeout_status -eq 0 ]]; then
+  echo "FAIL: run_and_capture must fail when GATE_CMD_TIMEOUT_SECS elapses" >&2
+  exit 1
+fi
+if ! grep -Fq "GATE_TIMEOUT" "$TIMEOUT_STDOUT"; then
+  echo "FAIL: run_and_capture must print GATE_TIMEOUT on stdout or the captured stream" >&2
+  if ! grep -Fq "GATE_TIMEOUT" "$TIMEOUT_LOG"; then
+    echo "FAIL: GATE_TIMEOUT missing from stdout and log" >&2
+    cat "$TIMEOUT_STDOUT" >&2
+    exit 1
+  fi
 fi
 
 CAPTURED_COMMANDS="$TMP_DIR/captured-gate-commands.txt"

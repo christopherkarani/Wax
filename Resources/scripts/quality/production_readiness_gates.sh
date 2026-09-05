@@ -7,7 +7,10 @@ cd "$ROOT_DIR"
 run_and_capture() {
   local log_file="$1"
   shift
-  local status cmd_pid heartbeat_pid
+  local status cmd_pid heartbeat_pid start_ts now_ts timed_out=0
+  local timeout_secs="${GATE_CMD_TIMEOUT_SECS:-1200}"
+  local last_line
+  local shell_flags=$-
 
   # Full swift test output includes hundreds of MB of swift-testing
   # deprecation warnings. Teeing that onto stdout stalls the GitHub
@@ -15,25 +18,50 @@ run_and_capture() {
   # log on disk for skip/pass-rate checks; print only breadcrumbs.
   echo "GATE_CMD: $*"
   echo "GATE_LOG: $log_file"
+  echo "GATE_TIMEOUT_SECS: $timeout_secs"
   : >"$log_file"
 
   set +e
   "$@" >"$log_file" 2>&1 &
   cmd_pid=$!
+  start_ts=$(date +%s)
   (
     while sleep 30; do
       kill -0 "$cmd_pid" 2>/dev/null || exit 0
-      echo "GATE_STILL_RUNNING bytes=$(wc -c <"$log_file" | tr -d ' ')"
+      last_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
+      echo "GATE_STILL_RUNNING bytes=$(wc -c <"$log_file" | tr -d ' ') last=${last_line}"
     done
   ) &
   heartbeat_pid=$!
-  wait "$cmd_pid"
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    now_ts=$(date +%s)
+    if (( now_ts - start_ts >= timeout_secs )); then
+      timed_out=1
+      echo "GATE_TIMEOUT ${timeout_secs}s: $*"
+      last_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
+      echo "GATE_TIMEOUT_LAST ${last_line}"
+      kill "$cmd_pid" 2>/dev/null || true
+      sleep 2
+      kill -9 "$cmd_pid" 2>/dev/null || true
+      pkill -P "$cmd_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+  done
+  wait "$cmd_pid" 2>/dev/null
   status=$?
   kill "$heartbeat_pid" 2>/dev/null || true
   wait "$heartbeat_pid" 2>/dev/null || true
-  set -e
 
   echo "GATE_DONE status=$status bytes=$(wc -c <"$log_file" | tr -d ' ')"
+  if [[ $shell_flags == *e* ]]; then
+    set -e
+  fi
+  if [[ $timed_out -ne 0 ]]; then
+    echo "FAIL: command timed out after ${timeout_secs}s: $*" >&2
+    tail -n 80 "$log_file" >&2 || true
+    return 124
+  fi
   if [[ $status -ne 0 ]]; then
     echo "FAIL: command failed with status $status: $*" >&2
     tail -n 80 "$log_file" >&2 || true
@@ -158,7 +186,8 @@ assert_mcp_trait_test_inventory() {
 
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
-  local mcp_log_file="/tmp/wax-gate-full-mcp.log"
+  local mcp_unit_log="/tmp/wax-gate-full-mcp-unit.log"
+  local mcp_process_log="/tmp/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
 
@@ -170,12 +199,19 @@ run_full() {
   require_swiftpm_traits
   assert_mcp_trait_test_inventory
 
-  # MCPServer process tests share ports/locks; --parallel deadlocks on this
-  # runner (local and GitHub macos-15). Serial keeps the same inventory.
-  run_and_capture "$mcp_log_file" \
-    swift test --no-parallel --traits MCPServer --skip "$skip_regex"
-  assert_no_skips "$mcp_log_file"
-  assert_full_pass_rate "$mcp_log_file"
+  # Do not re-run the default suite serially under --traits MCPServer: that
+  # hung GitHub macos-15 for 75m with a frozen log after compile. Keep
+  # trait-gated unit tests parallel; serialize only process tests that share
+  # ports/locks.
+  run_and_capture "$mcp_unit_log" \
+    swift test --parallel --traits MCPServer --filter wax_mcpTests --skip "${skip_regex}|WaxMCPProcessTests"
+  assert_no_skips "$mcp_unit_log"
+  assert_full_pass_rate "$mcp_unit_log"
+
+  run_and_capture "$mcp_process_log" \
+    swift test --no-parallel --traits MCPServer --filter WaxMCPProcessTests
+  assert_no_skips "$mcp_process_log"
+  assert_full_pass_rate "$mcp_process_log"
 
   bash "$ROOT_DIR/Resources/scripts/quality/check_corruption_assertions.sh"
 }
