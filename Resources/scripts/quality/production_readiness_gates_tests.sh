@@ -168,6 +168,14 @@ if grep -E '\| tee "\$log_file"' "$SCRIPT" >/dev/null; then
   echo "FAIL: run_and_capture must not tee full swift output onto stdout (GitHub Actions log pipe stalls)" >&2
   exit 1
 fi
+if ! grep -Fq 'GATE_CMD_TIMEOUT_SECS:-2700' "$SCRIPT"; then
+  echo "FAIL: default gate command timeout must be 2700s (MCPServer unit suite exceeded 1200s while still passing)" >&2
+  exit 1
+fi
+if ! grep -Fq 'script -q -F' "$SCRIPT"; then
+  echo "FAIL: run_and_capture must PTY-flush swift output so heartbeats are not stale" >&2
+  exit 1
+fi
 
 QUALITY_GATES="$ROOT_DIR/.github/workflows/quality-gates.yml"
 if ! grep -Fq 'cancel-in-progress: true' "$QUALITY_GATES"; then

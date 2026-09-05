@@ -8,7 +8,7 @@ run_and_capture() {
   local log_file="$1"
   shift
   local status cmd_pid heartbeat_pid start_ts now_ts timed_out=0
-  local timeout_secs="${GATE_CMD_TIMEOUT_SECS:-1200}"
+  local timeout_secs="${GATE_CMD_TIMEOUT_SECS:-2700}"
   local last_line
   local shell_flags=$-
 
@@ -16,13 +16,19 @@ run_and_capture() {
   # deprecation warnings. Teeing that onto stdout stalls the GitHub
   # Actions log pipe (local Popen has the same failure). Keep the full
   # log on disk for skip/pass-rate checks; print only breadcrumbs.
+  # Run under `script -F` so Swift line-buffers; a plain file redirect
+  # froze the log while tests were still passing (CI 20m false timeout).
   echo "GATE_CMD: $*"
   echo "GATE_LOG: $log_file"
   echo "GATE_TIMEOUT_SECS: $timeout_secs"
   : >"$log_file"
 
   set +e
-  "$@" >"$log_file" 2>&1 &
+  if command -v script >/dev/null 2>&1; then
+    script -q -F "$log_file" "$@" >/dev/null 2>&1 &
+  else
+    "$@" >"$log_file" 2>&1 &
+  fi
   cmd_pid=$!
   start_ts=$(date +%s)
   (
