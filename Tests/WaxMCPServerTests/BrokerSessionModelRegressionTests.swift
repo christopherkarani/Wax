@@ -73,7 +73,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
         let sessionNote = await service.handle(.init(
             command: "remember",
             arguments: [
-                "content": .string("Session-only note: do not promote. CLEAN-TOKEN-20260818"),
+                "content": .string("Session-only rv note: do not promote. CLEAN-TOKEN-20260818"),
                 "session_id": .string(sessionID),
             ]
         ))
@@ -82,7 +82,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
         let scoped = await service.handle(.init(
             command: "recall",
             arguments: [
-                "query": .string("What is rv?"),
+                "query": .string("rv CLEAN-TOKEN-20260818 Zig CLI policy"),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
                 "scope": .string("global"),
@@ -285,9 +285,12 @@ func sessionStartInfersProjectFromClientCwdNotBrokerBinary() async throws {
         ))
         #expect(search.ok == true)
         let hit = try #require(try requireObject(search.payload)["results"]?.arrayValue?.first?.objectValue)
-        let metadata = try #require(hit["metadata"]?.objectValue)
-        #expect(metadata["wax.project"]?.stringValue == repo.lastPathComponent)
-        #expect(metadata["wax.repo"]?.stringValue == repo.lastPathComponent)
+        let project = hit["project"]?.stringValue
+            ?? hit["metadata"]?.objectValue?[MemoryMetadataKeys.project]?.stringValue
+        let repoName = hit["repo"]?.stringValue
+            ?? hit["metadata"]?.objectValue?[MemoryMetadataKeys.repo]?.stringValue
+        #expect(project == repo.lastPathComponent)
+        #expect(repoName == repo.lastPathComponent)
     }
 }
 
@@ -660,6 +663,7 @@ func recallAppliesFrameFilterToDurableHitsWhenSessionIDIsSet() async throws {
                 "query": .string(token),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
+                "scope": .string("global"),
                 "limit": .int(10),
                 "filters": .object([
                     "metadata": .object(["topic": .string("keep")]),
@@ -727,6 +731,7 @@ func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
                 "query": .string(token),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
+                "scope": .string("global"),
                 "limit": .int(10),
             ]
         ))

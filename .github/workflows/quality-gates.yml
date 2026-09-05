@@ -24,6 +24,17 @@ jobs:
       - name: Run Hermes plugin tests
         run: bash Resources/scripts/quality/hermes_plugin_tests.sh
 
+  waxmcp-launcher:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run installer and MCP handshake tests
+        run: npm --prefix Resources/npm/waxmcp test
+
   gates:
     # Keep the verification runner aligned with the release build. macos-latest
     # currently resolves to macOS 26, whose CoreML MiniLM runtime emits

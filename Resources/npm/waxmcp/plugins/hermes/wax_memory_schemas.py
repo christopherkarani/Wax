@@ -33,10 +33,6 @@ EXTENDED_TOOL_NAMES = {
     "wax_compact_context",
     "wax_markdown_export",
     "wax_markdown_sync",
-    "wax_session_start",
-    "wax_session_end",
-    "wax_session_resume",
-    "wax_session_synthesize",
     "wax_knowledge_capture",
     "wax_corpus_search",
     "wax_promote",
@@ -54,11 +50,9 @@ TOOLS_WITH_SESSION_ID = {
     "session_synthesize",
     "memory_append",
     "memory_search",
-    "memory_get",
     "memory_promote",
     "promote",
     "knowledge_capture",
-    "corpus_search",
 }
 
 
@@ -86,7 +80,6 @@ TOOL_SCHEMAS = {
         "Store durable or working memory in Wax. Use for facts, decisions, lessons, and preferences.",
         {
             "content": {"type": "string", "description": "Text content to store."},
-            "session_id": {"type": "string"},
             "metadata": {"type": "object", "additionalProperties": True},
             "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
             "durability": {"type": "string", "enum": ["ephemeral", "working", "durable", "locked"]},
@@ -101,13 +94,24 @@ TOOL_SCHEMAS = {
     ),
     "wax_recall": _schema(
         "wax_recall",
-        "Recall context from Wax using RAG assembly. Prefer hybrid mode unless a lexical search is required.",
+        "Recall context from Wax using RAG assembly. Use text for recent or exact facts; use hybrid only when embeddings are available.",
         {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "session_id": {"type": "string"},
             "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
             "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "scope": {
+                "type": "string",
+                "enum": ["project", "session", "global"],
+                "description": "Project is the default relevance scope; global searches every project and is not an authorization boundary.",
+            },
+            "project": {"type": "string"},
+            "repo": {
+                "type": "string",
+                "description": "Exact repo filter; when project is also supplied, both must match.",
+            },
+            "cwd": {"type": "string"},
+            "search_top_k": {"type": "integer", "minimum": 1, "maximum": 200},
         },
         ["query"],
     ),
@@ -118,7 +122,6 @@ TOOL_SCHEMAS = {
             "query": {"type": "string"},
             "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
             "topK": {"type": "integer", "minimum": 1, "maximum": 200},
-            "session_id": {"type": "string"},
             "alpha": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         },
         ["query"],
@@ -128,7 +131,6 @@ TOOL_SCHEMAS = {
         "Store a cross-session handoff note for later retrieval.",
         {
             "content": {"type": "string"},
-            "session_id": {"type": "string"},
             "project": {"type": "string"},
             "pending_tasks": {"type": "array", "items": {"type": "string"}},
         },
@@ -192,7 +194,6 @@ TOOL_SCHEMAS = {
         "Assemble short, medium, and long-horizon memory into a token-budgeted checkpoint.",
         {
             "query": {"type": "string"},
-            "session_id": {"type": "string"},
             "token_budget": {"type": "integer", "minimum": 128, "maximum": 32000},
             "max_items": {"type": "integer", "minimum": 1, "maximum": 64},
             "mode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
@@ -203,7 +204,7 @@ TOOL_SCHEMAS = {
     "wax_markdown_export": _schema(
         "wax_markdown_export",
         "Export Markdown projections (MEMORY.md, daily notes) from Wax.",
-        {"output_dir": {"type": "string"}, "session_id": {"type": "string"}},
+        {"output_dir": {"type": "string"}},
         ["output_dir"],
     ),
     "wax_markdown_sync": _schema(
@@ -238,7 +239,6 @@ TOOL_SCHEMAS = {
         "Capture durable knowledge from a natural statement.",
         {
             "content": {"type": "string"},
-            "session_id": {"type": "string"},
             "memory_type": {"type": "string", "enum": WAX_MEMORY_TYPES},
             "kind": {"type": "string"},
         },
@@ -249,7 +249,6 @@ TOOL_SCHEMAS = {
         "Search broker-managed session history with provenance.",
         {
             "query": {"type": "string"},
-            "session_id": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         },
         ["query"],
@@ -257,6 +256,6 @@ TOOL_SCHEMAS = {
     "wax_promote": _schema(
         "wax_promote",
         "Promote a working memory into durable memory.",
-        {"session_id": {"type": "string"}, "frame_id": {"type": "integer"}},
+        {"frame_id": {"type": "integer"}},
     ),
 }

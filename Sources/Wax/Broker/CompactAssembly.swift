@@ -85,7 +85,9 @@ package enum CompactAssembly {
     ) async throws -> Result {
         let recallRequest = LayeredRecall.RecallRequest(
             query: request.query,
-            scope: request.scope,
+            // Retrieve without project metadata injection so unscoped durable
+            // and ended-session hits remain available; scoped() post-filters.
+            scope: .global,
             limit: request.maxItems,
             searchTopK: fetchSearchTopK(maxItems: request.maxItems),
             mode: request.mode,

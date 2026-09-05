@@ -3,29 +3,24 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import os
+import platform
 import re
 import subprocess
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-try:
-    from wax_memory_schemas import (
-        CORE_TOOL_NAMES,
-        EXTENDED_TOOL_NAMES,
-        STRUCTURED_TOOL_NAMES,
-        TOOL_SCHEMAS as _TOOL_SCHEMAS,
-        TOOLS_WITH_SESSION_ID,
-        WAX_MEMORY_TYPES,
-    )
-except ImportError:  # directory plugin loaded as a package
+if __package__:
+    # Hermes directory plugins are a synthetic package and do not put this
+    # directory on sys.path. Relative sibling imports resolve via __path__;
+    # hyphenated package segments cannot be loaded as dotted identifiers.
     from .wax_memory_schemas import (
         CORE_TOOL_NAMES,
         EXTENDED_TOOL_NAMES,
@@ -34,10 +29,21 @@ except ImportError:  # directory plugin loaded as a package
         TOOLS_WITH_SESSION_ID,
         WAX_MEMORY_TYPES,
     )
+    from .wax_memory_lifecycle import WaxProviderLifecycle
+else:
+    from wax_memory_schemas import (
+        CORE_TOOL_NAMES,
+        EXTENDED_TOOL_NAMES,
+        STRUCTURED_TOOL_NAMES,
+        TOOL_SCHEMAS as _TOOL_SCHEMAS,
+        TOOLS_WITH_SESSION_ID,
+        WAX_MEMORY_TYPES,
+    )
+    from wax_memory_lifecycle import WaxProviderLifecycle
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_VERSION = "0.1.26"
+PLUGIN_VERSION = "0.1.39"
 DEFAULT_ENDPOINT = "http://127.0.0.1:3000/mcp"
 CONFIG_FILENAME = "wax-memory.json"
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -258,21 +264,30 @@ class _WaxMCPManager:
         self._process: Optional[subprocess.Popen] = None
 
     def probe(self) -> Dict[str, Any]:
+        client: Optional[_WaxHTTPClient] = None
         try:
             client = _WaxHTTPClient(self.endpoint)
             result = client.call_tool("stats", {})
-            client.close()
             if result["ok"] and result["text"]:
                 stats = json.loads(result["text"])
+                vector_configured = bool(stats.get("vectorSearchEnabled", False))
+                query_available = bool(stats.get("queryEmbeddingAvailable", False))
                 return {
                     "reachable": True,
-                    "vector_search_enabled": stats.get("vectorSearchEnabled", False),
-                    "query_embedding_available": stats.get("queryEmbeddingAvailable", False),
+                    "vector_search_enabled": vector_configured and query_available,
+                    "vector_search_configured": vector_configured,
+                    "query_embedding_available": query_available,
+                    "embedding_status": stats.get("embeddingStatus"),
+                    "embedding_status_reason": stats.get("embeddingStatusReason"),
+                    "frames_without_vectors": stats.get("framesWithoutVectors", 0),
                     "embedder": stats.get("embedder"),
                     "frame_count": stats.get("frameCount", 0),
                 }
         except Exception as exc:
             logger.debug("Wax MCP probe failed: %s", exc)
+        finally:
+            if client is not None:
+                client.close()
         return {"reachable": False}
 
     def auto_start(self, timeout: float = 10.0) -> bool:
@@ -285,13 +300,28 @@ class _WaxMCPManager:
             )
             return False
         parsed = urlparse(self.endpoint)
-        host = parsed.hostname or "127.0.0.1"
+        host = parsed.hostname
+        try:
+            is_loopback = bool(
+                host
+                and (
+                    host.lower() == "localhost"
+                    or ipaddress.ip_address(host).is_loopback
+                )
+            )
+        except ValueError:
+            is_loopback = False
+        if parsed.scheme != "http" or not is_loopback:
+            logger.error("Refusing to auto-start Wax MCP for unsupported endpoint: %s", self.endpoint)
+            return False
         port = str(parsed.port or 3000)
+        endpoint_path = parsed.path or "/mcp"
         cmd = [
             binary,
             "--transport", "http",
             "--http-host", host,
             "--http-port", port,
+            "--http-endpoint", endpoint_path,
             "--embedder", "minilm",
         ]
         logger.info("Auto-starting Wax MCP: %s", " ".join(cmd))
@@ -301,30 +331,68 @@ class _WaxMCPManager:
             )
             deadline = time.time() + timeout
             while time.time() < deadline:
-                time.sleep(0.2)
+                if self._process.poll() is not None:
+                    logger.error("Auto-started Wax MCP exited before becoming ready")
+                    self._stop_process()
+                    return False
                 if self.probe().get("reachable"):
                     self._auto_started = True
                     return True
+                time.sleep(0.2)
         except Exception as exc:
             logger.error("Failed to auto-start Wax MCP: %s", exc)
+            self._stop_process()
+            return False
+        logger.error("Timed out waiting for auto-started Wax MCP")
+        self._stop_process()
         return False
 
     def shutdown(self) -> None:
-        if self._auto_started and self._process:
+        if self._process:
+            self._stop_process()
+
+    def _stop_process(self) -> None:
+        process = self._process
+        self._process = None
+        self._auto_started = False
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+        except Exception:
             try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
+                process.kill()
             except Exception:
-                try:
-                    self._process.kill()
-                except Exception:
-                    pass
-            self._process = None
-            self._auto_started = False
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                logger.error("Unable to reap auto-started Wax MCP process")
 
     def _find_wax_mcp_binary(self) -> Optional[str]:
+        machine = platform.machine().lower()
+        architecture = {
+            "aarch64": "arm64",
+            "arm64": "arm64",
+            "amd64": "x64",
+            "x86_64": "x64",
+        }.get(machine, machine)
+        system = platform.system().lower()
+        install_root = os.environ.get(
+            "WAX_MCP_INSTALL_ROOT",
+            os.path.expanduser("~/.local/share/waxmcp"),
+        )
+        installed_runtime = os.path.join(
+            os.path.expanduser(install_root),
+            "runtime",
+            f"{system}-{architecture}",
+            "wax-mcp",
+        )
         candidates = [
             os.environ.get("WAX_MCP_BIN"),
+            installed_runtime,
             os.path.expanduser("~/.local/bin/wax-mcp"),
             "/usr/local/bin/wax-mcp",
             "/opt/homebrew/bin/wax-mcp",
@@ -351,8 +419,12 @@ class _WaxMCPManager:
             embedder = info.get("embedder", {})
             model = embedder.get("model", "unknown") if isinstance(embedder, dict) else "unknown"
             return f"Vector search is active ({model})"
+        status = info.get("embedding_status") or "unavailable"
+        reason = info.get("embedding_status_reason") or "query embedding is unavailable"
+        missing = info.get("frames_without_vectors", 0)
         return (
-            "Vector search is disabled — text search still works. "
+            f"Vector search is unavailable (embeddingStatus={status}, reason={reason}, "
+            f"framesWithoutVectors={missing}) — text search still works. "
             "Restart with: npx waxmcp --embedder minilm --transport http"
         )
 
@@ -366,17 +438,55 @@ class WaxMemoryProvider(MemoryProvider):
         self.endpoint = resolve_endpoint(self._config)
         self._client = client or _WaxHTTPClient(self.endpoint)
         self._manager = _WaxMCPManager(self.endpoint)
-        self._session_id: Optional[str] = None
+        self._lifecycle = WaxProviderLifecycle(
+            client=lambda: self._client,
+            reset_transport=self._reset_transport_after_failed_open,
+        )
         self._hermes_home: str = ""
         self._platform: str = "cli"
+        self._cwd: str = os.getcwd()
+        self._project: str = ""
+        self._repo: str = ""
         self._vector_search_available = False
         self._prefetch_lock = threading.Lock()
         self._prefetch_text = ""
         self._prefetch_query = ""
         self._prefetch_count = 0
         self._generation = 0
-        self._pool: Optional[ThreadPoolExecutor] = None
-        self._in_flight: List[Future[None]] = []
+
+    # Preserve the provider's established internal test seams while the
+    # coordinator remains the sole owner of lifecycle state.
+    @property
+    def _session_id(self) -> Optional[str]:
+        return self._lifecycle.session_id
+
+    @_session_id.setter
+    def _session_id(self, value: Optional[str]) -> None:
+        self._lifecycle.session_id = value
+
+    @property
+    def _host_session_id(self) -> str:
+        return self._lifecycle.host_session_id
+
+    @_host_session_id.setter
+    def _host_session_id(self, value: str) -> None:
+        self._lifecycle.host_session_id = value
+
+    @property
+    def _accepting_background(self) -> bool:
+        return self._lifecycle.accepting_background
+
+    @_accepting_background.setter
+    def _accepting_background(self, value: bool) -> None:
+        self._lifecycle.accepting_background = value
+
+    @property
+    def _lifecycle_lock(self):
+        return self._lifecycle.lifecycle_lock
+
+    @property
+    def _transition_lock(self):
+        return self._lifecycle.transition_lock
 
     @property
     def name(self) -> str:
@@ -421,57 +531,93 @@ class WaxMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._hermes_home = kwargs.get("hermes_home") or self._hermes_home
-        self._platform = kwargs.get("platform", "cli")
         agent_context = kwargs.get("agent_context", "primary")
         if agent_context != "primary":
             logger.debug("Wax skipping init for non-primary context: %s", agent_context)
             return
 
-        if self._hermes_home:
-            self._config.update(load_plugin_config(self._hermes_home))
-            endpoint = resolve_endpoint(self._config)
-            if endpoint != self.endpoint and not self._injected_client:
-                self.endpoint = endpoint
-                self._client = _WaxHTTPClient(self.endpoint)
-                self._manager = _WaxMCPManager(self.endpoint)
+        platform_name = kwargs.get("platform", "cli")
+        cwd = str(kwargs.get("cwd") or os.getcwd())
+        project = str(kwargs.get("project") or "").strip()
+        repo = str(kwargs.get("repo") or "").strip()
 
-        if not self._injected_client and self._auto_start_enabled():
-            self._manager.auto_start()
+        def _prepare() -> None:
+            self._platform = platform_name
+            self._cwd = cwd
+            self._project = project
+            self._repo = repo
+            if self._hermes_home:
+                self._config.update(load_plugin_config(self._hermes_home))
+                endpoint = resolve_endpoint(self._config)
+                if endpoint != self.endpoint and not self._injected_client:
+                    self._replace_endpoint(endpoint)
 
-        if not self._injected_client:
-            info = self._manager.probe()
-            self._vector_search_available = bool(info.get("vector_search_enabled"))
-            if info.get("reachable") and not self._vector_search_available:
-                logger.warning("%s", self._manager.diagnose_vector_search())
+            if not self._injected_client and self._auto_start_enabled():
+                self._manager.auto_start()
 
-        self._start_session(session_id)
+            if not self._injected_client:
+                info = self._manager.probe()
+                self._vector_search_available = bool(info.get("vector_search_enabled"))
+                if info.get("reachable") and not self._vector_search_available:
+                    logger.warning("%s", self._manager.diagnose_vector_search())
 
-    def _start_session(self, session_id: str, resume: bool = False) -> None:
-        tool = "session_resume" if resume else "session_start"
-        args: Dict[str, Any] = {"session_id": session_id}
-        if not resume:
-            args["agent_id"] = f"hermes-{self._platform}"
+        self._lifecycle.initialize_session(
+            session_id,
+            platform=platform_name,
+            cwd=cwd,
+            project=project,
+            repo=repo,
+            prepare=_prepare,
+            invalidate_prefetch=self._invalidate_prefetch,
+        )
+
+    def _replace_endpoint(self, endpoint: str) -> None:
+        old_client = self._client
+        old_manager = self._manager
+        old_session = self._session_id
+        if old_session:
+            try:
+                result = old_client.call_tool("session_end", {"session_id": old_session})
+                if not result.get("ok"):
+                    logger.error("Wax endpoint-change session_end failed: %s", result.get("text"))
+            except Exception as exc:
+                logger.debug("Wax endpoint-change session_end failed: %s", exc)
         try:
-            result = self._client.call_tool(tool, args)
-            if result["ok"]:
-                try:
-                    payload = json.loads(result["text"]) if result["text"] else {}
-                    self._session_id = payload.get("session_id", session_id)
-                except Exception:
-                    self._session_id = session_id
-            else:
-                if resume:
-                    self._start_session(session_id, resume=False)
-                    return
-                logger.error("Wax %s failed: %s", tool, result.get("text", "unknown"))
-                self._session_id = session_id
+            old_client.close()
         except Exception as exc:
-            if resume:
-                logger.debug("Wax session_resume failed, starting new session: %s", exc)
-                self._start_session(session_id, resume=False)
-                return
-            logger.error("Wax initialize failed: %s", exc)
-            self._session_id = session_id
+            logger.debug("Wax endpoint-change transport close failed: %s", exc)
+        try:
+            old_manager.shutdown()
+        except Exception as exc:
+            logger.error("Wax endpoint-change process cleanup failed: %s", exc)
+        self._session_id = None
+        self.endpoint = endpoint
+        self._client = _WaxHTTPClient(endpoint)
+        self._manager = _WaxMCPManager(endpoint)
+
+    def _open_session(self, host_session_id: str) -> None:
+        self._lifecycle.configure(
+            platform=self._platform,
+            cwd=self._cwd,
+            project=self._project,
+            repo=self._repo,
+        )
+        self._lifecycle.open_session(host_session_id)
+
+    def _reset_transport_after_failed_open(self) -> None:
+        if self._injected_client:
+            return
+        try:
+            self._client.close()
+        except Exception as exc:
+            logger.debug("Wax failed transport close after session_open error: %s", exc)
+        self._client = _WaxHTTPClient(self.endpoint)
+
+    def _ensure_session(self) -> Optional[str]:
+        return self._lifecycle.ensure_session()
+
+    def _admitted_session(self) -> Optional[str]:
+        return self._lifecycle.admitted_session()
 
     def system_prompt_block(self) -> str:
         search_modes = "text, vector, and hybrid" if self._vector_search_available else "text"
@@ -479,13 +625,26 @@ class WaxMemoryProvider(MemoryProvider):
             f"You have access to Wax memory — a persistent, searchable memory system "
             f"with {search_modes} search.\n"
             "Use wax_remember to save important facts, decisions, and lessons.\n"
-            "Use wax_recall to retrieve prior context when needed.\n"
+            "Use wax_recall to retrieve prior context; it defaults to the current project. "
+            "For facts about the person or standing cross-project preferences, pass scope=global. "
+            "On project_miss, pass the intended project/repo or explicitly choose global.\n"
             "Use wax_handoff to capture session state for future sessions.\n"
             "Built-in MEMORY.md writes are mirrored into Wax automatically."
         )
 
     def _active_session(self, session_id: str = "") -> Optional[str]:
-        return session_id or self._session_id
+        # MemoryProvider callback session IDs belong to Hermes and are not Wax UUIDs.
+        # Only the broker-issued ID returned by session_open is safe to forward.
+        return self._session_id
+
+    @staticmethod
+    def _tool_args_for_session(
+        base: Dict[str, Any], wax_session_id: Optional[str]
+    ) -> Dict[str, Any]:
+        args = dict(base)
+        if wax_session_id:
+            args["session_id"] = wax_session_id
+        return args
 
     def _invalidate_prefetch(self) -> int:
         with self._prefetch_lock:
@@ -507,16 +666,17 @@ class WaxMemoryProvider(MemoryProvider):
         return formatted
 
     def _tool_args(self, base: Dict[str, Any], session_id: str = "") -> Dict[str, Any]:
-        args = dict(base)
-        active = self._active_session(session_id)
-        if active:
-            args["session_id"] = active
-        return args
+        return self._tool_args_for_session(base, self._active_session(session_id))
 
     def _recall_text(self, query: str, session_id: str = "") -> str:
+        active = self._ensure_session()
+        if not active:
+            return ""
         result = self._client.call_tool(
             "recall",
-            self._tool_args({"query": query, "limit": 5, "mode": "hybrid"}, session_id),
+            self._tool_args_for_session(
+                {"query": query, "limit": 5, "mode": "hybrid"}, active
+            ),
         )
         if result["ok"] and result["text"]:
             return result["text"]
@@ -525,25 +685,37 @@ class WaxMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
             return
-        with self._prefetch_lock:
-            self._generation += 1
-            generation = self._generation
+        wax_session_id = self._admitted_session()
+        with self._lifecycle_lock:
+            if not self._lifecycle.is_admitted(wax_session_id):
+                return
+            generation = self._invalidate_prefetch()
 
-        def _warm() -> None:
-            try:
-                text = self._recall_text(query, session_id)
-                self._set_prefetch(query, text, generation)
-            except Exception as exc:
-                logger.debug("Wax queue_prefetch failed: %s", exc)
+            def _warm() -> None:
+                try:
+                    result = self._client.call_tool(
+                        "recall",
+                        self._tool_args_for_session(
+                            {"query": query, "limit": 5, "mode": "hybrid"}, wax_session_id
+                        ),
+                    )
+                    text = result["text"] if result["ok"] and result["text"] else ""
+                    self._set_prefetch(query, text, generation)
+                except Exception as exc:
+                    logger.debug("Wax queue_prefetch failed: %s", exc)
 
-        self._spawn(_warm)
+            self._spawn(_warm)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if is_trivial_prompt(query) or _is_internal_gateway_turn(query):
             return ""
+        with self._lifecycle_lock:
+            if not self._accepting_background:
+                return ""
         with self._prefetch_lock:
             cached_query = self._prefetch_query
             cached_text = self._prefetch_text
+            generation = self._generation
         if cached_text and cached_query == query:
             return cached_text
         self._join_background(timeout=1.0)
@@ -552,39 +724,27 @@ class WaxMemoryProvider(MemoryProvider):
                 return self._prefetch_text
         try:
             text = self._recall_text(query, session_id)
-            return self._set_prefetch(query, text)
+            return self._set_prefetch(query, text, generation)
         except Exception as exc:
             logger.debug("Wax prefetch failed: %s", exc)
             return ""
 
     def recall_status(self) -> Optional[RecallStatus]:
+        if self._lifecycle.is_shutdown:
+            return None
         with self._prefetch_lock:
             if not self._prefetch_text:
                 return None
             return RecallStatus(provider_label="Wax", count=self._prefetch_count, glyph="🧠")
 
-    def _ensure_pool(self) -> ThreadPoolExecutor:
-        if self._pool is None:
-            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wax-mem")
-        return self._pool
-
     def _close_pool(self) -> None:
-        pool = self._pool
-        self._pool = None
-        self._in_flight = []
-        if pool is not None:
-            pool.shutdown(wait=True, cancel_futures=False)
+        self._lifecycle.close_pool()
 
     def _spawn(self, target: Callable[[], None]) -> None:
-        future = self._ensure_pool().submit(target)
-        self._in_flight.append(future)
-        self._in_flight = [item for item in self._in_flight if not item.done()]
+        self._lifecycle.spawn(target)
 
-    def _join_background(self, timeout: float = 2.0) -> None:
-        pending = [item for item in self._in_flight if not item.done()]
-        if pending:
-            wait(pending, timeout=timeout)
-        self._in_flight = [item for item in self._in_flight if not item.done()]
+    def _join_background(self, timeout: Optional[float] = 2.0) -> bool:
+        return self._lifecycle.join_background(timeout)
 
     def sync_turn(
         self,
@@ -598,26 +758,27 @@ class WaxMemoryProvider(MemoryProvider):
             return
         if is_trivial_prompt(user_content) or _is_internal_gateway_turn(user_content):
             return
+        wax_session_id = self._admitted_session()
+        with self._lifecycle_lock:
+            if not self._lifecycle.is_admitted(wax_session_id):
+                return
+            arguments = self._tool_args_for_session(
+                {
+                    "content": f"User: {user_content[:500]}\nAssistant: {assistant_content[:500]}",
+                    "memory_type": "note",
+                    "durability": "working",
+                    "metadata": {"source": "hermes_sync_turn", "platform": self._platform},
+                },
+                wax_session_id,
+            )
 
-        def _sync() -> None:
-            try:
-                summary = f"User: {user_content[:500]}\nAssistant: {assistant_content[:500]}"
-                self._client.call_tool(
-                    "remember",
-                    self._tool_args(
-                        {
-                            "content": summary,
-                            "memory_type": "note",
-                            "durability": "working",
-                            "metadata": {"source": "hermes_sync_turn", "platform": self._platform},
-                        },
-                        session_id,
-                    ),
-                )
-            except Exception as exc:
-                logger.debug("Wax sync_turn failed: %s", exc)
+            def _sync() -> None:
+                try:
+                    self._client.call_tool("remember", arguments)
+                except Exception as exc:
+                    logger.debug("Wax sync_turn failed: %s", exc)
 
-        self._spawn(_sync)
+            self._spawn(_sync)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         names = set(CORE_TOOL_NAMES)
@@ -630,14 +791,27 @@ class WaxMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         wax_tool = tool_name.replace("wax_", "", 1)
         forwarded = dict(args or {})
-        if (
-            self._session_id
-            and "session_id" not in forwarded
-            and wax_tool in TOOLS_WITH_SESSION_ID
-        ):
-            forwarded["session_id"] = self._session_id
+        if wax_tool in {
+            "remember", "recall", "search", "handoff", "compact_context",
+            "markdown_export", "knowledge_capture", "corpus_search", "promote",
+        }:
+            forwarded.pop("session_id", None)
+        if wax_tool in {"remember", "recall"} and not str(forwarded.get("cwd") or "").strip() and self._cwd:
+            forwarded["cwd"] = self._cwd
         try:
-            result = self._client.call_tool(wax_tool, forwarded)
+            if wax_tool in TOOLS_WITH_SESSION_ID:
+                wax_session_id = self._admitted_session()
+                with self._lifecycle_lock:
+                    if not self._lifecycle.is_admitted(wax_session_id):
+                        return json.dumps({
+                            "ok": False,
+                            "error": "Wax session unavailable; session_open did not return a valid UUID",
+                            "retryable": True,
+                        })
+                    forwarded["session_id"] = wax_session_id
+                    result = self._client.call_tool(wax_tool, forwarded)
+            else:
+                result = self._client.call_tool(wax_tool, forwarded)
             if result["ok"]:
                 return result["text"] or json.dumps({"ok": True})
             return json.dumps({"ok": False, "error": result["text"] or "Wax tool failed"})
@@ -654,65 +828,28 @@ class WaxMemoryProvider(MemoryProvider):
         rewound: bool = False,
         **kwargs,
     ) -> None:
-        if rewound and new_session_id == (self._session_id or ""):
-            self._invalidate_prefetch()
-            return
-        self._invalidate_prefetch()
-        old = self._session_id
-        if reset and old:
-            try:
-                self._client.call_tool("session_end", {"session_id": old})
-            except Exception as exc:
-                logger.debug("Wax session_end during reset failed: %s", exc)
-            self._start_session(new_session_id, resume=False)
-        else:
-            self._start_session(new_session_id, resume=True)
+        cwd = str(kwargs.get("cwd") or os.getcwd())
+        project = str(kwargs.get("project") or "").strip()
+        repo = str(kwargs.get("repo") or "").strip()
+        switched = self._lifecycle.switch_session(
+            new_session_id,
+            reset=reset,
+            rewound=rewound,
+            cwd=cwd,
+            project=project,
+            repo=repo,
+            invalidate_prefetch=self._invalidate_prefetch,
+        )
+        if switched:
+            self._cwd = cwd
+            self._project = project
+            self._repo = repo
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        logger.info("Wax on_session_end triggered")
-        self._invalidate_prefetch()
-        self._join_background()
-        try:
-            content = ""
-            try:
-                result = self._client.call_tool(
-                    "session_synthesize",
-                    {"session_id": self._session_id} if self._session_id else {},
-                )
-                if result["ok"] and result["text"]:
-                    try:
-                        payload = json.loads(result["text"])
-                        content = (
-                            payload.get("handoff")
-                            or payload.get("content")
-                            or payload.get("summary")
-                            or result["text"]
-                        )
-                    except Exception:
-                        content = result["text"]
-            except Exception as exc:
-                logger.debug("Wax session_synthesize failed: %s", exc)
-            if not content:
-                parts = []
-                for msg in messages[-6:]:
-                    role = msg.get("role", "")
-                    text = msg.get("content", "")
-                    if text and len(str(text)) < 500:
-                        parts.append(f"{role}: {str(text)[:200]}")
-                content = "\n".join(parts)
-            if content:
-                self._client.call_tool(
-                    "handoff",
-                    self._tool_args({"content": content, "pending_tasks": []}),
-                )
-            if self._session_id:
-                self._client.call_tool("session_end", {"session_id": self._session_id})
-        except Exception as exc:
-            logger.error("Wax on_session_end failed: %s", exc)
-        finally:
-            self._session_id = None
-            self._client.close()
-            self._close_pool()
+        self._lifecycle.end_session(
+            messages,
+            invalidate_prefetch=self._invalidate_prefetch,
+        )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         try:
@@ -720,10 +857,16 @@ class WaxMemoryProvider(MemoryProvider):
             if not user_msgs:
                 return ""
             query = " ".join(user_msgs[-3:])[:200]
-            result = self._client.call_tool(
-                "compact_context",
-                self._tool_args({"query": query, "token_budget": 800}),
-            )
+            wax_session_id = self._admitted_session()
+            with self._lifecycle_lock:
+                if not self._lifecycle.is_admitted(wax_session_id):
+                    return ""
+                result = self._client.call_tool(
+                    "compact_context",
+                    self._tool_args_for_session(
+                        {"query": query, "token_budget": 800}, wax_session_id
+                    ),
+                )
             if result["ok"]:
                 return result["text"]
         except Exception as exc:
@@ -733,27 +876,30 @@ class WaxMemoryProvider(MemoryProvider):
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         if not task or not result:
             return
+        wax_session_id = self._admitted_session()
+        with self._lifecycle_lock:
+            if not self._lifecycle.is_admitted(wax_session_id):
+                return
+            arguments = self._tool_args_for_session(
+                {
+                    "content": f"Delegated: {task[:400]}\nResult: {result[:400]}",
+                    "memory_type": "note",
+                    "durability": "working",
+                    "metadata": {
+                        "source": "hermes_delegation",
+                        "child_session_id": child_session_id or "",
+                    },
+                },
+                wax_session_id,
+            )
 
-        def _write() -> None:
-            try:
-                self._client.call_tool(
-                    "remember",
-                    self._tool_args(
-                        {
-                            "content": f"Delegated: {task[:400]}\nResult: {result[:400]}",
-                            "memory_type": "note",
-                            "durability": "working",
-                            "metadata": {
-                                "source": "hermes_delegation",
-                                "child_session_id": child_session_id or "",
-                            },
-                        }
-                    ),
-                )
-            except Exception as exc:
-                logger.debug("Wax on_delegation failed: %s", exc)
+            def _write() -> None:
+                try:
+                    self._client.call_tool("remember", arguments)
+                except Exception as exc:
+                    logger.debug("Wax on_delegation failed: %s", exc)
 
-        self._spawn(_write)
+            self._spawn(_write)
 
     def on_memory_write(
         self,
@@ -765,28 +911,32 @@ class WaxMemoryProvider(MemoryProvider):
         if action not in {"add", "replace"} or not content:
             return
         memory_type = "user_preference" if target == "user" else "note"
+        wax_session_id = self._admitted_session()
+        with self._lifecycle_lock:
+            if not self._lifecycle.is_admitted(wax_session_id):
+                logger.warning("Wax on_memory_write skipped: session unavailable")
+                return
+            arguments = self._tool_args_for_session(
+                {
+                    "content": content,
+                    "memory_type": memory_type,
+                    "durability": "durable",
+                    "metadata": {
+                        "source": "hermes_memory_write",
+                        "target": target,
+                        "action": action,
+                    },
+                },
+                wax_session_id,
+            )
 
-        def _write() -> None:
-            try:
-                self._client.call_tool(
-                    "remember",
-                    self._tool_args(
-                        {
-                            "content": content,
-                            "memory_type": memory_type,
-                            "durability": "durable",
-                            "metadata": {
-                                "source": "hermes_memory_write",
-                                "target": target,
-                                "action": action,
-                            },
-                        }
-                    ),
-                )
-            except Exception as exc:
-                logger.debug("Wax on_memory_write failed: %s", exc)
+            def _write() -> None:
+                try:
+                    self._client.call_tool("remember", arguments)
+                except Exception as exc:
+                    logger.debug("Wax on_memory_write failed: %s", exc)
 
-        self._spawn(_write)
+            self._spawn(_write)
 
     def backup_paths(self) -> List[str]:
         candidates = [
@@ -801,17 +951,10 @@ class WaxMemoryProvider(MemoryProvider):
         return paths
 
     def shutdown(self) -> None:
-        self._join_background()
-        if self._session_id:
-            try:
-                self._client.call_tool("session_end", {"session_id": self._session_id})
-            except Exception as exc:
-                logger.debug("Wax shutdown cleanup failed: %s", exc)
-            finally:
-                self._session_id = None
-        self._client.close()
-        self._manager.shutdown()
-        self._close_pool()
+        self._lifecycle.shutdown(
+            self._manager.shutdown,
+            invalidate_prefetch=self._invalidate_prefetch,
+        )
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [

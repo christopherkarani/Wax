@@ -1,6 +1,7 @@
 import ArgumentParser
 import Dispatch
 import Foundation
+import Wax
 import WaxCore
 
 @main
@@ -331,12 +332,6 @@ extension WaxCLI.MCP {
                 }
             }
 
-            do {
-                try resolveToolPath("claude")
-            } catch {
-                failures.append(error.localizedDescription)
-            }
-
             if !failures.isEmpty {
                 // Dependency checks failed — skip server smoke check since dependencies are absent.
                 // All failures (including skipped smoke check) are reported below.
@@ -357,6 +352,17 @@ extension WaxCLI.MCP {
             }
 
             if failures.isEmpty {
+                let expandedStore = Pathing.expandPath(storePath)
+                let storeURL = URL(fileURLWithPath: expandedStore)
+                if (try? StoreLockProbe.tryExclusiveAccess(at: storeURL)) == false {
+                    warnings.append(
+                        "store is held by another process (likely the HTTP LaunchAgent); smoke-checking an isolated store"
+                    )
+                    storePath = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("wax-doctor-smoke-\(UUID().uuidString).wax")
+                        .path
+                }
+
                 var env = ProcessInfo.processInfo.environment
                 env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
                 env.merge(embedderRuntime.resolvedTuning().environmentOverrides(), uniquingKeysWith: { _, new in new })
@@ -388,7 +394,7 @@ extension WaxCLI.MCP {
                         arguments: arguments,
                         environment: env,
                         input: request,
-                        expectedToolName: "remember"
+                        expectedToolNames: MCPDoctorSurface.dailyToolNames
                     )
                     if output.timedOut {
                         failures.append(
@@ -400,9 +406,10 @@ extension WaxCLI.MCP {
                             "Smoke check failed with exit code \(output.status). " +
                                 smokeCheckFailureContext(output)
                         )
-                    } else if !output.foundExpectedTool {
+                    } else if !output.missingExpectedTools.isEmpty {
                         failures.append(
-                            "Smoke check response missing remember tool. " +
+                            "Smoke check response missing daily tools: " +
+                                output.missingExpectedTools.joined(separator: ", ") + ". " +
                                 smokeCheckFailureContext(output)
                         )
                     }
@@ -496,11 +503,82 @@ private struct CapturedProcessOutput {
     let stderr: String
 }
 
+enum MCPDoctorSurface {
+    static let dailyToolNames = [
+        "session_open",
+        "remember",
+        "recall",
+        "session_close",
+        "stats",
+        "memory_get",
+        "compact_context",
+        "session_resume",
+    ]
+}
+
+enum MCPVectorHealthDiagnostics {
+    struct Report: Equatable, Sendable {
+        var healthy: Bool
+        var vectorSearchEnabled: Bool
+        var queryEmbeddingAvailable: Bool
+        var model: String?
+        var status: String
+        var reason: String
+        var framesWithoutVectors: Int
+    }
+
+    static func evaluate(
+        vectorSearchEnabled: Bool,
+        queryEmbeddingAvailable: Bool,
+        model: String? = nil,
+        embeddingStatus: String? = nil,
+        embeddingStatusReason: String? = nil,
+        framesWithoutVectors: Int = 0
+    ) -> Report {
+        let healthy = vectorSearchEnabled && queryEmbeddingAvailable
+        let reason: String
+        if healthy {
+            reason = embeddingStatusReason
+                ?? "vector search and query embeddings are available"
+        } else if !vectorSearchEnabled {
+            reason = embeddingStatusReason ?? "vector search is disabled"
+        } else {
+            reason = embeddingStatusReason ?? "query embeddings are unavailable"
+        }
+        let status: String
+        if healthy {
+            status = "healthy"
+        } else {
+            let token = embeddingStatus?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if let embeddingStatus,
+               token != "healthy",
+               token != "ready",
+               token != "ok",
+               token != "" {
+                status = embeddingStatus
+            } else {
+                status = "degraded"
+            }
+        }
+        return Report(
+            healthy: healthy,
+            vectorSearchEnabled: vectorSearchEnabled,
+            queryEmbeddingAvailable: queryEmbeddingAvailable,
+            model: model,
+            status: status,
+            reason: reason,
+            framesWithoutVectors: max(0, framesWithoutVectors)
+        )
+    }
+}
+
 private struct MCPSmokeCheckOutput {
     let status: Int32
     let stdout: String
     let stderr: String
-    let foundExpectedTool: Bool
+    let missingExpectedTools: [String]
     let timedOut: Bool
 }
 
@@ -605,7 +683,7 @@ private enum ProcessRunner {
         arguments: [String],
         environment: [String: String]? = nil,
         input: String,
-        expectedToolName: String,
+        expectedToolNames: [String],
         timeoutSeconds: TimeInterval = 5
     ) throws -> MCPSmokeCheckOutput {
         final class SmokeCheckState: @unchecked Sendable {
@@ -614,7 +692,7 @@ private enum ProcessRunner {
             private var stderrAll = Data()
             private var stdoutPending = Data()
             private var toolsListResponse: String?
-            private var foundExpectedTool = false
+            private var missingExpectedTools: [String] = []
             private var signaled = false
             fileprivate let semaphore = DispatchSemaphore(value: 0)
 
@@ -626,7 +704,7 @@ private enum ProcessRunner {
                 semaphore.signal()
             }
 
-            func appendStdout(_ data: Data, expectedToolName: String) {
+            func appendStdout(_ data: Data, expectedToolNames: [String]) {
                 lock.lock()
                 stdoutAll.append(data)
                 stdoutPending.append(data)
@@ -641,7 +719,10 @@ private enum ProcessRunner {
                        (line.contains(#""id":2"#) || line.contains(#""id": 2"#))
                     {
                         toolsListResponse = line
-                        foundExpectedTool = line.contains(#""name":"\#(expectedToolName)""#)
+                        missingExpectedTools = expectedToolNames.filter { name in
+                            !line.contains(#""name":"\#(name)""#)
+                                && !line.contains(#""name": "\#(name)""#)
+                        }
                         lock.unlock()
                         signalOnce()
                         return
@@ -657,10 +738,10 @@ private enum ProcessRunner {
                 lock.unlock()
             }
 
-            func snapshot() -> (stdout: Data, stderr: Data, toolsListResponse: String?, foundExpectedTool: Bool) {
+            func snapshot() -> (stdout: Data, stderr: Data, toolsListResponse: String?, missingExpectedTools: [String]) {
                 lock.lock()
                 defer { lock.unlock() }
-                return (stdoutAll, stderrAll, toolsListResponse, foundExpectedTool)
+                return (stdoutAll, stderrAll, toolsListResponse, missingExpectedTools)
             }
         }
 
@@ -684,7 +765,7 @@ private enum ProcessRunner {
                 state.signalOnce()
                 return
             }
-            state.appendStdout(data, expectedToolName: expectedToolName)
+            state.appendStdout(data, expectedToolNames: expectedToolNames)
         }
 
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -712,7 +793,7 @@ private enum ProcessRunner {
 
         // Drain any remaining output.
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
-            state.appendStdout(data, expectedToolName: expectedToolName)
+            state.appendStdout(data, expectedToolNames: expectedToolNames)
         }
         if let data = try? stderrPipe.fileHandleForReading.readToEnd() {
             state.appendStderr(data)
@@ -722,16 +803,19 @@ private enum ProcessRunner {
         let stdout = String(data: snapshot.stdout, encoding: .utf8) ?? ""
         let stderr = String(data: snapshot.stderr, encoding: .utf8) ?? ""
 
-        var foundExpectedTool = snapshot.foundExpectedTool
+        var missingExpectedTools = snapshot.missingExpectedTools
         if snapshot.toolsListResponse == nil {
-            foundExpectedTool = stdout.contains(#""name":"\#(expectedToolName)""#)
+            missingExpectedTools = expectedToolNames.filter { name in
+                !stdout.contains(#""name":"\#(name)""#)
+                    && !stdout.contains(#""name": "\#(name)""#)
+            }
         }
 
         return MCPSmokeCheckOutput(
             status: process.terminationStatus,
             stdout: stdout,
             stderr: stderr,
-            foundExpectedTool: foundExpectedTool,
+            missingExpectedTools: missingExpectedTools,
             timedOut: timedOut
         )
     }

@@ -10,12 +10,32 @@ struct VectorHealthCommand: AsyncParsableCommand {
 
     @OptionGroup var store: VectorStoreOptions
 
+    static func isHealthy(
+        vectorSearchEnabled: Bool,
+        queryEmbeddingAvailable: Bool,
+        embedderPresent: Bool,
+        framesWithoutVectors: UInt64,
+        canaryPassed: Bool
+    ) -> Bool {
+        MCPVectorHealthDiagnostics.evaluate(
+            vectorSearchEnabled: vectorSearchEnabled,
+            queryEmbeddingAvailable: queryEmbeddingAvailable
+        ).healthy
+            && embedderPresent
+            && framesWithoutVectors == 0
+            && canaryPassed
+    }
+
     func runAsync() async throws {
         let primary = try await checkPrimaryStore()
-        let healthy = primary.vectorSearchEnabled
-            && primary.embedderIdentity != nil
-            && primary.framesWithoutVectors == 0
-            && primary.canary.passed
+        let queryEmbeddingAvailable = primary.canary.queryEmbeddingState == .available
+        let healthy = Self.isHealthy(
+            vectorSearchEnabled: primary.vectorSearchEnabled,
+            queryEmbeddingAvailable: queryEmbeddingAvailable,
+            embedderPresent: primary.embedderIdentity != nil,
+            framesWithoutVectors: primary.framesWithoutVectors,
+            canaryPassed: primary.canary.passed
+        )
 
         switch store.format {
         case .json:
@@ -31,9 +51,11 @@ struct VectorHealthCommand: AsyncParsableCommand {
 
             printJSON([
                 "healthy": healthy,
+                "queryEmbeddingAvailable": queryEmbeddingAvailable,
                 "primaryStore": [
                     "path": primary.path,
                     "vectorSearchEnabled": primary.vectorSearchEnabled,
+                    "queryEmbeddingAvailable": queryEmbeddingAvailable,
                     "frameCount": primary.frameCount,
                     "framesWithoutVectors": primary.framesWithoutVectors,
                     "embedder": embedder,
@@ -54,6 +76,7 @@ struct VectorHealthCommand: AsyncParsableCommand {
             print("Vector health: \(healthy ? "PASS" : "FAIL")")
             print("Store: \(primary.path)")
             print("Vector search: \(primary.vectorSearchEnabled ? "enabled" : "disabled")")
+            print("Query embeddings: \(queryEmbeddingAvailable ? "available" : "unavailable")")
             print("Frames without vectors: \(primary.framesWithoutVectors)")
             if let identity = primary.embedderIdentity {
                 let provider = identity.provider ?? "unknown"

@@ -1,8 +1,14 @@
 # Wax MCP project rules
 
-Paste **AGENTS.md** after installing the Wax MCP server. For Hermes or
-OpenClaw, append the **SOUL.md** stanza if missing. If `## Memory (Wax)`
-already exists, replace that section — do not leave two manuals.
+Paste **AGENTS.md** after installing the Wax MCP server. For OpenClaw,
+append the **SOUL.md** stanza if missing. If `## Memory (Wax)` already
+exists, replace that section — do not leave two manuals.
+
+Native Hermes is not this MCP playbook. Set `memory.provider: wax-memory`
+only, call `wax_remember` / `wax_recall` / `wax_stats`, and do not pass a
+Wax `session_id`. Omit `scope` for current-project recall; pass
+`scope=global` for person facts. Do not add `wax-memory` to
+`plugins.enabled`.
 
 The inner `text` fences are what you copy. Keep them in lockstep with
 `WaxMCPAgentPlaybook` in `Sources/WaxCLI/WaxCLICommand.swift` and the README

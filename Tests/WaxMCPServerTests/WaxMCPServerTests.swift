@@ -571,6 +571,20 @@ func coreToolDescriptionsIncludeOperatorHints() {
     #expect(tools["remember"]?.contains("session_id") == true)
     #expect(tools["recall"]?.contains("Preferred read path") == true)
     #expect(tools["recall"]?.contains("session_open") == true)
+    #expect(tools["recall"]?.contains("Default scope is the current project") == true)
+    #expect(tools["recall"]?.contains("scope=global") == true)
+    #expect(tools["recall"]?.localizedCaseInsensitiveContains("optional session_id") == true)
+    #expect(tools["recall"]?.localizedCaseInsensitiveContains("required uuid") != true)
+    #expect(tools["remember"]?.localizedCaseInsensitiveContains("required uuid") != true)
+    #expect(tools["session_open"]?.localizedCaseInsensitiveContains("required uuid") != true)
+    for description in tools.values {
+        #expect(description.localizedCaseInsensitiveContains("deferral") == false)
+        #expect(description.localizedCaseInsensitiveContains("deferral-router") == false)
+    }
+    let recallScope = schemaPropertyDescription(ToolSchemas.waxRecall, property: "scope") ?? ""
+    #expect(recallScope.contains("project (default)"))
+    #expect(recallScope.contains("global searches the complete trusted local store"))
+    #expect(recallScope.localizedCaseInsensitiveContains("deferral") == false)
     #expect(tools["handoff"]?.contains("end-of-session") == true)
 }
 
@@ -674,6 +688,18 @@ func toolSchemaRegression() {
         } else {
             Issue.record("Schema for '\(toolName)' is missing 'required' array")
         }
+    }
+
+    for tool in ToolSchemas.tools(structuredMemoryEnabled: true, profile: .daily) {
+        let required = schemaRequiredNames(tool.inputSchema)
+        if tool.name == "session_close" {
+            #expect(required.contains("content"), "session_close still requires handoff content")
+            continue
+        }
+        #expect(
+            required.contains("session_id") == false,
+            "Daily tool '\(tool.name)' must not require a session UUID"
+        )
     }
 }
 
@@ -1693,6 +1719,30 @@ func httpAuthPolicyValidatesBearerToken() {
     #expect(!HTTPAuthPolicy.isAuthorized(requestToken: nil, configuredToken: token))
     #expect(!HTTPAuthPolicy.isAuthorized(requestToken: "Bearer wrong", configuredToken: token))
     #expect(!HTTPAuthPolicy.isAuthorized(requestToken: token, configuredToken: token))
+}
+
+@Test
+func loopbackHTTPRejectsDNSRebindingHostAndForeignOrigin() {
+    #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
+        hostHeader: "127.0.0.1:3000",
+        originHeader: "http://localhost:3000"
+    ))
+    #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
+        hostHeader: "[::1]:3000",
+        originHeader: nil
+    ))
+    #expect(!HTTPAuthPolicy.isSafeLoopbackRequest(
+        hostHeader: "attacker.example:3000",
+        originHeader: nil
+    ))
+    #expect(!HTTPAuthPolicy.isSafeLoopbackRequest(
+        hostHeader: "127.0.0.1:3000",
+        originHeader: "https://attacker.example"
+    ))
+    #expect(!HTTPAuthPolicy.isSafeLoopbackRequest(
+        hostHeader: "127.0.0.1:3000",
+        originHeader: "null"
+    ))
 }
 
 @Test
@@ -3327,7 +3377,7 @@ func invalidSessionIDIsRejected() async throws {
 }
 
 @Test
-func recallJSONResourceIncludesStructuredResults() async throws {
+func verboseRecallStructuredContentIncludesRawMetadata() async throws {
     try await withAgentBrokerService { service, _ in
         _ = await WaxMCPTools.handleCall(
             params: .init(
@@ -3342,19 +3392,29 @@ func recallJSONResourceIncludesStructuredResults() async throws {
         let recall = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
-                arguments: ["query": "payload marker", "limit": 3, "scope": "global"]
+                arguments: [
+                    "query": "payload marker",
+                    "limit": 3,
+                    "scope": "global",
+                    "verbosity": "verbose",
+                ]
             ),
             broker: service
         )
 
         #expect(recall.isError != true)
-        let payload = try parseJSONResource(in: recall, uriSuffix: "/recall-summary")
-        let results = try requireArray(payload, key: "results")
-        #expect(!results.isEmpty)
-        let first = try requireObject(results[0])
-        #expect((first["text"] as? String)?.contains("Structured recall payload marker") == true)
-        let metadata = try requireObject(first, key: "metadata")
-        #expect((metadata["source"] as? String) == "recall-json")
+        guard case .object(let payload) = try #require(recall.structuredContent),
+              case .array(let results)? = payload["results"],
+              case .object(let first)? = results.first,
+              case .string(let text)? = first["text"],
+              case .object(let metadata)? = first["metadata"],
+              case .string(let source)? = metadata["source"]
+        else {
+            Issue.record("Expected verbose recall structured content with raw metadata")
+            return
+        }
+        #expect(text.contains("Structured recall payload marker"))
+        #expect(source == "recall-json")
     }
 }
 
@@ -5555,7 +5615,7 @@ func verboseResultsUseStructuredContentWithoutResourceEcho() async throws {
 }
 
 @Test
-func compactRecallPreservesUserDisplayTextMetadata() async throws {
+func verboseRecallPreservesUserDisplayTextMetadataWhileCompactStaysSlim() async throws {
     try await withAgentBrokerService { service, _ in
         let marker = "USER_DISPLAY_TEXT_MARKER_\(UUID().uuidString)"
         #expect((await service.handle(.init(
@@ -5572,14 +5632,218 @@ func compactRecallPreservesUserDisplayTextMetadata() async throws {
                 arguments: [
                     "query": .string(marker),
                     "scope": .string("global"),
+                    "verbosity": .string("verbose"),
                 ]
             ),
             broker: service
         )
+        guard case .object(let payload) = try #require(result.structuredContent),
+              case .array(let results)? = payload["results"],
+              case .object(let first)? = results.first,
+              case .object(let metadata)? = first["metadata"],
+              case .string(let displayText)? = metadata["display_text"]
+        else {
+            Issue.record("Expected verbose recall to preserve user metadata")
+            return
+        }
+        #expect(displayText == "user-authored value")
+
+        let compact = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(marker),
+                    "scope": .string("global"),
+                ]
+            ),
+            broker: service
+        )
+        #expect(compact.isError != true)
+        #expect(compact.content.count == 1)
+        #expect(compact.structuredContent == nil)
+        let compactPayload = try parseJSONText(in: compact)
+        let compactResults = try #require(compactPayload["results"] as? [[String: Any]])
+        let compactHit = try #require(compactResults.first)
+        #expect(compactHit["metadata"] == nil)
+        #expect(compactHit["explanations"] == nil)
+        #expect(containsKeyRecursively("display_text", in: compactPayload) == false)
+    }
+}
+
+@Test
+func compactRecallKeepsIdTextScopeTypeAgeAndProvenance() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "u3-compact-\(UUID().uuidString.prefix(8))"
+        let token = "WAXU3COMPACT-\(UUID().uuidString.prefix(8))"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: keep \(token) readable in compact MCP recall."),
+                "memory_type": .string("decision"),
+                "project": .string(project),
+                "repo": .string(project),
+            ]
+        ))).ok == true)
+
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(token),
+                    "project": .string(project),
+                    "repo": .string(project),
+                    "mode": .string("text"),
+                    "limit": .int(5),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError != true)
+        #expect(result.content.count == 1)
+        #expect(result.structuredContent == nil)
         let payload = try parseJSONText(in: result)
+        #expect(payload["scope"] as? String == "project")
+        #expect(payload["project_miss"] as? Bool == false)
         let results = try #require(payload["results"] as? [[String: Any]])
-        let metadata = try #require(results.first?["metadata"] as? [String: Any])
-        #expect(metadata["display_text"] as? String == "user-authored value")
+        let hit = try #require(results.first { row in
+            (row["text"] as? String)?.contains(token) == true
+        })
+        #expect((hit["id"] as? String)?.hasPrefix("durable:") == true)
+        #expect((hit["text"] as? String)?.contains(token) == true)
+        #expect(hit["memory_type"] as? String == "decision")
+        #expect(jsonInt64(hit["age_days"]) == 0)
+        #expect((jsonInt64(hit["created_at_ms"]) ?? 0) > 0)
+        #expect(hit["explanations"] == nil)
+        #expect(hit["metadata"] == nil)
+        #expect(containsKeyRecursively("display_text", in: payload) == false)
+        #expect(containsKeyRecursively("store_path", in: payload) == false)
+        #expect(containsKeyRecursively("event_log_path", in: payload) == false)
+    }
+}
+
+@Test
+func verboseRecallKeepsExplanationsWithoutDuplicatePayloads() async throws {
+    try await withAgentBrokerService { service, _ in
+        let project = "u3-verbose-\(UUID().uuidString.prefix(8))"
+        let token = "WAXU3VERBOSE-\(UUID().uuidString.prefix(8))"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: \(token) keeps explanations when verbose."),
+                "memory_type": .string("decision"),
+                "project": .string(project),
+                "repo": .string(project),
+            ]
+        ))).ok == true)
+
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(token),
+                    "project": .string(project),
+                    "mode": .string("text"),
+                    "limit": .int(5),
+                    "verbosity": .string("verbose"),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError != true)
+        #expect(result.content.count == 1)
+        #expect(result.structuredContent != nil)
+        #expect(result.content.allSatisfy { content in
+            if case .resource = content { return false }
+            return true
+        })
+        let narrative = firstText(in: result)
+        #expect(decodeJSONObject(narrative) == nil)
+        guard case .object(let payload) = try #require(result.structuredContent),
+              case .array(let results)? = payload["results"],
+              case .object(let hit)? = results.first(where: { value in
+                  if case .object(let object) = value,
+                     case .string(let text)? = object["text"] {
+                      return text.contains(token)
+                  }
+                  return false
+              }),
+              case .array(let explanations)? = hit["explanations"]
+        else {
+            Issue.record("Expected verbose recall structured content with explanations")
+            return
+        }
+        #expect(explanations.isEmpty == false)
+        #expect(hit["id"] != nil)
+        #expect(hit["text"] != nil)
+        #expect(hit["memory_type"] != nil)
+    }
+}
+
+@Test
+func compactRecallProjectMissOffersContentFreeExplicitGlobalRetry() async throws {
+    try await withAgentBrokerService { service, _ in
+        let token = "WAXU3MISS-\(UUID().uuidString.prefix(8))"
+        let foreign = "Foreign-\(UUID().uuidString.prefix(8))"
+        let empty = "Empty-\(UUID().uuidString.prefix(8))"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Foreign private text \(token) must not leak in a scoped miss."),
+                "memory_type": .string("fact"),
+                "project": .string(foreign),
+                "repo": .string(foreign),
+            ]
+        ))).ok == true)
+
+        let miss = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(token),
+                    "project": .string(empty),
+                    "scope": .string("project"),
+                    "mode": .string("text"),
+                    "limit": .int(5),
+                ]
+            ),
+            broker: service
+        )
+        #expect(miss.isError != true)
+        let payload = try parseJSONText(in: miss)
+        #expect(payload["scope"] as? String == "project")
+        #expect(payload["project_miss"] as? Bool == true)
+        #expect(payload["next_action"] as? String == "retry explicitly with scope=global")
+        #expect(payload["cross_project_matches_available"] == nil)
+        #expect(payload["cross_project_match_count"] == nil)
+        #expect(payload["scope_dropped"] == nil)
+        let results = payload["results"] as? [[String: Any]] ?? []
+        #expect(results.isEmpty)
+        #expect(results.contains { row in
+            (row["text"] as? String)?.contains(token) == true
+                || (row["preview"] as? String)?.contains(token) == true
+        } == false)
+        #expect((payload["scope_miss_message"] as? String)?.contains(token) != true)
+        #expect(containsKeyRecursively("preview", in: payload) == false)
+
+        let global = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string(token),
+                    "scope": .string("global"),
+                    "mode": .string("text"),
+                    "limit": .int(5),
+                ]
+            ),
+            broker: service
+        )
+        #expect(global.isError != true)
+        let globalPayload = try parseJSONText(in: global)
+        #expect(globalPayload["scope"] as? String == "global")
+        let globalResults = try #require(globalPayload["results"] as? [[String: Any]])
+        #expect(globalResults.contains { row in
+            (row["text"] as? String)?.contains(token) == true
+        })
     }
 }
 
@@ -5915,7 +6179,10 @@ func handoffStoresPendingTasksOnceAndSupersedesPriorProjectHandoff() async throw
             ]
         ))
         let oldPayload = try #require(oldRecall.payload?.objectValue)
-        #expect(oldPayload["results"]?.arrayValue?.isEmpty == true)
+        let visibleTexts = oldPayload["results"]?.arrayValue?.compactMap {
+            $0.objectValue?["text"]?.stringValue
+        } ?? []
+        #expect(visibleTexts.allSatisfy { !$0.contains(firstMarker) })
     }
 }
 
@@ -6298,6 +6565,42 @@ private func schemaPropertyNames(_ schema: Value) -> Set<String> {
         return []
     }
     return Set(properties.keys)
+}
+
+private func schemaRequiredNames(_ schema: Value) -> [String] {
+    guard case .object(let root) = schema,
+          case .array(let required)? = root["required"]
+    else {
+        return []
+    }
+    return required.compactMap { value in
+        guard case .string(let name) = value else { return nil }
+        return name
+    }
+}
+
+private func schemaPropertyDescription(_ schema: Value, property: String) -> String? {
+    guard case .object(let root) = schema,
+          case .object(let properties)? = root["properties"],
+          case .object(let propertySchema)? = properties[property],
+          case .string(let description)? = propertySchema["description"]
+    else {
+        return nil
+    }
+    return description
+}
+
+private func jsonInt64(_ value: Any?) -> Int64? {
+    switch value {
+    case let number as Int64:
+        return number
+    case let number as Int:
+        return Int64(number)
+    case let number as NSNumber:
+        return number.int64Value
+    default:
+        return nil
+    }
 }
 
 private func schemaEnum(_ schema: Value, property: String) -> [String]? {

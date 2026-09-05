@@ -117,7 +117,7 @@ struct RecallIdentityRankingTests {
     }
 
     @Test
-    func layeredRecallProjectScopeReportsScopeDroppedForLouderForeignHit() async throws {
+    func layeredRecallProjectScopeDoesNotExposeLouderForeignHitMetadata() async throws {
         let token = "WAXRANKWIRE-DROP-\(UUID().uuidString.prefix(8))"
         try await withRecallIdentityMemory { memory in
             try await memory.remember(
@@ -156,8 +156,8 @@ struct RecallIdentityRankingTests {
             #expect(result.hits.isEmpty == false)
             #expect(result.hits.allSatisfy { $0.metadata[MemoryMetadataKeys.project] == "Swarmy" })
             #expect(result.hits.contains { $0.metadata[MemoryMetadataKeys.project] == "Wax" } == false)
-            #expect(result.scopeDropped.count >= 1)
-            #expect(result.scopeDropped.top.contains { $0.project == "Wax" })
+            #expect(result.scopeDropped.count == 0)
+            #expect(result.scopeDropped.top.isEmpty)
         }
     }
 
@@ -201,7 +201,60 @@ struct RecallIdentityRankingTests {
             #expect(result.projectMiss == false)
             #expect(result.hits.contains { $0.metadata[MemoryMetadataKeys.project] == "Home" })
             #expect(result.hits.allSatisfy { $0.metadata[MemoryMetadataKeys.project] == "Home" })
-            #expect(result.scopeDropped.count >= 1)
+            #expect(result.scopeDropped.count == 0)
+        }
+    }
+
+    @Test
+    func layeredRecallGlobalScopeDisablesCurrentProjectBoost() async throws {
+        let token = "WAXRANKWIRE-GLOBAL-\(UUID().uuidString.prefix(8))"
+        let homeScope = MemoryScopeContext(
+            repoName: "recall-repo",
+            projectName: "recall-project"
+        )
+        try await withRecallIdentityMemory(defaultScopeContext: homeScope) { memory in
+            try await memory.remember(
+                "Canonical \(token) home ranking identity note.",
+                metadata: [
+                    MemoryMetadataKeys.project: "recall-project",
+                    MemoryMetadataKeys.repo: "recall-repo",
+                    MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.remember(
+                "Canonical \(token) foreign ranking identity note.",
+                metadata: [
+                    MemoryMetadataKeys.project: "foreign-project",
+                    MemoryMetadataKeys.repo: "foreign-repo",
+                    MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.flush()
+
+            let result = try await LayeredRecall.recall(
+                request: LayeredRecall.RecallRequest(
+                    query: token,
+                    scope: .global,
+                    limit: 5,
+                    searchTopK: 5,
+                    mode: .textOnly,
+                    explicitProject: "recall-project",
+                    explicitRepo: "recall-repo"
+                ),
+                stores: identityStores(memory: memory)
+            )
+
+            let hits = result.hits.filter { $0.text.contains(token) }
+            #expect(hits.count == 2)
+            #expect(hits.contains { $0.metadata[MemoryMetadataKeys.project] == "recall-project" })
+            #expect(hits.contains { $0.metadata[MemoryMetadataKeys.project] == "foreign-project" })
+            #expect(hits.allSatisfy { $0.explanations.contains("same project") == false })
+            #expect(hits.allSatisfy { $0.explanations.contains("same repo") == false })
+            let home = try #require(hits.first { $0.metadata[MemoryMetadataKeys.project] == "recall-project" })
+            let foreign = try #require(hits.first { $0.metadata[MemoryMetadataKeys.project] == "foreign-project" })
+            #expect(home.score - foreign.score < 0.5)
         }
     }
 }

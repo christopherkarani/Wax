@@ -156,11 +156,14 @@ package actor AgentBrokerService {
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
-        if Self.isTaskStateMigrationRequest(request) {
+        if Self.requiresRememberDrain(request) {
             // Migration snapshots and mutates a copy of the long-term store. It
             // must hold both locks: remember intentionally uses its own mutex so
             // deferred embedding waits do not block reads, but a migration must
-            // not race that writer while hashing or copying the source.
+            // not race that writer while hashing or copying the source. Session
+            // teardown needs the same boundary: once end/close returns, every
+            // remember admitted before teardown must be flushed and no longer
+            // capable of appending to an ended session.
             return await commandMutex.withLock { [self] in
                 await rememberMutex.withLock { [self] in
                     await handleSerialized(request)
@@ -211,17 +214,19 @@ package actor AgentBrokerService {
         return false
     }
 
-    private static func isTaskStateMigrationRequest(_ request: AgentBrokerRequest) -> Bool {
+    private static func requiresRememberDrain(_ request: AgentBrokerRequest) -> Bool {
         guard let command = try? BrokerCommand.decode(
             command: request.command,
             arguments: request.arguments
         ) else {
             return false
         }
-        if case .taskStateMigrate = command {
+        switch command {
+        case .taskStateMigrate, .sessionEnd, .sessionClose:
             return true
+        default:
+            return false
         }
-        return false
     }
 
     private func handleSerialized(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
@@ -592,7 +597,7 @@ extension AgentBrokerService {
             "Query: \(query)",
             "Total tokens: \(result.hits.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
             "Results: \(result.hits.count) of \(limit) requested (orchestrator returned \(result.hits.count))",
-            "Search controls: requested_mode=\(result.requestedModeSummary) effective_mode=\(result.effectiveModeSummary) query_embedding_state=\(result.queryEmbeddingState) search_top_k=\(effectiveTopK) limit=\(limit) scope=\(result.scope.rawValue)",
+            "Search controls: requested_mode=\(result.requestedModeSummary) effective_mode=\(result.effectiveModeSummary) query_embedding_state=\(result.queryEmbeddingState) search_top_k=\(effectiveTopK) retrieval_top_k=\(result.retrievalTopK) limit=\(limit) scope=\(result.scope.rawValue)",
         ])
         if let project = result.identity.project {
             lines.append("Resolved project: \(project)")
@@ -637,6 +642,7 @@ extension AgentBrokerService {
             "result_count": .from(result.hits.count),
             "limit": .from(limit),
             "search_top_k": .from(effectiveTopK),
+            "retrieval_top_k": .from(result.retrievalTopK),
             "requested_mode": .string(result.requestedModeSummary),
             "effective_mode": .string(result.effectiveModeSummary),
             "query_embedding_state": .string(result.queryEmbeddingState),
@@ -658,8 +664,8 @@ extension AgentBrokerService {
         if let scopeMissMessage = result.scopeMissMessage {
             payload["scope_miss_message"] = .string(scopeMissMessage)
         }
-        if let dropped = renderScopeDropped(result.scopeDropped) {
-            payload["scope_dropped"] = dropped
+        if result.projectMiss {
+            payload["next_action"] = .string("retry explicitly with scope=global")
         }
         return .object(payload)
     }
@@ -1295,7 +1301,7 @@ extension AgentBrokerService {
             return sessionEndPayload(.idle)
         }
         let result = try await virtualSessions.end(sessionID: target, afterFlush: makeHarvestCallback())
-        return sessionEndPayload(result, sessionID: target)
+        return sessionEndPayload(result)
     }
 
     /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
@@ -1434,9 +1440,42 @@ extension AgentBrokerService {
             exactPair = nil
         }
 
-        let handoffPayload = try await handoffLatest(.init(project: project))
+        var conversationResume: (sessionID: UUID, runID: String)?
         let startPayload: AgentBrokerValue
-        if exactPair == nil,
+        if let conversationID {
+            if let match = try BrokerSessionPersistence.findActive(
+                conversationID: conversationID,
+                agentID: requestedAgentID,
+                project: inferredScope.projectName,
+                repo: inferredScope.repoName,
+                rootURL: sessionRootURL
+            ) {
+                conversationResume = (match.sessionID, match.runID)
+                startPayload = try await sessionResume(
+                    .init(sessionID: match.sessionID, agentID: nil, runID: nil)
+                )
+                if let requestedRunID, match.runID != requestedRunID {
+                    try virtualSessions.updateLive(match.sessionID) { state in
+                        state.manifest.runID = requestedRunID
+                        state.manifest.updatedAtMs = Self.nowMs()
+                    }
+                }
+            } else {
+                // An explicit host conversation is an isolation boundary. Do not
+                // let a connection hint or a same-agent/project session capture it.
+                startPayload = try await sessionStart(
+                    .init(
+                        sessionID: UUID(),
+                        agentID: agentID,
+                        runID: runID,
+                        cwd: cwd,
+                        project: project,
+                        repo: repo,
+                        conversationID: conversationID
+                    )
+                )
+            }
+        } else if exactPair == nil,
            priorUnique == nil,
            let hintedSessionID = command.sessionID,
            activeSessions[hintedSessionID] != nil
@@ -1444,23 +1483,6 @@ extension AgentBrokerService {
             startPayload = try await sessionResume(
                 .init(sessionID: hintedSessionID, agentID: nil, runID: nil)
             )
-        } else if exactPair == nil,
-           priorUnique == nil,
-           let conversationID,
-           let match = try BrokerSessionPersistence.findActive(
-            conversationID: conversationID,
-            rootURL: sessionRootURL
-           )
-        {
-            startPayload = try await sessionResume(
-                .init(sessionID: match.sessionID, agentID: nil, runID: nil)
-            )
-            if let requestedRunID, match.runID != requestedRunID {
-                try virtualSessions.updateLive(match.sessionID) { state in
-                    state.manifest.runID = requestedRunID
-                    state.manifest.updatedAtMs = Self.nowMs()
-                }
-            }
         } else {
             startPayload = try await sessionStart(
                 .init(
@@ -1506,6 +1528,14 @@ extension AgentBrokerService {
             resolvedProject = BrokerCommand.normalizedOrNil(project) ?? inferred.projectName
             resolvedRepo = BrokerCommand.normalizedOrNil(repo) ?? inferred.repoName
         }
+        let handoffPayload: AgentBrokerValue
+        if let resolvedProject {
+            handoffPayload = try await handoffLatest(.init(project: resolvedProject))
+        } else {
+            // A missing project is an unresolved scope, not permission to read
+            // the newest handoff across every project.
+            handoffPayload = .object(["found": .bool(false)])
+        }
 
         var recallPayload: AgentBrokerValue?
         if let recallQuery, !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1530,6 +1560,10 @@ extension AgentBrokerService {
         let rebound: Bool
         if let priorUnique, let returnedSessionID, returnedSessionID == priorUnique.sessionID {
             rebound = requestedRunID == nil || requestedRunID != priorUnique.runID
+        } else if let conversationResume, let returnedSessionID,
+                  returnedSessionID == conversationResume.sessionID
+        {
+            rebound = requestedRunID == nil || requestedRunID != conversationResume.runID
         } else {
             rebound = false
         }
@@ -1676,11 +1710,12 @@ extension AgentBrokerService {
 
     private func sessionEndPayload(
         _ result: VirtualSessionStore.EndResult,
-        sessionID: UUID? = nil,
         reclaimed: Bool = false
     ) -> AgentBrokerValue {
         let remaining = result.activeCount
-        let harvest = sessionID.map { loadHarvestReport(sessionID: $0) } ?? .skipped
+        // Use the harvest produced under endMutex+remember drain, not a reconstructed
+        // disk snapshot that drops leftover reasons and promoted previews.
+        let harvest = result.harvest
         let display: String
         switch result {
         case .idle:
@@ -1697,6 +1732,15 @@ extension AgentBrokerService {
             "active_session_count": .from(result.activeCount),
             "harvested": .bool(harvest.harvested),
             "promoted_count": .from(harvest.promotedCount),
+            "promoted": .array(harvest.promoted.map { item in
+                .object([
+                    "memory_id": .string(item.memoryID),
+                    "type": .string(item.type),
+                    "preview": .string(item.preview),
+                ])
+            }),
+            "leftover_count": .from(harvest.leftoverCount),
+            "leftover_reasons": .array(harvest.leftoverReasons.map { .string($0) }),
             "reclaim_after_ms": .from(harvest.reclaimAfterMs),
             "reclaimed": .bool(reclaimed),
             "display_text": .string(display),
@@ -2005,9 +2049,9 @@ extension AgentBrokerService {
             "token_budget": .from(tokenBudget),
             "used_tokens": .from(assembled.usedTokens),
             "summary": .string(assembled.summary),
-            "short_context": .array(assembled.short.map(renderLayeredMemoryHit)),
-            "medium_context": .array(assembled.medium.map(renderLayeredMemoryHit)),
-            "long_context": .array(assembled.long.map(renderLayeredMemoryHit)),
+            "short_context": .array(assembled.short.map(renderCompactLayeredMemoryHit)),
+            "medium_context": .array(assembled.medium.map(renderCompactLayeredMemoryHit)),
+            "long_context": .array(assembled.long.map(renderCompactLayeredMemoryHit)),
             "compacted_text": .string(assembled.compactedText),
             "display_text": .string(assembled.compactedText),
         ])
@@ -2525,10 +2569,11 @@ extension AgentBrokerService {
             },
             inferWriteScope: { sessionID, clientCWD in
                 if let sessionID, let state = sessionsSnapshot[sessionID] {
-                    return LayeredRecall.Identity(
-                        project: state.manifest.project,
-                        repo: state.manifest.repo
-                    )
+                    let project = state.manifest.project
+                    let repo = state.manifest.repo
+                    if project != nil || repo != nil {
+                        return LayeredRecall.Identity(project: project, repo: repo)
+                    }
                 }
                 if let clientCWD {
                     let inferred = MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
@@ -2802,12 +2847,16 @@ extension AgentBrokerService {
 
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
         if let sessionID, let session = activeSessions[sessionID] {
-            return MemoryScopeContext(
-                cwdPath: clientCWD,
-                repoRootPath: nil,
-                repoName: session.manifest.repo,
-                projectName: session.manifest.project
-            )
+            let project = session.manifest.project
+            let repo = session.manifest.repo
+            if project != nil || repo != nil {
+                return MemoryScopeContext(
+                    cwdPath: clientCWD,
+                    repoRootPath: nil,
+                    repoName: repo,
+                    projectName: project
+                )
+            }
         }
         if let clientCWD {
             return MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
@@ -3150,23 +3199,28 @@ extension AgentBrokerService {
         return .object(object)
     }
 
-    func renderScopeDropped(_ dropped: LayeredRecall.ScopeDropped) -> AgentBrokerValue? {
-        guard dropped.count > 0 else { return nil }
-        return .object([
-            "count": .from(dropped.count),
-            "top": .array(dropped.top.map { entry in
-                .object([
-                    "project": .from(entry.project),
-                    "repo": .from(entry.repo),
-                    "score": .double(Double(entry.score)),
-                    "preview": .string(entry.preview),
-                ])
-            }),
-            "hint": .string(dropped.hint),
-        ])
+    func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
+        var object = compactHitObject(
+            id: hit.reference,
+            text: hit.text,
+            preview: hit.preview,
+            metadata: hit.metadata,
+            score: hit.score,
+            createdAtMs: hit.timestampMs,
+            nowMs: Self.nowMs()
+        )
+        object["memory_id"] = .string(hit.reference)
+        object["horizon"] = .string(hit.horizon.rawValue)
+        object["session_id"] = .from(hit.sessionID?.uuidString)
+        object["agent_id"] = .from(hit.agentID)
+        object["run_id"] = .from(hit.runID)
+        object["frame_id"] = .from(hit.frameID)
+        object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
+        object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
+        return .object(object)
     }
 
-    func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
+    func renderCompactLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
         var object = compactHitObject(
             id: hit.reference,
             text: hit.text,
@@ -3194,8 +3248,11 @@ extension AgentBrokerService {
             "id": .string(id),
             "text": .string(text),
             "score": .double(Double(score)),
-            "age_days": .int(Self.ageDays(createdAtMs: createdAtMs, nowMs: nowMs)),
         ]
+        if createdAtMs > 0 {
+            object["created_at_ms"] = .int(createdAtMs)
+            object["age_days"] = .int(Self.ageDays(createdAtMs: createdAtMs, nowMs: nowMs))
+        }
         if let preview {
             object["preview"] = .string(preview)
         }
@@ -3207,6 +3264,15 @@ extension AgentBrokerService {
         }
         if let memoryType = metadata[MemoryMetadataKeys.type], !memoryType.isEmpty {
             object["memory_type"] = .string(memoryType)
+        }
+        if let durability = metadata[MemoryMetadataKeys.durability], !durability.isEmpty {
+            object["durability"] = .string(durability)
+        }
+        if let reviewed = metadata[MemoryMetadataKeys.reviewed] {
+            object["reviewed"] = .bool(reviewed.lowercased() == "true")
+        }
+        if let confidence = metadata[MemoryMetadataKeys.confidence].flatMap(Double.init) {
+            object["confidence"] = .double(confidence)
         }
         return object
     }
