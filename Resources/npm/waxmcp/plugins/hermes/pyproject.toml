@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-wax-memory"
-version = "0.1.26"
+version = "0.1.39"
 description = "Native Hermes memory provider plugin backed by Wax MCP over HTTP."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -31,4 +31,4 @@ Repository = "https://github.com/christopherkarani/Wax.git"
 wax-memory = "hermes_wax_memory:register"
 
 [tool.setuptools]
-py-modules = ["hermes_wax_memory", "wax_memory_schemas", "cli"]
+py-modules = ["hermes_wax_memory", "wax_memory_lifecycle", "wax_memory_schemas", "cli"]

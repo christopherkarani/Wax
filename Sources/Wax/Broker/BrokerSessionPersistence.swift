@@ -277,11 +277,23 @@ package enum BrokerSessionPersistence {
         }
     }
 
-    package static func findActive(conversationID: String, rootURL: URL) throws -> BrokerSessionManifest? {
+    package static func findActive(
+        conversationID: String,
+        agentID: String? = nil,
+        project: String? = nil,
+        repo: String? = nil,
+        rootURL: URL
+    ) throws -> BrokerSessionManifest? {
         let trimmed = conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let matches = try listManifests(rootURL: rootURL).filter { manifest in
-            manifest.status == .active && manifest.conversationID == trimmed
+            guard manifest.status == .active, manifest.conversationID == trimmed else {
+                return false
+            }
+            if let agentID, manifest.agentID != agentID { return false }
+            if let project, manifest.project != project { return false }
+            if let repo, manifest.repo != repo { return false }
+            return true
         }
         guard matches.count == 1 else { return nil }
         return matches[0]

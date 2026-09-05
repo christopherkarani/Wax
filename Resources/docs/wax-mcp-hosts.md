@@ -6,7 +6,7 @@ This is the install path. The playbook already exists — do not add a fourth co
 |---|---|---|
 | MCP `instructions` | shipped by `wax-mcp` | Session lifecycle on every connect |
 | Operator skill | `Resources/skills/public/wax-mcp` | Install + pointer; follow server `instructions` |
-| Paste block | `Resources/skills/public/wax-mcp/references/project-rules.md` | AGENTS.md / CLAUDE.md / Cursor, plus a SOUL.md stanza for Hermes / OpenClaw |
+| Paste block | `Resources/skills/public/wax-mcp/references/project-rules.md` | AGENTS.md / CLAUDE.md / Cursor, plus a SOUL.md stanza for OpenClaw |
 
 `wax-mcp` is the **operator** skill (using memory tools). `wax` is the **Swift framework** skill. Do not mix them.
 
@@ -20,23 +20,55 @@ All hosts on a machine must share `~/.wax/memory.wax`.
 ```bash
 # Stage binaries + skill once (does not register any host)
 npx -y waxmcp@latest install
-
-# Shared HTTP server (pin MiniLM if the store was built with MiniLM)
-npx -y waxmcp@latest --transport http --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp --embedder minilm
 ```
 
-If you already staged a runtime, this is equivalent:
+`waxmcp install` stages the MiniLM runtime, the operator skill, a copy of
+the Hermes provider, a checksum manifest, and
+`~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`. It does **not** write a
+LaunchAgent. Custom `--store-path` isolates session files next to the store
+unless `--session-root` or `WAX_SESSION_ROOT` / `WAX_SESSION_ROOT_DIR` is
+set.
+
+Keep **one** HTTP writer. Prefer the staged launcher:
 
 ```bash
 ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
-# or:
-# $HOME/.local/share/waxmcp/runtime/darwin-arm64/wax-mcp \
-#   --store-path "$HOME/.wax/memory.wax" \
-#   --embedder minilm --transport http \
-#   --http-host 127.0.0.1 --http-port 3000 --http-endpoint /mcp
-# Custom --store-path isolates session files next to the store unless
-# --session-root or WAX_SESSION_ROOT / WAX_SESSION_ROOT_DIR is set.
 ```
+
+If HTTP already runs as a login service, the label is `ai.wax.mcp-http`.
+After install or upgrade, restart it — do not start a second process on
+the same store (`npx waxmcp --transport http` and provider `auto_start`
+included):
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
+launchctl print "gui/$(id -u)/ai.wax.mcp-http"
+```
+
+The program path must be `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`.
+
+To create the LaunchAgent the first time, write
+`~/Library/LaunchAgents/ai.wax.mcp-http.plist` (absolute paths, `RunAtLoad`
+and `KeepAlive`, logs under `~/.local/share/waxmcp/logs/`,
+`WAX_BROKER_START_TIMEOUT_SECS=60`) and bootstrap it:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ai.wax.mcp-http.plist
+launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
+```
+
+Then prove vectors against that service:
+
+```bash
+npx -y waxmcp@latest vector-health
+npx -y waxmcp@latest doctor
+```
+
+`vector-health` is green only when both `vectorSearchEnabled` and
+`queryEmbeddingAvailable` are true (MiniLM identified). The check opens a
+temporary MCP session, calls `stats`, and DELETE-closes it. Degraded output
+prints the same install + launcher recovery path. `doctor` smoke-checks
+the daily tool surface (it is host-name agnostic).
 
 Stage the skill from the npm package or a checkout:
 
@@ -138,43 +170,65 @@ Restart Cursor. Confirm the `wax` MCP server is enabled in Settings → MCP.
 
 ## Hermes
 
-Hermes wants **both** the native memory provider and the MCP tool surface, both pointed at the same HTTP endpoint.
+Use **exactly one** Wax surface: the native memory provider. Hermes selects
+it with `memory.provider`. That is the whole wire-up.
 
 ```bash
+npx -y waxmcp@latest install
 npx -y waxmcp@latest install-hermes-plugin
-
+# keep HTTP up: start-wax-mcp-http.sh or LaunchAgent ai.wax.mcp-http
+npx -y waxmcp@latest vector-health
 hermes config set memory.provider wax-memory
-hermes config set wax_memory.endpoint http://127.0.0.1:3000/mcp --force
-hermes config set wax_memory.auto_start true --force
 ```
 
-Register MCP (non-interactive). `hermes mcp add` is TTY-only — write `mcp_servers.wax` in `~/.hermes/config.yaml`:
+The loopback endpoint `http://127.0.0.1:3000/mcp` is the default. Optional
+overrides: `WAX_MCP_HTTP_ENDPOINT`, `$HERMES_HOME/wax-memory.json`, or
+`hermes config set wax_memory.endpoint …`. Prefer LaunchAgent `ai.wax.mcp-http`
+over provider `auto_start` so a second process does not lock the store.
 
 ```yaml
 memory:
   provider: wax-memory
-
-wax_memory:
-  endpoint: http://127.0.0.1:3000/mcp
-  auto_start: true
-
-mcp_servers:
-  wax:
-    url: http://127.0.0.1:3000/mcp
-    enabled: true
-    timeout: 180
-    connect_timeout: 60
 ```
 
-Install the operator skill, then paste the SOUL.md fence from `references/project-rules.md` into `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`). Append if missing; replace an existing `## Memory (Wax)` section. Do not replace the rest of the soul.
+Do **not** add `wax-memory` to `plugins.enabled`. Memory providers are not
+generic plugins. Adding it there is the two-surface trap (PluginManager and
+the memory loader both try to load it). Do **not** also register
+`mcp_servers.wax`. Do **not** install the generic `wax-mcp` operator skill
+in this mode. Do not add a second stdio `wax` server.
+
+Native tools are `wax_remember`, `wax_recall`, and `wax_stats` (plus related
+`wax_*`). Call them directly; do not send them through a generic MCP
+deferral router. The provider owns session lifecycle from the host
+conversation id — **do not pass or invent a Wax `session_id`.**
+
+Recall:
+
+- Omit `scope` for **project-default**: hard-filter to the resolved
+  project/repo. Empty project recall is a miss, not “I have no memory.”
+- Pass `scope=global` only when you intend the whole local store (person
+  facts, standing preferences). Global disables the current-project rank
+  boost. It is **not** an authorization boundary.
+- If you supply both `project` and `repo`, both tags must match.
+
+Only point Hermes at a store every connected agent is trusted to read.
+
+After the plugin is installed from **this** tree:
 
 ```bash
-cp -a ~/.local/share/waxmcp/skills/wax-mcp ~/.hermes/skills/mcp/wax-mcp
+npx -y waxmcp@latest vector-health
+hermes wax-memory doctor
+hermes plugins doctor wax-memory
 ```
 
-Start a **new** Hermes session (MCP reload is required). Confirm `hermes mcp test wax` and that `handoff_latest` / `recall` are visible.
+`hermes wax-memory` registers `status`, `doctor`, and `config` only. Do not
+invent other subcommands. Confirm a new Hermes session lists `wax_remember`,
+`wax_recall`, and `wax_stats`.
 
-Do not add a second stdio `wax` server. Do not put `wax-memory` in `plugins.enabled` — the exclusive backend is `memory.provider: wax-memory`.
+If argparse rejects `wax-memory`, or Plugin Doctor reports
+`hermes_wax_memory module not found`, the installed plugin is stale. Re-run
+`npx -y waxmcp@latest install-hermes-plugin` from this package, then rerun
+both doctors. Do not “fix” that by adding `wax-memory` to `plugins.enabled`.
 
 ---
 
@@ -188,7 +242,7 @@ Do not add a second stdio `wax` server. Do not put `wax-memory` in `plugins.enab
    args:    --store-path /Users/<you>/.wax/memory.wax --embedder minilm
    ```
 
-3. Paste the AGENTS.md fence from `Resources/skills/public/wax-mcp/references/project-rules.md` into the project `AGENTS.md` or `CLAUDE.md`. Hermes / OpenClaw: paste the SOUL.md fence into `SOUL.md` (append if missing; replace an existing `## Memory (Wax)` section).
+3. Paste the AGENTS.md fence from `Resources/skills/public/wax-mcp/references/project-rules.md` into the project `AGENTS.md` or `CLAUDE.md`. OpenClaw: paste the SOUL.md fence into `SOUL.md` (append if missing; replace an existing `## Memory (Wax)` section). Native Hermes does not use that MCP paste.
 
 That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
@@ -196,10 +250,14 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 
 ## What the agent should do once connected
 
-Same rules on every host (from the paste block):
+**Native Hermes** uses `wax_remember` / `wax_recall` / `wax_stats` with no
+Wax UUID. Project-default vs `scope=global` is above.
+
+**MCP hosts** (Claude, Codex, Cursor, OpenClaw, generic) follow the paste
+block:
 
 1. Call `session_open` (`project`, stable `agent_id`/`run_id`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
-2. Before the first answer: `recall` with `session_id` and `mode: text` for this job, plus `scope: global` for facts about the person.
+2. Before the first answer: `recall` with `session_id` and `mode: text` for this job, plus `scope: global` for facts about the person. Omitted scope is current-project; empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
 3. Lasting writes: `remember` with top-level `session_id` and `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. Write one-line corrections too.
 4. This job only: `task_state` with `session_id` (plan lock, failed path, landmine, before spawn or stop).
 5. Close with `session_close` (`session_id`, short `content`, `pending_tasks`) when the job ends. Do not end between turns of one host chat.
@@ -214,12 +272,39 @@ Same rules on every host (from the paste block):
 
 ---
 
+## Diagnose / recover
+
+```bash
+npx -y waxmcp@latest doctor
+# same check:
+# ~/.local/share/waxmcp/runtime/darwin-arm64/wax-cli mcp doctor
+
+npx -y waxmcp@latest vector-health
+```
+
+Hermes (native provider installed from this tree):
+
+```bash
+hermes wax-memory doctor
+hermes plugins doctor wax-memory
+```
+
+`vector-health` must print both vector flags true. If it is degraded:
+
+1. `npx -y waxmcp@latest install`
+2. Restart HTTP: `launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"` when that LaunchAgent is loaded; otherwise run `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`
+3. Rerun `npx -y waxmcp@latest vector-health`
+
+If Hermes doctors fail to register or import, reinstall the plugin with
+`npx -y waxmcp@latest install-hermes-plugin`. Do not add `wax-memory` to
+`plugins.enabled`.
+
 ## Smoke test (any host)
 
 Ask the agent: “Load Wax, start a session, and tell me the latest handoff.”
 
 Pass if it:
 
-1. Calls `session_open` (not `handoff_latest` then `session_start` as the default open)
-2. Does not ask you to restate prior context that the handoff already contains
-3. Can `stats` and reports vector search on (or honestly says it is off)
+1. MCP hosts: calls `session_open` (not `handoff_latest` then `session_start` as the default open). Native Hermes: calls `wax_remember` / `wax_recall` with no Wax `session_id`.
+2. Does not ask you to restate prior context that memory already contains
+3. Can `stats` / `wax_stats` and reports vector search on (or honestly says it is off)

@@ -26,7 +26,8 @@
     "waxmcp": "bin/waxmcp.js"
   },
   "scripts": {
-    "prepack": "node scripts/verify-dist.mjs"
+    "prepack": "node scripts/verify-dist.mjs",
+    "test": "node --test scripts/launcher-tests.mjs"
   },
   "files": [
     "bin",

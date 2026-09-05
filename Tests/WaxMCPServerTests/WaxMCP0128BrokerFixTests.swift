@@ -271,6 +271,50 @@ func hintedSessionOpenResumesSameUUIDWithoutConflictingExactPair() async throws 
 }
 
 @Test
+func hintedSessionOpenKeepsExplicitConversationsIsolated() async throws {
+    try await withIsolatedBroker { service, _ in
+        let hint = MCPClientSessionHint()
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintConversationRepo",
+                    "agent_id": "hint-conversation-agent",
+                    "run_id": "hint-conversation-run-one",
+                    "conversation_id": "host-conversation-one",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(first.isError != true)
+        let firstID = try #require(
+            try requireJSONObject(firstTextContent(first))["session_id"] as? String
+        )
+
+        let second = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "project": "HintConversationRepo",
+                    "agent_id": "hint-conversation-agent",
+                    "run_id": "hint-conversation-run-two",
+                    "conversation_id": "host-conversation-two",
+                ]
+            ),
+            broker: service,
+            sessionHint: hint
+        )
+        #expect(second.isError != true)
+        let secondID = try #require(
+            try requireJSONObject(firstTextContent(second))["session_id"] as? String
+        )
+        #expect(secondID != firstID)
+        #expect(hint.current() == secondID)
+    }
+}
+
+@Test
 func hintedSessionOpenDoesNotStealConflictingExactPair() async throws {
     try await withIsolatedBroker { service, _ in
         let hint = MCPClientSessionHint()
@@ -512,9 +556,8 @@ func sessionScopedRememberKeepsManifestProjectAndRepo() async throws {
         ))
         #expect(search.ok == true)
         let hit = try #require(try requireObject(search.payload)["results"]?.arrayValue?.first?.objectValue)
-        let metadata = try #require(hit["metadata"]?.objectValue)
-        #expect(metadata["wax.repo"]?.stringValue == repoB.lastPathComponent)
-        #expect(metadata["wax.project"]?.stringValue == repoB.lastPathComponent)
+        #expect(hit["repo"]?.stringValue == repoB.lastPathComponent)
+        #expect(hit["project"]?.stringValue == repoB.lastPathComponent)
     }
 }
 

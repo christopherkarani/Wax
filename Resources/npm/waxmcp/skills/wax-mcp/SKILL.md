@@ -19,6 +19,13 @@ Daily tools: `session_open`, `remember`, `recall`, `session_close`, `stats`,
 Close harvests. Do not call `memory_promote` or `memory-maintain` in the agent
 loop. Never invent a `session_id` or put it in `metadata`.
 
+Recall defaults to the current project after project/repo resolution. Empty
+project recall is a miss, not “I have no memory.” Supplying both `project`
+and `repo` requires both exact tags. Pass `scope=global` only for
+cross-project retrieval (person facts, standing preferences). Global
+searches the entire local store with no current-project rank boost. It is
+not an authorization boundary.
+
 Pasteable host rules: `references/project-rules.md`.
 
 This is not the Swift framework skill. For embedding Wax in Swift apps, use
@@ -39,7 +46,7 @@ Then wire the **host**, not a new prompt:
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
 | Codex | HTTP URL in `~/.codex/config.toml` + copy this skill to `~/.codex/skills/wax-mcp` |
 | Cursor | HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
-| Hermes | HTTP + `memory.provider: wax-memory` + copy this skill + paste the SOUL.md stanza into `~/.hermes/SOUL.md` (replace existing `## Memory (Wax)`) |
+| Hermes | Native `memory.provider: wax-memory` only (`npx -y waxmcp@latest install-hermes-plugin`). Never `plugins.enabled`. Never also `mcp_servers.wax`; do not also register generic MCP or this generic skill. Call `wax_remember` / `wax_recall` / `wax_stats` with no Wax UUID. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into workspace `SOUL.md` (replace existing `## Memory (Wax)`) |
 | Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
 
@@ -51,6 +58,33 @@ Two or more clients must share **one** HTTP server on
 `Resources/docs/wax-mcp-hosts.md`.
 
 The npm launcher serves MCP. It does **not** implement `mcp install --scope`.
+
+## Diagnose / recover
+
+```bash
+npx -y waxmcp@latest doctor
+npx -y waxmcp@latest vector-health
+```
+
+`vector-health` is green only when both `vectorSearchEnabled` and
+`queryEmbeddingAvailable` are true. After `install`, restart HTTP if it is
+already a service — do not start a second writer:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
+# or: ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
+```
+
+Native Hermes, after `install-hermes-plugin` from this tree:
+
+```bash
+hermes wax-memory doctor
+hermes plugins doctor wax-memory
+```
+
+`hermes wax-memory` registers `status`, `doctor`, and `config` only. If
+those doctors fail to register or import, reinstall the plugin. Do not add
+`wax-memory` to `plugins.enabled`.
 
 ```bash
 # Claude skill (if wax-cli install did not auto-register)

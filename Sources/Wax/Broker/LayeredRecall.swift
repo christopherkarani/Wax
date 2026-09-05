@@ -205,6 +205,7 @@ package enum LayeredRecall {
         package var effectiveModeSummary: String
         package var queryEmbeddingState: String
         package var searchTopK: Int
+        package var retrievalTopK: Int
         package var limit: Int
     }
 
@@ -275,8 +276,6 @@ package enum LayeredRecall {
         package var identity: Identity
         package var workingExecution: MemoryOrchestrator.RecallExecution?
         package var durableExecution: MemoryOrchestrator.RecallExecution?
-        /// Unscoped durable overfetch for `scope_dropped` only. Not used for kept hits.
-        package var dropCandidates: [Hit] = []
     }
 
     package static func makeMemoryReference(_ id: MemoryID) -> String {
@@ -304,8 +303,13 @@ package enum LayeredRecall {
         sessionRepo: String?,
         inferred: Identity
     ) -> Identity {
-        var project = normalize(explicitProject)
-        var repo = normalize(explicitRepo)
+        let explicitProject = normalize(explicitProject)
+        let explicitRepo = normalize(explicitRepo)
+        if explicitProject != nil || explicitRepo != nil {
+            return Identity(project: explicitProject, repo: explicitRepo)
+        }
+        var project: String?
+        var repo: String?
         if project == nil {
             project = normalize(sessionProject)
         }
@@ -326,15 +330,39 @@ package enum LayeredRecall {
         project: String?,
         repo: String?
     ) -> [Hit] {
-        hits.filter { hit in
-            if let project {
-                return hit.metadata[MemoryMetadataKeys.project] == project
-            }
-            if let repo {
-                return hit.metadata[MemoryMetadataKeys.repo] == repo
-            }
-            return false
+        let identity = Identity(project: normalize(project), repo: normalize(repo))
+        return hits.filter { matchesProjectScope($0, identity: identity) }
+    }
+
+    /// Unresolved project keeps the live working lane and unstamped durable/episodic
+    /// hits. Stamped foreign durable is dropped so we never auto-widen. Resolved
+    /// identity keeps unstamped hits (they are not a different project).
+    package static func matchesProjectScope(_ hit: Hit, identity: Identity) -> Bool {
+        if identity.project == nil && identity.repo == nil {
+            if hit.horizon == .working { return true }
+            return !hasExplicitProjectOrRepo(hit)
         }
+        return matchesIdentityOrUnscoped(hit, identity: identity)
+    }
+
+    package static func hasExplicitProjectOrRepo(_ hit: Hit) -> Bool {
+        let project = hit.metadata[MemoryMetadataKeys.project]
+        let repo = hit.metadata[MemoryMetadataKeys.repo]
+        return (project.map { !$0.isEmpty } ?? false) || (repo.map { !$0.isEmpty } ?? false)
+    }
+
+    package static func matchesIdentityOrUnscoped(_ hit: Hit, identity: Identity) -> Bool {
+        let projectMatches = identity.project.map { wanted in
+            let actual = hit.metadata[MemoryMetadataKeys.project]
+            if actual == nil || actual == "" { return true }
+            return actual == wanted
+        } ?? true
+        let repoMatches = identity.repo.map { wanted in
+            let actual = hit.metadata[MemoryMetadataKeys.repo]
+            if actual == nil || actual == "" { return true }
+            return actual == wanted
+        } ?? true
+        return projectMatches && repoMatches
     }
 
     /// Ended virtual session stores eligible for the episodic lane.
@@ -360,8 +388,7 @@ package enum LayeredRecall {
     /// Inflates retrieval top-K when a post-rank project hard-filter may discard foreign hits.
     package static func retrievalTopK(requested: Int, scope: Scope, maxTopK: Int = 200) -> Int {
         let bounded = max(1, requested)
-        guard scope != .global else { return bounded }
-        return min(max(bounded * 3, bounded), maxTopK)
+        return min(max(bounded * 3, 12), maxTopK)
     }
 
     /// Merges resolved project/repo identity into the caller's frame filter for retrieval (C1/C3).
@@ -377,7 +404,8 @@ package enum LayeredRecall {
         var entries = base?.metadataFilter?.requiredEntries ?? [:]
         if let project = identity.project {
             entries[MemoryMetadataKeys.project] = project
-        } else if let repo = identity.repo {
+        }
+        if let repo = identity.repo {
             entries[MemoryMetadataKeys.repo] = repo
         }
 
@@ -398,7 +426,8 @@ package enum LayeredRecall {
     package static func mergeHits(
         sessionHits: [Hit],
         durableHits: [Hit],
-        limit: Int
+        limit: Int,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) -> [Hit] {
         func identity(_ hit: Hit) -> String {
             if let hash = hit.metadata["wax.content.hash"] {
@@ -407,28 +436,36 @@ package enum LayeredRecall {
             return hit.text
         }
 
+        func adjustFreshness(_ hit: Hit) -> Hit {
+            var copy = hit
+            let adjusted = freshnessAdjustedScore(hit, nowMs: nowMs)
+            if adjusted != hit.score {
+                copy.score = adjusted
+                copy.explanations.append("freshness adjusted operational memory")
+            }
+            return copy
+        }
+
         let sessionTagged = sessionHits.map { hit -> Hit in
             var copy = hit
             copy.score += 0.12
             if !copy.explanations.contains("current session") {
                 copy.explanations = ["current session"] + copy.explanations
             }
-            return copy
+            return adjustFreshness(copy)
         }
         let durableTagged = durableHits.map { hit -> Hit in
             var copy = hit
             if !copy.explanations.contains("durable memory") {
                 copy.explanations = ["durable memory"] + copy.explanations
             }
-            return copy
+            return adjustFreshness(copy)
         }
 
         var seen = Set<String>()
         var merged: [Hit] = []
-        let ranked = (sessionTagged + durableTagged).sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameID < rhs.frameID
-        }
+        let candidates = sessionTagged + durableTagged
+        let ranked = candidates.sorted(by: higherRank)
         for hit in ranked {
             guard seen.insert(identity(hit)).inserted else { continue }
             merged.append(hit)
@@ -440,10 +477,7 @@ package enum LayeredRecall {
             guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
             guard let extra = hits
                 .filter({ !seen.contains(identity($0)) })
-                .max(by: { lhs, rhs in
-                    if lhs.score != rhs.score { return lhs.score < rhs.score }
-                    return lhs.frameID > rhs.frameID
-                })
+                .max(by: { higherRank($1, $0) })
             else { return }
 
             if merged.count >= limit {
@@ -461,11 +495,32 @@ package enum LayeredRecall {
         if merged.count > limit {
             merged = Array(merged.prefix(limit))
         }
-        merged.sort { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameID < rhs.frameID
-        }
+        merged.sort(by: higherRank)
         return merged
+    }
+
+    private static func higherRank(_ lhs: Hit, _ rhs: Hit) -> Bool {
+        if lhs.score != rhs.score { return lhs.score > rhs.score }
+        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
+        return lhs.frameID > rhs.frameID
+    }
+
+    /// Recency only nudges short-lived operational memory. Durable preferences,
+    /// facts, lessons, decisions, constraints, reviewed frames, and locked frames
+    /// keep their semantic score regardless of age.
+    package static func freshnessAdjustedScore(_ hit: Hit, nowMs: Int64) -> Float {
+        let type = hit.metadata[MemoryMetadataKeys.type]
+        let isOperational = type == MemoryType.note.rawValue
+            || type == MemoryType.taskState.rawValue
+            || type == MemoryType.handoff.rawValue
+        let isReviewed = hit.metadata[MemoryMetadataKeys.reviewed]?.lowercased() == "true"
+        let isLocked = hit.metadata[MemoryMetadataKeys.durability] == MemoryDurability.locked.rawValue
+        guard isOperational, !isReviewed, !isLocked, hit.timestampMs > 0, nowMs > hit.timestampMs else {
+            return hit.score
+        }
+        let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
+        let penalty = min(0.18, max(0, ageDays / 30) * 0.18)
+        return hit.score - penalty
     }
 
     /// Scope selection after merge (project hard-filter + miss messaging).
@@ -478,21 +533,25 @@ package enum LayeredRecall {
         if scope == .global || scope == .session {
             return (merged, false, nil, .empty)
         }
-        // scope == .project
         let filtered = filterHitsByProject(merged, project: identity.project, repo: identity.repo)
-        if identity.project == nil && identity.repo == nil {
-            return (
-                [],
-                true,
-                "no frames for project (unresolved); pass project/repo or scope=global",
-                .empty
-            )
-        }
         if filtered.isEmpty {
+            if identity.project == nil && identity.repo == nil {
+                return (
+                    [],
+                    true,
+                    "no frames for project (unresolved); pass project/repo or scope=global",
+                    .empty
+                )
+            }
             let label = identity.project.map { "project \($0)" }
                 ?? identity.repo.map { "repo \($0)" }
                 ?? "project"
             return ([], true, "no frames for \(label)", .empty)
+        }
+        if identity.project == nil && identity.repo == nil {
+            // Unresolved project keeps the live session and unstamped durable;
+            // stamped foreign durable was already dropped by the filter.
+            return (filtered, false, nil, .empty)
         }
         return (filtered, false, nil, louderDropped(merged: merged, kept: filtered, identity: identity))
     }
@@ -503,16 +562,15 @@ package enum LayeredRecall {
         kept: [Hit],
         identity: Identity
     ) -> ScopeDropped {
-        guard let maxKept = kept.map(\.score).max() else { return .empty }
+        let maxKept = kept.map(\.score).max()
         let foreign = merged.filter { hit in
             filterHitsByProject([hit], project: identity.project, repo: identity.repo).isEmpty
         }
-        let louder = foreign.filter { $0.score >= maxKept }
-        guard !louder.isEmpty else { return .empty }
-        let ranked = louder.sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameID < rhs.frameID
+        let louder = foreign.filter { hit in
+            maxKept.map { hit.score >= $0 } ?? true
         }
+        guard !louder.isEmpty else { return .empty }
+        let ranked = louder.sorted(by: higherRank)
         let top = ranked.prefix(3).map { hit in
             ScopeDropped.Entry(
                 project: hit.metadata[MemoryMetadataKeys.project],
@@ -524,7 +582,7 @@ package enum LayeredRecall {
         return ScopeDropped(
             count: louder.count,
             top: Array(top),
-            hint: "pass scope=global for cross-project — do not auto-widen"
+            hint: "retry explicitly with scope=global"
         )
     }
 
@@ -602,13 +660,13 @@ package enum LayeredRecall {
         )
 
         let topK = max(1, request.searchTopK)
-        let rankingScope = MemoryScopeContext(
-            repoName: identity.repo,
-            projectName: identity.project
-        )
-        // Primary working/durable retrieval stays project-scoped so foreign hits
-        // cannot crowd out the lane. Unscoped durable overfetch is dropCandidates
-        // only. Episodic keeps the scoped helper.
+        // A non-nil empty context intentionally disables the orchestrator's
+        // configured project fallback for global recall.
+        let rankingScope = request.scope == .global
+            ? MemoryScopeContext()
+            : MemoryScopeContext(repoName: identity.repo, projectName: identity.project)
+        // Project scope injects identity into the frame filter so foreign hits
+        // cannot crowd the lane. Global and session leave the caller filter alone.
         let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
             base: request.frameFilter,
             scope: request.scope,
@@ -630,35 +688,11 @@ package enum LayeredRecall {
             sessionHits = execution.context.items.map {
                 hit(from: $0, horizon: .working, sessionID: working.sessionID)
             }
-            if sessionHits.isEmpty {
-                let documents = try await working.memory.corpusSourceDocuments()
-                    .sorted { lhs, rhs in
-                        if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                        return lhs.frameId > rhs.frameId
-                    }
-                sessionHits = documents.prefix(topK).map { document in
-                    Hit(
-                        id: .working(sessionID: working.sessionID, frameID: document.frameId),
-                        agentID: working.agentID,
-                        runID: working.runID,
-                        score: 0.2,
-                        text: document.text,
-                        preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                        metadata: document.metadata,
-                        explanations: ["current session", "recent session note"],
-                        timestampMs: document.timestampMs,
-                        kind: .snippet,
-                        sources: [.text]
-                    )
-                }
-            } else {
-                sessionHits = sessionHits.map { hit in
-                    var copy = hit
-                    copy.agentID = working.agentID
-                    copy.runID = working.runID
-                    copy.timestampMs = working.updatedAtMs
-                    return copy
-                }
+            sessionHits = sessionHits.map { hit in
+                var copy = hit
+                copy.agentID = working.agentID
+                copy.runID = working.runID
+                return copy
             }
             if canonicalizeFrameIDs {
                 sessionHits = await canonicalizeHits(sessionHits, memory: working.memory, stores: stores)
@@ -667,7 +701,6 @@ package enum LayeredRecall {
 
         var durableHits: [Hit] = []
         var durableExecution: MemoryOrchestrator.RecallExecution?
-        var dropCandidates: [Hit] = []
         if request.scope != .session, horizons.contains(.durable) {
             let execution = try await stores.longTermMemory.recallExecution(
                 query: request.query,
@@ -684,21 +717,6 @@ package enum LayeredRecall {
                     durableHits,
                     memory: stores.longTermMemory,
                     stores: stores
-                )
-            }
-            if request.scope == .project {
-                let dropExecution = try await stores.longTermMemory.recallExecution(
-                    query: request.query,
-                    mode: request.mode,
-                    frameFilter: request.frameFilter,
-                    timeRange: request.timeRange,
-                    topK: topK,
-                    scopeContext: rankingScope
-                )
-                dropCandidates = visibleDurableHits(
-                    from: dropExecution,
-                    request: request,
-                    nowMs: stores.nowMs()
                 )
             }
         }
@@ -730,9 +748,41 @@ package enum LayeredRecall {
             durable: durableHits,
             identity: identity,
             workingExecution: sessionExecution,
-            durableExecution: durableExecution,
-            dropCandidates: dropCandidates
+            durableExecution: durableExecution
         )
+    }
+
+    /// Live-session documents reserved for `scope=global` when retrieval missed.
+    /// Compact and project/session recall must not use this path.
+    private static func reservedLiveSessionHits(
+        request: RecallRequest,
+        stores: Stores
+    ) async throws -> [Hit] {
+        guard let sessionID = request.sessionID, let working = stores.workingLane(sessionID) else {
+            return []
+        }
+        let documents = try await working.memory.corpusSourceDocuments()
+            .sorted { lhs, rhs in
+                if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
+                return lhs.frameId > rhs.frameId
+            }
+        let topK = max(1, request.searchTopK)
+        return documents.prefix(topK).map { document in
+            Hit(
+                id: .working(sessionID: working.sessionID, frameID: document.frameId),
+                agentID: working.agentID,
+                runID: working.runID,
+                score: 0.2,
+                text: document.text,
+                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                metadata: document.metadata,
+                explanations: ["current session", "recent session note"],
+                timestampMs: document.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init)
+                    ?? document.timestampMs,
+                kind: .snippet,
+                sources: [.text]
+            )
+        }
     }
 
     private static func visibleDurableHits(
@@ -777,28 +827,27 @@ package enum LayeredRecall {
             merged = mergeHits(
                 sessionHits: scopedSession,
                 durableHits: scopedDurable,
-                limit: request.limit
+                limit: request.limit,
+                nowMs: stores.nowMs()
             )
         } else {
+            // Global recall still merges the live session. Do not run this
+            // reservation in fetchLanes: compact/project/session must not
+            // backfill unmatched working notes.
+            var sessionHits = lanes.working
+            if sessionHits.isEmpty {
+                sessionHits = try await reservedLiveSessionHits(request: request, stores: stores)
+            }
             merged = mergeHits(
-                sessionHits: lanes.working,
+                sessionHits: sessionHits,
                 durableHits: lanes.durable,
-                limit: request.limit
+                limit: request.limit,
+                nowMs: stores.nowMs()
             )
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
         let keptHits = Array(selected.hits.prefix(request.limit))
-        let scopeDropped: ScopeDropped
-        if request.scope == .project {
-            scopeDropped = louderDropped(
-                merged: lanes.dropCandidates,
-                kept: keptHits,
-                identity: identity
-            )
-        } else {
-            scopeDropped = selected.scopeDropped
-        }
         let primary = lanes.workingExecution ?? lanes.durableExecution
 
         return RecallResult(
@@ -807,11 +856,12 @@ package enum LayeredRecall {
             identity: identity,
             projectMiss: selected.projectMiss,
             scopeMissMessage: selected.scopeMissMessage,
-            scopeDropped: scopeDropped,
+            scopeDropped: selected.scopeDropped,
             requestedModeSummary: primary?.requestedMode.diagnosticsSummary ?? "n/a",
             effectiveModeSummary: primary?.effectiveMode.diagnosticsSummary ?? "n/a",
             queryEmbeddingState: primary?.queryEmbeddingState.rawValue ?? "n/a",
             searchTopK: request.searchTopK,
+            retrievalTopK: fetchRequest.searchTopK,
             limit: request.limit
         )
     }
@@ -844,7 +894,7 @@ package enum LayeredRecall {
                         preview: stores.preview(result.previewText),
                         metadata: result.metadata,
                         explanations: ["current session"] + result.explanations,
-                        timestampMs: lane.updatedAtMs,
+                        timestampMs: result.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0,
                         sources: result.sources
                     )
                 )
@@ -925,7 +975,7 @@ package enum LayeredRecall {
                             preview: stores.preview(laneHit.previewText),
                             metadata: laneHit.metadata,
                             explanations: explanations,
-                            timestampMs: manifest.updatedAtMs,
+                            timestampMs: laneHit.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0,
                             sources: []
                         )
                     )

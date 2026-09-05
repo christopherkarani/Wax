@@ -1388,9 +1388,106 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains(#""committed" : false"#))
     }
 
+    @Test
+    func mcpDoctorDailyToolSurfaceMatchesCanonicalVerbs() {
+        #expect(MCPDoctorSurface.dailyToolNames == [
+            "session_open",
+            "remember",
+            "recall",
+            "session_close",
+            "stats",
+            "memory_get",
+            "compact_context",
+            "session_resume",
+        ])
+    }
+
+    @Test
+    func vectorHealthIsGreenOnlyWhenQueryEmbeddingsAreAvailable() {
+        let healthy = MCPVectorHealthDiagnostics.evaluate(
+            vectorSearchEnabled: true,
+            queryEmbeddingAvailable: true,
+            model: "all-MiniLM-L6-v2",
+            embeddingStatus: "ready",
+            framesWithoutVectors: 0
+        )
+        #expect(healthy.healthy)
+        #expect(healthy.status == "healthy")
+        #expect(healthy.model == "all-MiniLM-L6-v2")
+        #expect(healthy.reason.contains("query embeddings"))
+        #expect(healthy.framesWithoutVectors == 0)
+
+        let storageOnly = MCPVectorHealthDiagnostics.evaluate(
+            vectorSearchEnabled: true,
+            queryEmbeddingAvailable: false,
+            model: "all-MiniLM-L6-v2",
+            embeddingStatus: "degraded",
+            embeddingStatusReason: "query embedder is not ready",
+            framesWithoutVectors: 4
+        )
+        #expect(storageOnly.healthy == false)
+        #expect(storageOnly.status == "degraded")
+        #expect(storageOnly.model == "all-MiniLM-L6-v2")
+        #expect(storageOnly.reason == "query embedder is not ready")
+        #expect(storageOnly.framesWithoutVectors == 4)
+        #expect(storageOnly.vectorSearchEnabled)
+        #expect(storageOnly.queryEmbeddingAvailable == false)
+
+        let disabled = MCPVectorHealthDiagnostics.evaluate(
+            vectorSearchEnabled: false,
+            queryEmbeddingAvailable: false
+        )
+        #expect(disabled.healthy == false)
+        #expect(disabled.status == "degraded")
+        #expect(disabled.reason.contains("vector search is disabled"))
+
+        let storageReadyWithoutQuery = MCPVectorHealthDiagnostics.evaluate(
+            vectorSearchEnabled: true,
+            queryEmbeddingAvailable: false,
+            model: "all-MiniLM-L6-v2",
+            embeddingStatus: "ready"
+        )
+        #expect(storageReadyWithoutQuery.healthy == false)
+        #expect(storageReadyWithoutQuery.status == "degraded")
+        #expect(storageReadyWithoutQuery.status != "healthy")
+        #expect(storageReadyWithoutQuery.status != "ready")
+        #expect(storageReadyWithoutQuery.reason.contains("query embeddings"))
+    }
+
+    @Test
+    func vectorHealthCommandIsUnhealthyWhenQueryEmbeddingsAreUnavailable() {
+        #expect(
+            VectorHealthCommand.isHealthy(
+                vectorSearchEnabled: true,
+                queryEmbeddingAvailable: true,
+                embedderPresent: true,
+                framesWithoutVectors: 0,
+                canaryPassed: true
+            )
+        )
+        #expect(
+            VectorHealthCommand.isHealthy(
+                vectorSearchEnabled: true,
+                queryEmbeddingAvailable: false,
+                embedderPresent: true,
+                framesWithoutVectors: 0,
+                canaryPassed: true
+            ) == false
+        )
+        #expect(
+            VectorHealthCommand.isHealthy(
+                vectorSearchEnabled: false,
+                queryEmbeddingAvailable: true,
+                embedderPresent: true,
+                framesWithoutVectors: 0,
+                canaryPassed: true
+            ) == false
+        )
+    }
+
     @Test(.disabled(if: !mcpServerTraitEnabled,
                     "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
-    func mcpDoctorRecognizesRenamedToolSurface() throws {
+    func mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-doctor-\(UUID().uuidString)", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("doctor.wax")
@@ -1400,9 +1497,6 @@ struct WaxCLIMemoryTests {
 
         let cli = try builtProductPath(named: "wax-cli")
         let server = try builtProductPath(named: "wax-mcp")
-        let fakeClaude = tempRoot.appendingPathComponent("claude")
-        try makeExecutableStub(at: fakeClaude)
-        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
         let output = try runProcess(
             executableURL: URL(fileURLWithPath: cli),
             arguments: [
@@ -1411,12 +1505,117 @@ struct WaxCLIMemoryTests {
                 "--store-path", storeURL.path,
                 "--no-embedder",
             ],
-            environment: ["PATH": "\(tempRoot.path):\(inheritedPath)"],
+            environment: ["PATH": "/usr/bin:/bin"],
             timeout: 60
         )
 
-        #expect(output.status == EXIT_SUCCESS, "wax-cli mcp doctor should pass against the renamed tool surface")
+        #expect(output.status == EXIT_SUCCESS, "wax-cli mcp doctor should pass against the daily tool surface without a host CLI")
         #expect(output.stdout.contains("Doctor passed."))
+        #expect(output.stdout.lowercased().contains("claude") == false)
+        #expect(output.stdout.lowercased().contains("vector: healthy") == false)
+        #expect(output.stdout.contains("Vector search is working") == false)
+    }
+
+    @Test(.disabled(if: !mcpServerTraitEnabled,
+                    "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
+    func mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-locked-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("held.wax")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableStructuredMemory = true
+        config.rag.searchMode = .textOnly
+        let holder = try await MemoryOrchestrator(at: storeURL, config: config)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let server = try builtProductPath(named: "wax-mcp")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", server,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeout: 60
+        )
+        try await holder.close()
+
+        #expect(output.status == EXIT_SUCCESS, "doctor failed: \(output.stderr)")
+        #expect(output.stdout.contains("Doctor passed."))
+        #expect(output.stdout.contains("smoke-checking an isolated store"))
+    }
+
+    @Test
+    func mcpDoctorFailsWhenDailyToolSurfaceIsIncomplete() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try #require(FileManager.default.isExecutableFile(atPath: python.path))
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-incomplete-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("doctor.wax")
+        let fakeServer = tempRoot.appendingPathComponent("fake-mcp")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try #"""
+        #!/usr/bin/python3
+        import json
+        import sys
+
+        tools = [{"name": "remember"}]
+        for raw in sys.stdin:
+            line = raw.strip()
+            if not line:
+                continue
+            message = json.loads(line)
+            method = message.get("method")
+            request_id = message.get("id")
+            if method == "initialize":
+                sys.stdout.write(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fake-mcp", "version": "0"},
+                    },
+                }) + "\n")
+                sys.stdout.flush()
+            elif method == "tools/list":
+                sys.stdout.write(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"tools": tools},
+                }) + "\n")
+                sys.stdout.flush()
+        """#.write(to: fakeServer, atomically: true, encoding: .utf8)
+        try setExecutable(fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", fakeServer.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeout: 20
+        )
+
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("missing daily tools"))
+        #expect(output.stdout.contains("session_open"))
+        #expect(output.stdout.contains("recall"))
+        #expect(output.stdout.contains("Doctor passed.") == false)
+        #expect(output.stdout.lowercased().contains("claude") == false)
     }
 
     @Test(.disabled(if: !mcpServerTraitEnabled,

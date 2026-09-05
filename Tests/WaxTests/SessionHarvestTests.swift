@@ -77,6 +77,7 @@ private func rememberSession(
             "session_id": .string(sessionID),
             "memory_type": .string(memoryType),
             "durability": .string(durability),
+            "scope": .string("session"),
             "project": .string(harvestProject),
             "repo": .string(harvestProject),
         ]
@@ -799,12 +800,17 @@ func harvestReportLabelsLockedSessionDocumentAsLocked() async throws {
 func harvestReportLabelsSecretLikeLeftoverAsSecret() async throws {
     try await withHarvestBroker { service, _ in
         let sessionID = try await startHarvestSession(service, runID: "harvest-secret-leftover")
-        try await rememberSession(
-            service,
-            sessionID: sessionID,
-            content: "Decision: rotate access key AKIAIOSFODNN7EXAMPLE before harvest.",
-            memoryType: "decision"
+        let state = try await liveHarvestState(service, sessionID: sessionID)
+        _ = try await state.memory.remember(
+            "Decision: rotate access key AKIAIOSFODNN7EXAMPLE before harvest.",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                MemoryMetadataKeys.project: harvestProject,
+                MemoryMetadataKeys.repo: harvestProject,
+            ]
         )
+        try await state.memory.flush()
 
         let report = try await harvestLiveSession(service, sessionID: sessionID)
         #expect(report.leftoverCount >= 1)
@@ -844,5 +850,271 @@ func harvestReportLabelsExactDurableDuplicateAsDup() async throws {
         #expect(report.leftoverReasons.contains("dup"))
         #expect(report.promoted.isEmpty)
         #expect(report.promotedCount == 0)
+    }
+}
+
+@Test
+func findActiveConversationRequiresMatchingAgentProjectAndRepo() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-find-active-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let hostA = UUID()
+    let hostB = UUID()
+    let otherProject = UUID()
+    try saveHarvestManifest(
+        harvestManifest(
+            sessionID: hostA,
+            agentID: "host-a",
+            project: "proj",
+            repo: "repo-a",
+            conversationID: "shared-thread"
+        ),
+        rootURL: rootURL
+    )
+    try saveHarvestManifest(
+        harvestManifest(
+            sessionID: hostB,
+            agentID: "host-b",
+            runID: "b",
+            project: "proj",
+            repo: "repo-a",
+            conversationID: "shared-thread"
+        ),
+        rootURL: rootURL
+    )
+    try saveHarvestManifest(
+        harvestManifest(
+            sessionID: otherProject,
+            agentID: "host-a",
+            runID: "c",
+            project: "other-proj",
+            repo: "repo-a",
+            conversationID: "shared-thread"
+        ),
+        rootURL: rootURL
+    )
+
+    let stolen = try BrokerSessionPersistence.findActive(
+        conversationID: "shared-thread",
+        rootURL: rootURL
+    )
+    #expect(stolen == nil)
+
+    let namespaced = try BrokerSessionPersistence.findActive(
+        conversationID: "shared-thread",
+        agentID: "host-a",
+        project: "proj",
+        repo: "repo-a",
+        rootURL: rootURL
+    )
+    #expect(namespaced?.sessionID == hostA)
+
+    let otherHost = try BrokerSessionPersistence.findActive(
+        conversationID: "shared-thread",
+        agentID: "host-b",
+        project: "proj",
+        repo: "repo-a",
+        rootURL: rootURL
+    )
+    #expect(otherHost?.sessionID == hostB)
+
+    let repoMiss = try BrokerSessionPersistence.findActive(
+        conversationID: "shared-thread",
+        agentID: "host-a",
+        project: "proj",
+        repo: "repo-b",
+        rootURL: rootURL
+    )
+    #expect(repoMiss == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func sessionEndHarvestsAdmittedInFlightRemember() async throws {
+    let needle = "WAXDRAIN-\(UUID().uuidString.prefix(8))"
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-end-drain-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let embedder = ControlledRememberEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions", isDirectory: true).path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: embedder
+    )
+    do {
+        let sessionID = try await startHarvestSession(service, runID: "drain-end")
+        async let remembering = service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: keep \(needle) after in-flight close drain."),
+                "memory_type": .string("decision"),
+                "durability": .string("working"),
+                "scope": .string("session"),
+                "session_id": .string(sessionID),
+                "project": .string(harvestProject),
+                "repo": .string(harvestProject),
+            ]
+        ))
+        await embedder.waitUntilEmbeddingStarts()
+        async let ending = service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+
+        await embedder.release()
+        let remembered = await remembering
+        let ended = await ending
+        #expect(remembered.ok == true, "admitted remember failed: \(remembered.error ?? "nil")")
+        #expect(ended.ok == true, "session_end failed: \(ended.error ?? "nil")")
+        #expect(ended.payload?.objectValue?["ended"]?.boolValue == true)
+        #expect((ended.payload?.objectValue?["promoted_count"]?.intValue ?? 0) >= 1)
+        let promoted = ended.payload?.objectValue?["promoted"]?.arrayValue ?? []
+        #expect(promoted.contains { item in
+            (item.objectValue?["preview"]?.stringValue ?? "").contains(needle)
+        })
+
+        let payload = try await projectRecall(service, query: needle)
+        #expect(firstHitText(payload).contains(needle))
+        try await service.close()
+    } catch {
+        await embedder.release()
+        try? await service.close()
+        throw error
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func sessionCloseHarvestsAdmittedInFlightRemember() async throws {
+    let needle = "WAXCLOSEDRAIN-\(UUID().uuidString.prefix(8))"
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-close-drain-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let embedder = ControlledRememberEmbedder()
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: rootURL.appendingPathComponent("sessions", isDirectory: true).path,
+        noEmbedder: false,
+        embedderChoice: "auto",
+        requireVector: false,
+        embedderOverride: embedder
+    )
+    do {
+        let sessionID = try await startHarvestSession(service, runID: "drain-close")
+        async let remembering = service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Decision: keep \(needle) after session_close drain."),
+                "memory_type": .string("decision"),
+                "durability": .string("working"),
+                "scope": .string("session"),
+                "session_id": .string(sessionID),
+                "project": .string(harvestProject),
+                "repo": .string(harvestProject),
+            ]
+        ))
+        await embedder.waitUntilEmbeddingStarts()
+        async let closing = service.handle(.init(
+            command: "session_close",
+            arguments: [
+                "session_id": .string(sessionID),
+                "content": .string("drain close"),
+                "project": .string(harvestProject),
+            ]
+        ))
+
+        await embedder.release()
+        let remembered = await remembering
+        let closed = await closing
+        #expect(remembered.ok == true, "admitted remember failed: \(remembered.error ?? "nil")")
+        #expect(closed.ok == true, "session_close failed: \(closed.error ?? "nil")")
+        #expect(closed.payload?.objectValue?["ended"]?.boolValue == true)
+        #expect((closed.payload?.objectValue?["promoted_count"]?.intValue ?? 0) >= 1)
+
+        let payload = try await projectRecall(service, query: needle)
+        #expect(firstHitText(payload).contains(needle))
+        try await service.close()
+    } catch {
+        await embedder.release()
+        try? await service.close()
+        throw error
+    }
+}
+
+private func harvestManifest(
+    sessionID: UUID,
+    agentID: String,
+    runID: String = "a",
+    project: String?,
+    repo: String?,
+    conversationID: String
+) -> BrokerSessionManifest {
+    BrokerSessionManifest(
+        sessionID: sessionID,
+        agentID: agentID,
+        runID: runID,
+        project: project,
+        repo: repo,
+        storePath: "/tmp/\(sessionID.uuidString).wax",
+        eventLogPath: "/tmp/\(sessionID.uuidString).events.jsonl",
+        status: .active,
+        brokerLeaseOwnerID: nil,
+        leaseExpiresAtMs: nil,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        conversationID: conversationID
+    )
+}
+
+private func saveHarvestManifest(_ manifest: BrokerSessionManifest, rootURL: URL) throws {
+    try BrokerSessionPersistence.saveManifest(
+        manifest,
+        to: BrokerSessionPersistence.manifestURL(rootURL: rootURL, sessionID: manifest.sessionID)
+    )
+}
+
+private actor ControlledRememberEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = .init(
+        provider: "Test",
+        model: "ControlledRemember",
+        dimensions: 2,
+        normalized: true
+    )
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        if !released {
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        }
+        return [1.0, 0.0]
+    }
+
+    func waitUntilEmbeddingStarts() async {
+        if started { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 }

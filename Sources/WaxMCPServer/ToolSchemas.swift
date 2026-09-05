@@ -39,7 +39,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "recall",
-            description: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Passing session_id merges that session with durable long-term memory.",
+            description: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
             inputSchema: waxRecall
         ),
         Tool(
@@ -99,7 +99,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_open",
-            description: "One-shot session open plus optional recall. Returns session_id plus a bounded short handoff projection; optional non-empty recall_query adds capped project-scoped recall. Prefer this over handoff_latest then session_start. Use handoff_latest only when you need the complete handoff.",
+            description: "One-shot session open plus optional recall. Returns session_id plus a bounded short handoff projection; optional non-empty recall_query adds capped project-scoped recall. Prefer this combined operation over manually fetching a handoff and starting a session. Use handoff_latest only when you need the complete handoff.",
             inputSchema: waxSessionOpen
         ),
         Tool(
@@ -256,7 +256,7 @@ enum ToolSchemas {
             ],
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID. When set with default scope, recall merges that session with durable long-term memory.",
+                "description": "Optional session UUID. When set with default project scope, recall merges that session with durable long-term memory. Omit it unless you already have a broker-issued value — do not invent one.",
             ],
             "project": [
                 "type": "string",
@@ -264,11 +264,11 @@ enum ToolSchemas {
             ],
             "repo": [
                 "type": "string",
-                "description": "Optional repo hard-filter used when project is unset. Filters wax.repo exactly.",
+                "description": "Optional exact wax.repo hard-filter. When project is also set, both filters must match.",
             ],
             "scope": [
                 "type": "string",
-                "description": "Recall scope. project (default) hard-filters to resolved project; session requires session_id and skips durable merge; global disables project filter.",
+                "description": "Recall scope. project (default) hard-filters to the resolved project/repo; session skips durable merge when a session_id is supplied; global searches the complete trusted local store without current-project boost (it is not an authorization boundary).",
                 "enum": ["project", "session", "global"],
             ],
             "mode": [
