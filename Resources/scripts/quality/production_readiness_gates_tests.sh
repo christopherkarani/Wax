@@ -182,6 +182,10 @@ if ! grep -Fq 'cancel-in-progress: true' "$QUALITY_GATES"; then
   echo "FAIL: quality-gates.yml must cancel superseded in-progress runs" >&2
   exit 1
 fi
+if [[ -f "$ROOT_DIR/.github/workflows/claude-code-review.yml" ]]; then
+  echo "FAIL: claude-code-review.yml must not run on pull requests" >&2
+  exit 1
+fi
 
 SPAM_CMD="$TMP_DIR/spam-swift.sh"
 cat >"$SPAM_CMD" <<'EOF'
