@@ -148,8 +148,10 @@ run_full() {
   require_swiftpm_traits
   assert_mcp_trait_test_inventory
 
+  # MCPServer process tests share ports/locks; --parallel deadlocks on this
+  # runner (local and GitHub macos-15). Serial keeps the same inventory.
   run_and_capture "$mcp_log_file" \
-    swift test --parallel --traits MCPServer --skip "$skip_regex"
+    swift test --no-parallel --traits MCPServer --skip "$skip_regex"
   assert_no_skips "$mcp_log_file"
   assert_full_pass_rate "$mcp_log_file"
 

@@ -39,6 +39,9 @@ jobs:
     # Keep the verification runner aligned with the release build. macos-latest
     # currently resolves to macOS 26, whose CoreML MiniLM runtime emits
     # non-finite vectors for this model on every compute-unit configuration.
+    # 90m is well above a healthy full/soak/burn run and fails a deadlock
+    # instead of sitting on the 6h GitHub default.
+    timeout-minutes: 90
     runs-on: macos-15
     strategy:
       fail-fast: false
