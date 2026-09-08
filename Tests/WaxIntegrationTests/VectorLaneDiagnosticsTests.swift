@@ -58,7 +58,8 @@ struct VectorLaneDiagnosticsTests {
                 let context = try await FastRAGContextBuilder().build(
                     query: "memory reliability", embedding: [1, 0],
                     vectorSearchTimeout: .milliseconds(25), wax: wax,
-                    engineOverrides: .init(vectorEngine: DiagnosticVectorEngine(hang: true))
+                    engineOverrides: .init(vectorEngine: DiagnosticVectorEngine(hang: true)),
+                    config: FastRAGConfig(deterministicNowMs: 1_700_000_000_000)
                 )
                 #expect(context.diagnostics?.effectiveMode == .textOnly)
                 #expect(context.diagnostics?.queryEmbeddingState == .available)
