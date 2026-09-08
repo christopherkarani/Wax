@@ -1634,8 +1634,7 @@ extension AgentBrokerService {
             hintedSessionResumable = false
         }
 
-        var conversationResume: (sessionID: UUID, runID: String)?
-        let startPayload: AgentBrokerValue
+        var conversationMatch: SessionOpenDecision.Match?
         if let conversationID {
             if let match = try BrokerSessionPersistence.findActive(
                 conversationID: conversationID,
@@ -1644,70 +1643,73 @@ extension AgentBrokerService {
                 repo: inferredScope.repoName,
                 rootURL: sessionRootURL
             ) {
-                conversationResume = (match.sessionID, match.runID)
-                startPayload = try await sessionResume(
-                    .init(sessionID: match.sessionID, agentID: nil, runID: nil)
-                )
-                if let requestedRunID, match.runID != requestedRunID {
-                    try virtualSessions.updateLive(match.sessionID) { state in
-                        state.manifest.runID = requestedRunID
-                        state.manifest.updatedAtMs = Self.nowMs()
-                    }
-                }
-            } else {
-                // An explicit host conversation is an isolation boundary. Do not
-                // let a connection hint or a same-agent/project session capture it.
-                startPayload = try await sessionStart(
-                    .init(
-                        sessionID: UUID(),
-                        agentID: agentID,
-                        runID: runID,
-                        cwd: cwd,
-                        project: project,
-                        repo: repo,
-                        conversationID: conversationID
-                    )
-                )
+                conversationMatch = .init(sessionID: match.sessionID, runID: match.runID)
             }
-        } else if hintedSessionResumable, let hintedSessionID = command.sessionID {
-            // A broker restart clears the live map without ending persisted
-            // sessions. Restore that session instead of losing its working state.
-            // A different explicit project is a new job, not a rewrite of the
-            // connection's current session identity.
-            startPayload = try await sessionResume(
-                .init(sessionID: hintedSessionID, agentID: nil, runID: nil)
-            )
-        } else {
-            startPayload = try await sessionStart(
-                .init(
-                    sessionID: nil,
-                    agentID: agentID,
-                    runID: runID,
-                    cwd: cwd,
-                    project: project,
-                    repo: repo,
-                    conversationID: conversationID
-                )
-            )
         }
-        let startObject = startPayload.objectValue
-        let sessionID = startObject?["session_id"]?.stringValue
+
+        let openFacts = SessionOpenDecision.Facts(
+            conversationID: conversationID,
+            conversationMatch: conversationMatch,
+            hintedSessionID: command.sessionID,
+            hintedResumable: hintedSessionResumable,
+            priorUnique: priorUnique.map { .init(sessionID: $0.sessionID, runID: $0.runID) },
+            requestedRunID: requestedRunID
+        )
+        let openAction = SessionOpenDecision.evaluate(openFacts)
+
+        let lifecycle: VirtualSessionStore.LifecycleResult
+        switch openAction {
+        case .resume(let resumeSessionID):
+            // Conversation match may also stamp a new run_id; hinted resume restores
+            // a connection session after broker restart without rewriting identity.
+            lifecycle = try await virtualSessions.resume(
+                explicitSessionID: resumeSessionID,
+                agentID: nil,
+                runID: nil
+            )
+            if let conversationMatch,
+               conversationMatch.sessionID == resumeSessionID,
+               let requestedRunID,
+               conversationMatch.runID != requestedRunID
+            {
+                try virtualSessions.updateLive(resumeSessionID) { state in
+                    state.manifest.runID = requestedRunID
+                    state.manifest.updatedAtMs = Self.nowMs()
+                }
+            }
+        case .startNew:
+            // Conversation isolation mints a fresh UUID; otherwise start handles
+            // exact pair / unique agent+project rebind.
+            let explicitSessionID = conversationID == nil ? nil : UUID()
+            lifecycle = try await virtualSessions.start(
+                explicitSessionID: explicitSessionID,
+                agentID: agentID,
+                runID: runID,
+                inferredScope: inferredScope
+            )
+            if let conversationID {
+                try virtualSessions.updateLive(lifecycle.state.id) { state in
+                    state.manifest.conversationID = conversationID
+                }
+            }
+        }
+
+        let sessionUUID = lifecycle.state.id
+        let sessionID = sessionUUID.uuidString
 
         // Explicit project must win over cwd inference for both project and repo.
         // Leaving a cwd-inferred repo would advertise a split identity and stamp
         // foreign wax.repo on later remembers.
-        if let sessionID, let uuid = UUID(uuidString: sessionID) {
-            let trimmedProject = project?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !trimmedProject.isEmpty || conversationID != nil {
-                try virtualSessions.updateLive(uuid) { state in
-                    if !trimmedProject.isEmpty {
-                        state.manifest.project = trimmedProject
-                        state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
-                    }
-                    if let conversationID {
-                        state.manifest.conversationID = conversationID
-                    }
+        let trimmedProject = project?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedProject.isEmpty || conversationID != nil {
+            try virtualSessions.updateLive(sessionUUID) { state in
+                if !trimmedProject.isEmpty {
+                    state.manifest.project = trimmedProject
+                    state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo
+                }
+                if let conversationID {
+                    state.manifest.conversationID = conversationID
                 }
             }
         }
@@ -1715,7 +1717,7 @@ extension AgentBrokerService {
         let inferred = cwd.map { MemorySemantics.inferScopeContext(currentDirectoryPath: $0) } ?? MemoryScopeContext()
         let resolvedProject: String?
         let resolvedRepo: String?
-        if let sessionID, let uuid = UUID(uuidString: sessionID), let live = activeSessions[uuid] {
+        if let live = activeSessions[sessionUUID] {
             resolvedProject = live.manifest.project ?? BrokerCommand.normalizedOrNil(project) ?? inferred.projectName
             resolvedRepo = live.manifest.repo ?? BrokerCommand.normalizedOrNil(repo) ?? inferred.repoName
         } else {
@@ -1733,10 +1735,8 @@ extension AgentBrokerService {
 
         var recallPayload: AgentBrokerValue?
         if let recallQuery, !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let sessionID,
-               let uuid = UUID(uuidString: sessionID),
-               await longTermMemory.isQueryEmbedderReady() {
-                await awaitQueryEmbedderIfNeeded(memory: try await memory(for: uuid))
+            if await longTermMemory.isQueryEmbedderReady() {
+                await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionUUID))
             }
             var recallArgs: [String: AgentBrokerValue] = [
                 "query": .string(recallQuery),
@@ -1745,36 +1745,27 @@ extension AgentBrokerService {
             ]
             if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
             if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
-            if let sessionID { recallArgs["session_id"] = .string(sessionID) }
+            recallArgs["session_id"] = .string(sessionID)
             if let cwd { recallArgs["cwd"] = .string(cwd) }
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
-        let returnedSessionID = sessionID.flatMap { UUID(uuidString: $0) }
         let rebound: Bool
-        if let priorUnique, let returnedSessionID, returnedSessionID == priorUnique.sessionID {
+        if let priorUnique, sessionUUID == priorUnique.sessionID {
             rebound = requestedRunID == nil || requestedRunID != priorUnique.runID
-        } else if let conversationResume, let returnedSessionID,
-                  returnedSessionID == conversationResume.sessionID
-        {
-            rebound = requestedRunID == nil || requestedRunID != conversationResume.runID
+        } else if let conversationMatch, sessionUUID == conversationMatch.sessionID {
+            rebound = requestedRunID == nil || requestedRunID != conversationMatch.runID
         } else {
             rebound = false
         }
-        let sharePrompt: String
-        if let sessionID {
-            sharePrompt =
-                "This MCP connection remembers session_id (\(sessionID)); omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
-        } else {
-            sharePrompt =
-                "The MCP connection remembers the returned session_id; omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
-        }
+        let sharePrompt =
+            "This MCP connection remembers session_id (\(sessionID)); omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
 
         // Keep the bootstrap wire shape deliberately small.  Callers that
         // need project/repo, lease state, or the full handoff can issue the
         // corresponding explicit read after they have the session UUID.
         var payload: [String: AgentBrokerValue] = [
-            "session_id": .from(sessionID),
+            "session_id": .string(sessionID),
             "rebound": .bool(rebound),
             "share_prompt": .string(sharePrompt),
             "handoff": try await Self.compactSessionOpenHandoff(
