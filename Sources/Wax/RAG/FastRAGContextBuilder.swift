@@ -16,8 +16,10 @@ package struct FastRAGContextBuilder: Sendable {
         query: String,
         embedding: [Float]? = nil,
         vectorEnginePreference: VectorEnginePreference = .auto,
+        vectorSearchTimeout: Duration? = nil,
         wax: Wax,
         session: WaxSession? = nil,
+        engineOverrides: UnifiedSearchEngineOverrides? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         scopeContext: MemoryScopeContext? = nil,
@@ -43,6 +45,7 @@ package struct FastRAGContextBuilder: Sendable {
             query: query,
             embedding: embedding,
             vectorEnginePreference: vectorEnginePreference,
+            vectorSearchTimeout: vectorSearchTimeout,
             mode: clamped.searchMode,
             topK: searchTopK,
             timeRange: timeRange,
@@ -52,7 +55,9 @@ package struct FastRAGContextBuilder: Sendable {
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
         )
-        let response = if let session {
+        let response = if let engineOverrides {
+            try await wax.search(request, engineOverrides: engineOverrides)
+        } else if let session {
             try await session.search(request)
         } else {
             try await wax.search(request)
@@ -332,13 +337,25 @@ package struct FastRAGContextBuilder: Sendable {
             count: { text in await counter.count(text) },
             truncate: { text, maxTokens in await counter.truncate(text, maxTokens: maxTokens) }
         )
-        return await RecallAssembly.pack(
+        var context = await RecallAssembly.pack(
             query: query,
             payloads: payloads,
             config: clamped,
             tokenizer: tokenizer,
             nowMs: nowMs
         )
+        let embeddingState: RAGContext.QueryEmbeddingState
+        if let embedding, !embedding.isEmpty {
+            embeddingState = .available
+        } else {
+            embeddingState = .notRequested
+        }
+        context.diagnostics = RAGContext.Diagnostics(
+            requestedMode: clamped.searchMode,
+            effectiveMode: response.vectorSearchTimedOut ? .textOnly : clamped.searchMode,
+            queryEmbeddingState: embeddingState
+        )
+        return context
     }
 
     // MARK: - Helpers

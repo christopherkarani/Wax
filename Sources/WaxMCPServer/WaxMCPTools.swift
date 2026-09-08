@@ -78,15 +78,15 @@ enum WaxMCPTools {
             }
 
             try validateToolAvailability(name: params.name, structuredMemoryEnabled: structuredMemoryEnabled)
-            try validateArgumentSurface(name: params.name, arguments: params.arguments)
 
             var forwarded = params.arguments ?? [:]
             if let oversize = contentLimitError(name: params.name, arguments: forwarded) {
                 return oversize
             }
-            // Do not stamp the MCP process working directory as `cwd`. Omitted cwd
-            // must stay omitted so durable writes do not inherit the broker repo.
+            // The connection supplies a default, not an ownership boundary.
+            // Explicit UUIDs are validated against persisted sessions by the broker.
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+            try validateArgumentSurface(name: params.name, arguments: forwarded)
             let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
 
             let response = try await perform(
@@ -158,6 +158,7 @@ final class MCPClientSessionHint: @unchecked Sendable {
 private extension WaxMCPTools {
     static let compactPresentationKeys: Set<String> = [
         "display_text", "storePath", "store_path", "event_log_path",
+        "root_path", "corpus_store_path", "source_store_path",
     ]
     static func contentLimitError(name: String, arguments: [String: Value]) -> CallTool.Result? {
         guard case .string(let content)? = arguments["content"] else { return nil }
@@ -188,21 +189,35 @@ private extension WaxMCPTools {
     ) {
         guard arguments["session_id"] == nil else { return }
         guard let sessionID = sessionHint?.current() else { return }
-        switch name {
-        case "stats", "recall":
+        switch AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name {
+        case "stats", "recall", "search", "memory_search", "corpus_search",
+             "compact_context", "session_close", "session_end", "handoff":
             arguments["session_id"] = .string(sessionID)
         case "session_open":
-            if case .string(let conversationID)? = arguments["conversation_id"],
-               !conversationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return
-            }
+            if nonEmptyString(arguments["conversation_id"]) != nil { return }
+            if nonEmptyString(arguments["agent_id"]) != nil { return }
+            if nonEmptyString(arguments["run_id"]) != nil { return }
+            arguments["session_id"] = .string(sessionID)
+        case "session_resume":
+            // Selectors intentionally target another session; an empty resume
+            // should recover this connection, not search every agent's manifests.
+            if nonEmptyString(arguments["agent_id"]) != nil { return }
+            if nonEmptyString(arguments["run_id"]) != nil { return }
             arguments["session_id"] = .string(sessionID)
         case "remember":
-            guard rememberShouldInheritSession(arguments) else { return }
+            if let scope = nonEmptyString(arguments["scope"])?.lowercased(), scope == "durable" {
+                return
+            }
             arguments["session_id"] = .string(sessionID)
         default:
             break
         }
+    }
+
+    static func nonEmptyString(_ value: Value?) -> String? {
+        guard case .string(let raw)? = value else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Session-horizon writes only. Durable types stay durable if session_id is
@@ -287,14 +302,34 @@ private extension WaxMCPTools {
         return "execution_failed"
     }
 
+}
+
+extension WaxMCPTools {
     static func renderResult(
         name: String,
         payload: AgentBrokerValue,
         verbosity: String? = nil
     ) -> CallTool.Result {
+        var presented = payload
+        if name == "compact_context", verbosity != "verbose", var object = payload.objectValue {
+            // The checkpoint text has already been token-budgeted. Keep memory
+            // references for follow-up reads without repeating full source bodies.
+            object.removeValue(forKey: "summary")
+            for key in ["short_context", "medium_context", "long_context"] {
+                if let rows = object[key]?.arrayValue {
+                    object[key] = .array(rows.map { row in
+                        guard var hit = row.objectValue else { return row }
+                        hit.removeValue(forKey: "text")
+                        hit.removeValue(forKey: "preview")
+                        return .object(hit)
+                    })
+                }
+            }
+            presented = .object(object)
+        }
         let compactPayload = mcpValue(from: removingPresentationFields(
-            from: payload,
-            removing: compactPresentationKeys
+            from: presented,
+            removing: verbosity == "verbose" ? ["display_text"] : compactPresentationKeys
         ))
         if verbosity == "compact" {
             let json = encodeJSON(compactPayload) ?? "{}"
@@ -306,22 +341,22 @@ private extension WaxMCPTools {
             )
         }
 
-        let text = payload.objectValue?["display_text"]?.stringValue
-
         if verbosity == "verbose" {
-            let structuredPayload = mcpValue(from: removingPresentationFields(
-                from: payload,
-                removing: ["display_text"]
-            ))
-            return textWithStructuredResult(
-                text: text ?? "Wax \(name) completed.",
-                payload: structuredPayload
+            let json = encodeJSON(compactPayload) ?? "{}"
+            return CallTool.Result(
+                content: [
+                    .text(text: json, annotations: nil, _meta: nil),
+                ],
+                structuredContent: Optional.some(compactPayload),
+                isError: false
             )
         }
 
         return jsonResult(compactPayload)
     }
+}
 
+private extension WaxMCPTools {
     static func removingPresentationFields(
         from payload: AgentBrokerValue,
         removing keys: Set<String>,
@@ -350,19 +385,6 @@ private extension WaxMCPTools {
         }
     }
 
-    static func textWithStructuredResult(
-        text: String,
-        payload: Value
-    ) -> CallTool.Result {
-        return CallTool.Result(
-            content: [
-                .text(text: text, annotations: nil, _meta: nil),
-            ],
-            structuredContent: Optional.some(payload),
-            isError: false
-        )
-    }
-
     static func jsonResult(_ value: Value) -> CallTool.Result {
         let json = encodeJSON(value) ?? "{}"
         return CallTool.Result(
@@ -389,7 +411,7 @@ private extension WaxMCPTools {
         let json = encodeJSON(.object(payload)) ?? "{}"
         return CallTool.Result(
             content: [
-                .text(text: message, annotations: nil, _meta: nil),
+                .text(text: json, annotations: nil, _meta: nil),
                 .resource(resource: .text(json, uri: "wax://errors/\(code)", mimeType: "application/json")),
             ],
             isError: true
@@ -404,7 +426,7 @@ private extension WaxMCPTools {
         let json = encodeJSON(payload) ?? "{}"
         return CallTool.Result(
             content: [
-                .text(text: message, annotations: nil, _meta: nil),
+                .text(text: json, annotations: nil, _meta: nil),
                 .resource(resource: .text(json, uri: "wax://errors/\(code)", mimeType: "application/json")),
             ],
             isError: true

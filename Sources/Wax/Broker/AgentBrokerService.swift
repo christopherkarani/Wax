@@ -40,7 +40,8 @@ package actor AgentBrokerService {
         embedderOverride: (any EmbeddingProvider)? = nil,
         readiness: EmbeddingReadiness = .shared,
         factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
-        orchestratorConfig: OrchestratorConfig? = nil
+        orchestratorConfig: OrchestratorConfig? = nil,
+        automaticEmbeddingBackfill: Bool = true
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -100,6 +101,7 @@ package actor AgentBrokerService {
         let capturedRequest = request
         let capturedReadiness = readiness
         let capturedFactory = factoryOverride
+        let capturedBackfill = automaticEmbeddingBackfill
         self.virtualSessions = VirtualSessionStore(
             sessionRootURL: sessionRootURL,
             brokerInstanceID: brokerInstanceID,
@@ -108,7 +110,7 @@ package actor AgentBrokerService {
                 sessionConfig.enableStructuredMemory = false
                 sessionConfig.enableAccessStatsScoring = capturedAccessStats
                 sessionConfig.defaultScopeContext = capturedScope
-                return try await EmbeddingReadinessBinding.openOrchestrator(
+                let memory = try await EmbeddingReadinessBinding.openOrchestrator(
                     at: url,
                     config: sessionConfig,
                     request: capturedRequest,
@@ -116,6 +118,10 @@ package actor AgentBrokerService {
                     readiness: capturedReadiness,
                     factoryOverride: capturedFactory
                 )
+                if capturedBackfill {
+                    await memory.enableAutomaticEmbeddingBackfill()
+                }
+                return memory
             }
         )
         var config = orchestratorConfig ?? .default
@@ -140,8 +146,14 @@ package actor AgentBrokerService {
             }
             throw error
         }
+        if automaticEmbeddingBackfill {
+            await longTermMemory.enableAutomaticEmbeddingBackfill()
+        }
+        // An expired broker lease does not end the agent's session. Idle daemon
+        // restarts must leave active manifests available for the next request to rebind.
         _ = try? await memoryMaintain(
-            BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false)
+            BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false),
+            endExpiredSessions: false
         )
     }
 
@@ -191,8 +203,10 @@ package actor AgentBrokerService {
             return false
         }
         switch command {
-        case .recall, .search:
-            return true
+        case .recall(let recall):
+            return recall.mode != .textOnly
+        case .search(let search):
+            return search.mode != .textOnly
         case .sessionOpen(let open):
             let query = open.recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return !query.isEmpty
@@ -410,7 +424,7 @@ extension AgentBrokerService {
     }
 
     /// Suspends until `memory` can accept remember writes, or fails after `timeout`.
-    private static func awaitRememberReady(
+    package static func awaitRememberReady(
         memory: MemoryOrchestrator,
         timeout: Duration
     ) async throws {
@@ -604,7 +618,7 @@ extension AgentBrokerService {
         // wait for that attach here so a session-scoped first recall is hybrid.
         // Skip when long-term is still loading so a timeout does not become a
         // second 30s hold on commandMutex.
-        if let sessionID = parsedFilters.sessionId,
+        if mode != .textOnly, let sessionID = parsedFilters.sessionId,
            await longTermMemory.isQueryEmbedderReady() {
             await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
         }
@@ -696,17 +710,41 @@ extension AgentBrokerService {
         let mode = command.mode
         let topK = command.topK
         let parsedFilters = command.filters
-        let memory = try await memory(for: parsedFilters.sessionId)
-        if parsedFilters.sessionId != nil, await longTermMemory.isQueryEmbedderReady() {
-            await awaitQueryEmbedderIfNeeded(memory: memory)
+        let sessionMemory = try await memory(for: parsedFilters.sessionId)
+        if mode != .textOnly, parsedFilters.sessionId != nil, await longTermMemory.isQueryEmbedderReady() {
+            await awaitQueryEmbedderIfNeeded(memory: sessionMemory)
         }
-        let execution = try await memory.searchExecution(
+        let sessionExecution = try await sessionMemory.searchExecution(
             query: query,
             mode: mode,
             topK: topK,
             frameFilter: parsedFilters.frameFilter,
             timeRange: parsedFilters.timeRange
         )
+        let execution: MemoryOrchestrator.SearchExecution
+        if parsedFilters.sessionId == nil {
+            execution = sessionExecution
+        } else {
+            let scope = writeScope(for: parsedFilters.sessionId)
+            let identity = LayeredRecall.Identity(project: scope.projectName, repo: scope.repoName)
+            let durableFilter = LayeredRecall.frameFilterForScopedRetrieval(
+                base: parsedFilters.frameFilter,
+                scope: .project,
+                identity: identity
+            )
+            let durableExecution = try await longTermMemory.searchExecution(
+                query: query,
+                mode: mode,
+                topK: topK,
+                frameFilter: durableFilter,
+                timeRange: parsedFilters.timeRange
+            )
+            execution = Self.mergeSearchExecutions(
+                working: sessionExecution,
+                durable: durableExecution,
+                topK: topK
+            )
+        }
         let rows: [AgentBrokerValue] = execution.hits.enumerated().map { index, hit in
             .object([
                 "rank": .from(index + 1),
@@ -723,8 +761,8 @@ extension AgentBrokerService {
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: query,
-                hits: execution.hits.map { ($0.frameId, $0.score) },
-                memory: memory
+                hits: sessionExecution.hits.map { ($0.frameId, $0.score) },
+                memory: sessionMemory
             )
         }
         let text = rows.isEmpty ? "No results." : rows.map(\.debugJSONString).joined(separator: "\n")
@@ -770,13 +808,23 @@ extension AgentBrokerService {
             sessionID = nil
         }
         let horizons = Self.scopedHorizons(scope: scope, requested: requested)
-        let hits = try await layeredMemorySearch(
+        var hits = try await layeredMemorySearch(
             query: query,
             mode: mode,
             topK: topK,
             sessionID: sessionID,
             horizons: horizons
         )
+        if let sessionID {
+            let writeScope = writeScope(for: sessionID)
+            hits = Self.filterMemorySearchHits(
+                hits,
+                identity: LayeredRecall.Identity(
+                    project: writeScope.projectName,
+                    repo: writeScope.repoName
+                )
+            )
+        }
 
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
@@ -1228,15 +1276,57 @@ extension AgentBrokerService {
         try? await Self.awaitRememberReady(memory: memory, timeout: .seconds(30))
     }
 
-    /// Compact JSON warning when hybrid was requested but the query ran as text.
+    /// Session-scoped search merges the live working store with durable long-term.
+    /// Working hits win ties so a just-written session note is not buried.
+    /// Frame IDs are not comparable across stores; do not dedupe them.
+    package static func mergeSearchExecutions(
+        working: MemoryOrchestrator.SearchExecution,
+        durable: MemoryOrchestrator.SearchExecution,
+        topK: Int
+    ) -> MemoryOrchestrator.SearchExecution {
+        enum Lane: Equatable {
+            case working
+            case durable
+        }
+        var tagged: [(MemoryOrchestrator.MemorySearchHit, Lane)] = working.hits.map { ($0, .working) }
+        tagged.append(contentsOf: durable.hits.map { ($0, .durable) })
+        tagged.sort { lhs, rhs in
+            if lhs.0.score != rhs.0.score { return lhs.0.score > rhs.0.score }
+            if lhs.1 != rhs.1 { return lhs.1 == .working }
+            return lhs.0.frameId > rhs.0.frameId
+        }
+        let effectiveMode: SearchMode
+        switch (working.effectiveMode, durable.effectiveMode) {
+        case (.textOnly, _), (_, .textOnly):
+            effectiveMode = .textOnly
+        default:
+            effectiveMode = working.effectiveMode
+        }
+        return MemoryOrchestrator.SearchExecution(
+            hits: tagged.prefix(max(1, topK)).map(\.0),
+            requestedMode: working.requestedMode,
+            effectiveMode: effectiveMode,
+            queryEmbeddingState: worseQueryEmbeddingState(
+                working.queryEmbeddingState,
+                durable.queryEmbeddingState
+            )
+        )
+    }
+
+    /// Compact JSON warning when hybrid was requested but some or all stores used text.
     package static func retrievalDowngradeWarning(
         requestedMode: String,
         effectiveMode: String,
         queryEmbeddingState: String
     ) -> String? {
         let requestedHybrid = requestedMode.hasPrefix("hybrid")
+        guard requestedHybrid else { return nil }
+        let mixed = effectiveMode == "mixed" || queryEmbeddingState == "mixed"
+        if mixed {
+            return "WARNING: hybrid requested, some memory stores used text"
+        }
         let usedText = effectiveMode == "text" || effectiveMode.hasPrefix("text")
-        guard requestedHybrid, usedText else { return nil }
+        guard usedText else { return nil }
         let reason: String
         switch RAGContext.QueryEmbeddingState(rawValue: queryEmbeddingState) {
         case .timeout:
@@ -1247,10 +1337,30 @@ extension AgentBrokerService {
             reason = "embedder failed"
         case .vectorDisabled:
             reason = "vector search disabled"
-        case .noEmbedder, .notRequested, .available, .none:
+        case .available:
+            reason = "vector search timed out"
+        case .noEmbedder, .notRequested, .none:
             reason = "embedder missing"
         }
         return "WARNING: hybrid requested, \(reason), used text"
+    }
+
+    private static func worseQueryEmbeddingState(
+        _ lhs: RAGContext.QueryEmbeddingState,
+        _ rhs: RAGContext.QueryEmbeddingState
+    ) -> RAGContext.QueryEmbeddingState {
+        func rank(_ state: RAGContext.QueryEmbeddingState) -> Int {
+            switch state {
+            case .available: return 0
+            case .notRequested: return 1
+            case .vectorDisabled: return 2
+            case .noEmbedder: return 3
+            case .failed: return 4
+            case .circuitOpen: return 5
+            case .timeout: return 6
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
     }
 
     func flush() async throws -> AgentBrokerValue {
@@ -1329,7 +1439,6 @@ extension AgentBrokerService {
     func sessionClose(_ command: BrokerCommand.SessionClose) async throws -> AgentBrokerValue {
         let sessionID = command.sessionID
         let content = command.content
-        let project = command.project
         let pendingTasks = command.pendingTasks
 
         if activeSessions[sessionID] == nil {
@@ -1353,6 +1462,8 @@ extension AgentBrokerService {
         }
 
         try await validateActiveSession(sessionID)
+        let project = BrokerCommand.normalizedOrNil(command.project)
+            ?? writeScope(for: sessionID).projectName
         let frameId = try await longTermMemory.rememberHandoff(
             content: content,
             project: project,
@@ -1415,6 +1526,29 @@ extension AgentBrokerService {
         return .object(payload)
     }
 
+    /// True when an injected/explicit session_id belongs to a different named
+    /// project than this `session_open`. That is a new job, not a resume.
+    private func hintedSessionProjectConflicts(_ sessionID: UUID, project: String?) throws -> Bool {
+        guard let requested = BrokerCommand.normalizedOrNil(project) else { return false }
+        let existing: String?
+        if let live = activeSessions[sessionID]?.manifest.project {
+            existing = BrokerCommand.normalizedOrNil(live)
+        } else {
+            do {
+                existing = BrokerCommand.normalizedOrNil(
+                    try BrokerSessionPersistence.loadManifest(
+                        rootURL: sessionRootURL,
+                        sessionID: sessionID
+                    ).project
+                )
+            } catch BrokerSessionPersistenceError.manifestNotFound {
+                existing = nil
+            }
+        }
+        guard let existing else { return false }
+        return existing != requested
+    }
+
     /// `handoff_latest` + `session_start` + optional `recall` in one round-trip (Phase 2).
     ///
     /// The handoff is intentionally projected to a bounded bootstrap shape.
@@ -1461,6 +1595,25 @@ extension AgentBrokerService {
             exactPair = nil
         }
 
+        let hintedSessionResumable: Bool
+        if exactPair == nil,
+           priorUnique == nil,
+           let hintedSessionID = command.sessionID
+        {
+            let exists = try activeSessions[hintedSessionID] != nil
+                || virtualSessions.persistedStatus(for: hintedSessionID) == .active
+            if exists {
+                hintedSessionResumable = try !hintedSessionProjectConflicts(
+                    hintedSessionID,
+                    project: project
+                )
+            } else {
+                hintedSessionResumable = false
+            }
+        } else {
+            hintedSessionResumable = false
+        }
+
         var conversationResume: (sessionID: UUID, runID: String)?
         let startPayload: AgentBrokerValue
         if let conversationID {
@@ -1496,11 +1649,11 @@ extension AgentBrokerService {
                     )
                 )
             }
-        } else if exactPair == nil,
-           priorUnique == nil,
-           let hintedSessionID = command.sessionID,
-           activeSessions[hintedSessionID] != nil
-        {
+        } else if hintedSessionResumable, let hintedSessionID = command.sessionID {
+            // A broker restart clears the live map without ending persisted
+            // sessions. Restore that session instead of losing its working state.
+            // A different explicit project is a new job, not a rewrite of the
+            // connection's current session identity.
             startPayload = try await sessionResume(
                 .init(sessionID: hintedSessionID, agentID: nil, runID: nil)
             )
@@ -1591,10 +1744,10 @@ extension AgentBrokerService {
         let sharePrompt: String
         if let sessionID {
             sharePrompt =
-                "Keep this session_id (\(sessionID)) on remember, recall, and session_close. Host children do not get Wax tools."
+                "This MCP connection remembers session_id (\(sessionID)); omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
         } else {
             sharePrompt =
-                "Keep the returned session_id on remember, recall, and session_close. Host children do not get Wax tools."
+                "The MCP connection remembers the returned session_id; omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
         }
 
         // Keep the bootstrap wire shape deliberately small.  Callers that
@@ -1898,7 +2051,10 @@ extension AgentBrokerService {
         }
     }
 
-    func memoryMaintain(_ command: BrokerCommand.MemoryMaintain) async throws -> AgentBrokerValue {
+    func memoryMaintain(
+        _ command: BrokerCommand.MemoryMaintain,
+        endExpiredSessions: Bool = true
+    ) async throws -> AgentBrokerValue {
         let apply = command.apply
         let force = command.forceReclaim
         let now = Self.nowMs()
@@ -1910,7 +2066,8 @@ extension AgentBrokerService {
         var quarantineSoftDeletes = 0
 
         var zombieIDs = Set<UUID>()
-        for manifest in manifests where SessionReclaim.isZombie(manifest: manifest, liveIDs: liveIDs, nowMs: now) {
+        for manifest in manifests where endExpiredSessions
+            && SessionReclaim.isZombie(manifest: manifest, liveIDs: liveIDs, nowMs: now) {
             zombiesToEnd += 1
             zombieIDs.insert(manifest.sessionID)
             harvests += 1
@@ -1978,10 +2135,11 @@ extension AgentBrokerService {
 
     func handoff(_ command: BrokerCommand.Handoff) async throws -> AgentBrokerValue {
         let content = command.content
-        let project = command.project
         let pendingTasks = command.pendingTasks
         let sessionID = command.sessionID
         try await validateActiveSession(sessionID)
+        let project = BrokerCommand.normalizedOrNil(command.project)
+            ?? writeScope(for: sessionID).projectName
         let frameId = try await longTermMemory.rememberHandoff(
             content: content,
             project: project,
@@ -2264,6 +2422,8 @@ extension AgentBrokerService {
         ])
     }
 
+    // Unscoped corpus stays cross-session. A bound session_id applies the same
+    // project fence as search so ForeignLab durable does not leak.
     func corpusSearch(_ command: BrokerCommand.CorpusSearch) async throws -> AgentBrokerValue {
         let query = command.query
         let recursive = command.recursive
@@ -2391,11 +2551,23 @@ extension AgentBrokerService {
             activeSessionHitGroups.append(group)
         }
 
-        let merged = BrokerCorpusHitMerge.merge(
+        var merged = BrokerCorpusHitMerge.merge(
             corpusHits: corpusHits,
             activeSessionHitGroups: activeSessionHitGroups,
             topK: topK
         )
+        if let sessionID = command.sessionID {
+            let writeScope = writeScope(for: sessionID)
+            let identity = LayeredRecall.Identity(
+                project: writeScope.projectName,
+                repo: writeScope.repoName
+            )
+            if identity.project != nil || identity.repo != nil {
+                merged = merged.filter {
+                    LayeredRecall.metadataMatchesScopedRetrieval($0.metadata, identity: identity)
+                }
+            }
+        }
         let activeSessionsSearched = orderedActiveSessions.count
 
         var results: [AgentBrokerValue] = []
@@ -2407,7 +2579,7 @@ extension AgentBrokerService {
                 "score": .double(Double(hit.score)),
                 "sources": .array(hit.sources.map { .string($0) }),
                 "preview": .string(hit.preview),
-                "metadata": .object(hit.metadata.mapValues(AgentBrokerValue.string)),
+                "metadata": .object(Self.publicCorpusMetadata(hit.metadata).mapValues(AgentBrokerValue.string)),
             ]
             if command.expand || index < 3 {
                 object["text"] = .string(await corpusHitFullText(hit))
@@ -2422,13 +2594,11 @@ extension AgentBrokerService {
                 "stores_skipped": .from(buildSummary.storesSkipped),
                 "documents_indexed": .from(buildSummary.documentsIndexed),
                 "documents_skipped": .from(buildSummary.documentsSkipped),
-                "corpus_store_path": .string(buildSummary.targetStorePath),
                 "active_sessions_searched": .from(activeSessionsSearched),
             ])
         } else {
             .object([
                 "performed": .bool(false),
-                "corpus_store_path": .string(corpusStoreURL.path),
                 "active_sessions_searched": .from(activeSessionsSearched),
             ])
         }
@@ -2918,6 +3088,26 @@ extension AgentBrokerService {
         case session(UUID)
         case durableOnly
         case none
+    }
+
+    /// Keep working-lane hits. When the live session has a project/repo, drop
+    /// durable/episodic hits that would fail `search`'s scoped frame filter.
+    static func filterMemorySearchHits(
+        _ hits: [LayeredMemoryHit],
+        identity: LayeredRecall.Identity
+    ) -> [LayeredMemoryHit] {
+        guard identity.project != nil || identity.repo != nil else { return hits }
+        return hits.filter { hit in
+            if hit.horizon == .working { return true }
+            return LayeredRecall.metadataMatchesScopedRetrieval(hit.metadata, identity: identity)
+        }
+    }
+
+    /// Omit store paths from the MCP/broker JSON. Keep origin and frame ids.
+    static func publicCorpusMetadata(_ metadata: [String: String]) -> [String: String] {
+        var copy = metadata
+        copy.removeValue(forKey: BrokerCorpusMetadataKeys.sourceStorePath)
+        return copy
     }
 
     /// Lane visibility after session-scope resolution: a resolved session keeps

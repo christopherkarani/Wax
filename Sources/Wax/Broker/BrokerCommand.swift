@@ -266,6 +266,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var mode: SearchMode
         package var topK: Int
         package var expand: Bool = false
+        package var sessionID: UUID? = nil
     }
 
     /// Validates the argument surface and decodes a typed command.
@@ -356,6 +357,9 @@ extension BrokerCommand.Remember {
             "content",
             maxBytes: BrokerLimits.maxContentBytes
         )
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw BrokerValidationError.invalid("content must not be empty")
+        }
         let sessionID = try BrokerCommand.parseOptionalSessionID(args)
         let writeScope = try BrokerCommand.parseRememberWriteScope(args)
         if let writeScope {
@@ -820,7 +824,8 @@ extension BrokerCommand.CorpusSearch {
                 alpha: try args.optionalDouble("alpha")
             ),
             topK: topK,
-            expand: try args.optionalBool("expand") ?? false
+            expand: try args.optionalBool("expand") ?? false,
+            sessionID: try BrokerCommand.parseOptionalSessionID(args)
         )
     }
 }

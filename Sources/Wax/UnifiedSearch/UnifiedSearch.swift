@@ -3,7 +3,7 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-struct UnifiedSearchEngineOverrides {
+package struct UnifiedSearchEngineOverrides {
     var textEngine: FTS5SearchEngine? = nil
     /// Test injection. Production search uses `loadedVectorEngine` or the cache enum.
     var vectorEngine: (any VectorSearchEngine)? = nil
@@ -190,13 +190,16 @@ extension Wax {
             }
         }()
 
-        async let vectorResultsAsync: [(frameId: UInt64, score: Float)] = {
-            guard includeVector, let resolvedVectorEngine, let embedding = request.embedding, !embedding.isEmpty else { return [] }
+        async let vectorLaneAsync: (results: [(frameId: UInt64, score: Float)], timedOut: Bool) = {
+            guard includeVector, let resolvedVectorEngine, let embedding = request.embedding, !embedding.isEmpty else {
+                return ([], false)
+            }
             if let timeout = request.vectorSearchTimeout {
                 do {
-                    return try await AsyncTimeout.run(timeout: timeout, operation: "vector search") {
+                    let results = try await AsyncTimeout.run(timeout: timeout, operation: "vector search") {
                         try await resolvedVectorEngine.search(vector: embedding, topK: candidateLimit)
                     }
+                    return (results, false)
                 } catch let error as AsyncTimeout.TimeoutError {
                     // Hybrid/text modes can degrade to non-vector lanes; vectorOnly should fail hard.
                     if request.mode == .vectorOnly {
@@ -207,10 +210,10 @@ extension Wax {
                         context: "unified search vector lane timeout",
                         fallback: "fall back to non-vector lanes"
                     )
-                    return []
+                    return ([], true)
                 }
             } else {
-                return try await resolvedVectorEngine.search(vector: embedding, topK: candidateLimit)
+                return (try await resolvedVectorEngine.search(vector: embedding, topK: candidateLimit), false)
             }
         }()
 
@@ -244,7 +247,9 @@ extension Wax {
         let textLane = try await textLaneAsync
         let textResults = textLane.results
         let textLaneIsORFallbackOnly = textLane.isORFallbackOnly
-        var vectorResults = try await vectorResultsAsync
+        let vectorLane = try await vectorLaneAsync
+        var vectorResults = vectorLane.results
+        let vectorSearchTimedOut = vectorLane.timedOut
         vectorResults.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             return lhs.frameId < rhs.frameId
@@ -401,6 +406,37 @@ extension Wax {
             if vectorWeight > 0, !vectorIds.isEmpty { lists.append((source: .vector, weight: vectorWeight, frameIds: vectorIds)) }
             if weights.temporal > 0, !timelineIds.isEmpty { lists.append((source: .timeline, weight: weights.temporal, frameIds: timelineIds)) }
             if structuredWeight > 0, !structuredIds.isEmpty { lists.append((source: .structured, weight: structuredWeight, frameIds: structuredIds)) }
+
+            if lists.count == 1, lists[0].source == .vector {
+                // Hybrid with only the vector lane must keep engine similarity.
+                // Rank-only RRF collapses 0.95 and 0.20 to the same published 1.0.
+                baseResults = vectorResults.enumerated().map { index, result in
+                    let diagnostics: SearchResponse.RankingDiagnostics?
+                    if diagnosticsEnabled, index < diagnosticsTopK {
+                        diagnostics = .init(
+                            bestLaneRank: index + 1,
+                            laneContributions: [
+                                .init(
+                                    source: .vector,
+                                    weight: vectorWeight,
+                                    rank: index + 1,
+                                    rrfScore: result.score
+                                ),
+                            ],
+                            tieBreakReason: index == 0 ? .topResult : .fusedScore
+                        )
+                    } else {
+                        diagnostics = nil
+                    }
+                    return BaseResult(
+                        frameId: result.frameId,
+                        score: result.score,
+                        sources: [.vector],
+                        rankingDiagnostics: diagnostics
+                    )
+                }
+                break
+            }
 
             var fused = Self.rrfFusionResults(
                 lists: lists,
@@ -629,7 +665,7 @@ extension Wax {
             filtered = await timelineFallbackResults(request: request, filter: filter, nowMs: semanticNowMs)
         }
 
-        return SearchResponse(results: filtered)
+        return SearchResponse(results: filtered, vectorSearchTimedOut: vectorSearchTimedOut)
     }
 
     private func timelineFallbackResults(request: SearchRequest, filter: FrameFilter, nowMs: Int64) async -> [SearchResponse.Result] {

@@ -232,6 +232,38 @@ both doctors. Do not “fix” that by adding `wax-memory` to `plugins.enabled`.
 
 ---
 
+## Grok CLI
+
+Daily install is the shared HTTP server plus a Grok MCP entry. Do **not** use
+`GROK_CONFIG` / `GROK_CONFIG_PATH` to retarget Wax — those overlays cannot
+change `mcp_servers` (network redirect is dropped on purpose).
+
+```bash
+grok mcp add --transport http wax http://127.0.0.1:3000/mcp
+```
+
+To point a throwaway agent at an isolated `wax-mcp` (unreleased binary, separate
+store, not `~/.wax`), use a **project** config and a **private leader**. Shared
+`~/.grok/leader.sock` keeps the live `:3000` watches.
+
+```bash
+# from the throwaway git repo you want inferred as project
+mkdir -p .grok
+cat > .grok/config.toml <<'EOF'
+[mcp_servers.wax]
+url = "http://127.0.0.1:3140/mcp"
+enabled = true
+EOF
+grok --leader-socket /path/to/isolated.leader.sock --cwd "$PWD"
+# or: grok --no-leader --cwd "$PWD"
+# or: GROK_HOME=/path/to/throwaway-grok-home (its own config.toml)
+```
+
+`grok mcp add --scope project --transport http …` writes that project file.
+Do not rewrite `~/.grok/config.toml` just to isolate a lab.
+
+---
+
 ## Generic / OpenCode / Windsurf / anything else
 
 1. Run the shared HTTP server above.

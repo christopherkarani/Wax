@@ -48,6 +48,7 @@ Then wire the **host**, not a new prompt:
 | Cursor | HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
 | Hermes | Native `memory.provider: wax-memory` only (`npx -y waxmcp@latest install-hermes-plugin`). Never `plugins.enabled`. Never also `mcp_servers.wax`; do not also register generic MCP or this generic skill. Call `wax_remember` / `wax_recall` / `wax_stats` with no Wax UUID. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into workspace `SOUL.md` (replace existing `## Memory (Wax)`) |
+| Grok CLI | HTTP URL `http://127.0.0.1:3000/mcp`. Do not use `GROK_CONFIG` / `GROK_CONFIG_PATH` to retarget Wax. Isolated labs: project `.grok/config.toml` + `--leader-socket` (or `--no-leader` / `GROK_HOME`) — see `Resources/docs/wax-mcp-hosts.md`. |
 | Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
 
 Optional: `wax-cli mcp install --write-host-rule PATH` writes the generated

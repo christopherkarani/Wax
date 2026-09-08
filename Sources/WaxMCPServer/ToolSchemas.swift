@@ -34,7 +34,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "remember",
-            description: "Store concise durable text memory (decisions, preferences, facts). For session-scoped writes pass session_id as a top-level argument — never put session_id inside metadata.",
+            description: "Store concise text memory. memory_type selects working or durable storage. The MCP connection supplies session_id after session_open; explicit IDs belong at the top level, never in metadata.",
             inputSchema: waxRemember
         ),
         Tool(
@@ -84,12 +84,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_resume",
-            description: "Resume a persisted broker-managed session after restart using session_id or agent/run selectors.",
+            description: "Resume the connection session when arguments are omitted. After reconnecting, use the saved session_id or agent/run selectors to resume a persisted session.",
             inputSchema: waxSessionResume
         ),
         Tool(
             name: "session_end",
-            description: "End an active broker-managed virtual session after handoff. Pass session_id when multiple sessions are active.",
+            description: "End the connection session after handoff. Supply session_id to explicitly select another session or when no connection session is bound.",
             inputSchema: waxSessionEnd
         ),
         Tool(
@@ -186,12 +186,12 @@ enum ToolSchemas {
             ],
             "scope": [
                 "type": "string",
-                "description": "Write horizon. session requires session_id; durable forbids session_id. Omit for legacy omit-session_id=durable behavior.",
+                "description": "Write horizon. session requires session_id (inherited after session_open); durable forbids session_id. When omitted, memory_type selects the horizon and the connection session supplies project attribution.",
                 "enum": ["session", "durable"],
             ],
             "verbosity": [
                 "type": "string",
-                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns the same JSON in the text block plus structuredContent. Hosts that ignore structuredContent still receive the payload.",
                 "enum": ["compact", "verbose"],
             ],
             "metadata": [
@@ -296,7 +296,7 @@ enum ToolSchemas {
             ],
             "verbosity": [
                 "type": "string",
-                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+                "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns the same JSON in the text block plus structuredContent. Hosts that ignore structuredContent still receive the payload.",
                 "enum": ["compact", "verbose"],
             ],
             "filters": searchFilters,
@@ -323,7 +323,7 @@ enum ToolSchemas {
             ],
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID for scoped search.",
+                "description": "Optional session UUID. When set, search merges that session's working store with durable long-term memory in the session's project (same default merge as recall). Omit it to search long-term only.",
             ],
             "alpha": [
                 "type": "number",
@@ -500,6 +500,10 @@ enum ToolSchemas {
                 "type": "boolean",
                 "description": "When true, include full text for every hit. Default: false (top 3 include text; remaining hits keep preview).",
             ],
+            "session_id": [
+                "type": "string",
+                "description": "Optional session UUID. When set, corpus hits are project-fenced like search. Omit after session_open on this connection.",
+            ],
         ],
         required: ["query"]
     )
@@ -518,7 +522,7 @@ enum ToolSchemas {
     )
     static let waxSessionResume: Value = objectSchema(
         properties: [
-            "session_id": ["type": "string", "description": "Session UUID to reopen."],
+            "session_id": ["type": "string", "description": "Optional session UUID to reopen. Omit on a bound MCP connection unless selecting another session; after reconnecting, supply the saved UUID or agent/run selectors."],
             "agent_id": ["type": "string", "description": "Optional agent selector when session_id is omitted."],
             "run_id": ["type": "string", "description": "Optional run selector when session_id is omitted."],
             "verbosity": responseVerbositySchema,
@@ -529,7 +533,7 @@ enum ToolSchemas {
         properties: [
             "session_id": [
                 "type": "string",
-                "description": "Optional session UUID to end explicitly. Required when more than one MCP session is active.",
+                "description": "Optional session UUID to end explicitly. Omit after session_open on this connection.",
             ],
             "verbosity": responseVerbositySchema,
         ],
@@ -540,7 +544,7 @@ enum ToolSchemas {
         properties: [
             "session_id": [
                 "type": "string",
-                "description": "Session UUID to close (required).",
+                "description": "Session UUID to close. Omit after session_open on this connection; do not invent one.",
             ],
             "content": [
                 "type": "string",
@@ -557,7 +561,7 @@ enum ToolSchemas {
             ],
             "verbosity": responseVerbositySchema,
         ],
-        required: ["session_id", "content"]
+        required: ["content"]
     )
 
     static let waxSessionOpen: Value = objectSchema(
@@ -685,7 +689,24 @@ enum ToolSchemas {
             "metadata": [
                 "type": "object",
                 "description": "Exact metadata entry matches as a flat object, or wrapped as {\"exact\": {...}}. Scalar values are coerced to strings.",
-                "additionalProperties": scalarMetadataValueSchema,
+                "oneOf": [
+                    [
+                        "type": "object",
+                        "additionalProperties": scalarMetadataValueSchema,
+                        "not": ["required": ["exact"]],
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "exact": [
+                                "type": "object",
+                                "additionalProperties": scalarMetadataValueSchema,
+                            ],
+                        ],
+                        "required": ["exact"],
+                        "additionalProperties": false,
+                    ],
+                ],
             ],
             "labels": [
                 "type": "array",
@@ -823,7 +844,6 @@ enum ToolSchemas {
             "object": [
                 "oneOf": [
                     ["type": "string"],
-                    ["type": "integer"],
                     ["type": "number"],
                     ["type": "boolean"],
                     [
@@ -1015,7 +1035,6 @@ enum ToolSchemas {
     private static let scalarMetadataValueSchema: Value = [
         "oneOf": [
             ["type": "string"],
-            ["type": "integer"],
             ["type": "number"],
             ["type": "boolean"],
         ],
@@ -1023,7 +1042,7 @@ enum ToolSchemas {
 
     private static let responseVerbositySchema: Value = [
         "type": "string",
-        "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns narrative text plus structured content.",
+        "description": "Response verbosity. compact (default) returns one JSON text block and omits host store paths. verbose includes operator diagnostics and host store paths in both the JSON text block and structuredContent. Hosts that ignore structuredContent still receive the payload.",
         "enum": ["compact", "verbose"],
     ]
 

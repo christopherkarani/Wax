@@ -553,7 +553,7 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("agent_id+resolved project rebinds"))
     #expect(text.contains("durable types stay durable even if session_id is present"))
     #expect(!text.contains("durable types must omit session_id"))
-    #expect(text.contains("remember inherits session_id only for task_state, handoff, or scope=session"))
+    #expect(text.contains("remember and memory_append inherit session_id unless scope=durable"))
 }
 
 @Test
@@ -2416,9 +2416,7 @@ func corpusSearchDefaultRebuildIsFalse() async throws {
         try #require(omitted.payload?.objectValue?["rebuild_requested"]?.boolValue == false)
         try #require(omittedBuild["performed"]?.boolValue == false)
 
-        let corpusPath = try #require(
-            omitted.payload?.objectValue?["build"]?.objectValue?["corpus_store_path"]?.stringValue
-        )
+        let corpusPath = await service.corpusStoreURL.path
         try FileManager.default.removeItem(atPath: corpusPath)
 
         let missing = await service.handle(.init(
@@ -5566,7 +5564,27 @@ func compactLifecycleResponsesOmitHostPaths() async throws {
             #expect(!containsKeyRecursively("storePath", in: payload))
             #expect(!containsKeyRecursively("store_path", in: payload))
             #expect(!containsKeyRecursively("event_log_path", in: payload))
+            #expect(!containsKeyRecursively("root_path", in: payload))
+            #expect(!containsKeyRecursively("corpus_store_path", in: payload))
+            #expect(!containsKeyRecursively("source_store_path", in: payload))
         }
+
+        let corpus = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "corpus_search",
+                arguments: [
+                    "query": .string("host-path-omission"),
+                    "mode": .string("text"),
+                    "topK": .int(1),
+                ]
+            ),
+            broker: service
+        )
+        #expect(corpus.isError != true)
+        let corpusPayload = try parseJSONText(in: corpus)
+        #expect(!containsKeyRecursively("root_path", in: corpusPayload))
+        #expect(!containsKeyRecursively("corpus_store_path", in: corpusPayload))
+        #expect(!containsKeyRecursively("source_store_path", in: corpusPayload))
     }
 }
 
@@ -5610,7 +5628,60 @@ func verboseResultsUseStructuredContentWithoutResourceEcho() async throws {
             Issue.record("Expected verbose stats structured content")
             return
         }
-        #expect(statsPayload["storePath"] != nil)
+        let expectedStorePath = await service.longTermStoreURL.path
+        #expect(statsPayload["storePath"] == .string(expectedStorePath))
+    }
+}
+
+@Test
+func verboseStatsAndSessionOpenKeepJSONInTextContent() async throws {
+    try await withAgentBrokerService { service, _ in
+        let stats = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "stats",
+                arguments: ["verbosity": .string("verbose")]
+            ),
+            broker: service
+        )
+        #expect(stats.isError != true)
+        #expect(firstText(in: stats) != "Wax stats completed.")
+        let statsJSON = try parseJSONText(in: stats)
+        let expectedStorePath = await service.longTermStoreURL.path
+        let expectedSessionRoot = await service.sessionRootURL.path
+        #expect(statsJSON["embedder"] != nil)
+        #expect(statsJSON["queryEmbeddingAvailable"] != nil)
+        #expect(statsJSON["storePath"] as? String == expectedStorePath)
+        #expect(statsJSON["store_path"] == nil)
+        #expect(statsJSON["event_log_path"] == nil)
+        #expect((statsJSON["sessions"] as? [String: Any])?["root_path"] as? String == expectedSessionRoot)
+        #expect(!containsKeyRecursively("corpus_store_path", in: statsJSON))
+        #expect(!containsKeyRecursively("source_store_path", in: statsJSON))
+        #expect(stats.structuredContent != nil)
+        if case .object(let structured)? = stats.structuredContent {
+            #expect(structured["storePath"] == .string(expectedStorePath))
+        }
+
+        let opened = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_open",
+                arguments: [
+                    "agent_id": .string("verbose-dx"),
+                    "run_id": .string(UUID().uuidString),
+                    "verbosity": .string("verbose"),
+                ]
+            ),
+            broker: service
+        )
+        #expect(opened.isError != true)
+        #expect(firstText(in: opened) != "Wax session_open completed.")
+        let openJSON = try parseJSONText(in: opened)
+        #expect((openJSON["session_id"] as? String)?.isEmpty == false)
+        #expect(openJSON["store_path"] == nil)
+        #expect(openJSON["event_log_path"] == nil)
+        #expect(!containsKeyRecursively("root_path", in: openJSON))
+        #expect(!containsKeyRecursively("corpus_store_path", in: openJSON))
+        #expect(!containsKeyRecursively("source_store_path", in: openJSON))
+        #expect(opened.structuredContent != nil)
     }
 }
 
@@ -5757,7 +5828,8 @@ func verboseRecallKeepsExplanationsWithoutDuplicatePayloads() async throws {
             return true
         })
         let narrative = firstText(in: result)
-        #expect(decodeJSONObject(narrative) == nil)
+        let textJSON = try #require(decodeJSONObject(narrative))
+        #expect(textJSON["results"] != nil)
         guard case .object(let payload) = try #require(result.structuredContent),
               case .array(let results)? = payload["results"],
               case .object(let hit)? = results.first(where: { value in
@@ -6371,7 +6443,8 @@ func defaultRecallUsesHybridWhenVectorCoverageIsPartial() async throws {
         embedderChoice: "auto",
         requireVector: false,
         embedderOverride: MCPTestDeterministicEmbedder(),
-        orchestratorConfig: hybridConfig
+        orchestratorConfig: hybridConfig,
+        automaticEmbeddingBackfill: false
     )
     do {
         #expect((await hybrid.handle(.init(
@@ -8673,6 +8746,50 @@ struct WaxMCPProcessTests {
         #expect(try await harness.waitForExit(timeout: 10) == EXIT_SUCCESS)
         let stderr = harness.stderrSnapshot()
         #expect(stderr.contains("wax-mcp v\(WaxMCPServerMetadata.version) starting"))
+    }
+
+    @Test(
+        .timeLimit(.minutes(3)),
+        .disabled(
+            if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+            "Set WAX_TEST_MINILM=1 to run MiniLM semantic retrieval tests"
+        )
+    )
+    func waxMCPProcessFindsParaphraseAcrossWorkingAndDurableMemory() async throws {
+        let harness = try MCPServerProcessHarness(useRealEmbedder: true)
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+        _ = try await harness.bootstrap(clientName: "semantic-paraphrase-test")
+        _ = try await harness.callTool(id: 2, name: "session_open", arguments: [
+            "project": "semantic-paraphrase-test",
+        ])
+        let fact = try await harness.callTool(id: 3, name: "remember", arguments: [
+            "memory_type": "fact",
+            "content": "The automobile needs its worn brake pads replaced before it is safe to drive.",
+        ], timeout: 120)
+        let factID = try requireString(try parseToolTextJSON(fromResponseLine: fact), key: "memory_id")
+        _ = try await harness.callTool(id: 4, name: "remember", arguments: [
+            "memory_type": "task_state",
+            "content": "The forgotten account password can be recovered by requesting a reset link by email.",
+        ], timeout: 120)
+        _ = try await harness.callTool(id: 5, name: "remember", arguments: [
+            "memory_type": "fact",
+            "content": "Roast the vegetables with olive oil until the edges turn golden brown.",
+        ], timeout: 120)
+        for (offset, mode) in ["vector", "hybrid"].enumerated() {
+            let response = try await harness.callTool(id: 6 + offset, name: "recall", arguments: [
+                "query": "car stopping mechanism repair", "mode": mode, "limit": 3,
+            ], timeout: 30)
+            let payload = try parseToolTextJSON(fromResponseLine: response)
+            let results = try #require(payload["results"] as? [[String: Any]])
+            #expect(results.first?["id"] as? String == factID)
+            #expect((results.first?["sources"] as? [String])?.contains("vector") == true)
+            #expect((payload["effective_mode"] as? String)?.hasPrefix(mode) == true)
+            #expect(payload["query_embedding_state"] as? String == "available")
+        }
+        _ = try await harness.callTool(id: 8, name: "session_close", arguments: [
+            "content": "Verified semantic paraphrase retrieval with connection session defaults.",
+        ])
     }
 
     @Test(.timeLimit(.minutes(1)))

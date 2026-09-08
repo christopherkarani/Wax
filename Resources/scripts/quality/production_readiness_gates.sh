@@ -129,6 +129,12 @@ assert_full_pass_rate() {
 
   runnable=$((executed - skipped))
   if [[ $runnable -le 0 ]]; then
+    # Swift Testing emits an XCTest wrapper of "Executed 0 tests" when the
+    # selected filter has no XCTest cases. A passing swift-testing run is enough.
+    if grep -E "Test run with [0-9]+ tests passed" "$log_file" >/dev/null; then
+      echo "PASS_RATE: 100.00% (swift-testing; XCTest wrapper executed 0)"
+      return 0
+    fi
     echo "FAIL: no runnable XCTest cases detected." >&2
     return 1
   fi

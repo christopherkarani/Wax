@@ -63,6 +63,14 @@ assert_rejects_summary \
   "swift-testing-failure" \
   "Executed 2 tests, with 1 failure"
 
+assert_accepts_summary \
+  "swift-testing-only-filter" \
+  $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 28 tests passed after 9.859 seconds.'
+
+assert_rejects_summary \
+  "xctest-wrapper-zero-without-swift-testing" \
+  $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds'
+
 assert_rejects_skip_output \
   "swift-testing-suite-skipped" \
   "Suite FeatureFlaggedTests skipped: requires local fixture"

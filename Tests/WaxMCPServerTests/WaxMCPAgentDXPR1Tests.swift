@@ -439,7 +439,7 @@ func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
     #expect(!recallBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
     #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
     #expect(recallBody.contains("awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))"))
-    #expect(searchBody.contains("awaitQueryEmbedderIfNeeded(memory: memory)"))
+    #expect(searchBody.contains("awaitQueryEmbedderIfNeeded(memory: sessionMemory)"))
     #expect(source.contains("isQueryEmbedderWaitRequest(request)"))
 }
 
@@ -492,20 +492,26 @@ func prewarmEmbedderBackfillsUnembeddedFramesOnOpenStore() async throws {
 
     var hybridConfig = OrchestratorConfig.default
     hybridConfig.enableVectorSearch = true
+    let providerGate = DXGate()
     let service = try await AgentBrokerService(
         storePath: storeURL.path,
         sessionRootPath: sessionRootURL.path,
         noEmbedder: false,
         embedderChoice: "auto",
         requireVector: false,
-        embedderOverride: DXDeterministicEmbedder(),
+        readiness: EmbeddingReadiness(),
+        factoryOverride: {
+            await providerGate.wait()
+            return DXDeterministicEmbedder()
+        },
         orchestratorConfig: hybridConfig
     )
-    defer { Task { try? await service.close() } }
+    defer { Task { await providerGate.open(); try? await service.close() } }
 
     let before = try #require((await service.handle(.init(command: "stats"))).payload?.objectValue)
     #expect((before["framesWithoutVectors"]?.intValue ?? 0) > 0)
 
+    await providerGate.open()
     await service.prewarmEmbedder()
 
     let after = try #require((await service.handle(.init(command: "stats"))).payload?.objectValue)

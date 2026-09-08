@@ -70,8 +70,10 @@ package struct SearchResponse: Sendable, Equatable {
     }
 
     package var results: [Result]
+    package var vectorSearchTimedOut: Bool
 
-    package init(results: [Result]) {
+    package init(results: [Result], vectorSearchTimedOut: Bool = false) {
         self.results = results
+        self.vectorSearchTimedOut = vectorSearchTimedOut
     }
 }

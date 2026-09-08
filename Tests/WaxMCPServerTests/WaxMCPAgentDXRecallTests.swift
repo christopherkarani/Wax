@@ -536,6 +536,98 @@ struct WaxMCPAgentDXRecallTests {
     }
 
     @Test
+    func occupiedProjectQueryMissIsNotProjectMissAndDoesNotWiden() async throws {
+        try await withAgentDXRecallBroker { service, _ in
+            let project = "project-a-\(UUID().uuidString.prefix(8))"
+            let tokenA = "zxqadvA\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+            let tokenB = "zxqadvB\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+            let opened = await service.handle(.init(
+                command: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "repo": .string(project),
+                    "agent_id": .string("dx-occupied-miss-agent"),
+                    "run_id": .string("dx-occupied-miss-run"),
+                ]
+            ))
+            #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+            let sessionID = try requireString(try requireObject(opened.payload), "session_id")
+
+            let remembered = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("Durable lesson \(tokenA) occupies this project lane."),
+                    "memory_type": .string("lesson"),
+                    "durability": .string("durable"),
+                    "session_id": .string(sessionID),
+                ]
+            ))
+            #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+            let rememberPayload = try requireObject(remembered.payload)
+            #expect(rememberPayload["unresolved_project"]?.boolValue != true)
+
+            let hit = await service.handle(.init(
+                command: "recall",
+                arguments: [
+                    "query": .string(tokenA),
+                    "mode": .string("text"),
+                    "session_id": .string(sessionID),
+                ]
+            ))
+            #expect(hit.ok == true, "TOKEN_A recall failed: \(hit.error ?? "nil")")
+            let hitPayload = try requireObject(hit.payload)
+            #expect(hitPayload["project_miss"]?.boolValue != true)
+            #expect(try requireHits(hitPayload).contains { ($0["text"]?.stringValue ?? "").contains(tokenA) })
+
+            let missed = await service.handle(.init(
+                command: "recall",
+                arguments: [
+                    "query": .string(tokenB),
+                    "mode": .string("text"),
+                    "session_id": .string(sessionID),
+                ]
+            ))
+            #expect(missed.ok == true, "TOKEN_B recall failed: \(missed.error ?? "nil")")
+            let payload = try requireObject(missed.payload)
+            #expect(try requireHits(payload).isEmpty)
+            #expect(payload["project_miss"]?.boolValue == false)
+            #expect(payload["next_action"] == nil)
+            #expect(payload["scope_miss_message"] == nil)
+            let display = payload["display_text"]?.stringValue ?? ""
+            #expect(display.contains("no frames for project") == false)
+        }
+    }
+
+    @Test
+    func unlabeledDurableDoesNotOccupyEmptyNamedProject() async throws {
+        try await withAgentDXRecallBroker { service, _ in
+            let token = "WAXDXUNLAB-\(UUID().uuidString.prefix(8))"
+            #expect((await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("Unlabeled durable \(token) must not occupy EmptyProject."),
+                    "memory_type": .string("fact"),
+                ]
+            ))).ok == true)
+
+            let recalled = await service.handle(.init(
+                command: "recall",
+                arguments: [
+                    "query": .string("ZXQJ-EMPTY-\(UUID().uuidString)"),
+                    "project": .string("EmptyProject"),
+                    "scope": .string("project"),
+                    "mode": .string("text"),
+                ]
+            ))
+            #expect(recalled.ok == true)
+            let payload = try requireObject(recalled.payload)
+            #expect(payload["project_miss"]?.boolValue == true)
+            #expect(payload["next_action"]?.stringValue == "retry explicitly with scope=global")
+            #expect(try requireHits(payload).isEmpty)
+        }
+    }
+
+    @Test
     func omittedRecallScopeIsProjectAndExcludesForeignHits() async throws {
         try await withAgentDXRecallBroker { service, _ in
             let token = "WAXDXOMITTED-\(UUID().uuidString.prefix(8))"
@@ -672,6 +764,8 @@ struct WaxMCPAgentDXRecallTests {
             let payload = try requireObject(recalled.payload)
             #expect(payload["scope"]?.stringValue == "project")
             #expect(try requireHits(payload).isEmpty)
+            #expect(payload["project_miss"]?.boolValue == false)
+            #expect(payload["next_action"] == nil)
             #expect(payload["cross_project_matches_available"] == nil)
             #expect(payload["cross_project_match_count"] == nil)
         }

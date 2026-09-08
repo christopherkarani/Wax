@@ -448,7 +448,12 @@ package enum LayeredRecall {
 
         let sessionTagged = sessionHits.map { hit -> Hit in
             var copy = hit
-            copy.score += 0.12
+            // Lexical session notes should surface immediately. Vector-only
+            // working neighbors already have a similarity score; a flat boost
+            // lets unrelated task_state beat the durable fact MiniLM ranked first.
+            if hit.sources.contains(.text) || hit.sources.isEmpty {
+                copy.score += 0.12
+            }
             if !copy.explanations.contains("current session") {
                 copy.explanations = ["current session"] + copy.explanations
             }
@@ -554,6 +559,53 @@ package enum LayeredRecall {
             return (filtered, false, nil, .empty)
         }
         return (filtered, false, nil, louderDropped(merged: merged, kept: filtered, identity: identity))
+    }
+
+    /// Exact `wax.project` / `wax.repo` match, same as `frameFilterForScopedRetrieval`.
+    /// Unlabeled frames do not occupy a named project (retrieval would drop them).
+    package static func metadataMatchesScopedRetrieval(
+        _ metadata: [String: String],
+        identity: Identity
+    ) -> Bool {
+        if let project = identity.project {
+            guard metadata[MemoryMetadataKeys.project] == project else { return false }
+        }
+        if let repo = identity.repo {
+            guard metadata[MemoryMetadataKeys.repo] == repo else { return false }
+        }
+        return identity.project != nil || identity.repo != nil
+    }
+
+    /// True when working or durable already has a frame retrieval would keep
+    /// for this named project. Metadata only — do not load bodies. Store-wide
+    /// `frameCount` is the wrong probe.
+    private static func projectLaneOccupied(
+        identity: Identity,
+        request: RecallRequest,
+        stores: Stores
+    ) async -> Bool {
+        if let sessionID = request.sessionID, let working = stores.workingLane(sessionID) {
+            if await storeHasProjectLaneFrames(working.memory, identity: identity) {
+                return true
+            }
+        }
+        return await storeHasProjectLaneFrames(stores.longTermMemory, identity: identity)
+    }
+
+    private static func storeHasProjectLaneFrames(
+        _ memory: MemoryOrchestrator,
+        identity: Identity
+    ) async -> Bool {
+        let metas = await memory.wax.frameMetas()
+        for meta in metas {
+            guard meta.status == .active, meta.supersededBy == nil, meta.role == .document else {
+                continue
+            }
+            if metadataMatchesScopedRetrieval(meta.metadata?.entries ?? [:], identity: identity) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Foreign hits scoring ≥ the kept top. Empty-lane miss stays `projectMiss`; never auto-widens.
@@ -752,39 +804,6 @@ package enum LayeredRecall {
         )
     }
 
-    /// Live-session documents reserved for `scope=global` when retrieval missed.
-    /// Compact and project/session recall must not use this path.
-    private static func reservedLiveSessionHits(
-        request: RecallRequest,
-        stores: Stores
-    ) async throws -> [Hit] {
-        guard let sessionID = request.sessionID, let working = stores.workingLane(sessionID) else {
-            return []
-        }
-        let documents = try await working.memory.corpusSourceDocuments()
-            .sorted { lhs, rhs in
-                if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                return lhs.frameId > rhs.frameId
-            }
-        let topK = max(1, request.searchTopK)
-        return documents.prefix(topK).map { document in
-            Hit(
-                id: .working(sessionID: working.sessionID, frameID: document.frameId),
-                agentID: working.agentID,
-                runID: working.runID,
-                score: 0.2,
-                text: document.text,
-                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                metadata: document.metadata,
-                explanations: ["current session", "recent session note"],
-                timestampMs: document.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init)
-                    ?? document.timestampMs,
-                kind: .snippet,
-                sources: [.text]
-            )
-        }
-    }
-
     private static func visibleDurableHits(
         from execution: MemoryOrchestrator.RecallExecution,
         request: RecallRequest,
@@ -831,15 +850,9 @@ package enum LayeredRecall {
                 nowMs: stores.nowMs()
             )
         } else {
-            // Global recall still merges the live session. Do not run this
-            // reservation in fetchLanes: compact/project/session must not
-            // backfill unmatched working notes.
-            var sessionHits = lanes.working
-            if sessionHits.isEmpty {
-                sessionHits = try await reservedLiveSessionHits(request: request, stores: stores)
-            }
+            // Global changes the project boundary, not query or filter matching.
             merged = mergeHits(
-                sessionHits: sessionHits,
+                sessionHits: lanes.working,
                 durableHits: lanes.durable,
                 limit: request.limit,
                 nowMs: stores.nowMs()
@@ -847,23 +860,61 @@ package enum LayeredRecall {
         }
 
         let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
+        var projectMiss = selected.projectMiss
+        var scopeMissMessage = selected.scopeMissMessage
+        if request.scope == .project,
+           selected.hits.isEmpty,
+           projectMiss,
+           identity.project != nil || identity.repo != nil,
+           await projectLaneOccupied(identity: identity, request: request, stores: stores) {
+            // Query miss in an occupied project is not an empty lane.
+            projectMiss = false
+            scopeMissMessage = nil
+        }
         let keptHits = Array(selected.hits.prefix(request.limit))
         let primary = lanes.workingExecution ?? lanes.durableExecution
+        let laneDiagnostics = combinedLaneDiagnostics(
+            working: lanes.workingExecution,
+            durable: lanes.durableExecution
+        )
 
         return RecallResult(
             hits: keptHits,
             scope: request.scope,
             identity: identity,
-            projectMiss: selected.projectMiss,
-            scopeMissMessage: selected.scopeMissMessage,
+            projectMiss: projectMiss,
+            scopeMissMessage: scopeMissMessage,
             scopeDropped: selected.scopeDropped,
             requestedModeSummary: primary?.requestedMode.diagnosticsSummary ?? "n/a",
-            effectiveModeSummary: primary?.effectiveMode.diagnosticsSummary ?? "n/a",
-            queryEmbeddingState: primary?.queryEmbeddingState.rawValue ?? "n/a",
+            effectiveModeSummary: laneDiagnostics.mode,
+            queryEmbeddingState: laneDiagnostics.state,
             searchTopK: request.searchTopK,
             retrievalTopK: fetchRequest.searchTopK,
             limit: request.limit
         )
+    }
+
+    private static func combinedLaneDiagnostics(
+        working: MemoryOrchestrator.RecallExecution?,
+        durable: MemoryOrchestrator.RecallExecution?
+    ) -> (mode: String, state: String) {
+        switch (working, durable) {
+        case let (working?, durable?):
+            let mode = working.effectiveMode.diagnosticsSummary
+            let otherMode = durable.effectiveMode.diagnosticsSummary
+            let state = working.queryEmbeddingState.rawValue
+            let otherState = durable.queryEmbeddingState.rawValue
+            return (
+                mode == otherMode ? mode : "mixed",
+                state == otherState ? state : "mixed"
+            )
+        case let (working?, nil):
+            return (working.effectiveMode.diagnosticsSummary, working.queryEmbeddingState.rawValue)
+        case let (nil, durable?):
+            return (durable.effectiveMode.diagnosticsSummary, durable.queryEmbeddingState.rawValue)
+        case (nil, nil):
+            return ("n/a", "n/a")
+        }
     }
 
     package static func search(

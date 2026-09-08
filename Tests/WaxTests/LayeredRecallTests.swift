@@ -20,6 +20,58 @@ struct LayeredRecallTests {
     }
 
     @Test
+    func layeredRecallMergeDoesNotLetWeakerVectorOnlySessionHitBeatStrongerDurableFact() {
+        let session = [
+            layeredHit(
+                frameID: 1,
+                score: 0.90,
+                text: "The forgotten account password can be recovered by requesting a reset link by email.",
+                horizon: .working,
+                metadata: [MemoryMetadataKeys.type: MemoryType.taskState.rawValue],
+                sources: [.vector]
+            )
+        ]
+        let durable = [
+            layeredHit(
+                frameID: 2,
+                score: 0.91,
+                text: "The automobile needs its worn brake pads replaced before it is safe to drive.",
+                horizon: .durable,
+                metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue],
+                sources: [.vector]
+            )
+        ]
+        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 2)
+        #expect(merged.first?.text.contains("brake pads") == true)
+        #expect(merged.first?.score == 0.91)
+    }
+
+    @Test
+    func layeredRecallMergeStillBoostsLexicalSessionNotes() {
+        let session = [
+            layeredHit(
+                frameID: 1,
+                score: 0.90,
+                text: "Just wrote: brake pads are the next repair.",
+                horizon: .working,
+                sources: [.text]
+            )
+        ]
+        let durable = [
+            layeredHit(
+                frameID: 2,
+                score: 0.91,
+                text: "The automobile needs its worn brake pads replaced before it is safe to drive.",
+                horizon: .durable,
+                sources: [.vector]
+            )
+        ]
+        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 2)
+        #expect(merged.first?.text.contains("Just wrote") == true)
+        #expect(merged.first?.score == 1.02)
+    }
+
+    @Test
     func layeredRecallMergeReservesMissingDurableHorizonWhenSessionFillsLimit() {
         let session = (1...5).map { index in
             layeredHit(frameID: UInt64(index), score: 1.0 - Float(index) * 0.01, text: "session hit \(index)", horizon: .working)
@@ -659,7 +711,8 @@ private func layeredHit(
     text: String,
     horizon: LayeredRecall.Horizon,
     metadata: [String: String] = [:],
-    timestampMs: Int64 = 0
+    timestampMs: Int64 = 0,
+    sources: [RAGContext.Source] = []
 ) -> LayeredRecall.Hit {
     let id: MemoryID
     switch horizon {
@@ -677,6 +730,7 @@ private func layeredHit(
         preview: text,
         metadata: metadata,
         explanations: [],
-        timestampMs: timestampMs
+        timestampMs: timestampMs,
+        sources: sources
     )
 }
