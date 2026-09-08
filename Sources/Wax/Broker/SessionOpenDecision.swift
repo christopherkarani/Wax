@@ -18,7 +18,9 @@ package enum SessionOpenDecision: Sendable {
         package var hintedSessionID: UUID?
         /// Exists, active, and no project conflict — shell already gates exact-pair / unique lease.
         package var hintedResumable: Bool
+        /// Unique agent+project lease; used by `rebound`, not by `evaluate` (start owns rebind).
         package var priorUnique: Match?
+        /// Requested run_id; used by `rebound`, not by `evaluate`.
         package var requestedRunID: String?
 
         package init(
@@ -44,6 +46,8 @@ package enum SessionOpenDecision: Sendable {
     }
 
     /// Evaluate order matches current `sessionOpen` policy.
+    /// Unique agent+project rebind is intentionally *not* decided here — `startNew`
+    /// lets `virtualSessions.start` stamp/rebind.
     package static func evaluate(_ facts: Facts) -> Action {
         if facts.conversationID != nil {
             if let match = facts.conversationMatch {
@@ -56,5 +60,16 @@ package enum SessionOpenDecision: Sendable {
             return .resume(sessionID: hintedSessionID)
         }
         return .startNew
+    }
+
+    /// Unique agent+project rebind or conversation resume with a different/omitted run_id.
+    package static func rebound(returnedSessionID: UUID, facts: Facts) -> Bool {
+        if let prior = facts.priorUnique, returnedSessionID == prior.sessionID {
+            return facts.requestedRunID == nil || facts.requestedRunID != prior.runID
+        }
+        if let match = facts.conversationMatch, returnedSessionID == match.sessionID {
+            return facts.requestedRunID == nil || facts.requestedRunID != match.runID
+        }
+        return false
     }
 }

@@ -79,6 +79,21 @@ struct SessionOpenDecisionTests {
         #expect(SessionOpenDecision.evaluate(facts) == .startNew)
     }
 
+    @Test
+    func evaluateStartsNewWhenPriorUniqueAlone() {
+        // Unique rebind is owned by virtualSessions.start, not evaluate.
+        let facts = SessionOpenDecision.Facts(
+            conversationID: nil,
+            conversationMatch: nil,
+            hintedSessionID: nil,
+            hintedResumable: false,
+            priorUnique: matchA,
+            requestedRunID: "run-b"
+        )
+
+        #expect(SessionOpenDecision.evaluate(facts) == .startNew)
+    }
+
     @Test(arguments: [
         (
             "conversation match wins over hint",
@@ -127,6 +142,21 @@ struct SessionOpenDecisionTests {
             )
         ),
         (
+            "priorUnique alone is startNew",
+            SessionOpenDecision.Facts(
+                conversationID: nil,
+                conversationMatch: nil,
+                hintedSessionID: nil,
+                hintedResumable: false,
+                priorUnique: SessionOpenDecision.Match(
+                    sessionID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+                    runID: "old"
+                ),
+                requestedRunID: "new"
+            ),
+            SessionOpenDecision.Action.startNew
+        ),
+        (
             "default start",
             SessionOpenDecision.Facts(
                 conversationID: nil,
@@ -145,5 +175,75 @@ struct SessionOpenDecisionTests {
         expected: SessionOpenDecision.Action
     ) {
         #expect(SessionOpenDecision.evaluate(facts) == expected, "\(label)")
+    }
+
+    @Test
+    func reboundTrueForPriorUniqueWithDifferentRunID() {
+        let facts = SessionOpenDecision.Facts(
+            conversationID: nil,
+            conversationMatch: nil,
+            hintedSessionID: nil,
+            hintedResumable: false,
+            priorUnique: matchA,
+            requestedRunID: "run-b"
+        )
+
+        #expect(SessionOpenDecision.rebound(returnedSessionID: matchA.sessionID, facts: facts))
+    }
+
+    @Test
+    func reboundTrueForPriorUniqueWithOmittedRunID() {
+        let facts = SessionOpenDecision.Facts(
+            conversationID: nil,
+            conversationMatch: nil,
+            hintedSessionID: nil,
+            hintedResumable: false,
+            priorUnique: matchA,
+            requestedRunID: nil
+        )
+
+        #expect(SessionOpenDecision.rebound(returnedSessionID: matchA.sessionID, facts: facts))
+    }
+
+    @Test
+    func reboundFalseForPriorUniqueWithSameRunID() {
+        let facts = SessionOpenDecision.Facts(
+            conversationID: nil,
+            conversationMatch: nil,
+            hintedSessionID: nil,
+            hintedResumable: false,
+            priorUnique: matchA,
+            requestedRunID: matchA.runID
+        )
+
+        #expect(!SessionOpenDecision.rebound(returnedSessionID: matchA.sessionID, facts: facts))
+    }
+
+    @Test
+    func reboundTrueForConversationResumeWithDifferentRunID() {
+        let facts = SessionOpenDecision.Facts(
+            conversationID: "conv-1",
+            conversationMatch: matchA,
+            hintedSessionID: nil,
+            hintedResumable: false,
+            priorUnique: nil,
+            requestedRunID: "run-b"
+        )
+
+        #expect(SessionOpenDecision.rebound(returnedSessionID: matchA.sessionID, facts: facts))
+    }
+
+    @Test
+    func reboundFalseWhenReturnedSessionDoesNotMatch() {
+        let facts = SessionOpenDecision.Facts(
+            conversationID: nil,
+            conversationMatch: nil,
+            hintedSessionID: hintedID,
+            hintedResumable: true,
+            priorUnique: matchA,
+            requestedRunID: "run-b"
+        )
+
+        #expect(!SessionOpenDecision.rebound(returnedSessionID: hintedID, facts: facts))
     }
 }

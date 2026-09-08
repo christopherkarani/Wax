@@ -1750,14 +1750,7 @@ extension AgentBrokerService {
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
-        let rebound: Bool
-        if let priorUnique, sessionUUID == priorUnique.sessionID {
-            rebound = requestedRunID == nil || requestedRunID != priorUnique.runID
-        } else if let conversationMatch, sessionUUID == conversationMatch.sessionID {
-            rebound = requestedRunID == nil || requestedRunID != conversationMatch.runID
-        } else {
-            rebound = false
-        }
+        let rebound = SessionOpenDecision.rebound(returnedSessionID: sessionUUID, facts: openFacts)
         let sharePrompt =
             "This MCP connection remembers session_id (\(sessionID)); omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
 
