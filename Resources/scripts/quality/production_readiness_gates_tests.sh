@@ -68,6 +68,10 @@ assert_accepts_summary \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 28 tests passed after 9.859 seconds.'
 
 assert_rejects_summary \
+  "swift-testing-zero-tests-passed" \
+  $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 0 tests passed after 0.007 seconds.'
+
+assert_rejects_summary \
   "xctest-wrapper-zero-without-swift-testing" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds'
 
@@ -143,14 +147,54 @@ EOF
 
 assert_default_mcp_trait_tests_omitted "$DEFAULT_TEST_LIST"
 
-MCP_TEST_LIST="$TMP_DIR/mcp-tests.txt"
-cat >"$MCP_TEST_LIST" <<'EOF'
+MCP_TEST_LIST_NO_DOCTOR="$TMP_DIR/mcp-tests-no-doctor.txt"
+cat >"$MCP_TEST_LIST_NO_DOCTOR" <<'EOF'
 waxTests.PackageTraitManifestTests/waxMCPProductEnablesMiniLMCompileDefine()
 wax_mcpTests.WaxMCPProcessTests/brokerAutoStartHandlesConcurrentFirstAccess()
 wax_mcpTests.toolsListContainsExpectedTools()
 EOF
 
+if assert_mcp_trait_tests_listed "$MCP_TEST_LIST_NO_DOCTOR" >/dev/null 2>&1; then
+  echo "FAIL: MCPServer inventory must require WaxCLI doctor smoke test IDs" >&2
+  exit 1
+fi
+
+MCP_TEST_LIST="$TMP_DIR/mcp-tests.txt"
+cat >"$MCP_TEST_LIST" <<'EOF'
+waxTests.PackageTraitManifestTests/waxMCPProductEnablesMiniLMCompileDefine()
+wax_mcpTests.WaxMCPProcessTests/brokerAutoStartHandlesConcurrentFirstAccess()
+wax_mcpTests.toolsListContainsExpectedTools()
+WaxCLITests.WaxCLIMemoryTests/mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface()
+WaxCLITests.WaxCLIMemoryTests/mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld()
+EOF
+
 assert_mcp_trait_tests_listed "$MCP_TEST_LIST"
+
+DOCTOR_RUN_LOG="$TMP_DIR/mcp-cli-doctor-run.log"
+printf '%s\n' \
+  'Test mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface() passed after 1.000 seconds.' \
+  'Test mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld() passed after 1.000 seconds.' \
+  >"$DOCTOR_RUN_LOG"
+assert_mcp_cli_doctor_smokes_ran "$DOCTOR_RUN_LOG" >/dev/null
+
+SKIPPED_DOCTOR_LOG="$TMP_DIR/mcp-cli-doctor-skipped.log"
+printf '%s\n' \
+  'Test mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface() skipped: "Build with --traits default,MCPServer to run wax-mcp smoke tests"' \
+  'Test mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld() passed after 1.000 seconds.' \
+  >"$SKIPPED_DOCTOR_LOG"
+if assert_mcp_cli_doctor_smokes_ran "$SKIPPED_DOCTOR_LOG" >/dev/null 2>&1; then
+  echo "FAIL: expected skipped doctor smoke to fail run-log inventory" >&2
+  exit 1
+fi
+
+MISSING_DOCTOR_LOG="$TMP_DIR/mcp-cli-doctor-missing.log"
+printf '%s\n' \
+  'Test mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld() passed after 1.000 seconds.' \
+  >"$MISSING_DOCTOR_LOG"
+if assert_mcp_cli_doctor_smokes_ran "$MISSING_DOCTOR_LOG" >/dev/null 2>&1; then
+  echo "FAIL: expected missing doctor smoke to fail run-log inventory" >&2
+  exit 1
+fi
 
 if grep -F 'swift test --traits MCPServer --disable-automatic-resolution list' "$SCRIPT" >/dev/null; then
   echo "FAIL: MCP trait inventory must allow first-time trait dependency resolution" >&2
@@ -166,6 +210,18 @@ if grep -F 'swift test --no-parallel --traits MCPServer --skip' "$SCRIPT" >/dev/
 fi
 if ! grep -F 'swift test --parallel --traits MCPServer --filter wax_mcpTests' "$SCRIPT" >/dev/null; then
   echo "FAIL: MCPServer unit tests must run in parallel filtered to wax_mcpTests" >&2
+  exit 1
+fi
+if ! grep -F 'swift test --parallel --traits MCPServer --filter WaxCLIMemoryTests' "$SCRIPT" >/dev/null; then
+  echo "FAIL: MCPServer gate must run WaxCLIMemoryTests doctor smokes under --traits MCPServer" >&2
+  exit 1
+fi
+if ! grep -E 'Test run with \[1-9\]\[0-9\]\* tests passed' "$SCRIPT" >/dev/null; then
+  echo "FAIL: pass-rate helper must require a positive Swift Testing test count" >&2
+  exit 1
+fi
+if grep -E 'Test run with \[0-9\]\+ tests passed' "$SCRIPT" >/dev/null; then
+  echo "FAIL: pass-rate helper must not treat a 0-test Swift Testing run as success" >&2
   exit 1
 fi
 if ! grep -E 'swift test --no-parallel --traits MCPServer --filter .*WaxMCPProcessTests' "$SCRIPT" >/dev/null; then

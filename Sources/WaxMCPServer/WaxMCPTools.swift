@@ -220,26 +220,6 @@ private extension WaxMCPTools {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// Session-horizon writes only. Durable types stay durable if session_id is
-    /// present, but inheriting the connection UUID would still stamp session
-    /// project onto writes that omitted it on purpose.
-    static func rememberShouldInheritSession(_ arguments: [String: Value]) -> Bool {
-        if case .string(let scope)? = arguments["scope"] {
-            let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if trimmed == "session" { return true }
-            if trimmed == "durable" { return false }
-        }
-        if case .string(let type)? = arguments["memory_type"] {
-            switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "task_state", "handoff":
-                return true
-            default:
-                return false
-            }
-        }
-        return false
-    }
-
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
         guard let entry = AgentBrokerCommandSurface.entry(for: name), entry.exposure == .publicCommand else {
             throw ToolValidationError.invalid("Unknown tool '\(name)'.")

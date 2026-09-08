@@ -1278,6 +1278,138 @@ func corpusSearchWithLiveSessionIDDoesNotReturnForeignProjectDurable() async thr
 }
 
 @Test
+func filterMemorySearchHitsUnresolvedIdentityDropsStampedForeignDurable() {
+    let sessionID = UUID()
+    let working = LayeredRecall.Hit(
+        id: .working(sessionID: sessionID, frameID: 1),
+        score: 1,
+        text: "live working note",
+        preview: "live working note",
+        metadata: [MemoryMetadataKeys.project: "ForeignLab"],
+        explanations: [],
+        timestampMs: 0
+    )
+    let unstamped = LayeredRecall.Hit(
+        id: .durable(frameID: 2),
+        score: 1,
+        text: "unstamped durable token",
+        preview: "unstamped durable token",
+        metadata: [:],
+        explanations: [],
+        timestampMs: 0
+    )
+    let foreign = LayeredRecall.Hit(
+        id: .durable(frameID: 3),
+        score: 1,
+        text: "ForeignLab durable token",
+        preview: "ForeignLab durable token",
+        metadata: [
+            MemoryMetadataKeys.project: "ForeignLab",
+            MemoryMetadataKeys.repo: "ForeignLab",
+        ],
+        explanations: [],
+        timestampMs: 0
+    )
+    let filtered = AgentBrokerService.filterMemorySearchHits(
+        [working, unstamped, foreign],
+        identity: LayeredRecall.Identity()
+    )
+    #expect(filtered.map(\.text) == ["live working note", "unstamped durable token"])
+}
+
+@Test
+func filterCorpusHitsUnresolvedIdentityDropsStampedForeignDurable() {
+    func hit(preview: String, origin: String, project: String?) -> BrokerCorpusMergeHit {
+        var metadata = [BrokerCorpusMetadataKeys.origin: origin]
+        if let project {
+            metadata[MemoryMetadataKeys.project] = project
+            metadata[MemoryMetadataKeys.repo] = project
+        }
+        return BrokerCorpusMergeHit(
+            frameId: 1,
+            score: 1,
+            sources: ["text"],
+            preview: preview,
+            metadata: metadata,
+            dedupeKey: preview
+        )
+    }
+    let filtered = AgentBrokerService.filterCorpusHits(
+        [
+            hit(preview: "live working", origin: "active_session", project: "ForeignLab"),
+            hit(preview: "unstamped durable", origin: "long_term", project: nil),
+            hit(preview: "ForeignLab durable", origin: "long_term", project: "ForeignLab"),
+        ],
+        identity: LayeredRecall.Identity()
+    )
+    #expect(filtered.map(\.preview) == ["live working", "unstamped durable"])
+}
+
+@Test
+func unresolvedSessionScopedSearchDoesNotReturnForeignLabDurable() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("unresolved-fence-agent"),
+                "run_id": .string("unresolved-fence-run"),
+            ]
+        ))
+        #expect(started.ok == true, "session_start failed: \(started.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let foreignToken = "zxqunF\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("ForeignLab durable lesson \(foreignToken) must stay out of unresolved session search."),
+                "memory_type": .string("lesson"),
+                "project": .string("ForeignLab"),
+                "repo": .string("ForeignLab"),
+            ]
+        ))).ok == true)
+
+        for command in ["search", "memory_search", "corpus_search"] {
+            let searched = await service.handle(.init(
+                command: command,
+                arguments: [
+                    "query": .string(foreignToken),
+                    "mode": .string("text"),
+                    "topK": .int(10),
+                    "session_id": .string(sessionID),
+                ]
+            ))
+            #expect(searched.ok == true, "\(command) failed: \(searched.error ?? "nil")")
+            let texts = resultTexts(try requireObject(searched.payload))
+            #expect(
+                texts.contains { $0.contains(foreignToken) } == false,
+                "unresolved \(command)+session_id must not leak ForeignLab durable; got \(texts)"
+            )
+            #expect(
+                texts.contains { $0.contains("ForeignLab") } == false,
+                "unresolved \(command)+session_id must not leak ForeignLab text; got \(texts)"
+            )
+        }
+
+        let global = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(foreignToken),
+                "mode": .string("text"),
+                "scope": .string("global"),
+                "limit": .int(10),
+            ]
+        ))
+        #expect(global.ok == true, "global recall failed: \(global.error ?? "nil")")
+        let globalTexts = resultTexts(try requireObject(global.payload))
+        #expect(
+            globalTexts.contains { $0.contains(foreignToken) },
+            "scope=global recall must still find ForeignLab durable; got \(globalTexts)"
+        )
+    }
+}
+
+@Test
 func endedSessionIDIsRejectedOnLaterScopedBrokerCalls() async throws {
     try await withIsolatedBroker { service, _ in
         let started = await service.handle(.init(

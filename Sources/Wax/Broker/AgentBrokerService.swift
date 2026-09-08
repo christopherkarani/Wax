@@ -228,17 +228,28 @@ package actor AgentBrokerService {
         return false
     }
 
-    private static func requiresRememberDrain(_ request: AgentBrokerRequest) -> Bool {
+    /// Invalid decode does not take the remember-drain lock.
+    package static func requiresRememberDrain(_ request: AgentBrokerRequest) -> Bool {
         guard let command = try? BrokerCommand.decode(
             command: request.command,
             arguments: request.arguments
         ) else {
             return false
         }
+        return requiresRememberDrain(command)
+    }
+
+    /// New `BrokerCommand` cases must pick true (teardown) or false.
+    package static func requiresRememberDrain(_ command: BrokerCommand) -> Bool {
         switch command {
         case .taskStateMigrate, .sessionEnd, .sessionClose:
             return true
-        default:
+        case .remember, .recall, .search, .memorySearch, .sessionStart, .sessionResume,
+             .handoff, .handoffLatest, .memoryGet, .memoryHealth, .stats, .flush,
+             .markdownSync, .entityUpsert, .entityResolve, .factRetract, .shutdown,
+             .sessionSynthesize, .knowledgeCapture, .sessionOpen, .compactContext,
+             .markdownExport, .factsQuery, .memoryPromote, .promote, .factAssert,
+             .corpusSearch, .memoryMaintain:
             return false
         }
     }
@@ -732,13 +743,22 @@ extension AgentBrokerService {
                 scope: .project,
                 identity: identity
             )
-            let durableExecution = try await longTermMemory.searchExecution(
+            var durableExecution = try await longTermMemory.searchExecution(
                 query: query,
                 mode: mode,
                 topK: topK,
                 frameFilter: durableFilter,
                 timeRange: parsedFilters.timeRange
             )
+            // `frameFilterForScopedRetrieval` no-ops on empty identity; still drop
+            // stamped foreign durable so session-scoped search matches recall.
+            durableExecution.hits = durableExecution.hits.filter {
+                Self.matchesSessionScopedRetrieval(
+                    metadata: $0.metadata,
+                    identity: identity,
+                    isWorking: false
+                )
+            }
             execution = Self.mergeSearchExecutions(
                 working: sessionExecution,
                 durable: durableExecution,
@@ -2562,11 +2582,7 @@ extension AgentBrokerService {
                 project: writeScope.projectName,
                 repo: writeScope.repoName
             )
-            if identity.project != nil || identity.repo != nil {
-                merged = merged.filter {
-                    LayeredRecall.metadataMatchesScopedRetrieval($0.metadata, identity: identity)
-                }
-            }
+            merged = Self.filterCorpusHits(merged, identity: identity)
         }
         let activeSessionsSearched = orderedActiveSessions.count
 
@@ -3090,16 +3106,58 @@ extension AgentBrokerService {
         case none
     }
 
-    /// Keep working-lane hits. When the live session has a project/repo, drop
-    /// durable/episodic hits that would fail `search`'s scoped frame filter.
+    /// Keep working-lane hits. Resolved identity drops durable/episodic that would
+    /// fail `search`'s scoped frame filter. Unresolved identity keeps unstamped
+    /// durable and drops stamped foreign, matching `LayeredRecall.matchesProjectScope`.
     static func filterMemorySearchHits(
         _ hits: [LayeredMemoryHit],
         identity: LayeredRecall.Identity
     ) -> [LayeredMemoryHit] {
-        guard identity.project != nil || identity.repo != nil else { return hits }
+        hits.filter { hit in
+            matchesSessionScopedRetrieval(
+                metadata: hit.metadata,
+                identity: identity,
+                isWorking: hit.horizon == .working
+            )
+        }
+    }
+
+    /// Unresolved session scope: working + unstamped durable; drop stamped foreign.
+    /// Resolved: exact `wax.project` / `wax.repo` (working always kept).
+    static func matchesSessionScopedRetrieval(
+        metadata: [String: String],
+        identity: LayeredRecall.Identity,
+        isWorking: Bool
+    ) -> Bool {
+        if isWorking { return true }
+        if identity.project == nil && identity.repo == nil {
+            return !hasExplicitProjectOrRepoStamp(metadata)
+        }
+        return LayeredRecall.metadataMatchesScopedRetrieval(metadata, identity: identity)
+    }
+
+    static func hasExplicitProjectOrRepoStamp(_ metadata: [String: String]) -> Bool {
+        let project = metadata[MemoryMetadataKeys.project]
+        let repo = metadata[MemoryMetadataKeys.repo]
+        return (project.map { !$0.isEmpty } ?? false) || (repo.map { !$0.isEmpty } ?? false)
+    }
+
+    static func filterCorpusHits(
+        _ hits: [BrokerCorpusMergeHit],
+        identity: LayeredRecall.Identity
+    ) -> [BrokerCorpusMergeHit] {
+        if identity.project != nil || identity.repo != nil {
+            return hits.filter {
+                LayeredRecall.metadataMatchesScopedRetrieval($0.metadata, identity: identity)
+            }
+        }
         return hits.filter { hit in
-            if hit.horizon == .working { return true }
-            return LayeredRecall.metadataMatchesScopedRetrieval(hit.metadata, identity: identity)
+            let isWorking = hit.metadata[BrokerCorpusMetadataKeys.origin] == "active_session"
+            return matchesSessionScopedRetrieval(
+                metadata: hit.metadata,
+                identity: identity,
+                isWorking: isWorking
+            )
         }
     }
 

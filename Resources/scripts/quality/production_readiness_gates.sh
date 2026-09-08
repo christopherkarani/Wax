@@ -130,8 +130,9 @@ assert_full_pass_rate() {
   runnable=$((executed - skipped))
   if [[ $runnable -le 0 ]]; then
     # Swift Testing emits an XCTest wrapper of "Executed 0 tests" when the
-    # selected filter has no XCTest cases. A passing swift-testing run is enough.
-    if grep -E "Test run with [0-9]+ tests passed" "$log_file" >/dev/null; then
+    # selected filter has no XCTest cases. Require a positive swift-testing
+    # count so an empty --filter cannot green as 100%.
+    if grep -E "Test run with [1-9][0-9]* tests passed" "$log_file" >/dev/null; then
       echo "PASS_RATE: 100.00% (swift-testing; XCTest wrapper executed 0)"
       return 0
     fi
@@ -177,10 +178,37 @@ assert_mcp_trait_tests_listed() {
     echo "FAIL: MCPServer trait test list is missing wax_mcpTests.toolsListContainsExpectedTools()." >&2
     return 1
   fi
+  if ! grep -E "^WaxCLITests\.WaxCLIMemoryTests/mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface\(\)" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing WaxCLITests.WaxCLIMemoryTests/mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface()." >&2
+    return 1
+  fi
+  if ! grep -E "^WaxCLITests\.WaxCLIMemoryTests/mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld\(\)" "$log_file" >/dev/null; then
+    echo "FAIL: MCPServer trait test list is missing WaxCLITests.WaxCLIMemoryTests/mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld()." >&2
+    return 1
+  fi
 
   local count
   count="$(grep -Ec "^wax_mcpTests\." "$log_file")"
   echo "MCP_TRAIT_TESTS: listed=$count"
+}
+
+assert_mcp_cli_doctor_smokes_ran() {
+  local log_file="$1"
+  local id
+  for id in \
+    mcpDoctorIsHostAgnosticAndValidatesDailyToolSurface \
+    mcpDoctorSmokeChecksIsolatedStoreWhenTargetStoreIsHeld
+  do
+    if grep -E "Test ${id}\(\) skipped:" "$log_file" >/dev/null; then
+      echo "FAIL: MCPServer WaxCLI doctor smoke ${id} was skipped." >&2
+      return 1
+    fi
+    if ! grep -F "$id" "$log_file" >/dev/null; then
+      echo "FAIL: MCPServer WaxCLI run log is missing doctor smoke ${id}." >&2
+      return 1
+    fi
+  done
+  echo "MCP_CLI_DOCTOR_SMOKES: executed"
 }
 
 assert_mcp_trait_test_inventory() {
@@ -199,6 +227,7 @@ assert_mcp_trait_test_inventory() {
 run_full() {
   local log_file="/tmp/wax-gate-full.log"
   local mcp_unit_log="/tmp/wax-gate-full-mcp-unit.log"
+  local mcp_cli_log="/tmp/wax-gate-full-mcp-cli.log"
   local mcp_process_log="/tmp/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
@@ -219,6 +248,14 @@ run_full() {
     swift test --parallel --traits MCPServer --filter wax_mcpTests --skip "${skip_regex}|WaxMCPProcessTests"
   assert_no_skips "$mcp_unit_log"
   assert_full_pass_rate "$mcp_unit_log"
+
+  # Doctor smokes live in WaxCLIMemoryTests, not wax_mcpTests. Keep this
+  # slice filtered; do not restore an unfiltered MCPServer package run.
+  run_and_capture "$mcp_cli_log" \
+    swift test --parallel --traits MCPServer --filter WaxCLIMemoryTests
+  assert_no_skips "$mcp_cli_log"
+  assert_full_pass_rate "$mcp_cli_log"
+  assert_mcp_cli_doctor_smokes_ran "$mcp_cli_log"
 
   run_and_capture "$mcp_process_log" \
     swift test --no-parallel --traits MCPServer --filter WaxMCPProcessTests

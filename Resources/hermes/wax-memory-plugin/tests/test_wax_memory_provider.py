@@ -154,6 +154,16 @@ class ConfigResolutionTests(unittest.TestCase):
             provider = plugin.WaxMemoryProvider(config=cfg)
             self.assertFalse(provider.auto_start_enabled())
 
+    def test_yaml_section_ignores_inline_scalar_header(self) -> None:
+        values = plugin._yaml_section_scalars("wax_memory: true\n", "wax_memory")
+        self.assertEqual(values, {})
+        nested = plugin._yaml_section_scalars(
+            "wax_memory: true\n  auto_start: true\n  endpoint: http://127.0.0.1:3000/mcp\n",
+            "wax_memory",
+        )
+        self.assertEqual(nested.get("auto_start"), True)
+        self.assertEqual(nested.get("endpoint"), "http://127.0.0.1:3000/mcp")
+
 
 class AutoStartTests(unittest.TestCase):
     class Process:
@@ -977,6 +987,18 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertIn("project", properties)
         self.assertIn("repo", properties)
         self.assertIn("cwd", properties)
+        self.assertIn(
+            "hard-filters to the resolved project/repo",
+            properties["scope"]["description"],
+        )
+        self.assertIn("session skips durable merge", properties["scope"]["description"])
+        self.assertIn("wax.project", properties["project"]["description"])
+        self.assertIn("wax.repo", properties["repo"]["description"])
+        self.assertIn(
+            "Optional client working directory used to infer project/repo when not explicit",
+            properties["cwd"]["description"],
+        )
+        self.assertIn("host injects", properties["cwd"]["description"])
         description = recall["description"].lower()
         self.assertIn("recent", description)
         self.assertIn("exact", description)

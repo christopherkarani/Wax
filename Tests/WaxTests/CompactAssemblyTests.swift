@@ -151,7 +151,7 @@ func compactAssemblyFetchSearchTopKStaysUninflated() {
     #expect(CompactAssembly.fetchSearchTopK(maxItems: 8) == 4)
     #expect(CompactAssembly.fetchSearchTopK(maxItems: 1) == 1)
     #expect(CompactAssembly.fetchSearchTopK(maxItems: 4) == 4)
-    #expect(LayeredRecall.retrievalTopK(requested: 4, scope: .project) == 12)
+    #expect(LayeredRecall.retrievalTopK(requested: 4) == 12)
 }
 
 private func compactHit(
