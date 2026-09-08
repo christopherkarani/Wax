@@ -1283,12 +1283,13 @@ package actor MemoryOrchestrator {
         // Access-aware ranking needs additional candidates so a stale top hit
         // can be displaced by a close, recently/frequently used result. The
         // candidate window is bounded and applies only when the feature is on.
-        let searchTopK: Int
-        if !config.enableAccessStatsScoring || topK > 16 {
-            searchTopK = topK
-        } else {
-            searchTopK = topK * 3
-        }
+        let accessEnabled = config.enableAccessStatsScoring
+        let searchTopK = AccessRankingWindow.candidateCount(
+            requestedTopK: topK,
+            accessEnabled: accessEnabled,
+            multiplier: 3,
+            applyWhenRequestedTopKAtMost: 16
+        )
         // One ranking-now for this search: UnifiedSearch recency and later
         // access ranking must not tick the wall clock twice.
         let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
@@ -1307,7 +1308,7 @@ package actor MemoryOrchestrator {
         )
         let response = try await session.search(request)
 
-        let accessStatsMap: [UInt64: FrameAccessStats] = if config.enableAccessStatsScoring {
+        let accessStatsMap: [UInt64: FrameAccessStats] = if accessEnabled {
             await AccessFrequencyRanker.statsForRanking(
                 frameIds: response.results.map(\.frameId),
                 manager: accessStatsManager,
@@ -1316,15 +1317,14 @@ package actor MemoryOrchestrator {
         } else {
             [:]
         }
-        let scoredResults = config.enableAccessStatsScoring
-            ? AccessFrequencyRanker.rerank(
-                results: response.results,
-                query: trimmed,
-                accessStats: accessStatsMap,
-                nowMs: searchNowMs,
-                maxWindow: searchTopK
-            )
-            : response.results
+        let scoredResults = RankedSearch.applyAccessRanking(
+            results: response.results,
+            query: trimmed,
+            accessStats: accessStatsMap,
+            nowMs: searchNowMs,
+            maxWindow: searchTopK,
+            enabled: accessEnabled
+        )
         let hits = scoredResults.prefix(topK).map { result in
             let accessReasons = MemorySemantics.accessReasons(
                 stats: accessStatsMap[result.frameId],
