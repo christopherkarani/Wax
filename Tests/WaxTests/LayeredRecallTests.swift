@@ -12,7 +12,12 @@ struct LayeredRecallTests {
         let session = [
             layeredHit(frameID: 99, score: 0.05, text: "session reserved note", horizon: .working)
         ]
-        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 5)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: session,
+            durableHits: durable,
+            limit: 5,
+            nowMs: 0
+        )
         #expect(merged.count == 5)
         #expect(merged.contains { $0.text.contains("session reserved note") })
         #expect(merged.contains { $0.explanations.contains("current session") })
@@ -41,7 +46,12 @@ struct LayeredRecallTests {
                 sources: [.vector]
             )
         ]
-        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 2)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: session,
+            durableHits: durable,
+            limit: 2,
+            nowMs: 0
+        )
         #expect(merged.first?.text.contains("brake pads") == true)
         #expect(merged.first?.score == 0.91)
     }
@@ -66,7 +76,12 @@ struct LayeredRecallTests {
                 sources: [.vector]
             )
         ]
-        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 2)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: session,
+            durableHits: durable,
+            limit: 2,
+            nowMs: 0
+        )
         #expect(merged.first?.text.contains("Just wrote") == true)
         #expect(merged.first?.score == 1.02)
     }
@@ -79,7 +94,12 @@ struct LayeredRecallTests {
         let durable = [
             layeredHit(frameID: 99, score: 0.05, text: "durable reserved note", horizon: .durable)
         ]
-        let merged = LayeredRecall.mergeHits(sessionHits: session, durableHits: durable, limit: 5)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: session,
+            durableHits: durable,
+            limit: 5,
+            nowMs: 0
+        )
         #expect(merged.count == 5)
         #expect(merged.contains { $0.text.contains("durable reserved note") })
         #expect(merged.contains { $0.explanations.contains("current session") })
@@ -256,6 +276,51 @@ struct LayeredRecallTests {
             timestampMs: 0
         )
         #expect(LayeredRecall.freshnessAdjustedScore(unknown, nowMs: nowMs) == 0.92)
+    }
+
+    @Test
+    func layeredRecallMergeHitsZeroNowMsLeavesOperationalScoreUnchanged() {
+        let hit = layeredHit(
+            frameID: 1,
+            score: 0.92,
+            text: "operational note",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.note.rawValue],
+            timestampMs: 1_000
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [hit],
+            limit: 1,
+            nowMs: 0
+        )
+        #expect(merged.first?.score == 0.92)
+        #expect(merged.first?.explanations.contains("freshness adjusted operational memory") == false)
+    }
+
+    @Test
+    func layeredRecallMergeRecallItemsThreadsNowMsIntoFreshness() throws {
+        let nowMs: Int64 = 2_000_000_000_000
+        let stale = RAGContext.Item(
+            kind: .snippet,
+            frameId: 1,
+            score: 0.92,
+            sources: [.text],
+            text: "stale operational note",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                MemoryMetadataKeys.createdAtMs: String(nowMs - 30 * 86_400_000),
+            ]
+        )
+        let merged = LayeredRecall.mergeRecallItems(
+            sessionItems: [],
+            durableItems: [stale],
+            limit: 1,
+            nowMs: nowMs
+        )
+        let item = try #require(merged.first)
+        #expect(abs(item.score - 0.74) < 0.0001)
+        #expect(item.explanations.contains("freshness adjusted operational memory"))
     }
 
     @Test
@@ -610,10 +675,8 @@ struct LayeredRecallTests {
 
     @Test
     func layeredRecallRetrievalTopKOverfetchesForProjectScope() {
-        #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .project) == 15)
-        #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .session) == 15)
-        #expect(LayeredRecall.retrievalTopK(requested: 5, scope: .global) == 15)
-        #expect(LayeredRecall.retrievalTopK(requested: 100, scope: .project, maxTopK: 200) == 200)
+        #expect(LayeredRecall.retrievalTopK(requested: 5) == 15)
+        #expect(LayeredRecall.retrievalTopK(requested: 100, maxTopK: 200) == 200)
     }
 
     @Test
@@ -651,7 +714,12 @@ struct LayeredRecallTests {
             horizon: .durable,
             timestampMs: 200
         )
-        let merged = LayeredRecall.mergeHits(sessionHits: [], durableHits: [older, newer], limit: 2)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [older, newer],
+            limit: 2,
+            nowMs: 0
+        )
         #expect(merged.map(\.text) == ["newer correction", "older contract"])
     }
 

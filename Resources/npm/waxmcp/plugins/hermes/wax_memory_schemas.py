@@ -103,14 +103,20 @@ TOOL_SCHEMAS = {
             "scope": {
                 "type": "string",
                 "enum": ["project", "session", "global"],
-                "description": "Project is the default relevance scope; global searches every project and is not an authorization boundary.",
+                "description": "Recall scope. project (default) hard-filters to the resolved project/repo; session skips durable merge when a session_id is supplied; global searches the complete trusted local store without current-project boost (it is not an authorization boundary).",
             },
-            "project": {"type": "string"},
+            "project": {
+                "type": "string",
+                "description": "Optional project hard-filter. Default scope=project keeps only frames with matching wax.project.",
+            },
             "repo": {
                 "type": "string",
-                "description": "Exact repo filter; when project is also supplied, both must match.",
+                "description": "Optional exact wax.repo hard-filter. When project is also set, both filters must match.",
             },
-            "cwd": {"type": "string"},
+            "cwd": {
+                "type": "string",
+                "description": "Optional client working directory used to infer project/repo when not explicit; omit and the host injects it.",
+            },
             "search_top_k": {"type": "integer", "minimum": 1, "maximum": 200},
         },
         ["query"],

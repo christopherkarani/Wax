@@ -671,4 +671,39 @@ struct BrokerCommandDecodeTests {
             )
         }
     }
+
+    @Test
+    func requiresRememberDrainIsTrueForTeardownCommands() throws {
+        let sessionEnd = try BrokerCommand.decode(command: "session_end", arguments: [:])
+        let sessionClose = try BrokerCommand.decode(
+            command: "session_close",
+            arguments: [
+                "session_id": .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+                "content": .string("closing"),
+            ]
+        )
+        let migrate = try BrokerCommand.decode(
+            command: "task_state_migrate",
+            arguments: ["destination_path": .string("/tmp/wax-migrate")]
+        )
+        #expect(AgentBrokerService.requiresRememberDrain(sessionEnd))
+        #expect(AgentBrokerService.requiresRememberDrain(sessionClose))
+        #expect(AgentBrokerService.requiresRememberDrain(migrate))
+    }
+
+    @Test
+    func requiresRememberDrainIsFalseForReadsAndDecodeFailure() throws {
+        let search = try BrokerCommand.decode(
+            command: "search",
+            arguments: ["query": .string("hello")]
+        )
+        let remember = try BrokerCommand.decode(
+            command: "remember",
+            arguments: ["content": .string("note")]
+        )
+        #expect(!AgentBrokerService.requiresRememberDrain(search))
+        #expect(!AgentBrokerService.requiresRememberDrain(remember))
+        #expect(!AgentBrokerService.requiresRememberDrain(.init(command: "not_a_real_command")))
+        #expect(!AgentBrokerService.requiresRememberDrain(.init(command: "session_close")))
+    }
 }

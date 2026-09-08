@@ -386,7 +386,7 @@ package enum LayeredRecall {
     }
 
     /// Inflates retrieval top-K when a post-rank project hard-filter may discard foreign hits.
-    package static func retrievalTopK(requested: Int, scope: Scope, maxTopK: Int = 200) -> Int {
+    package static func retrievalTopK(requested: Int, maxTopK: Int = 200) -> Int {
         let bounded = max(1, requested)
         return min(max(bounded * 3, 12), maxTopK)
     }
@@ -427,7 +427,7 @@ package enum LayeredRecall {
         sessionHits: [Hit],
         durableHits: [Hit],
         limit: Int,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64
     ) -> [Hit] {
         func identity(_ hit: Hit) -> String {
             if let hash = hit.metadata["wax.content.hash"] {
@@ -514,10 +514,10 @@ package enum LayeredRecall {
     /// facts, lessons, decisions, constraints, reviewed frames, and locked frames
     /// keep their semantic score regardless of age.
     package static func freshnessAdjustedScore(_ hit: Hit, nowMs: Int64) -> Float {
-        let type = hit.metadata[MemoryMetadataKeys.type]
-        let isOperational = type == MemoryType.note.rawValue
-            || type == MemoryType.taskState.rawValue
-            || type == MemoryType.handoff.rawValue
+        let isOperational = switch MemoryType(rawValue: hit.metadata[MemoryMetadataKeys.type] ?? "") {
+        case .note, .taskState, .handoff: true
+        case .userPreference, .decision, .lesson, .constraint, .fact, nil: false
+        }
         let isReviewed = hit.metadata[MemoryMetadataKeys.reviewed]?.lowercased() == "true"
         let isLocked = hit.metadata[MemoryMetadataKeys.durability] == MemoryDurability.locked.rawValue
         guard isOperational, !isReviewed, !isLocked, hit.timestampMs > 0, nowMs > hit.timestampMs else {
@@ -664,13 +664,19 @@ package enum LayeredRecall {
     package static func mergeRecallItems(
         sessionItems: [RAGContext.Item],
         durableItems: [RAGContext.Item],
-        limit: Int
+        limit: Int,
+        nowMs: Int64 = 0
     ) -> [RAGContext.Item] {
         let sessionHits = sessionItems.map {
             hit(from: $0, horizon: .working, sessionID: UUID())
         }
         let durableHits = durableItems.map { hit(from: $0) }
-        return mergeHits(sessionHits: sessionHits, durableHits: durableHits, limit: limit).map { hit in
+        return mergeHits(
+            sessionHits: sessionHits,
+            durableHits: durableHits,
+            limit: limit,
+            nowMs: nowMs
+        ).map { hit in
             RAGContext.Item(
                 kind: hit.kind,
                 frameId: hit.frameID,
@@ -824,7 +830,7 @@ package enum LayeredRecall {
         stores: Stores
     ) async throws -> RecallResult {
         var fetchRequest = request
-        fetchRequest.searchTopK = retrievalTopK(requested: request.searchTopK, scope: request.scope)
+        fetchRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
         let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
         let identity = lanes.identity
 

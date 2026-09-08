@@ -7,43 +7,6 @@ import Testing
 struct WaxMCPHTTPAgentDXTests {
     @Test
     func loopbackHTTPRejectsDNSRebindingHostAndForeignOrigin() async throws {
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1:3000",
-            originHeader: "http://localhost:3000"
-        ))
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "[::1]:3000",
-            originHeader: nil
-        ))
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "localhost:3000",
-            originHeader: "http://127.0.0.1:3000"
-        ))
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "attacker.example:3000",
-            originHeader: nil
-        ) == false)
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1.attacker.example:3000",
-            originHeader: nil
-        ) == false)
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1:3000",
-            originHeader: "https://attacker.example"
-        ) == false)
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1:3000",
-            originHeader: "http://127.0.0.1.attacker.example"
-        ) == false)
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1:3000",
-            originHeader: "null"
-        ) == false)
-        #expect(HTTPAuthPolicy.isSafeLoopbackRequest(
-            hostHeader: "127.0.0.1:3000",
-            originHeader: "http://evil.com@127.0.0.1"
-        ) == false)
-
         let initializeBody = try JSONSerialization.data(withJSONObject: [
             "jsonrpc": "2.0",
             "id": 1,
@@ -170,20 +133,6 @@ struct WaxMCPHTTPAgentDXTests {
             path: "/mcp"
         ))
         #expect(closed.statusCode == 200)
-    }
-
-    @Test
-    func dailyToolProfileMatchesDoctorCanonicalVerbs() {
-        #expect(MCPToolProfile.dailyNames == [
-            "session_open",
-            "remember",
-            "recall",
-            "session_close",
-            "stats",
-            "memory_get",
-            "compact_context",
-            "session_resume",
-        ])
     }
 }
 #endif

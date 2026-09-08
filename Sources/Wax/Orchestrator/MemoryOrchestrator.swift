@@ -2083,6 +2083,7 @@ package actor MemoryOrchestrator {
         isClosed = true
         for waiter in readinessWaiters.values { waiter.resume(throwing: CancellationError()) }
         readinessWaiters.removeAll()
+        readinessFollowInFlight = false
         readinessFollowTask?.cancel()
         readinessFollowTask = nil
         automaticEmbeddingBackfillTask?.cancel()
@@ -2376,7 +2377,7 @@ package actor MemoryOrchestrator {
         readinessFollowTask?.cancel()
         readinessFollowInFlight = true
         readinessFollowTask = Task {
-            defer { Task { markReadinessFollowFinished() } }
+            defer { markReadinessFollowFinished() }
             let result = await session.waitUntilCompileFinished()
             guard !Task.isCancelled else { return }
             switch result {
@@ -2390,6 +2391,7 @@ package actor MemoryOrchestrator {
 
     private func markReadinessFollowFinished() {
         readinessFollowInFlight = false
+        finishReadinessWaiters()
     }
 
     package func attachEmbedder(_ provider: any EmbeddingProvider) async {

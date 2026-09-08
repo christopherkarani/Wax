@@ -498,6 +498,72 @@ func waitUntilReadyForRememberThrowsWhenCompileFails() async throws {
 }
 
 @Test
+func waitUntilReadyForRememberThrowsAfterCompileAlreadyMarkedUnavailable() async throws {
+    try await TempFiles.withTempFile { url in
+        let readiness = EmbeddingReadiness()
+        var config = OrchestratorConfig.default
+        config.requireOnDeviceProviders = false
+        let orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
+            at: url,
+            config: config,
+            request: .automatic(.miniLM, .default),
+            readiness: readiness
+        ) {
+            throw TestReadinessError.boom
+        }
+
+        let settleDeadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < settleDeadline {
+            if case .unavailable = await orchestrator.runtimeStats().embeddingStatus {
+                break
+            }
+            await Task.yield()
+        }
+        guard case .unavailable = await orchestrator.runtimeStats().embeddingStatus else {
+            Issue.record("expected unavailable after compile failure before waiting to remember")
+            try await orchestrator.close()
+            return
+        }
+        await Task.yield()
+
+        let waitTask = Task {
+            try await orchestrator.waitUntilReadyForRemember()
+        }
+        let outcome = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                _ = await waitTask.result
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(400))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        guard outcome else {
+            waitTask.cancel()
+            Issue.record("waitUntilReadyForRemember stalled after compile failure already marked unavailable")
+            try await orchestrator.close()
+            return
+        }
+
+        do {
+            try await waitTask.value
+            Issue.record("waitUntilReadyForRemember must throw when compile already failed")
+        } catch let error as WaxError {
+            guard case .io = error else {
+                Issue.record("expected WaxError.io from compile failure, got \(error)")
+                try await orchestrator.close()
+                return
+            }
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
 func framesWithoutVectorsCountsUnembeddedSourceFramesNotChunks() async throws {
     try await TempFiles.withTempFile { url in
         let provider = DeterministicTextEmbedder()

@@ -94,7 +94,7 @@ enum ToolSchemas {
         ),
         Tool(
             name: "session_close",
-            description: "Atomic handoff then session_end for one session_id. Idempotent if the session already ended.",
+            description: "Atomic handoff then session_end for the connection session. Idempotent if the session already ended. Supply session_id to explicitly select another session or when no connection session is bound.",
             inputSchema: waxSessionClose
         ),
         Tool(

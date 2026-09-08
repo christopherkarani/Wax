@@ -146,11 +146,6 @@ def _yaml_section_scalars(text: str, section: str) -> Dict[str, Any]:
             if indent == 0 and (stripped == f"{section}:" or stripped.startswith(f"{section}:")):
                 in_section = True
                 section_indent = indent
-                inline = stripped.split(":", 1)[1].strip()
-                if inline and not inline.startswith(("{", "[")):
-                    # Ignore `wax_memory: true` style scalars; we want a mapping.
-                    if inline.lower() not in {"true", "false", "yes", "no", "on", "off", "null", "~"}:
-                        pass
             continue
         if indent <= section_indent:
             break
