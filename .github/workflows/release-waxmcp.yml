@@ -203,6 +203,10 @@ jobs:
           # Ensures subsequent steps can authenticate with secrets.NPM_TOKEN
           # via NODE_AUTH_TOKEN (required by the registry-url .npmrc template).
 
+      - name: Test launcher, installer, and MCP handshake
+        working-directory: Resources/npm/waxmcp
+        run: npm test
+
       - name: Publish package
         working-directory: Resources/npm/waxmcp
         run: npm publish --access public

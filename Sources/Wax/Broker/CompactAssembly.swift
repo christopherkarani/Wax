@@ -85,6 +85,8 @@ package enum CompactAssembly {
     ) async throws -> Result {
         let recallRequest = LayeredRecall.RecallRequest(
             query: request.query,
+            // Apply the same project filter as recall before ranking so foreign
+            // matches cannot consume the compact context candidate budget.
             scope: request.scope,
             limit: request.maxItems,
             searchTopK: fetchSearchTopK(maxItems: request.maxItems),

@@ -19,9 +19,14 @@ grep -Fq 'wax-memory = "hermes_wax_memory:register"' "$CANONICAL/pyproject.toml"
   || fail "pip entry point must point at register()"
 grep -Fq 'HERMES_HOME' "$ROOT_DIR/Resources/npm/waxmcp/bin/waxmcp.js" \
   || fail "waxmcp install-hermes-plugin must honor HERMES_HOME"
+grep -Fq 'from .hermes_wax_memory import' "$CANONICAL/__init__.py" \
+  || fail "__init__.py must relative-import hermes_wax_memory (PluginManager does not put the plugin dir on sys.path)"
+grep -Fq 'from .hermes_wax_memory import' "$CANONICAL/cli.py" \
+  || fail "cli.py must relative-import hermes_wax_memory (Hermes CLI discovery does not put the plugin dir on sys.path)"
 
 runtime_files=(
   hermes_wax_memory.py
+  wax_memory_lifecycle.py
   wax_memory_schemas.py
   __init__.py
   plugin.yaml

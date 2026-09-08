@@ -17,6 +17,9 @@ hermes config set memory.provider wax-memory
 ```
 
 Do not add `wax-memory` to `plugins.enabled`. Memory providers are selected only by `memory.provider`.
+Do not also register the Wax MCP endpoint as a generic Hermes MCP server. The
+native provider already exposes `wax_*` tools; enabling both creates duplicate
+tool surfaces with different routing rules.
 
 ## Pip install
 
@@ -42,7 +45,7 @@ Resolution order for the MCP endpoint:
 | `WAX_MCP_HTTP_ENDPOINT` | Wax MCP HTTP endpoint |
 | `WAX_MCP_AUTO_START` | Set to `1` to auto-start `wax-mcp` during `initialize()` |
 | `WAX_STRUCTURED_MEMORY` | Enable structured memory tools (`1` default) |
-| `WAX_HERMES_EXTENDED_TOOLS` | Expose session/markdown/compact tools to the model |
+| `WAX_HERMES_EXTENDED_TOOLS` | Expose additional markdown/compact/search tools; lifecycle stays provider-owned |
 | `WAX_STORE_PATH` | Extra path included in `hermes backup` |
 | `HERMES_HOME` | Profile directory used by install and config |
 
@@ -63,7 +66,8 @@ Default tools stay small to avoid schema bloat:
 | `wax_handoff` / `wax_handoff_latest` | Cross-session handoff |
 | `wax_stats` | Runtime diagnostics |
 
-Structured tools (`wax_entity_*`, `wax_fact_*`) are on by default. Session lifecycle stays inside the provider unless `WAX_HERMES_EXTENDED_TOOLS=1`.
+Structured tools (`wax_entity_*`, `wax_fact_*`) are on by default. Session
+lifecycle always stays inside the provider; agents never supply a Wax UUID.
 
 ## CLI
 

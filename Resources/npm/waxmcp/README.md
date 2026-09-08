@@ -104,6 +104,13 @@ Host-by-host configuration for Claude Code, Codex, Cursor, Hermes, and generic
 MCP clients lives in
 [Resources/docs/wax-mcp-hosts.md](https://github.com/christopherkarani/Wax/blob/main/Resources/docs/wax-mcp-hosts.md).
 
+Hermes is one native surface: `memory.provider: wax-memory`. Do not add
+`wax-memory` to `plugins.enabled`. Do not also register `mcp_servers.wax`.
+Native tools are `wax_remember` / `wax_recall` / `wax_stats` with no
+model-visible Wax UUID. Omit `scope` for current-project recall; pass
+`scope=global` for person facts. Empty project recall is a miss. Global is
+not an authorization boundary.
+
 ### Claude Code
 
 From a Wax checkout, `wax-cli` is the registrar:
@@ -141,27 +148,54 @@ them in this order:
 | Command | Purpose |
 |---|---|
 | `npx -y waxmcp@latest mcp serve` | Serve MCP over stdio |
-| `npx -y waxmcp@latest --transport http ...` | Serve MCP over HTTP for multi-agent setups |
-| `npx -y waxmcp@latest mcp doctor` | Validate setup and run a tools/list smoke check |
-| `npx -y waxmcp@latest vector-health` | Check vector search status of the HTTP endpoint |
+| `npx -y waxmcp@latest --transport http ...` | Serve MCP over HTTP for multi-agent setups (do not run this if LaunchAgent `ai.wax.mcp-http` already owns `:3000`) |
+| `npx -y waxmcp@latest doctor` | Validate a local stdio runtime and the daily tool surface (`mcp doctor` is the same check via wax-cli) |
+| `npx -y waxmcp@latest vector-health` | Check the shared HTTP server; green only when `vectorSearchEnabled` and `queryEmbeddingAvailable` are both true |
 | `npx -y waxmcp@latest task-state-migrate --direct-store --store-path ~/.wax/memory.wax --destination-path /tmp/repaired.wax --dry-run` | Report and repair legacy durable `task_state` frames into a distinct, complete store copy |
-| `npx -y waxmcp@latest install` | Locate or build (`--build`) the `wax-mcp` binary |
-| `npx -y waxmcp@latest install-hermes-plugin` | Install the Hermes wax-memory plugin |
+| `npx -y waxmcp@latest install` | Stage runtime, skill, Hermes provider copy, checksum manifest, and `bin/start-wax-mcp-http.sh` (does not write a LaunchAgent) |
+| `npx -y waxmcp@latest install-hermes-plugin` | Reuse or restage that runtime and copy the native provider to `$HERMES_HOME/plugins/wax-memory` |
 | `npx -y waxmcp@latest install-openclaw-plugin` | Print OpenClaw plugin install steps |
-| `npx -y waxmcp@latest install-all-plugins` | Install all plugins |
+| `npx -y waxmcp@latest install-all-plugins` | Install bundled host plugins (still set `memory.provider: wax-memory`; never `plugins.enabled`) |
 
 ### Configuration
 
 | Setting | How |
 |---|---|
 | Store path | `--store-path <path>` (default `~/.wax/memory.wax`) |
-| Embedder | `--embedder minilm` or `--embedder arctic`; omit and the launcher defaults to arctic |
+| Embedder | `--embedder minilm` or `--embedder arctic`; omit and both raw and staged launchers default to MiniLM |
 | Text-only mode | `--no-embedder` |
 | Binary override | `WAX_MCP_BIN` / `WAX_CLI_BIN` environment variables |
 | Endpoint override | `WAX_MCP_HTTP_PORT` / `WAX_MCP_HTTP_ENDPOINT` (used by `vector-health`) |
 
 Vector search needs both binaries built with embedder traits; the bundled npm
 artifacts already are. Without an embedder, search runs text-only.
+
+### Prove HTTP and Hermes
+
+After `install`, keep **one** HTTP writer. If LaunchAgent `ai.wax.mcp-http`
+is loaded, restart it; otherwise run the staged launcher:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
+# or: ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
+
+npx -y waxmcp@latest vector-health
+npx -y waxmcp@latest doctor
+```
+
+Hermes, after `install-hermes-plugin` from this package:
+
+```bash
+hermes config set memory.provider wax-memory
+hermes wax-memory doctor
+hermes plugins doctor wax-memory
+```
+
+`hermes wax-memory` registers `status`, `doctor`, and `config` only. If
+argparse rejects `wax-memory` or Plugin Doctor cannot import
+`hermes_wax_memory`, re-run `install-hermes-plugin` — do not add
+`wax-memory` to `plugins.enabled`. Degraded `vector-health` is the same
+recovery: reinstall, restart the LaunchAgent or launcher, rerun the check.
 
 ## Platform support
 

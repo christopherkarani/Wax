@@ -41,6 +41,34 @@ struct BrokerCommandDecodeTests {
         #expect(rememberKeys == appendKeys)
     }
 
+    @Test(arguments: ["", "   ", "\n"])
+    func rememberRejectsEmptyAndWhitespaceOnlyContent(content: String) throws {
+        var thrownMessage: String?
+        do {
+            _ = try BrokerCommand.decode(
+                command: "remember",
+                arguments: ["content": .string(content)]
+            )
+        } catch let error as BrokerValidationError {
+            thrownMessage = error.errorDescription ?? String(describing: error)
+        }
+        let message = try #require(thrownMessage, "blank remember content must be rejected at decode")
+        #expect(message.contains("content must not be empty"))
+    }
+
+    @Test
+    func rememberKeepsNonEmptyContentIncludingSurroundingWhitespace() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "remember",
+            arguments: ["content": .string("  keep spaces  ")]
+        )
+        guard case .remember(let remember) = decoded else {
+            Issue.record("expected remember")
+            return
+        }
+        #expect(remember.content == "  keep spaces  ")
+    }
+
     @Test
     func rememberRejectsUnknownArgument() {
         #expect(throws: BrokerValidationError.self) {

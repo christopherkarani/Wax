@@ -337,11 +337,13 @@ npx -y waxmcp@latest install
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
 | Codex | `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` + copy the skill to `~/.codex/skills/wax-mcp` |
 | Cursor | `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
-| Hermes | HTTP + `memory.provider: wax-memory` + paste the SOUL.md stanza into `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md`); replace an existing `## Memory (Wax)` section |
+| Hermes | Native `memory.provider: wax-memory` only. `npx -y waxmcp@latest install-hermes-plugin`, then `hermes config set memory.provider wax-memory`. Daily tools: `wax_remember` / `wax_recall` (no Wax UUID). Do not add `wax-memory` to `plugins.enabled`. Do not also register `mcp_servers.wax`. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into the workspace `SOUL.md`; replace an existing `## Memory (Wax)` section |
 | Anything else | HTTP URL + paste the AGENTS.md block into project `AGENTS.md` |
 
-Full snippets, the HTTP start command, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+Keep HTTP up with `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` or LaunchAgent `ai.wax.mcp-http`. Prove it with `npx -y waxmcp@latest vector-health`, `npx -y waxmcp@latest doctor` (`wax-cli mcp doctor`), `hermes wax-memory doctor`, and `hermes plugins doctor wax-memory`. Native recall defaults to the current project; pass `scope=global` for person facts — global is not an authorization boundary.
+
+Full snippets, LaunchAgent `ai.wax.mcp-http`, `vector-health`, Hermes doctors, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 
 The **wax-mcp** skill is the operator playbook. The **wax** skill is Swift framework integration — different audience.
 
@@ -367,18 +369,18 @@ Learn. Write the moment it would change the next agent's behavior — including 
 
 Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
 
-Open: call `session_open` (`project` = repo, stable `agent_id` / `run_id`). Keep `session_id`. Do not invent one. Same `agent_id`+`run_id` resumes. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
+Open: call `session_open` (`project` = repo, stable `agent_id` / `run_id`). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Same `agent_id`+`run_id` resumes. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
 Before the first answer:
-1. `recall` with `session_id`, `mode: text`, query = this job
-2. `recall` with `session_id`, `scope: global`, `mode: text`, query = facts about this person / standing corrections
+1. `recall` with `mode: text`, query = this job
+2. `recall` with `scope: global`, `mode: text`, query = facts about this person / standing corrections
 Empty project recall is a miss, not "I have no memory."
 
-Lasting writes: `remember` with top-level `session_id` and `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. Type keeps them durable and stamps the project so default recall can find them. Person-facts still pass `session_id`; read them later with `scope: global`. Never put `session_id` in `metadata`.
+Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. Type keeps them durable and stamps the project so default recall can find them. Person-facts use the connection session; read them later with `scope: global`. Never put `session_id` in `metadata`.
 
-This job only (not the default write): `remember` with `session_id`, `memory_type: task_state`, `durability: working` — plan lock, failed path, landmine, before you spawn or stop. Parent writes before spawning; children often have no Wax tools.
+This job only (not the default write): `remember` with `memory_type: task_state`, `durability: working` — plan lock, failed path, landmine, before you spawn or stop. Parent writes before spawning; children often have no Wax tools.
 
-Close when the job ends, not between turns: `session_close` with `session_id`, a short state `content`, and `pending_tasks` for unfinished work. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
+Close when the job ends, not between turns: `session_close` with a short state `content`, and `pending_tasks` for unfinished work. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
 
 </details>
@@ -386,7 +388,9 @@ Close when the job ends, not between turns: `session_close` with `session_id`, a
 <details>
 <summary><strong>Paste into Hermes / OpenClaw SOUL.md</strong></summary>
 
-Hermes: `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md`. OpenClaw: the workspace `SOUL.md`.
+OpenClaw: the workspace `SOUL.md`. Native Hermes (`memory.provider: wax-memory`)
+already owns session lifecycle — do not paste the MCP `session_open` loop
+below into Hermes. Call `wax_remember` / `wax_recall` instead.
 
 SOUL.md is identity. **Append** this section if missing. If `## Memory (Wax)` already exists, **replace that section**. Do not replace the rest of the soul.
 
@@ -403,18 +407,24 @@ Write the moment it would change how you treat them or the work — including a 
 
 Store one or two sentences. Do not store chats, status, or secrets.
 
-On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation). Keep `session_id`. Do not invent one. Do not open per message. Do not close between turns.
+On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Do not open per message. Do not close between turns.
 
 Before you act:
-1. `recall` with `session_id`, `mode: text`, query = this repo/job
-2. `recall` with `session_id`, `scope: global`, `mode: text`, query = facts about this person
+1. `recall` with `mode: text`, query = this repo/job
+2. `recall` with `scope: global`, `mode: text`, query = facts about this person
 
-Lasting writes: `remember` with top-level `session_id` and `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`.
+Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`.
 
-This job only: `remember` with `session_id`, `memory_type: task_state`, `durability: working`.
+This job only: `remember` with `memory_type: task_state`, `durability: working`.
 
-Close with `session_close` (`session_id`, short `content`, `pending_tasks`) when the job ends. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
+Close with `session_close` (short `content`, `pending_tasks`) when the job ends. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
+
+Native Hermes (`memory.provider: wax-memory`) does **not** use that MCP paste
+as its tool surface. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not
+pass a Wax `session_id`. Omit `scope` for current-project recall; pass
+`scope=global` for person facts. Empty project recall is a miss. Do not add
+`wax-memory` to `plugins.enabled`. OpenClaw still pastes the SOUL.md stanza.
 
 </details>
 
@@ -461,7 +471,9 @@ Wax stays 100% local: the `.wax` file never leaves your machine, and the loopbac
 
 </details>
 
-Host install path: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md). Claude/doctor details: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
+Host install path (LaunchAgent `ai.wax.mcp-http`, `vector-health`, Hermes
+doctors, recovery): [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+Claude/doctor details: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
 ---
 

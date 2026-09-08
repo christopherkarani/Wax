@@ -144,6 +144,16 @@ actor MCPHTTPApplication {
     }
 
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
+        if !HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
+           !HTTPAuthPolicy.isSafeLoopbackRequest(
+               hostHeader: request.header("host"),
+               originHeader: request.header("origin")
+           ) {
+            return .error(
+                statusCode: 403,
+                .invalidRequest("Forbidden: non-local Host or Origin on loopback endpoint")
+            )
+        }
         if HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
            !HTTPAuthPolicy.isAuthorized(
                requestToken: request.header("authorization"),
@@ -432,6 +442,8 @@ actor MCPHTTPApplication {
 }
 
 enum HTTPAuthPolicy {
+    private static let loopbackNames: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
     static func requiresAuthentication(host rawHost: String) -> Bool {
         let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch host {
@@ -457,6 +469,46 @@ enum HTTPAuthPolicy {
         let prefix = "Bearer "
         guard trimmed.hasPrefix(prefix) else { return false }
         return String(trimmed.dropFirst(prefix.count)) == configuredToken
+    }
+
+    static func isSafeLoopbackRequest(hostHeader: String?, originHeader: String?) -> Bool {
+        if let hostHeader, !hostHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let host = hostFromHTTPHostHeader(hostHeader), isLoopbackHost(host) else {
+                return false
+            }
+        }
+
+        if let originHeader, !originHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let origin = URL(string: originHeader.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let scheme = origin.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  origin.user == nil,
+                  origin.password == nil,
+                  let host = origin.host,
+                  isLoopbackHost(host)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        loopbackNames.contains(
+            host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        )
+    }
+
+    private static func hostFromHTTPHostHeader(_ raw: String) -> String? {
+        let authority = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !authority.isEmpty, !authority.contains("@") else { return nil }
+        if authority.hasPrefix("[") {
+            guard let end = authority.firstIndex(of: "]") else { return nil }
+            let host = String(authority[authority.index(after: authority.startIndex)..<end])
+            return host.isEmpty ? nil : host
+        }
+        let host = authority.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+        return host.isEmpty ? nil : host
     }
 }
 

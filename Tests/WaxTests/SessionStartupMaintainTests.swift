@@ -3,20 +3,25 @@ import Testing
 @testable import Wax
 
 @Test
-func brokerInitEndsZombieExpiredLeaseTheSameWayMaintainWould() async throws {
+func brokerInitPreservesExpiredLeaseUntilExplicitMaintenance() async throws {
     try await withStartupGCRoots { storeURL, sessionRootURL in
         let sessionID = UUID()
-        _ = try plantSessionManifest(
-            sessionID: sessionID,
-            sessionRootURL: sessionRootURL,
-            status: .active,
-            leaseExpiresAtMs: 1,
-            brokerLeaseOwnerID: "dead-broker"
-        )
+        try await withStartupBroker(storePath: storeURL.path, sessionRootPath: sessionRootURL.path) { service in
+            let started = await service.handle(.init(command: "session_start", arguments: [
+                "session_id": .string(sessionID.uuidString),
+                "project": .string("startup-gc"),
+            ]))
+            #expect(started.ok)
+        }
 
-        let before = try BrokerSessionPersistence.loadManifest(
+        var before = try BrokerSessionPersistence.loadManifest(
             rootURL: sessionRootURL,
             sessionID: sessionID
+        )
+        before.leaseExpiresAtMs = 1
+        try BrokerSessionPersistence.saveManifest(
+            before,
+            to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
         )
         #expect(before.status == .active)
         #expect(SessionReclaim.isZombie(
@@ -25,12 +30,26 @@ func brokerInitEndsZombieExpiredLeaseTheSameWayMaintainWould() async throws {
             nowMs: Int64(Date().timeIntervalSince1970 * 1000)
         ))
 
-        try await withStartupBroker(storePath: storeURL.path, sessionRootPath: sessionRootURL.path) { _ in
+        try await withStartupBroker(storePath: storeURL.path, sessionRootPath: sessionRootURL.path) { service in
+            let preserved = try BrokerSessionPersistence.loadManifest(
+                rootURL: sessionRootURL,
+                sessionID: sessionID
+            )
+            #expect(preserved.status == .active)
+            #expect(preserved.harvestedAtMs == nil)
+            let applied = await service.handle(.init(
+                command: "memory_maintain",
+                arguments: ["apply": .bool(true)]
+            ))
+            #expect(applied.ok)
+            #expect(applied.payload?.objectValue?["zombies_to_end"]?.intValue == 1)
             let after = try BrokerSessionPersistence.loadManifest(
                 rootURL: sessionRootURL,
                 sessionID: sessionID
             )
             #expect(after.status == .ended)
+            #expect(after.harvestedAtMs != nil)
+            #expect(after.harvestError == nil)
             #expect(SessionReclaim.isZombie(
                 manifest: after,
                 liveIDs: [],

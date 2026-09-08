@@ -73,7 +73,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
         let sessionNote = await service.handle(.init(
             command: "remember",
             arguments: [
-                "content": .string("Session-only note: do not promote. CLEAN-TOKEN-20260818"),
+                "content": .string("Session-only rv note: do not promote. CLEAN-TOKEN-20260818"),
                 "session_id": .string(sessionID),
             ]
         ))
@@ -82,7 +82,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
         let scoped = await service.handle(.init(
             command: "recall",
             arguments: [
-                "query": .string("What is rv?"),
+                "query": .string("rv CLEAN-TOKEN-20260818 Zig CLI policy"),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
                 "scope": .string("global"),
@@ -285,9 +285,12 @@ func sessionStartInfersProjectFromClientCwdNotBrokerBinary() async throws {
         ))
         #expect(search.ok == true)
         let hit = try #require(try requireObject(search.payload)["results"]?.arrayValue?.first?.objectValue)
-        let metadata = try #require(hit["metadata"]?.objectValue)
-        #expect(metadata["wax.project"]?.stringValue == repo.lastPathComponent)
-        #expect(metadata["wax.repo"]?.stringValue == repo.lastPathComponent)
+        let project = hit["project"]?.stringValue
+            ?? hit["metadata"]?.objectValue?[MemoryMetadataKeys.project]?.stringValue
+        let repoName = hit["repo"]?.stringValue
+            ?? hit["metadata"]?.objectValue?[MemoryMetadataKeys.repo]?.stringValue
+        #expect(project == repo.lastPathComponent)
+        #expect(repoName == repo.lastPathComponent)
     }
 }
 
@@ -317,6 +320,46 @@ func corpusSearchIncludesDurableLongTermFrames() async throws {
         let payload = try requireObject(corpus.payload)
         let texts = resultTexts(payload)
         #expect(texts.contains { $0.contains("destructive command guard") })
+    }
+}
+
+@Test
+func corpusSearchPayloadOmitsStorePaths() async throws {
+    try await withIsolatedBroker { service, _ in
+        let token = "CORPUSPATH\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Durable corpus path-strip note \(token)."),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))).ok == true)
+
+        let corpus = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(8),
+                "rebuild": .bool(false),
+            ]
+        ))
+        #expect(corpus.ok == true, "corpus_search failed: \(corpus.error ?? "nil")")
+        let payload = try requireObject(corpus.payload)
+        let results = payload["results"]?.arrayValue ?? []
+        #expect(!results.isEmpty, "expected a corpus hit for \(token)")
+        for result in results {
+            let metadata = result.objectValue?["metadata"]?.objectValue ?? [:]
+            #expect(metadata[BrokerCorpusMetadataKeys.sourceStorePath] == nil)
+            #expect(metadata["corpus_store_path"] == nil)
+            #expect(metadata[BrokerCorpusMetadataKeys.origin] != nil)
+            #expect(metadata[BrokerCorpusMetadataKeys.sourceFrameID] != nil)
+        }
+        let display = payload["display_text"]?.stringValue ?? ""
+        #expect(!display.contains(BrokerCorpusMetadataKeys.sourceStorePath))
+        #expect(!display.contains("corpus_store_path"))
+        #expect(payload["build"]?.objectValue?["corpus_store_path"] == nil)
     }
 }
 
@@ -660,6 +703,7 @@ func recallAppliesFrameFilterToDurableHitsWhenSessionIDIsSet() async throws {
                 "query": .string(token),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
+                "scope": .string("global"),
                 "limit": .int(10),
                 "filters": .object([
                     "metadata": .object(["topic": .string("keep")]),
@@ -727,6 +771,7 @@ func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
                 "query": .string(token),
                 "session_id": .string(sessionID),
                 "mode": .string("text"),
+                "scope": .string("global"),
                 "limit": .int(10),
             ]
         ))
@@ -983,15 +1028,18 @@ func sessionStartDoesNotImplicitlyScopeUnscopedWrites() async throws {
         ))).ok == true)
 
         let scoped = await service.handle(.init(
-            command: "search",
+            command: "memory_search",
             arguments: [
                 "query": .string("GLOBAL_IMPLICIT_SCOPE_GUARD"),
                 "mode": .string("text"),
                 "topK": .int(10),
                 "session_id": .string(sessionID),
+                "include_working": .bool(true),
+                "include_durable": .bool(false),
+                "include_episodic": .bool(false),
             ]
         ))
-        #expect(scoped.ok == true)
+        #expect(scoped.ok == true, "working-only memory_search failed: \(scoped.error ?? "nil")")
         let scopedTexts = resultTexts(try requireObject(scoped.payload))
         #expect(scopedTexts.contains { $0.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") } == false)
 
@@ -1006,6 +1054,226 @@ func sessionStartDoesNotImplicitlyScopeUnscopedWrites() async throws {
         #expect(unscoped.ok == true)
         let unscopedTexts = resultTexts(try requireObject(unscoped.payload))
         #expect(unscopedTexts.contains { $0.contains("GLOBAL_IMPLICIT_SCOPE_GUARD") })
+    }
+}
+
+@Test
+func searchWithLiveSessionIDFindsJustWrittenDurableLesson() async throws {
+    try await withIsolatedBroker { service, _ in
+        let project = "search-merge-\(UUID().uuidString.prefix(8))"
+        let started = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string(project),
+                "repo": .string(project),
+                "agent_id": .string("search-merge-agent"),
+                "run_id": .string("search-merge-run"),
+            ]
+        ))
+        #expect(started.ok == true, "session_open failed: \(started.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let token = "zxqadvA\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+        let workingToken = "zxqadvW\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+        let foreignToken = "zxqadvF\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Durable lesson \(token) must be searchable while the session is live."),
+                "memory_type": .string("lesson"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Working note \(workingToken) stays in the live session store."),
+                "memory_type": .string("note"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Foreign durable \(foreignToken) must stay out of session-scoped search."),
+                "memory_type": .string("lesson"),
+                "project": .string("Foreign-\(project)"),
+                "repo": .string("Foreign-\(project)"),
+            ]
+        ))).ok == true)
+
+        let recalled = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")
+        #expect(resultTexts(try requireObject(recalled.payload)).contains { $0.contains(token) })
+
+        let scopedSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(scopedSearch.ok == true, "search failed: \(scopedSearch.error ?? "nil")")
+        let scopedTexts = resultTexts(try requireObject(scopedSearch.payload))
+        #expect(
+            scopedTexts.contains { $0.contains(token) },
+            "search+session_id must merge durable; got \(scopedTexts)"
+        )
+
+        let workingSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(workingToken),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(workingSearch.ok == true, "working search failed: \(workingSearch.error ?? "nil")")
+        let workingTexts = resultTexts(try requireObject(workingSearch.payload))
+        #expect(
+            workingTexts.contains { $0.contains(workingToken) },
+            "search+session_id must still find working notes; got \(workingTexts)"
+        )
+
+        let foreignSearch = await service.handle(.init(
+            command: "search",
+            arguments: [
+                "query": .string(foreignToken),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(foreignSearch.ok == true, "foreign search failed: \(foreignSearch.error ?? "nil")")
+        let foreignTexts = resultTexts(try requireObject(foreignSearch.payload))
+        #expect(
+            foreignTexts.contains { $0.contains(foreignToken) } == false,
+            "search+session_id must not leak foreign-project durable; got \(foreignTexts)"
+        )
+    }
+}
+
+@Test
+func memorySearchWithLiveSessionIDDoesNotReturnForeignProjectDurable() async throws {
+    try await withIsolatedBroker { service, _ in
+        let project = "memory-search-fence-\(UUID().uuidString.prefix(8))"
+        let started = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string(project),
+                "repo": .string(project),
+                "agent_id": .string("memory-search-fence-agent"),
+                "run_id": .string("memory-search-fence-run"),
+            ]
+        ))
+        #expect(started.ok == true, "session_open failed: \(started.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let token = "zxqmsF\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Home durable lesson \(token) must stay visible to session-scoped memory_search."),
+                "memory_type": .string("lesson"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("ForeignLab durable lesson \(token) must stay out of session-scoped memory_search."),
+                "memory_type": .string("lesson"),
+                "project": .string("Foreign-\(project)"),
+                "repo": .string("Foreign-\(project)"),
+            ]
+        ))).ok == true)
+
+        let searched = await service.handle(.init(
+            command: "memory_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(searched.ok == true, "memory_search failed: \(searched.error ?? "nil")")
+        let texts = resultTexts(try requireObject(searched.payload))
+        #expect(
+            texts.contains { $0.contains(token) && $0.contains("Home durable lesson") },
+            "memory_search+session_id must find the home-project lesson; got \(texts)"
+        )
+        #expect(
+            texts.contains { $0.contains("ForeignLab") } == false,
+            "memory_search+session_id must not leak ForeignLab durable; got \(texts)"
+        )
+    }
+}
+
+@Test
+func corpusSearchWithLiveSessionIDDoesNotReturnForeignProjectDurable() async throws {
+    try await withIsolatedBroker { service, _ in
+        let project = "corpus-fence-\(UUID().uuidString.prefix(8))"
+        let started = await service.handle(.init(
+            command: "session_open",
+            arguments: [
+                "project": .string(project),
+                "repo": .string(project),
+                "agent_id": .string("corpus-fence-agent"),
+                "run_id": .string("corpus-fence-run"),
+            ]
+        ))
+        #expect(started.ok == true, "session_open failed: \(started.error ?? "nil")")
+        let sessionID = try requireString(try requireObject(started.payload), "session_id")
+        let token = "zxqcsF\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Home durable lesson \(token) must stay visible to session-scoped corpus_search."),
+                "memory_type": .string("lesson"),
+                "session_id": .string(sessionID),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("ForeignLab durable lesson \(token) must stay out of session-scoped corpus_search."),
+                "memory_type": .string("lesson"),
+                "project": .string("Foreign-\(project)"),
+                "repo": .string("Foreign-\(project)"),
+            ]
+        ))).ok == true)
+
+        let searched = await service.handle(.init(
+            command: "corpus_search",
+            arguments: [
+                "query": .string(token),
+                "mode": .string("text"),
+                "topK": .int(10),
+                "session_id": .string(sessionID),
+            ]
+        ))
+        #expect(searched.ok == true, "corpus_search failed: \(searched.error ?? "nil")")
+        let texts = resultTexts(try requireObject(searched.payload))
+        #expect(
+            texts.contains { $0.contains(token) && $0.contains("Home durable lesson") },
+            "corpus_search+session_id must find the home-project lesson; got \(texts)"
+        )
+        #expect(
+            texts.contains { $0.contains("ForeignLab") } == false,
+            "corpus_search+session_id must not leak ForeignLab durable; got \(texts)"
+        )
     }
 }
 

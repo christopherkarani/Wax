@@ -161,10 +161,18 @@ func t01EmptyProjectLaneDoesNotAutoWidenToGlobal() async throws {
         #expect(miss.ok == true)
         let payload = try requireObject(miss.payload)
         #expect(payload["project_miss"]?.boolValue == true)
+        #expect(payload["next_action"]?.stringValue == "retry explicitly with scope=global")
+        #expect(payload["cross_project_matches_available"] == nil)
+        #expect(payload["cross_project_match_count"] == nil)
+        #expect(payload["scope_dropped"] == nil)
         #expect(resultTexts(payload).isEmpty)
+        #expect((payload["results"]?.arrayValue ?? []).contains(where: { value in
+            value.objectValue?["preview"] != nil
+        }) == false)
         let message = payload["scope_miss_message"]?.stringValue ?? ""
         #expect(message.contains("no frames for project MissingLand"))
         #expect(!message.lowercased().contains("showing global"))
+        #expect(!message.contains("ONLY-OTHER-PROJECT-TOKEN"))
     }
 }
 
@@ -682,6 +690,10 @@ func rememberAfterHopStampsSessionManifestProjectNotForeignCwd() async throws {
     #expect(recallPayload["project"]?.stringValue == "AlphaStampRepo")
     #expect(resultTexts(recallPayload).contains { $0.contains(token) })
     #expect(recallPayload["project_miss"]?.boolValue != true)
+    let hit = try #require((recallPayload["results"]?.arrayValue ?? []).first { row in
+        (row.objectValue?["text"]?.stringValue ?? "").contains(token)
+    }?.objectValue)
+    #expect(hit["project"]?.stringValue == "AlphaStampRepo")
 }
 
 @Test
@@ -766,13 +778,13 @@ func frameFilterByAddingProjectScopeInjectsWaxProject() {
     let merged = LayeredRecall.frameFilterForScopedRetrieval(
         base: base,
         scope: .project,
-        identity: LayeredRecall.Identity(project: "AlphaLand", repo: "IgnoredWhenProjectSet")
+        identity: LayeredRecall.Identity(project: "AlphaLand", repo: "AlphaRepo")
     )
     #expect(merged?.includeDeleted == true)
     #expect(merged?.metadataFilter?.requiredLabels == ["keep"])
     #expect(merged?.metadataFilter?.requiredEntries["custom"] == "1")
     #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.project] == "AlphaLand")
-    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == nil)
+    #expect(merged?.metadataFilter?.requiredEntries[MemoryMetadataKeys.repo] == "AlphaRepo")
 
     let repoOnly = LayeredRecall.frameFilterForScopedRetrieval(
         base: nil,

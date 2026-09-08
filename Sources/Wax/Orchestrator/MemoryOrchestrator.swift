@@ -230,12 +230,18 @@ package actor MemoryOrchestrator {
     private let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
     private let flushMutex = AsyncMutex()
+    private let embeddingBackfillMutex = AsyncMutex()
+    private let embeddingBackfillStoreMutex = AsyncMutex()
 
     let session: WaxSession
     private var embedderLifecycle: EmbedderLifecycle
     private var embeddingCache: EmbeddingMemoizer?
     private var isClosed = false
     private var readinessFollowTask: Task<Void, Never>?
+    private var automaticEmbeddingBackfillEnabled = false
+    private var automaticEmbeddingBackfillTask: Task<Void, Never>?
+    private var readinessWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var readinessFollowInFlight = false
     package var searchSnapshotHoldForTesting: Duration? = nil
 
     package func setSearchSnapshotHoldForTesting(_ duration: Duration?) {
@@ -1197,6 +1203,7 @@ package actor MemoryOrchestrator {
             query: query,
             embedding: embedding,
             vectorEnginePreference: preference,
+            vectorSearchTimeout: config.vectorSearchTimeout,
             wax: wax,
             session: session,
             frameFilter: frameFilter,
@@ -1336,7 +1343,7 @@ package actor MemoryOrchestrator {
         return SearchExecution(
             hits: hits,
             requestedMode: mode,
-            effectiveMode: searchMode,
+            effectiveMode: response.vectorSearchTimedOut ? .textOnly : searchMode,
             queryEmbeddingState: queryEmbedding.state
         )
     }
@@ -1389,23 +1396,37 @@ package actor MemoryOrchestrator {
     /// skipped. Throws ``WaxError/missingEmbedder`` when no provider is attached.
     @discardableResult
     package func backfillUnembedded() async throws -> UInt64 {
+        try await embeddingBackfillMutex.withLock { [self] in
+            try await backfillUnembeddedSerialized()
+        }
+    }
+
+    private func backfillUnembeddedSerialized() async throws -> UInt64 {
+        try Task.checkCancellation()
+        guard !isClosed else { throw CancellationError() }
         guard config.enableVectorSearch, let attached = readyEmbedderSnapshot else {
             throw WaxError.missingEmbedder
         }
         let embedder = attached.provider
 
-        let missing = await unembeddedLiveSources()
-        guard !missing.isEmpty else {
-            await refreshEmbeddingCoverage()
-            return 0
+        let missing = try await embeddingBackfillStoreMutex.withLock { [self] in
+            try Task.checkCancellation()
+            guard !(await isClosed) else { throw CancellationError() }
+            let missing = await unembeddedLiveSources()
+            if missing.isEmpty {
+                await refreshEmbeddingCoverage()
+            } else {
+                try await session.ensureVectorEngine(dimensions: embedder.dimensions)
+            }
+            return missing
         }
-
-        try await session.ensureVectorEngine(dimensions: embedder.dimensions)
+        guard !missing.isEmpty else { return 0 }
 
         let batchSize = max(1, config.ingestBatchSize)
         var embedded: UInt64 = 0
         var index = 0
         while index < missing.count {
+            try Task.checkCancellation()
             let end = min(index + batchSize, missing.count)
             let batch = Array(missing[index..<end])
             let vectors = try await Self.prepareEmbeddingsBatchOptimized(
@@ -1414,31 +1435,96 @@ package actor MemoryOrchestrator {
                 cache: embeddingCache,
                 timeout: config.ingestEmbeddingTimeout
             )
-            try await wax.putEmbeddingBatch(
-                frameIds: batch.map(\.id),
-                vectors: vectors
-            )
-            if let identity = embedder.identity {
-                try await ensureMemoryBindingIfNeeded(
-                    MemoryBindingCompatibility.binding(from: identity)
+            try await embeddingBackfillStoreMutex.withLock { [self] in
+                try Task.checkCancellation()
+                guard !(await isClosed) else { throw CancellationError() }
+                try await wax.putEmbeddingBatch(
+                    frameIds: batch.map(\.id),
+                    vectors: vectors
                 )
+                if let identity = embedder.identity {
+                    try await ensureMemoryBindingIfNeeded(
+                        MemoryBindingCompatibility.binding(from: identity)
+                    )
+                }
             }
             embedded += UInt64(batch.count)
             index = end
         }
 
-        await refreshEmbeddingCoverage()
+        try await embeddingBackfillStoreMutex.withLock { [self] in
+            try Task.checkCancellation()
+            guard !(await isClosed) else { throw CancellationError() }
+            await refreshEmbeddingCoverage()
+        }
         return embedded
+    }
+
+    /// Broker stores repair historical text-only writes when their provider attaches.
+    /// Loading never blocks the caller; repair survives a timed-out readiness waiter.
+    package func enableAutomaticEmbeddingBackfill() {
+        automaticEmbeddingBackfillEnabled = true
+        scheduleAutomaticEmbeddingBackfillIfReady()
+    }
+
+    private func scheduleAutomaticEmbeddingBackfillIfReady() {
+        guard automaticEmbeddingBackfillEnabled,
+              config.enableVectorSearch,
+              readyEmbedderSnapshot != nil,
+              !isClosed,
+              automaticEmbeddingBackfillTask == nil else { return }
+        automaticEmbeddingBackfillTask = Task(priority: .utility) { [self] in
+            defer { automaticEmbeddingBackfillTask = nil }
+            do {
+                let repaired = try await backfillUnembedded()
+                try Task.checkCancellation()
+                if repaired > 0 {
+                    try await embeddingBackfillStoreMutex.withLock { [self] in
+                        try Task.checkCancellation()
+                        guard !(await isClosed) else { throw CancellationError() }
+                        try await flush()
+                    }
+                }
+            } catch is CancellationError {
+                // Closing the store cancels repair before the final flush and close.
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "automatic embedding backfill",
+                    fallback: "unembedded frames remain searchable by text; retry on next open"
+                )
+            }
+        }
     }
 
     /// Wait until automatic compile has attached, or throw if it failed.
     ///
     /// Do not call ``remember(_:metadata:)`` while the status is ``.loading``
-    /// with no provider attached — that path persists text-only and is not backfilled.
+    /// with no provider attached — that path persists text-only until explicit
+    /// backfill or the broker's automatic repair completes.
     package func waitUntilReadyForRemember() async throws {
-        if let readinessFollowTask {
-            await readinessFollowTask.value
+        try Task.checkCancellation()
+        if readinessFollowInFlight {
+            switch embeddingStatus {
+            case .loading, .unavailable:
+                let waiterID = UUID()
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        if Task.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            readinessWaiters[waiterID] = continuation
+                        }
+                    }
+                } onCancel: {
+                    // Only this caller stops waiting; the shared provider load continues.
+                    Task { await self.cancelReadinessWaiter(waiterID) }
+                }
+            default:
+                break
+            }
         }
+        try Task.checkCancellation()
         switch embeddingStatus {
         case .active, .degraded, .disabled:
             return
@@ -1447,6 +1533,16 @@ package actor MemoryOrchestrator {
         case .unavailable(let reason):
             throw WaxError.io(reason)
         }
+    }
+
+    private func cancelReadinessWaiter(_ id: UUID) {
+        readinessWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    }
+
+    private func finishReadinessWaiters() {
+        let waiters = readinessWaiters.values
+        readinessWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     package func accessStatsSnapshot() async -> [UInt64: FrameAccessStats] {
@@ -1842,7 +1938,7 @@ package actor MemoryOrchestrator {
         return RecallExecution(
             context: context,
             requestedMode: resolvedRequestedMode,
-            effectiveMode: effectiveSearchMode,
+            effectiveMode: context.diagnostics?.effectiveMode ?? effectiveSearchMode,
             queryEmbeddingState: queryEmbedding.state
         )
     }
@@ -1985,8 +2081,14 @@ package actor MemoryOrchestrator {
 
     package func close() async throws {
         isClosed = true
+        for waiter in readinessWaiters.values { waiter.resume(throwing: CancellationError()) }
+        readinessWaiters.removeAll()
         readinessFollowTask?.cancel()
         readinessFollowTask = nil
+        automaticEmbeddingBackfillTask?.cancel()
+        // Inference may ignore cancellation. Drain only store work; any late
+        // inference result checks cancellation/isClosed before entering this lock.
+        await embeddingBackfillStoreMutex.withLock {}
         try await flush()
         if let enrichmentPipeline {
             do {
@@ -2272,7 +2374,9 @@ package actor MemoryOrchestrator {
 
     package func followReadiness(_ session: EmbeddingReadinessSession) {
         readinessFollowTask?.cancel()
+        readinessFollowInFlight = true
         readinessFollowTask = Task {
+            defer { Task { markReadinessFollowFinished() } }
             let result = await session.waitUntilCompileFinished()
             guard !Task.isCancelled else { return }
             switch result {
@@ -2282,6 +2386,10 @@ package actor MemoryOrchestrator {
                 self.markUnavailable(error.localizedDescription)
             }
         }
+    }
+
+    private func markReadinessFollowFinished() {
+        readinessFollowInFlight = false
     }
 
     package func attachEmbedder(_ provider: any EmbeddingProvider) async {
@@ -2336,15 +2444,19 @@ package actor MemoryOrchestrator {
             attached: AttachedEmbedder(provider: provider),
             degradedReason: lacksVectors ? "some saved frames have no vectors" : nil
         )
+        finishReadinessWaiters()
+        scheduleAutomaticEmbeddingBackfillIfReady()
     }
 
     package func markUnavailable(_ reason: String) {
         embedderLifecycle = .unavailable(reason: reason)
+        finishReadinessWaiters()
     }
 
     package func markUnavailableIfStillLoading(_ reason: String) {
         guard case .loading = embedderLifecycle else { return }
         embedderLifecycle = .unavailable(reason: reason)
+        finishReadinessWaiters()
     }
 
     private static func storeHasUnembeddedChunks(_ wax: Wax) async -> Bool {
