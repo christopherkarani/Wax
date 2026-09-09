@@ -7,11 +7,13 @@ import WaxVectorSearch
 enum FrameBuilders {
     static func photoRootMetadata(
         assetID: String,
+        source: PhotoSource = .photos,
         captureMs: Int64 = 1_700_000_000_000,
         isLocal: Bool = true
     ) -> Metadata {
         var metadata = Metadata()
         metadata.entries[PhotoMetadataKey.assetID.rawValue] = assetID
+        metadata.entries[PhotoMetadataKey.source.rawValue] = source.rawValue
         metadata.entries[PhotoMetadataKey.captureMs.rawValue] = String(captureMs)
         metadata.entries[PhotoMetadataKey.isLocal.rawValue] = isLocal ? "true" : "false"
         metadata.entries[PhotoMetadataKey.pipelineVersion.rawValue] = "test"

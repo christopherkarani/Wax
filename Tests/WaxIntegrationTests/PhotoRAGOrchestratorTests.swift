@@ -111,7 +111,7 @@ func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
 
         let ctx = try await orchestrator.recall(query)
         #expect(!ctx.items.isEmpty)
-        #expect(ctx.items.first?.assetID == "A")
+        #expect(ctx.items.first?.photoID.id == "A")
         #expect(ctx.items.first?.summaryText.contains("COSTCO") == true)
         try await orchestrator.flush()
     }
@@ -249,7 +249,7 @@ func photoRAGRecallIncludesSearchableTagsFromIndexedFrames() async throws {
 
         let ctx = try await orchestrator.recall(query)
         #expect(!ctx.items.isEmpty)
-        #expect(ctx.items.first?.assetID == "A")
+        #expect(ctx.items.first?.photoID.id == "A")
         #expect(ctx.items.first?.summaryText.contains("Tags:") == true)
         #expect(ctx.items.first?.summaryText.contains("beach, sunset") == true)
 

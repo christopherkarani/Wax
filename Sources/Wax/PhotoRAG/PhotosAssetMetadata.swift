@@ -32,7 +32,7 @@ enum PhotosAssetMetadata {
     }
 
     struct Record: Sendable {
-        var assetID: String
+        var photoID: PhotoID
         var creationDateMs: Int64?
         var captureMs: Int64?
         var location: Location?
@@ -45,11 +45,14 @@ enum PhotosAssetMetadata {
     }
 
     @MainActor
-    static func load(assetID: String) async throws -> Record {
+    static func load(photoID: PhotoID) async throws -> Record {
         #if canImport(Photos)
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard photoID.source == .photos else {
+            throw WaxError.io("Photos library load requires PhotoID(source: .photos)")
+        }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [photoID.id], options: nil)
         guard let asset = assets.firstObject else {
-            throw WaxError.io("PHAsset not found for id: \(assetID)")
+            throw WaxError.io("PHAsset not found for id: \(photoID.id)")
         }
 
         let (data, isLocal) = try await requestImageData(asset: asset)
@@ -73,7 +76,7 @@ enum PhotosAssetMetadata {
         }()
 
         return Record(
-            assetID: asset.localIdentifier,
+            photoID: PhotoID(source: .photos, id: asset.localIdentifier),
             creationDateMs: creationMs,
             captureMs: captureMs,
             location: location,
@@ -90,9 +93,10 @@ enum PhotosAssetMetadata {
     }
 
     @MainActor
-    static func loadImageData(assetID: String) async throws -> Data? {
+    static func loadImageData(photoID: PhotoID) async throws -> Data? {
         #if canImport(Photos)
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard photoID.source == .photos else { return nil }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [photoID.id], options: nil)
         guard let asset = assets.firstObject else { return nil }
         let (data, isLocal) = try await requestImageData(asset: asset)
         return isLocal ? data : nil

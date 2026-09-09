@@ -1,7 +1,7 @@
 import Wax
 
 extension PhotoRAGItem: Identifiable {
-    public var id: String { assetID }
+    public var id: PhotoID { photoID }
 
     /// Text snippets from `.text` evidence, or `summaryText` when none exist.
     var evidenceText: String {

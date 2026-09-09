@@ -40,7 +40,7 @@ func photoRAGIngestsLocalImageFilesAndRecallsCaptionMetadata() async throws {
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0)
             )
         )
-        #expect(context.items.first?.assetID == "local-fixture")
+        #expect(context.items.first?.photoID == PhotoID(source: .file, id: "local-fixture"))
         #expect(context.items.first?.summaryText.contains("local receipt image") == true)
 
         let rootId = try #require(await orchestrator.wax.frameMetas().first {
@@ -128,7 +128,7 @@ func photoRAGLocalFileRecallSurvivesMissingPixelSource() async throws {
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 1, maxRegions: 0)
             )
         )
-        #expect(context.items.first?.assetID == "deleted-file")
+        #expect(context.items.first?.photoID == PhotoID(source: .file, id: "deleted-file"))
         #expect(context.items.first?.thumbnail == nil)
     }
 }
