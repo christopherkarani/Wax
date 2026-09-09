@@ -346,6 +346,21 @@ package enum LayeredRecall {
         }
     }
 
+    /// Person-lane (`user_preference` only) drops other-project/other-repo prefs
+    /// when identity is resolved. Unscoped prefs stay. Unresolved identity is a no-op.
+    package static func filterHitsForGlobalPersonLane(
+        _ hits: [Hit],
+        memoryTypes: [MemoryType],
+        identity: Identity
+    ) -> [Hit] {
+        guard memoryTypes == [.userPreference],
+              identity.project != nil || identity.repo != nil
+        else {
+            return hits
+        }
+        return filterHitsByProject(hits, project: identity.project, repo: identity.repo)
+    }
+
     /// Unresolved project keeps the live working lane and unstamped durable/episodic
     /// hits. Stamped foreign durable is dropped so we never auto-widen. Resolved
     /// identity keeps unstamped hits (they are not a different project).
@@ -401,6 +416,13 @@ package enum LayeredRecall {
     package static func retrievalTopK(requested: Int, maxTopK: Int = 200) -> Int {
         let bounded = max(1, requested)
         return min(max(bounded * 3, 12), maxTopK)
+    }
+
+    /// Person-lane post-filters other-project prefs after a type-only retrieval.
+    /// Over-fetch further so current-project and unscoped prefs still make the window.
+    package static func retrievalTopKForGlobalPersonLane(requested: Int, maxTopK: Int = 200) -> Int {
+        let bounded = max(1, requested)
+        return min(max(bounded * 8, 48), maxTopK)
     }
 
     /// Merges resolved project/repo identity into the caller's frame filter for retrieval (C1/C3).
@@ -913,7 +935,10 @@ package enum LayeredRecall {
         stores: Stores
     ) async throws -> RecallResult {
         var fetchRequest = request
-        fetchRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
+        let personLane = request.scope == .global && request.memoryTypes == [.userPreference]
+        fetchRequest.searchTopK = personLane
+            ? retrievalTopKForGlobalPersonLane(requested: request.searchTopK)
+            : retrievalTopK(requested: request.searchTopK)
         let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
         let identity = lanes.identity
 
@@ -943,9 +968,37 @@ package enum LayeredRecall {
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
+            // Person-lane still drops other-project prefs when identity is resolved.
+            var personLaneWorking = filterHitsForGlobalPersonLane(
+                typedWorking,
+                memoryTypes: request.memoryTypes,
+                identity: identity
+            )
+            var personLaneDurable = filterHitsForGlobalPersonLane(
+                typedDurable,
+                memoryTypes: request.memoryTypes,
+                identity: identity
+            )
+            if personLane, identity.project != nil || identity.repo != nil {
+                // Type-only global retrieval can spend the window on foreign prefs.
+                // A project-scoped typed fetch keeps current-project prefs visible
+                // the same way single-type retrieval keeps the person-lane hit.
+                var scopedRequest = request
+                scopedRequest.scope = .project
+                scopedRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
+                let scopedLanes = try await fetchLanes(request: scopedRequest, stores: stores)
+                personLaneWorking.append(contentsOf: filterHitsByMemoryTypes(
+                    scopedLanes.working,
+                    types: request.memoryTypes
+                ))
+                personLaneDurable.append(contentsOf: filterHitsByMemoryTypes(
+                    scopedLanes.durable,
+                    types: request.memoryTypes
+                ))
+            }
             merged = mergeHits(
-                sessionHits: typedWorking,
-                durableHits: typedDurable,
+                sessionHits: personLaneWorking,
+                durableHits: personLaneDurable,
                 limit: request.limit,
                 nowMs: stores.nowMs(),
                 query: request.query

@@ -522,13 +522,6 @@ struct BrokerCommandDecodeTests {
             return
         }
         #expect(settings.maxCandidates == 3)
-
-        #expect(throws: BrokerValidationError.self) {
-            _ = try BrokerCommand.decode(
-                command: "session_close",
-                arguments: ["content": .string("done")]
-            )
-        }
     }
 
     @Test

@@ -298,4 +298,118 @@ struct RecallIdentityRankingTests {
             #expect(hit.text.contains("short answers"))
         }
     }
+
+    @Test
+    func layeredRecallGlobalPersonLaneDropsOtherProjectPreferences() async throws {
+        let token = "WAXPERSONLANE-OTHER-\(UUID().uuidString.prefix(8))"
+        try await withRecallIdentityMemory { memory in
+            try await memory.remember(
+                "\(token) home standing correction: short answers and bullets.",
+                metadata: [
+                    MemoryMetadataKeys.project: "recall-project",
+                    MemoryMetadataKeys.repo: "recall-repo",
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.remember(
+                "\(token) foreign standing correction: do not pick up rv tickets.",
+                metadata: [
+                    MemoryMetadataKeys.project: "foreign-project",
+                    MemoryMetadataKeys.repo: "foreign-repo",
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.remember(
+                "\(token) unscoped standing correction: prefer plain language.",
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.flush()
+
+            let result = try await LayeredRecall.recall(
+                request: LayeredRecall.RecallRequest(
+                    query: token,
+                    scope: .global,
+                    limit: 5,
+                    searchTopK: 5,
+                    mode: .textOnly,
+                    explicitProject: "recall-project",
+                    explicitRepo: "recall-repo",
+                    memoryTypes: [.userPreference]
+                ),
+                stores: identityStores(memory: memory)
+            )
+            let hits = result.hits.filter { $0.text.contains(token) }
+            let hasHome = hits.contains { $0.text.contains("home standing correction") }
+            let hasUnscoped = hits.contains { $0.text.contains("unscoped standing correction") }
+            let hasForeignText = hits.contains { $0.text.contains("foreign standing correction") }
+            let hasForeignProject = hits.contains { $0.metadata[MemoryMetadataKeys.project] == "foreign-project" }
+            #expect(hasHome)
+            #expect(hasUnscoped)
+            #expect(!hasForeignText)
+            #expect(!hasForeignProject)
+        }
+    }
+
+    @Test
+    func layeredRecallGlobalPersonLaneSurvivesForeignPreferenceCrowding() async throws {
+        let token = "WAXPERSONLANE-CROWD-\(UUID().uuidString.prefix(8))"
+        try await withRecallIdentityMemory { memory in
+            // retrievalTopK(searchTopK: 1) is 12. Foreign prefs can fill that
+            // window; person-lane unions a project-scoped typed fetch for home.
+            for index in 1...20 {
+                try await memory.remember(
+                    "\(token) foreign standing correction \(index): do not pick up rv tickets.",
+                    metadata: [
+                        MemoryMetadataKeys.project: "foreign-project",
+                        MemoryMetadataKeys.repo: "foreign-repo",
+                        MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                        MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                    ]
+                )
+            }
+            try await memory.remember(
+                "\(token) home standing correction: short answers and bullets.",
+                metadata: [
+                    MemoryMetadataKeys.project: "recall-project",
+                    MemoryMetadataKeys.repo: "recall-repo",
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.remember(
+                "\(token) unscoped standing correction: prefer plain language.",
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.flush()
+
+            let result = try await LayeredRecall.recall(
+                request: LayeredRecall.RecallRequest(
+                    query: "\(token) facts about this person standing corrections",
+                    scope: .global,
+                    limit: 5,
+                    searchTopK: 1,
+                    mode: .textOnly,
+                    explicitProject: "recall-project",
+                    explicitRepo: "recall-repo",
+                    memoryTypes: [.userPreference]
+                ),
+                stores: identityStores(memory: memory)
+            )
+            let hits = result.hits.filter { $0.text.contains(token) }
+            let hasHome = hits.contains { $0.text.contains("home standing correction") }
+            let hasUnscoped = hits.contains { $0.text.contains("unscoped standing correction") }
+            let hasForeign = hits.contains { $0.text.contains("foreign standing correction") }
+            #expect(hasHome)
+            #expect(hasUnscoped)
+            #expect(!hasForeign)
+        }
+    }
 }

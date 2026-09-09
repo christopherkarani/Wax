@@ -677,6 +677,9 @@ struct LayeredRecallTests {
     func layeredRecallRetrievalTopKOverfetchesForProjectScope() {
         #expect(LayeredRecall.retrievalTopK(requested: 5) == 15)
         #expect(LayeredRecall.retrievalTopK(requested: 100, maxTopK: 200) == 200)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 1) == 48)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 10) == 80)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 50) == 200)
     }
 
     @Test
@@ -777,6 +780,60 @@ struct LayeredRecallTests {
             types: [.userPreference]
         )
         #expect(filtered.map(\.frameID) == [1])
+    }
+
+    @Test
+    func layeredRecallGlobalPersonLaneFilterDropsOtherProjectPrefs() {
+        let home = layeredHit(
+            frameID: 1,
+            score: 1,
+            text: "home pref",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.project: "recall-project",
+                MemoryMetadataKeys.repo: "recall-repo",
+            ]
+        )
+        let foreign = layeredHit(
+            frameID: 2,
+            score: 1,
+            text: "foreign pref",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.project: "foreign-project",
+                MemoryMetadataKeys.repo: "foreign-repo",
+            ]
+        )
+        let unscoped = layeredHit(
+            frameID: 3,
+            score: 1,
+            text: "unscoped pref",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.userPreference.rawValue]
+        )
+        let identity = LayeredRecall.Identity(project: "recall-project", repo: "recall-repo")
+        let filtered = LayeredRecall.filterHitsForGlobalPersonLane(
+            [home, foreign, unscoped],
+            memoryTypes: [.userPreference],
+            identity: identity
+        )
+        #expect(filtered.map(\.frameID) == [1, 3])
+
+        let unresolved = LayeredRecall.filterHitsForGlobalPersonLane(
+            [home, foreign, unscoped],
+            memoryTypes: [.userPreference],
+            identity: LayeredRecall.Identity()
+        )
+        #expect(unresolved.map(\.frameID) == [1, 2, 3])
+
+        let multiType = LayeredRecall.filterHitsForGlobalPersonLane(
+            [home, foreign, unscoped],
+            memoryTypes: [.userPreference, .lesson],
+            identity: identity
+        )
+        #expect(multiType.map(\.frameID) == [1, 2, 3])
     }
 
     @Test

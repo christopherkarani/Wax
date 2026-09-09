@@ -1483,7 +1483,7 @@ extension AgentBrokerService {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
                 if status == .ended {
                     let harvest = await harvestPersistedSession(sessionID: sessionID)
-                    return sessionClosePayload(
+                    let payload = sessionClosePayload(
                         sessionID: sessionID,
                         ended: true,
                         alreadyEnded: true,
@@ -1491,6 +1491,8 @@ extension AgentBrokerService {
                         remainingActive: activeSessions.count,
                         harvest: harvest
                     )
+                    await sweepSessionStoresAfterClose()
+                    return payload
                 }
             } else {
                 throw BrokerSessionInactiveError.unknown(sessionID: sessionID)
@@ -1512,13 +1514,27 @@ extension AgentBrokerService {
         try await recordHandoff(sessionID: sessionID, content: content)
         try await longTermMemory.flush()
         let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: makeHarvestCallback())
-        return sessionClosePayload(
+        let payload = sessionClosePayload(
             sessionID: sessionID,
             ended: result.ended,
             alreadyEnded: false,
             handoffFrameID: frameId,
             remainingActive: result.activeCount,
             harvest: result.harvest
+        )
+        await sweepSessionStoresAfterClose()
+        return payload
+    }
+
+    /// Reclaim due ended files and harvest abandoned zombies without ending
+    /// fresh expired leases (those stay rebindable until explicit maintain).
+    /// Does not quarantine the long-term library — that stays operator-only
+    /// via `memory_maintain`.
+    private func sweepSessionStoresAfterClose() async {
+        _ = await maintainSessionStores(
+            apply: true,
+            forceReclaim: false,
+            endExpiredSessions: false
         )
     }
 
@@ -1839,36 +1855,8 @@ extension AgentBrokerService {
                 "content_tokens": .from(0),
             ])
         }
-        if !trimmedQuery.isEmpty,
-           MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
-        {
-            if originalTasks.isEmpty {
-                return .object([
-                    "found": .bool(false),
-                    "relevance": .string("low"),
-                    "content": .string(""),
-                    "pending_tasks": .array([]),
-                    "truncated": .bool(false),
-                    "content_truncated": .bool(false),
-                    "pending_tasks_truncated": .from(0),
-                    "pending_tasks_omitted": .from(0),
-                    "content_bytes": .from(0),
-                    "content_tokens": .from(0),
-                ])
-            }
-            return .object([
-                "found": .bool(true),
-                "relevance": .string("low"),
-                "content": .string(""),
-                "pending_tasks": .array(originalTasks.map { .string($0) }),
-                "truncated": .bool(false),
-                "content_truncated": .bool(true),
-                "pending_tasks_truncated": .from(0),
-                "pending_tasks_omitted": .from(0),
-                "content_bytes": .from(0),
-                "content_tokens": .from(0),
-            ])
-        }
+        let lowRelevance = !trimmedQuery.isEmpty
+            && MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
 
         let byteLimitedContent = utf8Prefix(
             originalContent,
@@ -1896,7 +1884,7 @@ extension AgentBrokerService {
         let omittedTaskCount = max(0, originalTasks.count - boundedTasks.count)
         let anyTruncated = contentTruncated || pendingTaskTruncations > 0 || omittedTaskCount > 0
 
-        return .object([
+        var compact: [String: AgentBrokerValue] = [
             "found": .bool(true),
             "content": .string(compactContent),
             "pending_tasks": .array(boundedTasks.map { .string($0) }),
@@ -1906,7 +1894,11 @@ extension AgentBrokerService {
             "pending_tasks_omitted": .from(omittedTaskCount),
             "content_bytes": .from(compactContent.utf8.count),
             "content_tokens": .from(await tokenCounter.count(compactContent)),
-        ])
+        ]
+        if lowRelevance {
+            compact["relevance"] = .string("low")
+        }
+        return .object(compact)
     }
 
     /// Return a prefix without splitting a user-visible Unicode grapheme.
@@ -2121,23 +2113,39 @@ extension AgentBrokerService {
         }
     }
 
-    func memoryMaintain(
-        _ command: BrokerCommand.MemoryMaintain,
-        endExpiredSessions: Bool = true
-    ) async throws -> AgentBrokerValue {
-        let apply = command.apply
-        let force = command.forceReclaim
+    private struct SessionStoreMaintainCounts: Sendable {
+        var zombiesToEnd: Int
+        var harvests: Int
+        var unlinks: Int
+    }
+
+    @discardableResult
+    private func maintainSessionStores(
+        apply: Bool,
+        forceReclaim: Bool,
+        endExpiredSessions: Bool
+    ) async -> SessionStoreMaintainCounts {
         let now = Self.nowMs()
+        let recentlyClosedMs = MemoryRetentionSettings.fromEnvironment().recentlyClosedMs
         let manifests = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
         let liveIDs = Set(activeSessions.keys)
         var zombiesToEnd = 0
         var harvests = 0
         var unlinks = 0
-        var quarantineSoftDeletes = 0
 
         var zombieIDs = Set<UUID>()
-        for manifest in manifests where endExpiredSessions
-            && SessionReclaim.isZombie(manifest: manifest, liveIDs: liveIDs, nowMs: now) {
+        for manifest in manifests where SessionReclaim.isZombie(
+            manifest: manifest,
+            liveIDs: liveIDs,
+            nowMs: now
+        ) {
+            let abandoned = SessionReclaim.isAbandonedZombie(
+                manifest: manifest,
+                liveIDs: liveIDs,
+                nowMs: now,
+                recentlyClosedMs: recentlyClosedMs
+            )
+            guard endExpiredSessions || abandoned else { continue }
             zombiesToEnd += 1
             zombieIDs.insert(manifest.sessionID)
             harvests += 1
@@ -2160,15 +2168,37 @@ extension AgentBrokerService {
                 rootURL: sessionRootURL,
                 sessionID: manifest.sessionID
             )) ?? manifest
-            if SessionReclaim.isReclaimable(manifest: current, nowMs: now, force: force) {
+            if SessionReclaim.isReclaimable(manifest: current, nowMs: now, force: forceReclaim) {
                 unlinks += 1
                 if apply {
-                    if await reclaimSessionIfDue(sessionID: current.sessionID, force: force) {
-                        // counted
-                    }
+                    _ = await reclaimSessionIfDue(sessionID: current.sessionID, force: forceReclaim)
                 }
             }
         }
+
+        return SessionStoreMaintainCounts(
+            zombiesToEnd: zombiesToEnd,
+            harvests: harvests,
+            unlinks: unlinks
+        )
+    }
+
+    func memoryMaintain(
+        _ command: BrokerCommand.MemoryMaintain,
+        endExpiredSessions: Bool = true
+    ) async throws -> AgentBrokerValue {
+        let apply = command.apply
+        let force = command.forceReclaim
+        let now = Self.nowMs()
+        let sessionCounts = await maintainSessionStores(
+            apply: apply,
+            forceReclaim: force,
+            endExpiredSessions: endExpiredSessions
+        )
+        let zombiesToEnd = sessionCounts.zombiesToEnd
+        let harvests = sessionCounts.harvests
+        let unlinks = sessionCounts.unlinks
+        var quarantineSoftDeletes = 0
 
         let documents = try await longTermMemory.corpusSourceDocuments()
         let accessStats = await longTermMemory.accessStatsSnapshot()

@@ -46,8 +46,10 @@ struct BrokerIdleSessionRecoveryTests {
         let uuid = try #require(UUID(uuidString: sessionID))
         var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessions, sessionID: uuid)
         #expect(manifest.status == .active)
-        // Simulate the daemon's idle exit without a five-minute wall-clock wait.
-        manifest.leaseExpiresAtMs = 1
+        // Simulate a fresh idle expiry (seconds ago). Epoch sentinels look
+        // abandoned (≥ recently-closed window) and init would harvest them.
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        manifest.leaseExpiresAtMs = nowMs - 1_000
         try BrokerSessionPersistence.saveManifest(
             manifest,
             to: BrokerSessionPersistence.manifestURL(rootURL: sessions, sessionID: uuid)

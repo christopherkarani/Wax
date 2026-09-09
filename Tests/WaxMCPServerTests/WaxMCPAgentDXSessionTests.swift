@@ -181,7 +181,7 @@ func sessionOpenRebindsUniqueLiveAgentProjectAndSharesSessionID() async throws {
 }
 
 @Test
-func sessionOpenOmitsUnrelatedHandoffBodyAsLowRelevance() async throws {
+func sessionOpenKeepsProjectHandoffWhenRecallQueryMismatches() async throws {
     try await withAgentDXBroker { service, _ in
         let project = "dx-handoff-\(UUID().uuidString.prefix(8))"
         let foreignProject = "dx-foreign-\(UUID().uuidString.prefix(8))"
@@ -225,12 +225,11 @@ func sessionOpenOmitsUnrelatedHandoffBodyAsLowRelevance() async throws {
             recallQuery: query
         )
         let handoff = try requireObject(unrelated["handoff"])
-        #expect(handoff["found"]?.boolValue == false)
-        #expect(handoff["relevance"]?.stringValue == "low")
-        let content = handoff["content"]?.stringValue ?? ""
-        #expect(content.isEmpty)
+        #expect(handoff["found"]?.boolValue == true)
+        let content = try requireString(handoff, "content")
+        #expect(content.contains("WAX-HOME-HANDOFF"))
         #expect(content.contains("FOREIGN-HANDOFF-NEEDLE") == false)
-        #expect(content.contains("WAX-HOME-HANDOFF") == false)
+        #expect(handoff["relevance"]?.stringValue == "low")
         let pending = handoff["pending_tasks"]?.arrayValue ?? []
         #expect(pending.isEmpty)
     }

@@ -39,6 +39,19 @@ package enum SessionReclaim {
         return lease < nowMs
     }
 
+    /// Active, not live, lease expired for at least the recently-closed window.
+    /// Fresh expired leases stay rebindable; these have been abandoned long enough to harvest.
+    package static func isAbandonedZombie(
+        manifest: BrokerSessionManifest,
+        liveIDs: Set<UUID>,
+        nowMs: Int64,
+        recentlyClosedMs: Int64 = MemoryRetentionSettings.default.recentlyClosedMs
+    ) -> Bool {
+        guard isZombie(manifest: manifest, liveIDs: liveIDs, nowMs: nowMs) else { return false }
+        guard let lease = manifest.leaseExpiresAtMs else { return false }
+        return nowMs &- lease >= recentlyClosedMs
+    }
+
     package static func isRecentlyClosed(
         manifest: BrokerSessionManifest,
         nowMs: Int64
