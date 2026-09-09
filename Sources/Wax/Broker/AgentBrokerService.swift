@@ -487,53 +487,21 @@ extension AgentBrokerService {
             sessionID: sessionID
         )
         let after = await memory.runtimeStats()
-
-        let scope = sessionID == nil ? "durable" : "session"
-        let memoryID = sessionID.map {
-            "working:\($0.uuidString):\(rememberResult.frameId)"
-        } ?? "durable:\(rememberResult.frameId)"
-        let project = metadata[MemoryMetadataKeys.project] ?? inferredScope.projectName
-        let repo = metadata[MemoryMetadataKeys.repo] ?? inferredScope.repoName
-        let unresolvedProject = project?.isEmpty != false
-        var display = "Remembered. \(rememberResult.framesAdded) frame(s) added (\(after.frameCount) total, \(after.pendingFrames) pending)."
-        if unresolvedProject {
-            display += " Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
-        }
-        var payload: [String: AgentBrokerValue] = [
-            "status": .string("ok"),
-            "frame_id": .from(rememberResult.frameId),
-            "memory_id": .string(memoryID),
-            "framesAdded": .from(rememberResult.framesAdded),
-            "frameCount": .from(after.frameCount),
-            "pendingFrames": .from(after.pendingFrames),
-            "scope": .string(scope),
-            "session_id": .from(sessionID?.uuidString),
-            "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
-            "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
-            "deduplicated": .bool(rememberResult.deduplicated),
-            "searchable": .bool(rememberResult.searchable),
-            "unresolved_project": .bool(unresolvedProject),
-            "display_text": .string(display),
-        ]
-        if let project, !project.isEmpty {
-            payload["project"] = .string(project)
-        }
-        if let repo, !repo.isEmpty {
-            payload["repo"] = .string(repo)
-        }
-        if unresolvedProject {
-            payload["next_action"] = .string("pass project/repo or recall with scope=global")
-        }
-        return .object(payload)
+        return RememberAssembly.payload(
+            frameId: rememberResult.frameId,
+            framesAdded: rememberResult.framesAdded,
+            frameCount: after.frameCount,
+            pendingFrames: after.pendingFrames,
+            sessionID: sessionID,
+            metadata: metadata,
+            inferredScope: inferredScope,
+            deduplicated: rememberResult.deduplicated,
+            searchable: rememberResult.searchable
+        )
     }
 
-    private static let autoSupersedeSimilarityThreshold: Float = 0.88
-    private static let autoSupersedeMaxMatches = 32
-    private static let autoSupersedeTypes: Set<MemoryType> = [
-        .decision, .lesson, .constraint, .fact,
-    ]
-
     /// Same-project Jaccard ≥ 0.88 retires prior unsuperseded durable twins. Locked stays live.
+    /// Selection policy lives in ``RememberAssembly``; this method still owns corpus I/O + supersede + flush.
     private func autoSupersedeSimilarDurableFrames(
         memory: MemoryOrchestrator,
         newFrameId: UInt64,
@@ -541,11 +509,14 @@ extension AgentBrokerService {
         metadata: [String: String],
         sessionID: UUID?
     ) async {
-        guard sessionID == nil else { return }
-        let info = MemorySemantics.parse(metadata: metadata, nowMs: Self.nowMs())
-        guard Self.autoSupersedeTypes.contains(info.type) else { return }
-        guard info.durability == .durable || info.durability == .locked else { return }
-        guard let project = info.project else { return }
+        let nowMs = Self.nowMs()
+        guard RememberAssembly.isAutoSupersedeEligible(
+            sessionID: sessionID,
+            metadata: metadata,
+            nowMs: nowMs
+        ) else {
+            return
+        }
 
         let documents: [MemoryOrchestrator.CorpusSourceDocument]
         do {
@@ -559,24 +530,30 @@ extension AgentBrokerService {
             return
         }
 
+        let frameIDs = RememberAssembly.selectSupersedeFrameIDs(
+            sessionID: sessionID,
+            newFrameId: newFrameId,
+            content: content,
+            metadata: metadata,
+            documents: documents.map {
+                RememberAssembly.Candidate(
+                    frameId: $0.frameId,
+                    text: $0.text,
+                    metadata: $0.metadata
+                )
+            },
+            nowMs: nowMs
+        )
+        guard !frameIDs.isEmpty else { return }
+
         var supersededAny = false
-        var matchCount = 0
-        for document in documents {
-            guard matchCount < Self.autoSupersedeMaxMatches else { break }
-            guard document.frameId != newFrameId else { continue }
-            let other = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
-            guard other.type == info.type else { continue }
-            guard other.project == project else { continue }
-            guard other.durability == .durable else { continue }
-            let similarity = MemorySemantics.similarity(lhs: content, rhs: document.text)
-            guard similarity >= Self.autoSupersedeSimilarityThreshold else { continue }
+        for frameID in frameIDs {
             do {
                 try await memory.wax.supersede(
-                    supersededId: document.frameId,
+                    supersededId: frameID,
                     supersedingId: newFrameId
                 )
                 supersededAny = true
-                matchCount += 1
             } catch {
                 WaxDiagnostics.logSwallowed(
                     error,
@@ -656,14 +633,14 @@ extension AgentBrokerService {
         }
         lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
         for (index, hit) in result.hits.enumerated() {
-            let kind = Self.itemKindLabel(hit.kind)
+            let kind = RecallPresent.itemKindLabel(hit.kind)
             lines.append("\(index + 1). [\(kind)] frame=\(hit.frameID) score=\(String(format: "%.4f", hit.score)) \(hit.text)")
         }
 
         let nowMs = Self.nowMs()
         let verbose = command.verbosity == "verbose"
         let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
-            renderRecallHit(hit, rank: index + 1, verbose: verbose, nowMs: nowMs)
+            RecallPresent.renderRecallHit(hit, rank: index + 1, verbose: verbose, nowMs: nowMs)
         }
         if let sessionID = parsedFilters.sessionId {
             let sessionMemory = try await memory(for: sessionID)
@@ -863,7 +840,8 @@ extension AgentBrokerService {
             )
         }
 
-        let rows = hits.map(renderLayeredMemoryHit)
+        let nowMs = Self.nowMs()
+        let rows = hits.map { RecallPresent.renderLayeredMemoryHit($0, nowMs: nowMs) }
         let text = rows.isEmpty ? "No results." : rows.map(\.debugJSONString).joined(separator: "\n")
         return .object([
             "query": .string(query),
@@ -1785,145 +1763,24 @@ extension AgentBrokerService {
         }
 
         let rebound = SessionOpenDecision.rebound(returnedSessionID: sessionUUID, facts: openFacts)
-        let sharePrompt =
-            "This MCP connection remembers session_id (\(sessionID)); omit it on subsequent memory calls on this connection. Retain it for reconnects, explicit cross-session calls, and direct broker/CLI use. Host children do not get Wax tools."
-
-        // Keep the bootstrap wire shape deliberately small.  Callers that
-        // need project/repo, lease state, or the full handoff can issue the
-        // corresponding explicit read after they have the session UUID.
-        var payload: [String: AgentBrokerValue] = [
-            "session_id": .string(sessionID),
-            "rebound": .bool(rebound),
-            "share_prompt": .string(sharePrompt),
-            "handoff": try await Self.compactSessionOpenHandoff(
-                handoffPayload,
-                recallQuery: recallQuery
-            ),
-        ]
-        if let recallPayload {
-            payload["recall"] = recallPayload
-            if let warning = recallPayload.objectValue?["warning"] {
-                payload["warning"] = warning
-            }
+        let tokenizer: SessionOpenAssembly.Tokenizer
+        if handoffPayload.objectValue?["found"]?.boolValue == true {
+            let counter = try await TokenCounter.shared()
+            tokenizer = SessionOpenAssembly.Tokenizer(count: { text in await counter.count(text) })
+        } else {
+            tokenizer = .character
         }
-        return .object(payload)
-    }
-
-    private static func compactSessionOpenHandoff(
-        _ value: AgentBrokerValue,
-        recallQuery: String?
-    ) async throws -> AgentBrokerValue {
-        guard let handoff = value.objectValue,
-              handoff["found"]?.boolValue == true
-        else {
-            return value
-        }
-
-        let originalContent = handoff["content"]?.stringValue ?? ""
-        let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        let trimmedQuery = recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let emptyBody = originalContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && originalTasks.isEmpty
-        if emptyBody {
-            return .object([
-                "found": .bool(false),
-                "relevance": .string("low"),
-                "content": .string(""),
-                "pending_tasks": .array([]),
-                "truncated": .bool(false),
-                "content_truncated": .bool(false),
-                "pending_tasks_truncated": .from(0),
-                "pending_tasks_omitted": .from(0),
-                "content_bytes": .from(0),
-                "content_tokens": .from(0),
-            ])
-        }
-        let lowRelevance = !trimmedQuery.isEmpty
-            && MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
-
-        let byteLimitedContent = utf8Prefix(
-            originalContent,
-            maxBytes: BrokerLimits.maxSessionOpenHandoffContentBytes
+        let handoff = await SessionOpenAssembly.compactHandoff(
+            handoffPayload,
+            recallQuery: recallQuery,
+            tokenizer: tokenizer
         )
-        let tokenCounter = try await TokenCounter.shared()
-        let compactContent = await Self.tokenLimitedPrefix(
-            byteLimitedContent,
-            counter: tokenCounter,
-            maxTokens: BrokerLimits.maxSessionOpenHandoffContentTokens
+        return SessionOpenAssembly.bootstrapPayload(
+            sessionID: sessionID,
+            rebound: rebound,
+            handoff: handoff,
+            recall: recallPayload
         )
-        let contentTruncated = compactContent != originalContent
-
-        let boundedTasks = originalTasks
-            .prefix(BrokerLimits.maxSessionOpenPendingTasks)
-            .map { task in
-                utf8Prefix(task, maxBytes: BrokerLimits.maxSessionOpenPendingTaskBytes)
-            }
-        let pendingTaskTruncations = zip(
-            originalTasks.prefix(BrokerLimits.maxSessionOpenPendingTasks),
-            boundedTasks
-        ).reduce(into: 0) { count, task in
-            if task.0 != task.1 { count += 1 }
-        }
-        let omittedTaskCount = max(0, originalTasks.count - boundedTasks.count)
-        let anyTruncated = contentTruncated || pendingTaskTruncations > 0 || omittedTaskCount > 0
-
-        var compact: [String: AgentBrokerValue] = [
-            "found": .bool(true),
-            "content": .string(compactContent),
-            "pending_tasks": .array(boundedTasks.map { .string($0) }),
-            "truncated": .bool(anyTruncated),
-            "content_truncated": .bool(contentTruncated),
-            "pending_tasks_truncated": .from(pendingTaskTruncations),
-            "pending_tasks_omitted": .from(omittedTaskCount),
-            "content_bytes": .from(compactContent.utf8.count),
-            "content_tokens": .from(await tokenCounter.count(compactContent)),
-        ]
-        if lowRelevance {
-            compact["relevance"] = .string("low")
-        }
-        return .object(compact)
-    }
-
-    /// Return a prefix without splitting a user-visible Unicode grapheme.
-    private static func utf8Prefix(_ text: String, maxBytes: Int) -> String {
-        guard maxBytes > 0 else { return "" }
-        var bytes = 0
-        var result = String()
-        result.reserveCapacity(min(text.utf8.count, maxBytes))
-        for character in text {
-            let characterBytes = String(character).utf8.count
-            guard bytes + characterBytes <= maxBytes else { break }
-            result.append(character)
-            bytes += characterBytes
-        }
-        return result
-    }
-
-    /// Bound `text` to `maxTokens` while remaining a grapheme prefix of `text`.
-    ///
-    /// Encode the full string once, then take a proportional character prefix
-    /// and shrink by graphemes if that prefix is still over budget. This avoids
-    /// re-tokenizing every binary-search midpoint on `TokenCounter.shared()`,
-    /// which serializes orchestrator chunking and MCP remember/recall.
-    private static func tokenLimitedPrefix(
-        _ text: String,
-        counter: TokenCounter,
-        maxTokens: Int
-    ) async -> String {
-        guard maxTokens > 0, !text.isEmpty else { return "" }
-        let fullCount = await counter.count(text)
-        if fullCount <= maxTokens { return text }
-
-        let characters = Array(text)
-        var high = max(1, min(characters.count, (maxTokens * characters.count) / fullCount))
-        var candidate = String(characters.prefix(high))
-        var candidateCount = await counter.count(candidate)
-        while candidateCount > maxTokens && high > 1 {
-            high = max(1, (high * 3) / 4)
-            candidate = String(characters.prefix(high))
-            candidateCount = await counter.count(candidate)
-        }
-        return candidateCount <= maxTokens ? candidate : ""
     }
 
     private func sessionEndPayload(
@@ -2306,14 +2163,21 @@ extension AgentBrokerService {
                 await session.memory.recordAccess(frameId: hit.frameID)
             }
         }
+        let nowMs = Self.nowMs()
         return .object([
             "query": .string(query),
             "token_budget": .from(tokenBudget),
             "used_tokens": .from(assembled.usedTokens),
             "summary": .string(assembled.summary),
-            "short_context": .array(assembled.short.map(renderCompactLayeredMemoryHit)),
-            "medium_context": .array(assembled.medium.map(renderCompactLayeredMemoryHit)),
-            "long_context": .array(assembled.long.map(renderCompactLayeredMemoryHit)),
+            "short_context": .array(assembled.short.map {
+                RecallPresent.renderCompactLayeredMemoryHit($0, nowMs: nowMs)
+            }),
+            "medium_context": .array(assembled.medium.map {
+                RecallPresent.renderCompactLayeredMemoryHit($0, nowMs: nowMs)
+            }),
+            "long_context": .array(assembled.long.map {
+                RecallPresent.renderCompactLayeredMemoryHit($0, nowMs: nowMs)
+            }),
             "compacted_text": .string(assembled.compactedText),
             "display_text": .string(assembled.compactedText),
         ])
@@ -2910,192 +2774,6 @@ extension AgentBrokerService {
         }
     }
 
-    func exportMarkdownProjection(
-        outputURL: URL,
-        sessionID: UUID?,
-        project: String? = nil
-    ) async throws -> MarkdownProjectionReport {
-        try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
-        let memoryDir = outputURL.appendingPathComponent("memory", isDirectory: true)
-        try FileManager.default.createDirectory(at: memoryDir, withIntermediateDirectories: true)
-        try await longTermMemory.flush()
-
-        let durableDocuments = try await longTermMemory.corpusSourceDocuments()
-            .filter { document in
-                matchesExportProject(document.metadata[MemoryMetadataKeys.project], project: project)
-            }
-            .sorted { lhs, rhs in
-                if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                return lhs.frameId > rhs.frameId
-            }
-        let memoryMarkdown = renderMemoryMarkdown(documents: durableDocuments)
-        let memoryMarkdownURL = outputURL.appendingPathComponent("MEMORY.md")
-        try memoryMarkdown.write(to: memoryMarkdownURL, atomically: true, encoding: .utf8)
-
-        var dailyNotesByDate: [String: [String]] = [:]
-        var handoffLines: [String] = []
-        let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-            .filter { sessionID == nil || $0.sessionID == sessionID }
-            .filter { matchesExportProject($0.project, project: project) }
-        for manifest in manifests {
-            let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
-            for event in events {
-                let dateKey = Self.dayString(fromMs: event.timestampMs)
-                switch event.kind {
-                case .remembered, .checkpoint, .promotionWritten, .promotionReviewed:
-                    let summary = if let summary = event.payload["summary"], !summary.isEmpty {
-                        summary
-                    } else if let contentHash = event.payload["content_hash"] {
-                        "session event \(event.kind.rawValue) [\(contentHash)]"
-                    } else {
-                        ""
-                    }
-                    if !summary.isEmpty {
-                        let marker = MarkdownProjectionMarker(
-                            managed: false,
-                            sourceKind: "daily_note_event",
-                            hash: Self.stableHash(summary),
-                            sessionID: manifest.sessionID.uuidString,
-                            sourceFrameID: event.payload["frame_id"].flatMap(UInt64.init),
-                            memoryType: event.payload["memory_type"],
-                            dateKey: dateKey
-                        )
-                        dailyNotesByDate[dateKey, default: []].append(
-                            renderManagedMarkdownLine(text: summary, marker: marker)
-                        )
-                    }
-                case .handoff:
-                    let summary = "[\(dateKey)] \(manifest.agentID)/\(manifest.runID): \(event.payload["summary"] ?? "")"
-                    let marker = MarkdownProjectionMarker(
-                        managed: false,
-                        sourceKind: "daily_note_event",
-                        hash: Self.stableHash(summary),
-                        sessionID: manifest.sessionID.uuidString,
-                        dateKey: dateKey
-                    )
-                    let line = renderManagedMarkdownLine(text: summary, marker: marker)
-                    handoffLines.append(line)
-                    dailyNotesByDate[dateKey, default: []].append(line)
-                default:
-                    break
-                }
-            }
-        }
-
-        let managedDailyNotes = durableDocuments
-            .filter { $0.metadata[MemoryMetadataKeys.sourceKind] == MarkdownProjectionKind.dailyNote.rawValue }
-            .sorted { lhs, rhs in
-                if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
-                return lhs.frameId > rhs.frameId
-        }
-        for document in managedDailyNotes {
-            let dateKey = Self.safeMarkdownDailyDateKey(
-                document.metadata[MemoryMetadataKeys.sourceDate],
-                fallbackMs: document.timestampMs
-            )
-            let marker = marker(for: document, kind: .dailyNote, dateKey: dateKey)
-            dailyNotesByDate[dateKey, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
-        }
-
-        var dailyNotePaths: [String] = []
-        var dailyNoteURLs = Set<URL>()
-        for dateKey in dailyNotesByDate.keys.sorted() {
-            let noteURL = memoryDir.appendingPathComponent("\(dateKey).md")
-            var bodyLines = ["# \(dateKey)", ""]
-            bodyLines.append(contentsOf: dailyNotesByDate[dateKey, default: []])
-            let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
-            try body.write(to: noteURL, atomically: true, encoding: .utf8)
-            dailyNoteURLs.insert(noteURL.standardizedFileURL)
-            dailyNotePaths.append(noteURL.path)
-        }
-
-        let dreamsLines = try await dreamProjectionLines(sessionID: sessionID, project: project)
-        let dreamsURL = memoryDir.appendingPathComponent("DREAMS.md")
-        var dreamsPath: String?
-        if !dreamsLines.isEmpty {
-            let body = "# DREAMS\n\n" + dreamsLines.joined(separator: "\n") + "\n"
-            try body.write(to: dreamsURL, atomically: true, encoding: .utf8)
-            dreamsPath = dreamsURL.path
-        } else {
-            try removeGeneratedMarkdownFileIfPresent(at: dreamsURL, allowedSourceKinds: [MarkdownProjectionKind.dreams.rawValue])
-        }
-
-        var handoffSummaryPath: String?
-        if !handoffLines.isEmpty {
-            let handoffURL = memoryDir.appendingPathComponent("HANDOFFS.md")
-            let body = "# Handoffs\n\n" + handoffLines.joined(separator: "\n") + "\n"
-            try body.write(to: handoffURL, atomically: true, encoding: .utf8)
-            handoffSummaryPath = handoffURL.path
-        } else {
-            try removeGeneratedMarkdownFileIfPresent(at: memoryDir.appendingPathComponent("HANDOFFS.md"), allowedSourceKinds: ["daily_note_event"])
-        }
-
-        try removeStaleGeneratedDailyNotes(in: memoryDir, keeping: dailyNoteURLs)
-
-        if let sessionID, activeSessions[sessionID] != nil {
-            try await appendSessionEvent(
-                sessionID: sessionID,
-                kind: .markdownExported,
-                payload: ["output_dir": outputURL.path]
-            )
-        }
-
-        return MarkdownProjectionReport(
-            memoryMarkdownPath: memoryMarkdownURL.path,
-            dailyNotePaths: dailyNotePaths.sorted(),
-            dreamsPath: dreamsPath,
-            handoffSummaryPath: handoffSummaryPath
-        )
-    }
-
-    private func removeStaleGeneratedDailyNotes(in memoryDir: URL, keeping currentDailyNoteURLs: Set<URL>) throws {
-        guard FileManager.default.fileExists(atPath: memoryDir.path) else { return }
-        let urls = try FileManager.default.contentsOfDirectory(
-            at: memoryDir,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        for url in urls where url.pathExtension == "md" {
-            guard !url.lastPathComponent.hasPrefix("DREAMS"),
-                  !url.lastPathComponent.hasPrefix("HANDOFFS"),
-                  url.lastPathComponent.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil,
-                  !currentDailyNoteURLs.contains(url.standardizedFileURL)
-            else { continue }
-            try removeGeneratedMarkdownFileIfPresent(
-                at: url,
-                allowedSourceKinds: [MarkdownProjectionKind.dailyNote.rawValue, "daily_note_event"]
-            )
-        }
-    }
-
-    private func removeGeneratedMarkdownFileIfPresent(at url: URL, allowedSourceKinds: Set<String>) throws {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let entries = try BrokerMarkdownSync.parseFile(at: url)
-        guard !entries.isEmpty else { return }
-        var generatedLines = Set<String>()
-        let generatedOnly = entries.allSatisfy { entry in
-            guard let marker = entry.marker else { return false }
-            guard allowedSourceKinds.contains(marker.sourceKind) else { return false }
-            guard marker.hash == Self.stableHash(entry.text) else { return false }
-            if marker.sourceKind == MarkdownProjectionKind.dreams.rawValue, entry.checked == true {
-                return false
-            }
-            generatedLines.insert(renderManagedMarkdownLine(text: entry.text, marker: marker, checked: entry.checked))
-            return true
-        }
-        guard generatedOnly else { return }
-        let raw = try String(contentsOf: url, encoding: .utf8)
-        let hasUserContent = raw.components(separatedBy: .newlines).contains { line in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return false }
-            guard !trimmed.hasPrefix("#") else { return false }
-            return !generatedLines.contains(trimmed)
-        }
-        guard !hasUserContent else { return }
-        try FileManager.default.removeItem(at: url)
-    }
-
-
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
         switch try await virtualSessions.ensureLive(sessionID) {
         case .none:
@@ -3428,124 +3106,9 @@ extension AgentBrokerService {
         }
     }
 
-    static func itemKindLabel(_ kind: RAGContext.ItemKind) -> String {
-        switch kind {
-        case .expanded:
-            return "expanded"
-        case .surrogate:
-            return "surrogate"
-        case .snippet:
-            return "snippet"
-        }
-    }
-
-    func renderRecallHit(
-        _ hit: LayeredRecall.Hit,
-        rank: Int,
-        verbose: Bool,
-        nowMs: Int64
-    ) -> AgentBrokerValue {
-        var object = compactHitObject(
-            id: hit.reference,
-            text: hit.text,
-            preview: nil,
-            metadata: hit.metadata,
-            score: hit.score,
-            createdAtMs: hit.timestampMs,
-            nowMs: nowMs
-        )
-        object["rank"] = .from(rank)
-        object["kind"] = .string(Self.itemKindLabel(hit.kind))
-        object["frameId"] = .from(hit.frameID)
-        object["sources"] = .array(hit.sources.map { .string($0.rawValue) })
-        if verbose {
-            object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
-            object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
-        }
-        return .object(object)
-    }
-
+    /// Thin actor wrapper for MCP/DX tests that still call presentation through the broker.
     func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
-        var object = compactHitObject(
-            id: hit.reference,
-            text: hit.text,
-            preview: hit.preview,
-            metadata: hit.metadata,
-            score: hit.score,
-            createdAtMs: hit.timestampMs,
-            nowMs: Self.nowMs()
-        )
-        object["memory_id"] = .string(hit.reference)
-        object["horizon"] = .string(hit.horizon.rawValue)
-        object["session_id"] = .from(hit.sessionID?.uuidString)
-        object["agent_id"] = .from(hit.agentID)
-        object["run_id"] = .from(hit.runID)
-        object["frame_id"] = .from(hit.frameID)
-        object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
-        object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
-        return .object(object)
-    }
-
-    func renderCompactLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
-        var object = compactHitObject(
-            id: hit.reference,
-            text: hit.text,
-            preview: hit.preview,
-            metadata: hit.metadata,
-            score: hit.score,
-            createdAtMs: hit.timestampMs,
-            nowMs: Self.nowMs()
-        )
-        object["memory_id"] = .string(hit.reference)
-        object["frame_id"] = .from(hit.frameID)
-        return .object(object)
-    }
-
-    func compactHitObject(
-        id: String,
-        text: String,
-        preview: String?,
-        metadata: [String: String],
-        score: Float,
-        createdAtMs: Int64,
-        nowMs: Int64
-    ) -> [String: AgentBrokerValue] {
-        var object: [String: AgentBrokerValue] = [
-            "id": .string(id),
-            "text": .string(text),
-            "score": .double(Double(score)),
-        ]
-        if createdAtMs > 0 {
-            object["created_at_ms"] = .int(createdAtMs)
-            object["age_days"] = .int(Self.ageDays(createdAtMs: createdAtMs, nowMs: nowMs))
-        }
-        if let preview {
-            object["preview"] = .string(preview)
-        }
-        if let project = metadata[MemoryMetadataKeys.project], !project.isEmpty {
-            object["project"] = .string(project)
-        }
-        if let repo = metadata[MemoryMetadataKeys.repo], !repo.isEmpty {
-            object["repo"] = .string(repo)
-        }
-        if let memoryType = metadata[MemoryMetadataKeys.type], !memoryType.isEmpty {
-            object["memory_type"] = .string(memoryType)
-        }
-        if let durability = metadata[MemoryMetadataKeys.durability], !durability.isEmpty {
-            object["durability"] = .string(durability)
-        }
-        if let reviewed = metadata[MemoryMetadataKeys.reviewed] {
-            object["reviewed"] = .bool(reviewed.lowercased() == "true")
-        }
-        if let confidence = metadata[MemoryMetadataKeys.confidence].flatMap(Double.init) {
-            object["confidence"] = .double(confidence)
-        }
-        return object
-    }
-
-    static func ageDays(createdAtMs: Int64, nowMs: Int64) -> Int64 {
-        guard createdAtMs > 0 else { return 0 }
-        return max(0, (nowMs - createdAtMs) / (1000 * 60 * 60 * 24))
+        RecallPresent.renderLayeredMemoryHit(hit, nowMs: Self.nowMs())
     }
 
     func corpusHitFullText(_ hit: BrokerCorpusMergeHit) async -> String {
@@ -3660,46 +3223,6 @@ extension AgentBrokerService {
         }
     }
 
-
-    func renderMemoryMarkdown(documents: [MemoryOrchestrator.CorpusSourceDocument]) -> String {
-        var sections: [MemoryType: [String]] = [:]
-        for document in documents {
-            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
-            guard info.durability == .durable || info.durability == .locked else { continue }
-            let type = info.type
-            let marker = marker(for: document, kind: .memory)
-            sections[type, default: []].append(renderManagedMarkdownLine(text: document.text, marker: marker))
-        }
-        let orderedTypes: [MemoryType] = [.decision, .lesson, .userPreference, .constraint, .fact, .handoff, .note, .taskState]
-        var lines = ["# MEMORY", ""]
-        for type in orderedTypes {
-            guard let entries = sections[type], !entries.isEmpty else { continue }
-            lines.append("## \(type.rawValue)")
-            lines.append(contentsOf: entries)
-            lines.append("")
-        }
-        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
-    }
-
-    static func dayString(fromMs timestampMs: Int64) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000))
-    }
-
-    static func safeMarkdownDailyDateKey(_ rawValue: String?, fallbackMs: Int64) -> String {
-        guard let rawValue else {
-            return dayString(fromMs: fallbackMs)
-        }
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
-            return dayString(fromMs: fallbackMs)
-        }
-        return trimmed
-    }
 
     static func makeMemoryReference(frameID: UInt64) -> String {
         LayeredRecall.makeMemoryReference(frameID: frameID)
