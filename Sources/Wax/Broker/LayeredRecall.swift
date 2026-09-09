@@ -418,6 +418,13 @@ package enum LayeredRecall {
         return min(max(bounded * 3, 12), maxTopK)
     }
 
+    /// Person-lane post-filters other-project prefs after a type-only retrieval.
+    /// Over-fetch further so current-project and unscoped prefs still make the window.
+    package static func retrievalTopKForGlobalPersonLane(requested: Int, maxTopK: Int = 200) -> Int {
+        let bounded = max(1, requested)
+        return min(max(bounded * 8, 48), maxTopK)
+    }
+
     /// Merges resolved project/repo identity into the caller's frame filter for retrieval (C1/C3).
     /// Only `scope=project` injects the hard-filter; session/global leave the base filter alone (C7).
     package static func frameFilterForScopedRetrieval(
@@ -928,7 +935,10 @@ package enum LayeredRecall {
         stores: Stores
     ) async throws -> RecallResult {
         var fetchRequest = request
-        fetchRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
+        let personLane = request.scope == .global && request.memoryTypes == [.userPreference]
+        fetchRequest.searchTopK = personLane
+            ? retrievalTopKForGlobalPersonLane(requested: request.searchTopK)
+            : retrievalTopK(requested: request.searchTopK)
         let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
         let identity = lanes.identity
 
@@ -959,16 +969,33 @@ package enum LayeredRecall {
         } else {
             // Global changes the project boundary, not query or filter matching.
             // Person-lane still drops other-project prefs when identity is resolved.
-            let personLaneWorking = filterHitsForGlobalPersonLane(
+            var personLaneWorking = filterHitsForGlobalPersonLane(
                 typedWorking,
                 memoryTypes: request.memoryTypes,
                 identity: identity
             )
-            let personLaneDurable = filterHitsForGlobalPersonLane(
+            var personLaneDurable = filterHitsForGlobalPersonLane(
                 typedDurable,
                 memoryTypes: request.memoryTypes,
                 identity: identity
             )
+            if personLane, identity.project != nil || identity.repo != nil {
+                // Type-only global retrieval can spend the window on foreign prefs.
+                // A project-scoped typed fetch keeps current-project prefs visible
+                // the same way single-type retrieval keeps the person-lane hit.
+                var scopedRequest = request
+                scopedRequest.scope = .project
+                scopedRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
+                let scopedLanes = try await fetchLanes(request: scopedRequest, stores: stores)
+                personLaneWorking.append(contentsOf: filterHitsByMemoryTypes(
+                    scopedLanes.working,
+                    types: request.memoryTypes
+                ))
+                personLaneDurable.append(contentsOf: filterHitsByMemoryTypes(
+                    scopedLanes.durable,
+                    types: request.memoryTypes
+                ))
+            }
             merged = mergeHits(
                 sessionHits: personLaneWorking,
                 durableHits: personLaneDurable,

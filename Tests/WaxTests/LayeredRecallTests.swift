@@ -677,6 +677,9 @@ struct LayeredRecallTests {
     func layeredRecallRetrievalTopKOverfetchesForProjectScope() {
         #expect(LayeredRecall.retrievalTopK(requested: 5) == 15)
         #expect(LayeredRecall.retrievalTopK(requested: 100, maxTopK: 200) == 200)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 1) == 48)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 10) == 80)
+        #expect(LayeredRecall.retrievalTopKForGlobalPersonLane(requested: 50) == 200)
     }
 
     @Test
