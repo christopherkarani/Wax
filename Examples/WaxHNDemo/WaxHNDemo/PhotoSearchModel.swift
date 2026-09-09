@@ -61,7 +61,7 @@ final class PhotoSearchModel {
 
         do {
             let memory = try await openPhotoMemory()
-            try await memory.ingest(assetIDs: assetIDs)
+            try await memory.ingest(assetIDs: assetIDs.map { PhotoID(source: .photos, id: $0) })
             try await memory.flush()
             refreshPhotoStoreSize()
             isPermissionBlocked = false
@@ -191,7 +191,7 @@ final class PhotoSearchModel {
     ) async throws -> PhotoIngestReport {
         let probe = try await memory.recall(
             PhotoQuery(
-                filters: PhotoFilters(assetIDs: Set(assetIDs)),
+                filters: PhotoFilters(assetIDs: Set(assetIDs.map { PhotoID(source: .photos, id: $0) })),
                 resultLimit: max(assetIDs.count, 1)
             )
         )

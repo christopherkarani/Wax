@@ -8,7 +8,7 @@ struct PhotoRAGItemEvidenceTests {
     @Test("Joins non-empty text snippets and skips blank ones")
     func joinsTextSnippets() {
         let item = PhotoRAGItem(
-            assetID: "asset-1",
+            photoID: PhotoID(source: .file, id: "asset-1"),
             score: 1,
             evidence: [
                 .text(snippet: "WAX 1234"),
@@ -25,7 +25,7 @@ struct PhotoRAGItemEvidenceTests {
     @Test("Falls back to summaryText when evidence has no text snippets")
     func fallsBackToSummaryText() {
         let item = PhotoRAGItem(
-            assetID: "asset-2",
+            photoID: PhotoID(source: .file, id: "asset-2"),
             score: 0.4,
             evidence: [.vector, .timeline],
             summaryText: "Caption: coffee receipt"

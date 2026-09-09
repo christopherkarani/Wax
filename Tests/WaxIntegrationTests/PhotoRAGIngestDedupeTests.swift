@@ -2,8 +2,30 @@ import Testing
 @testable import Wax
 
 @Test
-func photoRAGIngestDedupesAssetIDsStably() {
-    let input = ["A", "B", "A", "C", "B", "D", "D"]
-    let output = PhotoRAGOrchestrator.dedupeAssetIDs(input)
-    #expect(output == ["A", "B", "C", "D"])
+func photoRAGIngestDedupesPhotoIDsStably() {
+    let input = [
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "B"),
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "C"),
+        PhotoID(source: .photos, id: "B"),
+        PhotoID(source: .photos, id: "D"),
+        PhotoID(source: .photos, id: "D"),
+    ]
+    let output = PhotoRAGOrchestrator.dedupePhotoIDs(input)
+    #expect(output == [
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "B"),
+        PhotoID(source: .photos, id: "C"),
+        PhotoID(source: .photos, id: "D"),
+    ])
+}
+
+@Test
+func photoRAGIngestDedupeTreatsSourceAsPartOfIdentity() {
+    let mixed = [
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .file, id: "A"),
+    ]
+    #expect(PhotoRAGOrchestrator.dedupePhotoIDs(mixed) == mixed)
 }

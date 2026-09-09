@@ -157,7 +157,7 @@ func photoRAGDeleteRemovesAssetFrames() async throws {
         )
 
         // Delete asset A
-        try await orchestrator.delete(assetID: "A")
+        try await orchestrator.delete(photoID: PhotoID(source: .photos, id: "A"))
 
         // Recall should only find asset B
         let query = PhotoQuery(
@@ -171,31 +171,41 @@ func photoRAGDeleteRemovesAssetFrames() async throws {
         )
 
         let ctx = try await orchestrator.recall(query)
-        let assetIDs = ctx.items.map(\.assetID)
+        let assetIDs = ctx.items.map(\.photoID.id)
         #expect(!assetIDs.contains("A"))
         try await orchestrator.flush()
     }
 }
 
-// MARK: - PhotoRAG dedupeAssetIDs edge cases
+// MARK: - PhotoRAG dedupePhotoIDs edge cases
 
 @Test
 func photoRAGDedupeEmptyArrayReturnsEmpty() {
-    let output = PhotoRAGOrchestrator.dedupeAssetIDs([])
+    let output = PhotoRAGOrchestrator.dedupePhotoIDs([])
     #expect(output.isEmpty)
 }
 
 @Test
 func photoRAGDedupeSingleElementReturnsSame() {
-    let output = PhotoRAGOrchestrator.dedupeAssetIDs(["X"])
-    #expect(output == ["X"])
+    let output = PhotoRAGOrchestrator.dedupePhotoIDs([PhotoID(source: .photos, id: "X")])
+    #expect(output == [PhotoID(source: .photos, id: "X")])
 }
 
 @Test
 func photoRAGDedupePreservesOrderOfFirstOccurrence() {
-    let input = ["C", "A", "B", "A", "C"]
-    let output = PhotoRAGOrchestrator.dedupeAssetIDs(input)
-    #expect(output == ["C", "A", "B"])
+    let input = [
+        PhotoID(source: .photos, id: "C"),
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "B"),
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "C"),
+    ]
+    let output = PhotoRAGOrchestrator.dedupePhotoIDs(input)
+    #expect(output == [
+        PhotoID(source: .photos, id: "C"),
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "B"),
+    ])
 }
 
 // MARK: - VideoRAG segment range calculation

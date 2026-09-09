@@ -73,8 +73,8 @@ package actor PhotoRAGOrchestrator {
     }
 
     private struct IndexState: Sendable {
-        var rootByAssetID: [String: UInt64] = [:]
-        var assetIDByRoot: [UInt64: String] = [:]
+        var rootByPhotoID: [PhotoID: UInt64] = [:]
+        var photoIDByRoot: [UInt64: PhotoID] = [:]
         var derivedByRoot: [UInt64: DerivedRefs] = [:]
         var locationBins: [LocationBin: Set<UInt64>] = [:]
         var locationByFrame: [UInt64: PhotoCoordinate] = [:]
@@ -93,7 +93,7 @@ package actor PhotoRAGOrchestrator {
     private let queryEmbeddingCache: EmbeddingMemoizer?
 
     private var index = IndexState()
-    private var inFlightAssetIDs: Set<String> = []
+    private var inFlightPhotoIDs: Set<PhotoID> = []
 
     package init(
         storeURL: URL,
@@ -152,7 +152,7 @@ package actor PhotoRAGOrchestrator {
     /// The implementation fetches asset identifiers on the MainActor, then ingests by identifier only.
     package func syncLibrary(scope: PhotoScope) async throws {
         #if canImport(Photos)
-        let ids: [String] = switch scope {
+        let ids: [PhotoID] = switch scope {
         case .assetIDs(let ids):
             ids
         case .fullLibrary:
@@ -161,10 +161,10 @@ package actor PhotoRAGOrchestrator {
                 opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
                 let result = PHAsset.fetchAssets(with: .image, options: opts)
                 if result.count == 0 { return [] }
-                var ids: [String] = []
+                var ids: [PhotoID] = []
                 ids.reserveCapacity(result.count)
                 for index in 0..<result.count {
-                    ids.append(result.object(at: index).localIdentifier)
+                    ids.append(PhotoID(source: .photos, id: result.object(at: index).localIdentifier))
                 }
                 return ids
             }
@@ -176,18 +176,20 @@ package actor PhotoRAGOrchestrator {
         #endif
     }
 
+    #if canImport(Photos)
     /// Convenience wrapper: accepts PHAssets but only passes stable IDs into the actor.
     package nonisolated func ingest(assets: [PHAsset]) async throws {
-        let ids = await MainActor.run { assets.map(\.localIdentifier) }
+        let ids = await MainActor.run { assets.map { PhotoID(source: .photos, id: $0.localIdentifier) } }
         try await self.ingest(assetIDs: ids)
     }
+    #endif
 
-    /// Ingest photos by `PHAsset.localIdentifier`.
+    /// Ingest photos by ``PhotoID``.
     ///
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
-    package func ingest(assetIDs: [String]) async throws {
-        let uniqueAssetIDs = Self.dedupeAssetIDs(assetIDs)
+    package func ingest(assetIDs: [PhotoID]) async throws {
+        let uniqueAssetIDs = Self.dedupePhotoIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
         // Throttled concurrency: the actor's executor serializes state mutations, while
@@ -197,17 +199,17 @@ package actor PhotoRAGOrchestrator {
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<concurrency {
-                guard let assetID = iterator.next() else { break }
+                guard let photoID = iterator.next() else { break }
                 group.addTask {
                     try Task.checkCancellation()
-                    try await self.ingestOne(assetID: assetID)
+                    try await self.ingestOne(photoID: photoID)
                 }
             }
             for try await _ in group {
-                if let assetID = iterator.next() {
+                if let photoID = iterator.next() {
                     group.addTask {
                         try Task.checkCancellation()
-                        try await self.ingestOne(assetID: assetID)
+                        try await self.ingestOne(photoID: photoID)
                     }
                 }
             }
@@ -371,18 +373,18 @@ package actor PhotoRAGOrchestrator {
         }
         let rootIdsPicked = picked.map(\.rootId)
 
-        // Resolve asset IDs and derived frame refs.
-        var assetIdByRoot: [UInt64: String] = [:]
-        assetIdByRoot.reserveCapacity(rootIdsPicked.count)
+        // Resolve photo IDs and derived frame refs.
+        var photoIDByRoot: [UInt64: PhotoID] = [:]
+        photoIDByRoot.reserveCapacity(rootIdsPicked.count)
         for rootId in rootIdsPicked {
-            if let cached = index.assetIDByRoot[rootId] {
-                assetIdByRoot[rootId] = cached
+            if let cached = index.photoIDByRoot[rootId] {
+                photoIDByRoot[rootId] = cached
                 continue
             }
             if let meta = rootMetaById[rootId],
                let entries = meta.metadata?.entries,
-               let assetID = entries[MetaKey.assetID] {
-                assetIdByRoot[rootId] = assetID
+               let photoID = Self.photoID(from: entries) {
+                photoIDByRoot[rootId] = photoID
             }
         }
 
@@ -408,7 +410,7 @@ package actor PhotoRAGOrchestrator {
         items.reserveCapacity(picked.count)
 
         for candidate in picked {
-            guard let assetID = assetIdByRoot[candidate.rootId] else { continue }
+            guard let photoID = photoIDByRoot[candidate.rootId] else { continue }
             let refs = index.derivedByRoot[candidate.rootId] ?? DerivedRefs()
 
             let caption = text(from: refs.caption)
@@ -427,7 +429,7 @@ package actor PhotoRAGOrchestrator {
 
             items.append(
                 PhotoRAGItem(
-                    assetID: assetID,
+                    photoID: photoID,
                     score: candidate.score,
                     evidence: candidate.evidence,
                     summaryText: summary,
@@ -462,14 +464,14 @@ package actor PhotoRAGOrchestrator {
             maxRegions: query.contextBudget.maxRegions
         )
 
-        let degradedCount = await degradedResultCount(assetIDs: itemsWithPixels.map(\.assetID))
+        let degradedCount = await degradedResultCount(photoIDs: itemsWithPixels.map(\.photoID))
         let diagnostics = PhotoRAGContext.Diagnostics(usedTextTokens: usedTokens, degradedResultCount: degradedCount)
         return PhotoRAGContext(query: query, items: itemsWithPixels, diagnostics: diagnostics)
     }
 
-    /// Delete all frames associated with a given `PHAsset.localIdentifier`.
-    package func delete(assetID: String) async throws {
-        guard let rootId = index.rootByAssetID[assetID] else { return }
+    /// Delete all frames associated with a given ``PhotoID``.
+    package func delete(photoID: PhotoID) async throws {
+        guard let rootId = index.rootByPhotoID[photoID] else { return }
 
         var toDelete: [UInt64] = [rootId]
         if let refs = index.derivedByRoot[rootId] {
@@ -556,18 +558,19 @@ package actor PhotoRAGOrchestrator {
         }
     }
 
-    private func ingestOne(assetID: String) async throws {
-        guard inFlightAssetIDs.insert(assetID).inserted else { return }
-        defer { inFlightAssetIDs.remove(assetID) }
+    private func ingestOne(photoID: PhotoID) async throws {
+        guard inFlightPhotoIDs.insert(photoID).inserted else { return }
+        defer { inFlightPhotoIDs.remove(photoID) }
 
         #if canImport(Photos)
-        let metadata = try await PhotosAssetMetadata.load(assetID: assetID)
+        let metadata = try await PhotosAssetMetadata.load(photoID: photoID)
+        let resolvedID = metadata.photoID
 
         let captureMs = metadata.captureMs
         let frameTimestampMs = captureMs ?? Int64(Date().timeIntervalSince1970 * 1000)
         let isLocal = metadata.isLocal
         let baseMeta = Self.baseMetadata(
-            assetID: assetID,
+            photoID: resolvedID,
             captureMs: captureMs,
             pipelineVersion: config.pipelineVersion,
             isLocal: isLocal,
@@ -580,7 +583,7 @@ package actor PhotoRAGOrchestrator {
         // If we have a previous root, we supersede it after writing the new root.
         // Note: We intentionally keep old frames for audit/debug; superseded roots (and their children)
         // are filtered out by default in indexing and retrieval.
-        let previousRoot = index.rootByAssetID[assetID]
+        let previousRoot = index.rootByPhotoID[resolvedID]
 
         if !isLocal {
             // Metadata-only ingest
@@ -844,12 +847,12 @@ package actor PhotoRAGOrchestrator {
     }
 
     private func ingestOne(file: PhotoFile) async throws {
-        let assetID = file.id
-        guard inFlightAssetIDs.insert(assetID).inserted else { return }
-        defer { inFlightAssetIDs.remove(assetID) }
+        let photoID = file.id
+        guard inFlightPhotoIDs.insert(photoID).inserted else { return }
+        defer { inFlightPhotoIDs.remove(photoID) }
 
         guard FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)) else {
-            throw PhotoIngestError.fileMissing(id: assetID, url: file.url)
+            throw PhotoIngestError.fileMissing(id: photoID.id, url: file.url)
         }
 
         let imageData: Data
@@ -876,7 +879,7 @@ package actor PhotoRAGOrchestrator {
             nil
         }
         let metadata = PhotosAssetMetadata.Record(
-            assetID: assetID,
+            photoID: photoID,
             creationDateMs: nil,
             captureMs: captureMs,
             location: location,
@@ -888,7 +891,7 @@ package actor PhotoRAGOrchestrator {
             exif: exif
         )
         let baseMeta = Self.baseMetadata(
-            assetID: assetID,
+            photoID: photoID,
             captureMs: captureMs,
             pipelineVersion: config.pipelineVersion,
             isLocal: true,
@@ -896,10 +899,9 @@ package actor PhotoRAGOrchestrator {
             pixelWidth: originalDimensions.width,
             pixelHeight: originalDimensions.height,
             exif: exif,
-            source: "file",
             fileURL: file.url
         )
-        let previousRoot = index.rootByAssetID[assetID]
+        let previousRoot = index.rootByPhotoID[photoID]
 
         var globalEmbedding = try await embedder.embed(image: embedImage)
         if embedder.normalize, !globalEmbedding.isEmpty {
@@ -1132,7 +1134,7 @@ package actor PhotoRAGOrchestrator {
             guard let kind = meta.kind else { continue }
             if !kind.hasPrefix("photo.") && FrameKind(rawKind: kind) != .photo(.syncState) { continue }
             guard let entries = meta.metadata?.entries,
-                  let assetID = entries[MetaKey.assetID]
+                  let photoID = Self.photoID(from: entries)
             else { continue }
 
             if FrameKind(rawKind: kind) == .photo(.root) {
@@ -1140,8 +1142,8 @@ package actor PhotoRAGOrchestrator {
                     retiredVectorIds.insert(meta.id)
                     continue
                 }
-                next.rootByAssetID[assetID] = meta.id
-                next.assetIDByRoot[meta.id] = assetID
+                next.rootByPhotoID[photoID] = meta.id
+                next.photoIDByRoot[meta.id] = photoID
             }
 
             if let parentId = meta.parentId {
@@ -1296,21 +1298,21 @@ package actor PhotoRAGOrchestrator {
         return [minBin...maxBin]
     }
 
-    static func dedupeAssetIDs(_ assetIDs: [String]) -> [String] {
-        guard assetIDs.count > 1 else { return assetIDs }
-        var seen: Set<String> = []
-        seen.reserveCapacity(assetIDs.count)
-        var unique: [String] = []
-        unique.reserveCapacity(assetIDs.count)
-        for assetID in assetIDs where seen.insert(assetID).inserted {
-            unique.append(assetID)
+    static func dedupePhotoIDs(_ photoIDs: [PhotoID]) -> [PhotoID] {
+        guard photoIDs.count > 1 else { return photoIDs }
+        var seen: Set<PhotoID> = []
+        seen.reserveCapacity(photoIDs.count)
+        var unique: [PhotoID] = []
+        unique.reserveCapacity(photoIDs.count)
+        for photoID in photoIDs where seen.insert(photoID).inserted {
+            unique.append(photoID)
         }
         return unique
     }
 
     static func dedupePhotoFiles(_ files: [PhotoFile]) -> [PhotoFile] {
         guard files.count > 1 else { return files }
-        var seen: Set<String> = []
+        var seen: Set<PhotoID> = []
         seen.reserveCapacity(files.count)
         var unique: [PhotoFile] = []
         unique.reserveCapacity(files.count)
@@ -1318,6 +1320,11 @@ package actor PhotoRAGOrchestrator {
             unique.append(file)
         }
         return unique
+    }
+
+    private static func photoID(from entries: [String: String]) -> PhotoID? {
+        guard let id = entries[MetaKey.assetID] else { return nil }
+        return PhotoID.fromMetadata(id: id, source: entries[MetaKey.source])
     }
 
     private static func locationBin(from meta: [String: String]) -> LocationBin? {
@@ -1435,8 +1442,8 @@ package actor PhotoRAGOrchestrator {
         let thumbCount = min(maxImages, updated.count)
         if config.includeThumbnailsInContext, thumbCount > 0 {
             for index in 0..<thumbCount {
-                let assetID = updated[index].assetID
-                if let pixel = try await loadThumbnail(assetID: assetID) {
+                let photoID = updated[index].photoID
+                if let pixel = try await loadThumbnail(photoID: photoID) {
                     updated[index].thumbnail = pixel
                 }
             }
@@ -1446,12 +1453,12 @@ package actor PhotoRAGOrchestrator {
         if config.includeRegionCropsInContext, maxRegions > 0 {
             var remaining = maxRegions
             for index in 0..<updated.count where remaining > 0 {
-                let assetID = updated[index].assetID
-                guard let rootId = indexStateRootId(for: assetID) else { continue }
+                let photoID = updated[index].photoID
+                guard let rootId = indexStateRootId(for: photoID) else { continue }
                 let matched = rootCandidates.first(where: { $0.rootId == rootId })?.matchedRegions ?? []
                 guard !matched.isEmpty else { continue }
 
-                let source = try await loadRegionSourceImage(assetID: assetID)
+                let source = try await loadRegionSourceImage(photoID: photoID)
                 guard let source else { continue }
 
                 var regions: [PhotoRAGItem.RegionContext] = []
@@ -1475,16 +1482,16 @@ package actor PhotoRAGOrchestrator {
         return updated
     }
 
-    private func indexStateRootId(for assetID: String) -> UInt64? {
-        index.rootByAssetID[assetID]
+    private func indexStateRootId(for photoID: PhotoID) -> UInt64? {
+        index.rootByPhotoID[photoID]
     }
 
-    private func degradedResultCount(assetIDs: [String]) async -> Int {
+    private func degradedResultCount(photoIDs: [PhotoID]) async -> Int {
         var rootIds: [UInt64] = []
-        rootIds.reserveCapacity(assetIDs.count)
+        rootIds.reserveCapacity(photoIDs.count)
         var missingRootCount = 0
-        for assetID in assetIDs {
-            if let rootId = index.rootByAssetID[assetID] {
+        for photoID in photoIDs {
+            if let rootId = index.rootByPhotoID[photoID] {
                 rootIds.append(rootId)
             } else {
                 missingRootCount += 1
@@ -1551,13 +1558,13 @@ package actor PhotoRAGOrchestrator {
         return (rootMetaById, candidates)
     }
 
-    private func buildAssetAllowlist(assetIDs: Set<String>?) -> Set<UInt64>? {
+    private func buildAssetAllowlist(assetIDs: Set<PhotoID>?) -> Set<UInt64>? {
         guard let assetIDs else { return nil }
         var frameIds: Set<UInt64> = []
         frameIds.reserveCapacity(assetIDs.count * 4)
 
-        for assetID in assetIDs {
-            guard let rootId = index.rootByAssetID[assetID] else { continue }
+        for photoID in assetIDs {
+            guard let rootId = index.rootByPhotoID[photoID] else { continue }
             frameIds.insert(rootId)
             if let refs = index.derivedByRoot[rootId] {
                 if let id = refs.ocrSummary { frameIds.insert(id) }
@@ -1613,8 +1620,8 @@ package actor PhotoRAGOrchestrator {
         return true
     }
 
-    private func loadThumbnail(assetID: String) async throws -> PhotoPixel? {
-        if let data = try await localFileImageData(assetID: assetID) {
+    private func loadThumbnail(photoID: PhotoID) async throws -> PhotoPixel? {
+        if let data = try await localFileImageData(photoID: photoID) {
             do {
                 let thumb = try Self.decodeThumbnail(from: data, maxPixelSize: config.thumbnailMaxPixelSize)
                 let encoded = try Self.encodePNG(thumb)
@@ -1625,7 +1632,7 @@ package actor PhotoRAGOrchestrator {
         }
 
         #if canImport(Photos)
-        let data = try await PhotosAssetMetadata.loadImageData(assetID: assetID)
+        let data = try await PhotosAssetMetadata.loadImageData(photoID: photoID)
         guard let data else { return nil }
         let thumb = try Self.decodeThumbnail(from: data, maxPixelSize: config.thumbnailMaxPixelSize)
         let encoded = try Self.encodePNG(thumb)
@@ -1635,8 +1642,8 @@ package actor PhotoRAGOrchestrator {
         #endif
     }
 
-    private func loadRegionSourceImage(assetID: String) async throws -> CGImage? {
-        if let data = try await localFileImageData(assetID: assetID) {
+    private func loadRegionSourceImage(photoID: PhotoID) async throws -> CGImage? {
+        if let data = try await localFileImageData(photoID: photoID) {
             do {
                 return try Self.decodeThumbnail(from: data, maxPixelSize: config.regionCropMaxPixelSize)
             } catch {
@@ -1645,7 +1652,7 @@ package actor PhotoRAGOrchestrator {
         }
 
         #if canImport(Photos)
-        let data = try await PhotosAssetMetadata.loadImageData(assetID: assetID)
+        let data = try await PhotosAssetMetadata.loadImageData(photoID: photoID)
         guard let data else { return nil }
         return try Self.decodeThumbnail(from: data, maxPixelSize: config.regionCropMaxPixelSize)
         #else
@@ -1653,8 +1660,8 @@ package actor PhotoRAGOrchestrator {
         #endif
     }
 
-    private func localFileImageData(assetID: String) async throws -> Data? {
-        guard let rootId = index.rootByAssetID[assetID] else { return nil }
+    private func localFileImageData(photoID: PhotoID) async throws -> Data? {
+        guard let rootId = index.rootByPhotoID[photoID] else { return nil }
         let metas = await wax.frameMetasIncludingPending(frameIds: [rootId])
         guard let meta = metas[rootId],
               meta.metadata?.entries[MetaKey.source] == "file",
@@ -1843,7 +1850,7 @@ package actor PhotoRAGOrchestrator {
     }
 
     private static func baseMetadata(
-        assetID: String,
+        photoID: PhotoID,
         captureMs: Int64?,
         pipelineVersion: String,
         isLocal: Bool,
@@ -1851,12 +1858,11 @@ package actor PhotoRAGOrchestrator {
         pixelWidth: Int,
         pixelHeight: Int,
         exif: PhotosAssetMetadata.EXIF,
-        source: String = "photos",
         fileURL: URL? = nil
     ) -> Metadata {
         var meta = Metadata()
-        meta.entries[MetaKey.assetID] = assetID
-        meta.entries[MetaKey.source] = source
+        meta.entries[MetaKey.assetID] = photoID.id
+        meta.entries[MetaKey.source] = photoID.metadataSource
         if let fileURL {
             meta.entries[MetaKey.fileURL] = fileURL.absoluteString
         }

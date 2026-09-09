@@ -110,13 +110,15 @@ Available when `canImport(ImageIO)`. These are the public facades. Do not constr
 - `public actor VideoMemory` — segment videos, embed keyframes, optional host-supplied transcripts, ranked segment recall
 - `public enum BuiltInMultimodalEmbeddings { public static func make(_:options:) async throws -> any MultimodalEmbeddingProvider }`
 - `public protocol MultimodalEmbeddingProvider` — shared image + text embedder for the photo/video facades
-- Supporting public types: `PhotoRAGConfig`, `PhotoFile`, `PhotoQuery`, `PhotoScope`, `PhotoRAGContext`, `VideoRAGConfig`, `VideoFile`, `VideoQuery`, `VideoScope`, `VideoRAGContext`, `VideoTranscriptProvider`, `VisionOCRProvider`
+- Supporting public types: `PhotoID`, `PhotoRAGConfig`, `PhotoFile`, `PhotoQuery`, `PhotoScope`, `PhotoRAGContext`, `VideoID`, `VideoRAGConfig`, `VideoFile`, `VideoQuery`, `VideoScope`, `VideoRAGContext`, `VideoTranscriptProvider`, `VisionOCRProvider`
+- `PhotoID` matches `VideoID` (`source` + `id`). Photo delete, filters, file ingest, and `PhotoRAGItem` use `PhotoID`. Wrap Photos `localIdentifier` as `PhotoID(source: .photos, id:)`. On-disk photo metadata stays strings.
 
 ```swift
 let embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)
 let photos = try await PhotoMemory(at: storeURL, embedder: embedder, ocr: VisionOCRProvider())
-try await photos.ingest(files: [PhotoFile(id: "receipt-1", url: imageURL)])
+try await photos.ingest(files: [PhotoFile(id: PhotoID(source: .file, id: "receipt-1"), url: imageURL)])
 let context = try await photos.recall(PhotoQuery(text: "coffee receipt"))
+try await photos.delete(photoID: PhotoID(source: .file, id: "receipt-1"))
 try await photos.close()
 ```
 

@@ -86,7 +86,7 @@ func photoRAGTimeOnlyQueryUsesTimelineFallback() async throws {
 
         let ctx = try await orchestrator.recall(query)
         #expect(!ctx.items.isEmpty)
-        #expect(ctx.items.first?.assetID == "B")
+        #expect(ctx.items.first?.photoID.id == "B")
         try await orchestrator.flush()
     }
 }
@@ -169,7 +169,7 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
 
         let ctx = try await orchestrator.recall(query)
         #expect(!ctx.items.isEmpty)
-        #expect(Set(ctx.items.map(\.assetID)) == ["A", "B"])
+        #expect(Set(ctx.items.map(\.photoID.id)) == ["A", "B"])
         try await orchestrator.flush()
     }
 }
@@ -250,7 +250,7 @@ func photoRAGLocationRadiusAppliesExactDistanceAfterCoarseBin() async throws {
         )
 
         let ctx = try await orchestrator.recall(query)
-        #expect(ctx.items.map(\.assetID) == ["nearby"])
+        #expect(ctx.items.map(\.photoID.id) == ["nearby"])
         try await orchestrator.flush()
     }
 }
@@ -313,7 +313,7 @@ func photoRAGLocationRadiusHandlesAntimeridianBins() async throws {
             )
         )
 
-        #expect(ctx.items.map(\.assetID) == ["across-dateline"])
+        #expect(ctx.items.map(\.photoID.id) == ["across-dateline"])
         try await orchestrator.flush()
     }
 }
@@ -401,17 +401,17 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
             )
         )
 
-        #expect(ctx.items.map(\.assetID) == ["local-photo"])
+        #expect(ctx.items.map(\.photoID.id) == ["local-photo"])
 
         let remoteByAssetID = try await orchestrator.recall(
             PhotoQuery(
                 text: "receipt",
-                filters: PhotoFilters(assetIDs: ["icloud-only-photo"]),
+                filters: PhotoFilters(assetIDs: [PhotoID(source: .photos, id: "icloud-only-photo")]),
                 resultLimit: 10,
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
-        #expect(remoteByAssetID.items.map(\.assetID) == ["icloud-only-photo"])
+        #expect(remoteByAssetID.items.map(\.photoID.id) == ["icloud-only-photo"])
 
         let remoteBySource = try await orchestrator.recall(
             PhotoQuery(
@@ -421,7 +421,7 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
-        #expect(remoteBySource.items.map(\.assetID) == ["icloud-only-photo"])
+        #expect(remoteBySource.items.map(\.photoID.id) == ["icloud-only-photo"])
 
         try await orchestrator.flush()
     }
@@ -493,7 +493,7 @@ func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
-        #expect(ctx.items.map(\.assetID) == ["old-file"])
+        #expect(ctx.items.map(\.photoID.id) == ["old-file"])
         try await orchestrator.flush()
     }
 }
@@ -557,13 +557,16 @@ func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
 
         let ctx = try await orchestrator.recall(
             PhotoQuery(
-                filters: PhotoFilters(assetIDs: ["local-no-derived", "icloud-only"]),
+                filters: PhotoFilters(assetIDs: [
+                    PhotoID(source: .photos, id: "local-no-derived"),
+                    PhotoID(source: .photos, id: "icloud-only"),
+                ]),
                 resultLimit: 2,
                 contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
             )
         )
 
-        #expect(Set(ctx.items.map(\.assetID)) == ["local-no-derived", "icloud-only"])
+        #expect(Set(ctx.items.map(\.photoID.id)) == ["local-no-derived", "icloud-only"])
         #expect(ctx.diagnostics.degradedResultCount == 1)
         try await orchestrator.flush()
     }

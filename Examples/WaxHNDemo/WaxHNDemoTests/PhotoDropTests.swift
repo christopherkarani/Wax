@@ -11,7 +11,7 @@ struct PhotoDropTests {
         let notes = URL(fileURLWithPath: "/tmp/notes.txt")
         let files = PhotoDrop.photoFiles(from: [receipt, notes])
         #expect(files.count == 1)
-        #expect(files[0].id == "receipt.PNG")
+        #expect(files[0].id == PhotoID(source: .file, id: "receipt.PNG"))
         #expect(files[0].url == receipt)
     }
 }

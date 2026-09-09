@@ -307,6 +307,9 @@ func docsPastePublicAPISkillAndWebsiteNamePhotoVideoFacades() throws {
         #expect(doc.contains("PhotoMemory"), "\(relativePath) must name PhotoMemory")
         #expect(doc.contains("VideoMemory"), "\(relativePath) must name VideoMemory")
         #expect(doc.contains("BuiltInMultimodalEmbeddings"), "\(relativePath) must name BuiltInMultimodalEmbeddings")
+        if relativePath.hasSuffix("public-api.md") {
+            #expect(doc.contains("PhotoID"), "\(relativePath) must name PhotoID")
+        }
         #expect(!doc.contains("wait for a stable public facade"), "\(relativePath)")
         #expect(!doc.contains("wait for a facade"), "\(relativePath)")
     }

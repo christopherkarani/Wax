@@ -9,13 +9,13 @@ struct PhotoEvidencePromptTests {
     func buildsExactPrompt() {
         let items = [
             PhotoRAGItem(
-                assetID: "A1",
+                photoID: PhotoID(source: .photos, id: "A1"),
                 score: 1,
                 evidence: [.text(snippet: "must-not-appear")],
                 summaryText: "OCR: WAX-99"
             ),
             PhotoRAGItem(
-                assetID: "B2",
+                photoID: PhotoID(source: .photos, id: "B2"),
                 score: 0.5,
                 evidence: [.vector],
                 summaryText: "Caption: mug"
