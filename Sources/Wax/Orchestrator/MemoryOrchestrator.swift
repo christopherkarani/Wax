@@ -1279,6 +1279,7 @@ package actor MemoryOrchestrator {
             requested: mode,
             embeddingAvailable: queryEmbedding.embedding != nil
         )
+        let lane = try SearchLane.from(mode: searchMode, embedding: queryEmbedding.embedding)
 
         // Access-aware ranking needs additional candidates so a stale top hit
         // can be displaced by a close, recently/frequently used result. The
@@ -1293,12 +1294,11 @@ package actor MemoryOrchestrator {
         // One ranking-now for this search: UnifiedSearch recency and later
         // access ranking must not tick the wall clock twice.
         let searchNowMs = config.rag.deterministicNowMs ?? nowProvider()
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: trimmed,
-            embedding: queryEmbedding.embedding,
+            lane: lane,
             vectorEnginePreference: preference,
             vectorSearchTimeout: config.vectorSearchTimeout,
-            mode: searchMode,
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,

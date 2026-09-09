@@ -41,12 +41,6 @@ extension Wax {
         let candidateLimit = plan.candidateLimit
         let filter = request.frameFilter ?? FrameFilter()
 
-        if case .vectorOnly = request.mode {
-            let hasEmbedding = !(request.embedding?.isEmpty ?? true)
-            guard hasEmbedding else {
-                throw WaxError.io("vectorOnly search requires a non-empty query embedding")
-            }
-        }
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {
@@ -72,7 +66,7 @@ extension Wax {
             }
         }
 
-        let resolvedVectorEngine: ResolvedVectorEngine? = if includeVector, let embedding = request.embedding, !embedding.isEmpty {
+        let resolvedVectorEngine: ResolvedVectorEngine? = if includeVector, let embedding = request.lane.embedding, !embedding.isEmpty {
             if let override = engineOverrides?.vectorEngine {
                 .override(override)
             } else if let loaded = engineOverrides?.loadedVectorEngine {
@@ -170,7 +164,7 @@ extension Wax {
         }()
 
         async let vectorLaneAsync: (results: [(frameId: UInt64, score: Float)], timedOut: Bool) = {
-            guard includeVector, let resolvedVectorEngine, let embedding = request.embedding, !embedding.isEmpty else {
+            guard includeVector, let resolvedVectorEngine, let embedding = request.lane.embedding, !embedding.isEmpty else {
                 return ([], false)
             }
             if let timeout = request.vectorSearchTimeout {
@@ -181,7 +175,7 @@ extension Wax {
                     return (results, false)
                 } catch let error as AsyncTimeout.TimeoutError {
                     // Hybrid/text modes can degrade to non-vector lanes; vectorOnly should fail hard.
-                    if request.mode == .vectorOnly {
+                    if case .vectorOnly = request.lane {
                         throw error
                     }
                     WaxDiagnostics.logSwallowed(
@@ -268,7 +262,7 @@ extension Wax {
         }
 
         var baseResults: [BaseResult]
-        switch request.mode {
+        switch request.lane {
         case .textOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
                 baseResults = textResults.enumerated().map { index, result in
@@ -371,7 +365,7 @@ extension Wax {
                     )
                 }
             }
-        case .hybrid(let alpha):
+        case .hybrid(let alpha, _):
             let clampedAlpha = min(1, max(0, alpha))
             let textWeight = weights.bm25 * clampedAlpha
             let vectorWeight = weights.vector * (1 - clampedAlpha)
@@ -474,7 +468,7 @@ extension Wax {
         // those IDs so include_deleted / include_superseded can return them.
         // Constraint-only queries (no text) already rank via timeline — do not
         // reinsert the allowlist in ID order and scramble that ranking.
-        let hasLexicalOrVectorQuery = (request.query?.isEmpty == false) || request.embedding != nil
+        let hasLexicalOrVectorQuery = (request.query?.isEmpty == false) || request.lane.hasNonEmptyEmbedding
         if hasLexicalOrVectorQuery, let allowlist = filter.frameIds, !allowlist.isEmpty {
             let seen = Set(baseResults.map(\.frameId))
             for frameId in allowlist.sorted() where !seen.contains(frameId) {

@@ -254,7 +254,7 @@ package actor PhotoRAGOrchestrator {
 
         let queryEmbedding = try await buildQueryEmbedding(text: queryText, image: query.image)
 
-        let mode: SearchMode = {
+        let resolvedMode: SearchMode = {
             switch (queryText, queryEmbedding) {
             case (.none, .some):
                 return .vectorOnly
@@ -264,6 +264,7 @@ package actor PhotoRAGOrchestrator {
                 return .textOnly
             }
         }()
+        let lane = try SearchLane.from(mode: resolvedMode, embedding: queryEmbedding)
 
         let timeRange = Self.toWaxTimeRange(query.timeRange)
 
@@ -293,11 +294,10 @@ package actor PhotoRAGOrchestrator {
             rootMetaById = direct.rootMetaById
             picked = Array(direct.candidates.prefix(query.resultLimit))
         } else {
-            let request = SearchRequest(
+            let request = try SearchRequest(
                 query: queryText,
-                embedding: queryEmbedding,
+                lane: lane,
                 vectorEnginePreference: config.vectorEnginePreference,
-                mode: mode,
                 topK: max(query.resultLimit, config.searchTopK),
                 timeRange: timeRange,
                 frameFilter: frameFilter,

@@ -53,7 +53,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10)
+        let request = try SearchRequest(query: "Swift", lane: .textOnly, topK: 10)
         let response = try await wax.search(request)
 
         #expect(response.results.count == 1)
@@ -76,7 +76,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 10, minScore: 0.9)
+        let request = try SearchRequest(query: "Swift", lane: .textOnly, topK: 10, minScore: 0.9)
         let response = try await wax.search(request)
 
         #expect(response.results.map(\.frameId) == [exact])
@@ -97,7 +97,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await vec.commit()
 
         let queryEmbedding = VectorMath.normalizeL2([0.9, 0.1, 0.0, 0.0])
-        let request = SearchRequest(embedding: queryEmbedding, mode: .vectorOnly, topK: 10)
+        let request = try SearchRequest(lane: .vectorOnly(embedding: queryEmbedding), topK: 10)
         let response = try await wax.search(request)
 
         #expect(response.results.first?.frameId == id0)
@@ -122,10 +122,9 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await vec.commit()
         try await text.commit()
 
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: "Swift",
-            embedding: [1.0, 0.0, 0.0, 0.0],
-            mode: .hybrid(alpha: 0.5),
+            lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
             topK: 10
         )
         let response = try await wax.search(request)
@@ -146,7 +145,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await text.indexText(frameId: id0, text: "Swift")
         try await text.commit()
 
-        let request = SearchRequest(query: "Swift", mode: .textOnly, topK: 0)
+        let request = try SearchRequest(query: "Swift", lane: .textOnly, topK: 0)
         let response = try await wax.search(request)
 
         #expect(response.results.isEmpty)
@@ -166,7 +165,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let response = try await wax.search(
             SearchRequest(
                 query: "WAX-OVERFLOW-CANARY",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: Int.max
             )
         )
@@ -220,7 +219,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let latestResponse = try await session.search(
             SearchRequest(
                 query: "F027 Alice",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5,
                 timeRange: SearchTimeRange(before: 200),
                 asOfMs: .max
@@ -233,7 +232,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let outOfFrameRangeResponse = try await session.search(
             SearchRequest(
                 query: "F027 Alice",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5,
                 timeRange: SearchTimeRange(before: 50),
                 asOfMs: .max
@@ -245,7 +244,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let historicalResponse = try await session.search(
             SearchRequest(
                 query: "F027 Alice",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5,
                 asOfMs: 200
             )
@@ -303,7 +302,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await session.commit()
 
         let response = try await session.search(
-            SearchRequest(query: "F025ObjectParis", mode: .textOnly, topK: 5, asOfMs: .max)
+            SearchRequest(query: "F025ObjectParis", lane: .textOnly, topK: 5, asOfMs: .max)
         )
 
         #expect(response.results.map(\.frameId) == [evidenceFrame])
@@ -326,9 +325,8 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         try await vec.commit()
 
         let allowlist = FrameFilter(frameIds: [id2, id3])
-        let request = SearchRequest(
-            embedding: [1.0, 0.0],
-            mode: .vectorOnly,
+        let request = try SearchRequest(
+            lane: .vectorOnly(embedding: [1.0, 0.0]),
             topK: 2,
             frameFilter: allowlist
         )
@@ -363,9 +361,9 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let filter = FrameFilter(
             metadataFilter: .init(requiredEntries: ["source": "email"])
         )
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: "alpha",
-            mode: .textOnly,
+            lane: .textOnly,
             topK: 10,
             frameFilter: filter
         )
@@ -403,7 +401,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let response = try await wax.search(
             SearchRequest(
                 query: query,
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
@@ -439,8 +437,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let vectorEngine = DeterministicVectorResultsEngine(dimensions: 4, results: vectorResults)
         let response = try await wax.search(
             SearchRequest(
-                embedding: [1.0, 0.0, 0.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0, 0.0, 0.0]),
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
@@ -476,8 +473,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         let response = try await wax.search(
             SearchRequest(
-                embedding: [1.0, 0.0, 0.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0, 0.0, 0.0]),
                 topK: 1_100,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "allowed"])
@@ -512,8 +508,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         let response = try await wax.search(
             SearchRequest(
-                embedding: [1.0, 0.0, 0.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0, 0.0, 0.0]),
                 topK: 1,
                 frameFilter: FrameFilter(
                     metadataFilter: MetadataFilter(requiredEntries: ["scope": "pending"])
@@ -564,9 +559,9 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
                 requiredLabels: ["public"]
             )
         )
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: "Quarterly summary",
-            mode: .textOnly,
+            lane: .textOnly,
             topK: 10,
             frameFilter: filter
         )
@@ -596,9 +591,9 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         try await text.commit()
 
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: "query-with-no-primary-hits",
-            mode: .textOnly,
+            lane: .textOnly,
             topK: 10,
             frameFilter: FrameFilter(
                 metadataFilter: .init(requiredEntries: ["source": "email"])
@@ -662,9 +657,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
 
         let id0 = try await vec.putWithEmbedding(Data("Pending".utf8), embedding: [0.0, 1.0])
 
-        let request = SearchRequest(
-            embedding: [0.0, 1.0],
-            mode: .vectorOnly,
+        let request = try SearchRequest(
+            lane: .vectorOnly(embedding: [0.0, 1.0]),
             topK: 5
         )
         let response = try await wax.search(request)
@@ -690,7 +684,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let wax = try await Wax.create(at: url)
 
         do {
-            _ = try await wax.search(SearchRequest(mode: .vectorOnly, topK: 5))
+            _ = try await wax.search(SearchRequest(lane: .vectorOnly(embedding: []), topK: 5))
             Issue.record("Expected WaxError for vectorOnly search without embedding")
         } catch let error as WaxError {
             guard case .io(let message) = error else {
@@ -729,7 +723,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "Which city did Person18 move to",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -762,7 +756,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "What is the public launch date for Atlas 10",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -794,7 +788,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: #"What is the public launch date for "Atlas-10"? -- !!!"#,
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -826,7 +820,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "Which city did Priya move to",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -861,7 +855,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "which city noah moved to",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -899,7 +893,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "for noah on atlas-10 in 2026 what is the public launch date",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -937,7 +931,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: #"what is "Atlas-10 launch date" ???"#,
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -975,7 +969,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "what is 'Atlas-10 launch date' ???",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -1013,7 +1007,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "What is the public launch date for Atlas-10?",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5
             )
         )
@@ -1052,11 +1046,10 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await vec.commit()
         try await text.commit()
 
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: "Swift concurrency",
-            embedding: [1.0, 0.0, 0.0, 0.0],
+            lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
             vectorEnginePreference: .cpuOnly,
-            mode: .hybrid(alpha: 0.5),
             topK: 3,
             enableRankingDiagnostics: true,
             rankingDiagnosticsTopK: 1
@@ -1107,9 +1100,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: query,
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .hybrid(alpha: 0.3, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .hybrid(alpha: 0.3),
                 topK: 2,
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 2
@@ -1165,7 +1157,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "auth rollout decision",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 2,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
@@ -1208,7 +1200,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let response = try await wax.search(
-            SearchRequest(query: "rollout note", mode: .textOnly, topK: 5)
+            SearchRequest(query: "rollout note", lane: .textOnly, topK: 5)
         )
 
         #expect(response.results.map(\.frameId).contains(activeID))
@@ -1238,7 +1230,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "concise release notes",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 3,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
@@ -1292,7 +1284,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let textResponse = try await wax.search(
             SearchRequest(
                 query: token,
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 5,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             )
@@ -1302,9 +1294,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let hybridResponse = try await wax.search(
             SearchRequest(
                 query: token,
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .hybrid(alpha: 0.5),
                 topK: 5,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
@@ -1368,9 +1359,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let hybridResponse = try await wax.search(
             SearchRequest(
                 query: token,
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .hybrid(alpha: 0.5),
                 topK: 5,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
@@ -1431,9 +1421,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: token,
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .vectorOnly(embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .vectorOnly,
                 topK: 5,
                 scopeContext: MemoryScopeContext(repoName: "Wax", projectName: "Wax")
             ),
@@ -1470,7 +1459,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let response = try await wax.search(
-            SearchRequest(query: "cats OR dogs", mode: .textOnly, topK: 10)
+            SearchRequest(query: "cats OR dogs", lane: .textOnly, topK: 10)
         )
         let catsHit = try #require(response.results.first { $0.frameId == catsOnly })
         let dogsHit = try #require(response.results.first { $0.frameId == dogsOnly })
@@ -1491,12 +1480,12 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         try await text.commit()
 
         let stopwordOnly = try await wax.search(
-            SearchRequest(query: "the and or", mode: .textOnly, topK: 10)
+            SearchRequest(query: "the and or", lane: .textOnly, topK: 10)
         )
         #expect(stopwordOnly.results.isEmpty)
 
         let operatorOnly = try await wax.search(
-            SearchRequest(query: "NOT NEAR", mode: .textOnly, topK: 10)
+            SearchRequest(query: "NOT NEAR", lane: .textOnly, topK: 10)
         )
         #expect(operatorOnly.results.isEmpty)
 
@@ -1566,9 +1555,8 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: "when was F027Alice last seen",
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .hybrid(alpha: 0.5),
                 topK: 10,
                 enableRankingDiagnostics: true,
                 rankingDiagnosticsTopK: 10

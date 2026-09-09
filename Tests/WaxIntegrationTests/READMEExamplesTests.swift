@@ -214,7 +214,7 @@ func readmeExampleUnifiedSearchAPI() async throws {
         try await vec.commit()
         try await text.commit()
 
-        let request = SearchRequest(query: "Hello", mode: .hybrid(alpha: 0.5), topK: 10)
+        let request = try SearchRequest(query: "Hello", lane: .hybrid(alpha: 0.5, embedding: nil), topK: 10)
         let response = try await wax.search(request)
         #expect(response.results.count >= 0)
 

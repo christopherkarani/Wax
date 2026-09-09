@@ -49,12 +49,11 @@ package struct FastRAGContextBuilder: Sendable {
             multiplier: 2,
             applyWhenRequestedTopKAtMost: 24
         )
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: query,
-            embedding: embedding,
+            lane: try SearchLane.from(mode: clamped.searchMode, embedding: embedding),
             vectorEnginePreference: vectorEnginePreference,
             vectorSearchTimeout: vectorSearchTimeout,
-            mode: clamped.searchMode,
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
