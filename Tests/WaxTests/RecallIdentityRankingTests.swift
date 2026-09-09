@@ -257,4 +257,45 @@ struct RecallIdentityRankingTests {
             #expect(home.score - foreign.score < 0.5)
         }
     }
+
+    @Test
+    func layeredRecallMemoryTypesSurviveHigherScoringOtherTypes() async throws {
+        let token = "WAXPERSONLANE-\(UUID().uuidString.prefix(8))"
+        try await withRecallIdentityMemory { memory in
+            // retrievalTopK(searchTopK: 1) is 12. More than 12 exact-query
+            // lessons means a pre-merge-only filter never sees the preference.
+            for index in 1...20 {
+                try await memory.remember(
+                    "\(token) crowding lesson \(index): facts about this person standing corrections are not user preferences.",
+                    metadata: [
+                        MemoryMetadataKeys.type: MemoryType.lesson.rawValue,
+                        MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                    ]
+                )
+            }
+            try await memory.remember(
+                "\(token) Chris wants short answers and bullets.",
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                ]
+            )
+            try await memory.flush()
+
+            let result = try await LayeredRecall.recall(
+                request: LayeredRecall.RecallRequest(
+                    query: "\(token) facts about this person standing corrections",
+                    scope: .global,
+                    limit: 1,
+                    searchTopK: 1,
+                    mode: .textOnly,
+                    memoryTypes: [.userPreference]
+                ),
+                stores: identityStores(memory: memory)
+            )
+            let hit = try #require(result.hits.first)
+            #expect(hit.metadata[MemoryMetadataKeys.type] == MemoryType.userPreference.rawValue)
+            #expect(hit.text.contains("short answers"))
+        }
+    }
 }

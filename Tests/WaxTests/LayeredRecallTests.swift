@@ -780,6 +780,66 @@ struct LayeredRecallTests {
     }
 
     @Test
+    func layeredRecallFrameFilterInjectsSingleMemoryType() {
+        let filter = LayeredRecall.frameFilterForMemoryTypes(
+            base: nil,
+            types: [.userPreference]
+        )
+        #expect(filter?.metadataFilter?.requiredEntries[MemoryMetadataKeys.type] == MemoryType.userPreference.rawValue)
+
+        let multi = LayeredRecall.frameFilterForMemoryTypes(
+            base: nil,
+            types: [.userPreference, .lesson]
+        )
+        #expect(multi == nil)
+
+        let empty = LayeredRecall.frameFilterForMemoryTypes(base: nil, types: [])
+        #expect(empty == nil)
+
+        let duplicates = LayeredRecall.frameFilterForMemoryTypes(
+            base: nil,
+            types: [.userPreference, .userPreference]
+        )
+        #expect(duplicates?.metadataFilter?.requiredEntries[MemoryMetadataKeys.type] == MemoryType.userPreference.rawValue)
+    }
+
+    @Test
+    func layeredRecallQueryAwareRankingPenalizesOnlyLockedStaleIgnoreLists() {
+        let nowMs: Int64 = 2_000_000_000_000
+        let query = "where does the Mac desktop window live"
+        let unlocked = layeredHit(
+            frameID: 1,
+            score: 2.5,
+            text: "Do not follow Linear tickets unless the user names one.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+            ],
+            timestampMs: nowMs - 3 * 86_400_000
+        )
+        let locked = layeredHit(
+            frameID: 2,
+            score: 2.5,
+            text: "Stale Wax frames for rv (do not follow): durable:1219 leftover plan.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.constraint.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.locked.rawValue,
+            ],
+            timestampMs: nowMs - 3 * 86_400_000
+        )
+        #expect(
+            LayeredRecall.rankingAdjustedScore(unlocked, nowMs: nowMs, query: query)
+                == LayeredRecall.freshnessAdjustedScore(unlocked, nowMs: nowMs)
+        )
+        #expect(
+            LayeredRecall.rankingAdjustedScore(locked, nowMs: nowMs, query: query)
+                < LayeredRecall.freshnessAdjustedScore(locked, nowMs: nowMs)
+        )
+    }
+
+    @Test
     func layeredRecallMakeMemoryReferenceFormatsHorizons() {
         let sessionID = UUID()
         #expect(LayeredRecall.makeMemoryReference(frameID: 42) == "durable:42")
