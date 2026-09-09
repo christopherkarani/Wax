@@ -225,7 +225,8 @@ func memoryOrchestratorQueryAwareProviderUsesEmbedQueryOnRecall() async throws {
         )
 
         let embedder = RecordingQueryAwareEmbedder()
-        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
+        let erased: any EmbeddingProvider = embedder
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: erased)
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.flush()
 
@@ -242,6 +243,117 @@ func memoryOrchestratorQueryAwareProviderUsesEmbedQueryOnRecall() async throws {
         try await orchestrator.close()
     }
 }
+
+@Test
+func memoryOrchestratorErasedQueryOverrideUsesEmbedQueryWithoutQueryAwareConformance() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = false
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+        config.rag = FastRAGConfig(
+            maxContextTokens: 80,
+            expansionMaxTokens: 30,
+            snippetMaxTokens: 15,
+            maxSnippets: 10,
+            searchTopK: 25,
+            searchMode: .vectorOnly
+        )
+
+        let embedder = RecordingPrefixQueryEmbedder()
+        let erased: any EmbeddingProvider = embedder
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: erased)
+        try await orchestrator.remember("Swift concurrency uses actors and tasks.")
+        try await orchestrator.flush()
+
+        let ingestEmbeds = await embedder.embedCallCount
+        #expect(ingestEmbeds == 0)
+        #expect(await embedder.embedQueryCallCount == 0)
+        #expect(await embedder.batches.count >= 1)
+
+        let ctx = try await orchestrator.recall(query: "Swift concurrency uses actors and tasks.")
+        #expect(!ctx.items.isEmpty)
+        #expect(await embedder.embedQueryCallCount == 1)
+        #expect(await embedder.embedCallCount == ingestEmbeds)
+
+        try await orchestrator.close()
+    }
+}
+
+struct IncompleteIdentityCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let identity: EmbeddingIdentity
+    let expectedNeedle: String
+
+    var testDescription: String { name }
+}
+
+@Test(arguments: [
+    IncompleteIdentityCase(
+        name: "nil model",
+        identity: EmbeddingIdentity(
+            provider: "Test",
+            model: nil,
+            dimensions: 2,
+            normalized: true
+        ),
+        expectedNeedle: "model"
+    ),
+    IncompleteIdentityCase(
+        name: "nil dimensions",
+        identity: EmbeddingIdentity(
+            provider: "Test",
+            model: "Deterministic",
+            dimensions: nil,
+            normalized: true
+        ),
+        expectedNeedle: "dimensions"
+    ),
+])
+func memoryOrchestratorIncompleteIdentityMismatchesWhenBindingHasField(
+    testCase: IncompleteIdentityCase
+) async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
+
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        try await writer.remember("Persist a complete embedding identity on the store.")
+        try await writer.flush()
+        try await writer.close()
+
+        let incomplete = ConfigurableIdentityEmbedder(identity: testCase.identity)
+        do {
+            _ = try await MemoryOrchestrator(at: url, config: config, embedder: incomplete)
+            Issue.record("expected memory binding mismatch for \(testCase.name)")
+        } catch let error as WaxError {
+            guard case .io(let reason) = error else {
+                Issue.record("Wrong WaxError case: \(error)")
+                return
+            }
+            #expect(reason.contains("memory binding"))
+            #expect(reason.contains(testCase.expectedNeedle))
+        } catch {
+            Issue.record("Wrong error: \(error)")
+        }
+    }
+}
+
+#if canImport(ImageIO)
+@Test
+func textBridgedMultimodalUsesBaseEmbedQueryForQueriesAndEmbedForIngest() async throws {
+    let base = RecordingPrefixQueryEmbedder()
+    let bridged = TextBridgedMultimodalEmbedder(base: base)
+    _ = try await bridged.embed(text: "image labels: receipt")
+    #expect(await base.embedCallCount == 1)
+    #expect(await base.embedQueryCallCount == 0)
+    _ = try await bridged.embedQuery(text: "coffee receipt")
+    #expect(await base.embedQueryCallCount == 1)
+    #expect(await base.embedCallCount == 1)
+}
+#endif
 
 @Test
 func memoryOrchestratorReopenVectorSearchWithoutEmbedderAllowsRecallWithEmbedding() async throws {

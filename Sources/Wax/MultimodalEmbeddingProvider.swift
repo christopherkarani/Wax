@@ -20,6 +20,8 @@ public protocol MultimodalEmbeddingProvider: Sendable {
 
     /// Compute a text embedding in the same space as image embeddings.
     func embed(text: String) async throws -> [Float]
+    /// Retrieval-optimized text embedding. Default calls ``embed(text:)``.
+    func embedQuery(text: String) async throws -> [Float]
     /// Compute an image embedding in the same space as text embeddings.
     func embed(image: CGImage) async throws -> [Float]
 }
@@ -31,6 +33,10 @@ extension MultimodalEmbeddingProvider {
     /// Provide an explicit `executionMode` property on your conformance.
     @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
     public var executionMode: ProviderExecutionMode { .onDeviceOnly }
+
+    public func embedQuery(text: String) async throws -> [Float] {
+        try await embed(text: text)
+    }
 }
 
 #endif // canImport(ImageIO)

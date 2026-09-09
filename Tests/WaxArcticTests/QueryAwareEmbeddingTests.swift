@@ -1,8 +1,68 @@
-#if canImport(CoreML)
-import CoreML
 import Foundation
 import Testing
 import WaxVectorSearch
+
+/// Query/batch defaults on `EmbeddingProvider` dispatch through `any EmbeddingProvider`.
+struct QueryAwareEmbeddingProtocolTests {
+    @Test
+    func queryOverrideDispatchesThroughAnyEmbeddingProvider() async throws {
+        let erased: any EmbeddingProvider = PrefixQueryEmbedder()
+        let text = "How does photosynthesis work?"
+        let document = try await erased.embed(text)
+        let query = try await erased.embedQuery(text)
+        #expect(document != query)
+        #expect(document.count == query.count)
+    }
+
+    @Test
+    func defaultEmbedQueryMatchesEmbed() async throws {
+        let erased: any EmbeddingProvider = PlainCountEmbedder()
+        let text = "Simple test sentence"
+        let document = try await erased.embed(text)
+        let query = try await erased.embedQuery(text)
+        #expect(document == query)
+    }
+
+    @Test
+    func defaultBatchEmbedMapsSingleEmbed() async throws {
+        let erased: any EmbeddingProvider = PlainCountEmbedder()
+        let texts = ["a", "bb", "ccc"]
+        let batch = try await erased.embed(batch: texts)
+        var mapped: [[Float]] = []
+        mapped.reserveCapacity(texts.count)
+        for text in texts {
+            mapped.append(try await erased.embed(text))
+        }
+        #expect(batch == mapped)
+    }
+}
+
+private struct PrefixQueryEmbedder: EmbeddingProvider, Sendable {
+    let dimensions = 2
+    let normalize = false
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        [Float(text.utf8.count), 1]
+    }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        try await embed("query: " + text)
+    }
+}
+
+private struct PlainCountEmbedder: EmbeddingProvider, Sendable {
+    let dimensions = 2
+    let normalize = false
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        [Float(text.utf8.count), 0]
+    }
+}
+
+#if canImport(CoreML)
+import CoreML
 @testable import WaxVectorSearchMiniLM
 @testable import WaxVectorSearchArctic
 
