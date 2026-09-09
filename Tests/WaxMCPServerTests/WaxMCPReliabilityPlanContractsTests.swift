@@ -431,6 +431,7 @@ func t04SessionEndSummaryDistinguishesThisSessionFromSiblings() async throws {
         #expect(payload["active"]?.boolValue == false)
         #expect(payload["ended"]?.boolValue == true)
         #expect(payload["remaining_active"]?.boolValue == true)
+        #expect(payload["other_sessions_active"]?.boolValue == true)
         let display = payload["display_text"]?.stringValue ?? ""
         #expect(display.lowercased().contains("active=false") || display.lowercased().contains("this session"))
         #expect(display.contains("remaining_active") || display.lowercased().contains("other"))

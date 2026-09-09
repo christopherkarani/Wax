@@ -242,6 +242,12 @@ change `mcp_servers` (network redirect is dropped on purpose).
 grok mcp add --transport http wax http://127.0.0.1:3000/mcp
 ```
 
+Pass `conversation_id` as the Grok session UUID on every `session_open` so
+compaction resumes the same Wax session instead of minting a sibling. Grok
+currently requires a `search_tool` schema lookup before each MCP call; that is
+a host tax, not a Wax tool bug. Pin Wax tools in the host if the host supports
+it.
+
 To point a throwaway agent at an isolated `wax-mcp` (unreleased binary, separate
 store, not `~/.wax`), use a **project** config and a **private leader**. Shared
 `~/.grok/leader.sock` keeps the live `:3000` watches.
@@ -288,11 +294,11 @@ Wax UUID. Project-default vs `scope=global` is above.
 **MCP hosts** (Claude, Codex, Cursor, OpenClaw, generic) follow the paste
 block:
 
-1. Call `session_open` (`project`, stable `agent_id`/`run_id`). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
-2. Before the first answer: `recall` with `session_id` and `mode: text` for this job, plus `scope: global` for facts about the person. Omitted scope is current-project; empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
-3. Lasting writes: `remember` with top-level `session_id` and `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. Write one-line corrections too.
-4. This job only: `task_state` with `session_id` (plan lock, failed path, landmine, before spawn or stop).
-5. Close with `session_close` (`session_id`, short `content`, `pending_tasks`) when the job ends. Do not end between turns of one host chat.
+1. Call `session_open` (`project`, stable `agent_id`/`run_id`, `conversation_id` = host chat id). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
+2. Before the first answer: `recall` with `mode: text` for this job, plus `scope: global` and `memory_types: ["user_preference"]` for facts about the person. Omitted scope is current-project; empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
+3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. Write one-line corrections too. Omit `session_id` on this connection after open.
+4. This job only: `task_state` (plan lock, failed path, landmine, before spawn or stop).
+5. Close with `session_close` (short `content`, `pending_tasks`) when the job ends. Do not end between turns or after compaction. If omit-id fails after reconnect, pass the saved UUID.
 
 ### Pitfalls that show up on a real store
 

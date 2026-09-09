@@ -422,6 +422,18 @@ struct BrokerCommandDecodeTests {
             return
         }
         #expect(payload.content == "done")
+        #expect(payload.sessionID == UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+
+        let omitClose = try BrokerCommand.decode(
+            command: "session_close",
+            arguments: ["content": .string("omit id after connection bind")]
+        )
+        guard case .sessionClose(let omitted) = omitClose else {
+            Issue.record("expected session_close without session_id")
+            return
+        }
+        #expect(omitted.sessionID == nil)
+        #expect(omitted.content == "omit id after connection bind")
 
         let open = try BrokerCommand.decode(
             command: "session_open",

@@ -938,7 +938,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
     }
 
     private static var requireSessionIDError: BrokerValidationError {
-        .invalid("session_id is required when more than one session is active")
+        .invalid(
+            "session_id is required when more than one session is active; pass the UUID from session_open (this MCP connection has no bound session)"
+        )
     }
 
     private enum PairInsertRace: Error {

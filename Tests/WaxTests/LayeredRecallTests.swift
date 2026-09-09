@@ -724,6 +724,62 @@ struct LayeredRecallTests {
     }
 
     @Test
+    func layeredRecallQueryAwareRankingPrefersFreshFactOverLockedStaleIgnoreList() {
+        let nowMs: Int64 = 2_000_000_000_000
+        let stale = layeredHit(
+            frameID: 1276,
+            score: 2.64,
+            text: "Stale Wax frames for rv (do not follow): durable:1219 product-takes implementation not started.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.constraint.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.locked.rawValue,
+            ],
+            timestampMs: nowMs - 7 * 86_400_000
+        )
+        let fresh = layeredHit(
+            frameID: 2097,
+            score: 2.38,
+            text: "Mac desktop window lives in private rv-app as RVDesktop / rv-desktop.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue],
+            timestampMs: nowMs - 3_600_000
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [stale, fresh],
+            limit: 2,
+            nowMs: nowMs,
+            query: "where does the Mac desktop window live in rv-app"
+        )
+        #expect(merged.first?.text.contains("rv-app") == true)
+        #expect(merged.first?.frameID == 2097)
+    }
+
+    @Test
+    func layeredRecallMemoryTypeFilterKeepsOnlyRequestedTypes() {
+        let preference = layeredHit(
+            frameID: 1,
+            score: 1.2,
+            text: "Chris wants short answers.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.userPreference.rawValue]
+        )
+        let lesson = layeredHit(
+            frameID: 2,
+            score: 1.3,
+            text: "bounty ROI notes are not person facts.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.lesson.rawValue]
+        )
+        let filtered = LayeredRecall.filterHitsByMemoryTypes(
+            [preference, lesson],
+            types: [.userPreference]
+        )
+        #expect(filtered.map(\.frameID) == [1])
+    }
+
+    @Test
     func layeredRecallMakeMemoryReferenceFormatsHorizons() {
         let sessionID = UUID()
         #expect(LayeredRecall.makeMemoryReference(frameID: 42) == "durable:42")

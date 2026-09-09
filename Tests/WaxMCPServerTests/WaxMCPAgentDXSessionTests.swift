@@ -225,7 +225,7 @@ func sessionOpenOmitsUnrelatedHandoffBodyAsLowRelevance() async throws {
             recallQuery: query
         )
         let handoff = try requireObject(unrelated["handoff"])
-        #expect(handoff["found"]?.boolValue == true)
+        #expect(handoff["found"]?.boolValue == false)
         #expect(handoff["relevance"]?.stringValue == "low")
         let content = handoff["content"]?.stringValue ?? ""
         #expect(content.isEmpty)

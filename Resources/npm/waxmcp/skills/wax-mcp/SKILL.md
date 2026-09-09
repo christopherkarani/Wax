@@ -22,9 +22,14 @@ loop. Never invent a `session_id` or put it in `metadata`.
 Recall defaults to the current project after project/repo resolution. Empty
 project recall is a miss, not “I have no memory.” Supplying both `project`
 and `repo` requires both exact tags. Pass `scope=global` only for
-cross-project retrieval (person facts, standing preferences). Global
-searches the entire local store with no current-project rank boost. It is
-not an authorization boundary.
+cross-project retrieval (person facts, standing preferences). For person
+facts pass `memory_types: ["user_preference"]` so project lessons do not
+crowd the lane. Global searches the entire local store with no
+current-project rank boost. It is not an authorization boundary.
+
+Pass `conversation_id` (host chat/session id) on `session_open`. Do not
+close between turns or after compaction. If omit-id `session_close` fails
+after reconnect, pass the saved UUID.
 
 Pasteable host rules: `references/project-rules.md`.
 

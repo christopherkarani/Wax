@@ -8,9 +8,10 @@ enum WaxMCPTools {
     static func register(
         on server: Server,
         brokerConfiguration: AgentBrokerConfiguration,
-        structuredMemoryEnabled: Bool
+        structuredMemoryEnabled: Bool,
+        connectionKey: String? = nil
     ) async {
-        let sessionHint = MCPClientSessionHint()
+        let sessionHint = MCPClientSessionHint(connectionKey: connectionKey)
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(
                 tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
@@ -122,35 +123,85 @@ enum WaxMCPTools {
     }
 }
 
+/// Process-wide Wax session binding keyed by MCP HTTP/stdio connection id.
+/// Survives `Server` recreate under the same `Mcp-Session-Id`.
+final class MCPBoundSessionRegistry: @unchecked Sendable {
+    static let shared = MCPBoundSessionRegistry()
+    private let lock = NSLock()
+    private var ids: [String: String] = [:]
+
+    func current(for key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids[key]
+    }
+
+    func remember(key: String, sessionID: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let sessionID, !sessionID.isEmpty {
+            ids[key] = sessionID
+        } else {
+            ids.removeValue(forKey: key)
+        }
+    }
+
+    func resetForTests() {
+        lock.lock()
+        defer { lock.unlock() }
+        ids.removeAll()
+    }
+}
+
 /// Per MCP `Server` session id. HTTP creates one Server per client session; stdio has one Server.
 final class MCPClientSessionHint: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionID: String?
+    private let connectionKey: String?
+
+    init(connectionKey: String? = nil) {
+        self.connectionKey = connectionKey
+        if let connectionKey {
+            sessionID = MCPBoundSessionRegistry.shared.current(for: connectionKey)
+        }
+    }
 
     func current() -> String? {
         lock.lock()
         defer { lock.unlock() }
-        return sessionID
+        if let sessionID { return sessionID }
+        if let connectionKey {
+            return MCPBoundSessionRegistry.shared.current(for: connectionKey)
+        }
+        return nil
     }
 
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
             if let sessionID = payload.objectValue?["session_id"]?.stringValue {
-                lock.lock()
-                self.sessionID = sessionID
-                lock.unlock()
+                bind(sessionID)
             }
         case "session_end", "session_close":
             if let ended = payload.objectValue?["session_id"]?.stringValue {
                 lock.lock()
-                if sessionID == ended {
-                    sessionID = nil
-                }
+                let matches = sessionID == ended
                 lock.unlock()
+                if matches {
+                    bind(nil)
+                }
             }
         default:
             break
+        }
+    }
+
+    private func bind(_ sessionID: String?) {
+        lock.lock()
+        self.sessionID = sessionID
+        lock.unlock()
+        if let connectionKey {
+            MCPBoundSessionRegistry.shared.remember(key: connectionKey, sessionID: sessionID)
         }
     }
 }

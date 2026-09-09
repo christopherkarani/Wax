@@ -246,6 +246,35 @@ func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     #expect(started == false)
 }
 
+@Test(.timeLimit(.minutes(1)))
+func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    let listener = try bindAndListenUnixSocket(at: socketPath)
+    defer {
+        close(listener)
+        unlink(socketPath)
+    }
+
+    let startedAt = Date()
+    do {
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        Issue.record("expected mute live socket to fail")
+    } catch {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        #expect(elapsed < 15)
+        #expect(error.localizedDescription.contains("did not answer"))
+        #expect(error.localizedDescription.contains("not starting a second daemon"))
+        #expect(error.localizedDescription.contains("Restart wax-mcp") || error.localizedDescription.contains("launchctl"))
+    }
+}
+
 #if canImport(Darwin)
 private let testUnixStreamSocketType: Int32 = SOCK_STREAM
 #else
@@ -538,6 +567,7 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("session_end"))
     #expect(text.contains("session_id"))
     #expect(text.contains("remaining_active"))
+    #expect(text.contains("other_sessions_active"))
     #expect(text.contains("active_session_count"))
     #expect(text.contains("Do not manage SESSION_STORE"))
     #expect(!text.contains("or call handoff_latest first"))

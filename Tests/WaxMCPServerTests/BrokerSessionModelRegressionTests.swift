@@ -1470,6 +1470,102 @@ func sessionEndRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
         let ended = await service.handle(.init(command: "session_end"))
         #expect(ended.ok == false)
         #expect((ended.error ?? "").contains("session_id is required"))
+        #expect((ended.error ?? "").contains("pass the UUID from session_open"))
+    }
+}
+
+@Test
+func sessionCloseOmitsSessionIDWhenExactlyOneLiveSession() async throws {
+    try await withIsolatedBroker { service, _ in
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("omit-close-one"),
+                "run_id": .string("run-one"),
+            ]
+        ))
+        #expect(started.ok == true)
+        let closed = await service.handle(.init(
+            command: "session_close",
+            arguments: ["content": .string("close the only live session without id")]
+        ))
+        #expect(closed.ok == true, "session_close failed: \(closed.error ?? "nil")")
+        let payload = try requireObject(closed.payload)
+        #expect(payload["ended"]?.boolValue == true)
+        #expect(payload["other_sessions_active"]?.boolValue == false)
+    }
+}
+
+@Test
+func sessionCloseOmitsSessionIDFailsHelpfullyWhenMultipleSessionsAreActive() async throws {
+    try await withIsolatedBroker { service, _ in
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("omit-close-a"),
+                "run_id": .string("run-a"),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("omit-close-b"),
+                "run_id": .string("run-b"),
+            ]
+        ))).ok == true)
+
+        let closed = await service.handle(.init(
+            command: "session_close",
+            arguments: ["content": .string("ambiguous close")]
+        ))
+        #expect(closed.ok == false)
+        #expect((closed.error ?? "").contains("session_id is required when more than one session is active"))
+        #expect((closed.error ?? "").contains("pass the UUID from session_open"))
+    }
+}
+
+@Test
+func recallMemoryTypesFilterKeepsPersonLane() async throws {
+    try await withIsolatedBroker { service, _ in
+        let needle = "PERSONLANE-\(UUID().uuidString.prefix(8))"
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(needle) Chris wants short answers and bullets."),
+                "memory_type": .string("user_preference"),
+                "project": .string("person-lane"),
+            ]
+        ))).ok == true)
+        #expect((await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("\(needle) bounty ROI hunting is not a person preference."),
+                "memory_type": .string("lesson"),
+                "project": .string("bounty"),
+            ]
+        ))).ok == true)
+
+        let recalled = await service.handle(.init(
+            command: "recall",
+            arguments: [
+                "query": .string("\(needle) facts about this person standing corrections"),
+                "scope": .string("global"),
+                "mode": .string("text"),
+                "memory_types": .array([.string("user_preference")]),
+                "limit": .int(5),
+            ]
+        ))
+        #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")
+        let payload = try requireObject(recalled.payload)
+        let results = payload["results"]?.arrayValue ?? []
+        #expect(!results.isEmpty)
+        let texts = results.compactMap { $0.objectValue?["text"]?.stringValue }
+        #expect(texts.contains { $0.contains("Chris wants short answers") })
+        #expect(!texts.contains { $0.contains("bounty ROI") })
+        for result in results {
+            let object = try requireObject(result)
+            #expect(object["memory_type"]?.stringValue == "user_preference")
+        }
     }
 }
 

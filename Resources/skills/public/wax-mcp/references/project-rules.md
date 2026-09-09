@@ -27,18 +27,18 @@ Learn. Write the moment it would change the next agent's behavior — including 
 
 Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
 
-Open: call `session_open` (`project` = repo, stable `agent_id` / `run_id`). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Same `agent_id`+`run_id` resumes. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
+Open: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id when the host has one). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls on this connection. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes the unique live match. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
 Before the first answer:
 1. `recall` with `mode: text`, query = this job
-2. `recall` with `scope: global`, `mode: text`, query = facts about this person / standing corrections
+2. `recall` with `scope: global`, `mode: text`, `memory_types: ["user_preference"]`, query = facts about this person / standing corrections
 Empty project recall is a miss, not "I have no memory."
 
-Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. Type keeps them durable and stamps the project so default recall can find them. Person-facts use the connection session; read them later with `scope: global`. Never put `session_id` in `metadata`.
+Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. Type keeps them durable and stamps the project so default recall can find them. Person-facts use the connection session; read them later with `scope: global` plus `memory_types`. Never put `session_id` in `metadata`.
 
 This job only (not the default write): `remember` with `memory_type: task_state`, `durability: working` — plan lock, failed path, landmine, before you spawn or stop. Parent writes before spawning; children often have no Wax tools.
 
-Close when the job ends, not between turns: `session_close` with a short state `content`, and `pending_tasks` for unfinished work. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
+Close when the job ends, not between turns or after compaction: `session_close` with a short state `content`, and `pending_tasks` for unfinished work. Compaction is not job end. If omit-id fails after reconnect, pass the saved UUID or call `session_open` with the same `conversation_id`. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
 
 ## Hermes / OpenClaw SOUL.md
@@ -60,15 +60,15 @@ Write the moment it would change how you treat them or the work — including a 
 
 Store one or two sentences. Do not store chats, status, or secrets.
 
-On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Do not open per message. Do not close between turns.
+On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id). The MCP connection remembers `session_id`; omit it on subsequent `remember`, `recall`, `compact_context`, and `session_close` calls on this connection. Keep the returned ID for `session_resume` after reconnecting or for explicitly selecting another session. Do not invent one. Do not open per message. Do not close between turns or after compaction.
 
 Before you act:
 1. `recall` with `mode: text`, query = this repo/job
-2. `recall` with `scope: global`, `mode: text`, query = facts about this person
+2. `recall` with `scope: global`, `mode: text`, `memory_types: ["user_preference"]`, query = facts about this person
 
 Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`.
 
 This job only: `remember` with `memory_type: task_state`, `durability: working`.
 
-Close with `session_close` (short `content`, `pending_tasks`) when the job ends. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
+Close with `session_close` (short `content`, `pending_tasks`) when the job ends. Compaction is not job end. If omit-id fails after reconnect, pass the saved UUID or call `session_open` with the same `conversation_id`. If a call returns inactive / `resumable: false`, call `session_open` again. Follow the MCP server instructions when present.
 ```
