@@ -29,7 +29,7 @@ package extension SearchPlan {
             includeVector = false
         case .vectorOnly:
             includeText = false
-            includeVector = request.lane.hasNonEmptyEmbedding
+            includeVector = true
         case .hybrid:
             includeText = true
             includeVector = request.lane.hasNonEmptyEmbedding

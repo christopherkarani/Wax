@@ -41,9 +41,6 @@ extension Wax {
         let candidateLimit = plan.candidateLimit
         let filter = request.frameFilter ?? FrameFilter()
 
-        if case .vectorOnly(let embedding) = request.lane, embedding.isEmpty {
-            throw WaxError.io(SearchLane.missingVectorOnlyEmbeddingMessage)
-        }
         let cache = UnifiedSearchEngineCache.shared
         let textEngine: FTS5SearchEngine? = if includeText {
             if let override = engineOverrides?.textEngine {

@@ -83,6 +83,19 @@ struct SearchLaneTests {
     }
 
     @Test
+    func searchRequestFactoryCanonicalizesHybridEmptyEmbeddingToNil() throws {
+        let request = try SearchRequest(lane: .hybrid(alpha: 0.5, embedding: []), nowMs: 0)
+        #expect(request.embedding == nil)
+        #expect(request.lane == .hybrid(alpha: 0.5, embedding: nil))
+        #expect(SearchPlan.make(request).includeVector == false)
+    }
+
+    @Test
+    func hybridDefaultsAlphaToPointFive() {
+        #expect(SearchLane.hybrid(embedding: nil) == .hybrid(alpha: 0.5, embedding: nil))
+    }
+
+    @Test
     func hybridWithEmbeddingIncludesVectorLane() throws {
         let embedding: [Float] = [1, 0, 0, 0]
         let lane = try SearchLane.from(mode: .hybrid(alpha: 0.5), embedding: embedding)

@@ -7,15 +7,21 @@ import WaxVectorSearch
 /// `vectorOnly` without a non-empty embedding is rejected by ``from(mode:embedding:)``
 /// and by the throwing `SearchRequest` factory. The source-compatible `mode` +
 /// `embedding` initializer maps that case to `textOnly` instead of storing an
-/// empty vector-only lane. Hybrid with a nil embedding stays legal (text degradation).
+/// empty vector-only lane. Hybrid with a missing or empty embedding is stored
+/// as `nil` (text degradation).
 package enum SearchLane: Sendable, Equatable {
+    /// Full-text retrieval only.
     case textOnly
+    /// Vector-index retrieval. Must be non-empty when stored on a `SearchRequest`.
     case vectorOnly(embedding: [Float])
-    case hybrid(alpha: Float, embedding: [Float]?)
+    /// Blend text and vector. Empty embeddings are stored as `nil`.
+    case hybrid(alpha: Float = 0.5, embedding: [Float]?)
 
+    /// Message for ``WaxError/io(_:)`` when `vectorOnly` lacks a non-empty embedding.
     package static let missingVectorOnlyEmbeddingMessage =
         "vectorOnly search requires a non-empty query embedding"
 
+    /// Public ``SearchMode`` this lane maps to.
     package var mode: SearchMode {
         switch self {
         case .textOnly: .textOnly
@@ -24,6 +30,7 @@ package enum SearchLane: Sendable, Equatable {
         }
     }
 
+    /// Query embedding carried by this lane, if any.
     package var embedding: [Float]? {
         switch self {
         case .textOnly:
@@ -35,6 +42,7 @@ package enum SearchLane: Sendable, Equatable {
         }
     }
 
+    /// Whether this lane carries a non-empty query embedding.
     package var hasNonEmptyEmbedding: Bool {
         switch self {
         case .textOnly:
@@ -68,29 +76,14 @@ package enum SearchLane: Sendable, Equatable {
         }
     }
 
-    fileprivate func validateVectorOnlyEmbedding() throws {
-        if case .vectorOnly(let embedding) = self, embedding.isEmpty {
-            throw WaxError.io(Self.missingVectorOnlyEmbeddingMessage)
-        }
-    }
-
     /// Source-compatible mapping used by the non-throwing `mode` + `embedding`
     /// initializer. `vectorOnly` without a non-empty embedding becomes `textOnly`
     /// so that illegal empty vector-only state is never stored.
     fileprivate static func compatible(mode: SearchMode, embedding: [Float]?) -> SearchLane {
-        switch mode {
-        case .textOnly:
+        do {
+            return try from(mode: mode, embedding: embedding)
+        } catch {
             return .textOnly
-        case .vectorOnly:
-            if let embedding, !embedding.isEmpty {
-                return .vectorOnly(embedding: embedding)
-            }
-            return .textOnly
-        case .hybrid(let alpha):
-            if let embedding, !embedding.isEmpty {
-                return .hybrid(alpha: alpha, embedding: embedding)
-            }
-            return .hybrid(alpha: alpha, embedding: nil)
         }
     }
 }
@@ -98,6 +91,7 @@ package enum SearchLane: Sendable, Equatable {
 /// Unified search request.
 package struct SearchRequest: Sendable, Equatable {
     package var query: String?
+    /// Canonical retrieval lane stored by this request.
     package let lane: SearchLane
     package var vectorEnginePreference: VectorEnginePreference
     package var vectorSearchTimeout: Duration?
@@ -128,6 +122,14 @@ package struct SearchRequest: Sendable, Equatable {
     /// Query embedding carried by the stored lane, if any.
     package var embedding: [Float]? { lane.embedding }
 
+    /// Creates a unified search request for `lane`.
+    ///
+    /// Canonicalizes `lane` through ``SearchLane/from(mode:embedding:)`` so hybrid
+    /// empty embeddings become `nil` and `vectorOnly` without a non-empty
+    /// embedding is rejected.
+    ///
+    /// - Throws: ``WaxError/io(_:)`` when `lane` is `vectorOnly` with a missing
+    ///   or empty embedding.
     package init(
         query: String? = nil,
         lane: SearchLane,
@@ -149,10 +151,9 @@ package struct SearchRequest: Sendable, Equatable {
         enableRankingDiagnostics: Bool = false,
         rankingDiagnosticsTopK: Int = 10
     ) throws {
-        try lane.validateVectorOnlyEmbedding()
         self.init(
             query: query,
-            uncheckedLane: lane,
+            uncheckedLane: try SearchLane.from(mode: lane.mode, embedding: lane.embedding),
             vectorEnginePreference: vectorEnginePreference,
             vectorSearchTimeout: vectorSearchTimeout,
             topK: topK,
