@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Wax
 
 @Test
 func photoRAGDocsDoNotAdvertisePackageOnlyOrchestratorAsPublicAPI() throws {
@@ -82,7 +83,7 @@ func photoRAGPhotosRegionCropFailureDoesNotReturnBeforeSupersede() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
         encoding: .utf8
     )
-    let photosIngestStart = try #require(source.range(of: "private func ingestOne(assetID: String)"))
+    let photosIngestStart = try #require(source.range(of: "private func ingestOne(photoID: PhotoID)"))
     let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
     let photosIngestBody = source[photosIngestStart.lowerBound..<localIngestStart.lowerBound]
 
@@ -101,7 +102,7 @@ func photoRAGRegionCropResultsUseCompactCropIndices() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
         encoding: .utf8
     )
-    let photosIngestStart = try #require(source.range(of: "private func ingestOne(assetID: String)"))
+    let photosIngestStart = try #require(source.range(of: "private func ingestOne(photoID: PhotoID)"))
     let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
     let localHelperStart = try #require(source[localIngestStart.upperBound...].range(of: "private func writeRegionEmbeddingsIfNeeded"))
     let rebuildIndexStart = try #require(source[localHelperStart.upperBound...].range(of: "private func rebuildIndex"))
@@ -114,6 +115,82 @@ func photoRAGRegionCropResultsUseCompactCropIndices() throws {
         #expect(!regionEmbeddingBody.contains("crops.append((i, crop, region))"))
         #expect(!regionEmbeddingBody.contains("crops.append((index, crop, region))"))
     }
+}
+
+@Test
+func photoIDMatchesVideoIDShapeInPublicTypes() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let photoTypes = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGTypes.swift"),
+        encoding: .utf8
+    )
+    let videoTypes = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGTypes.swift"),
+        encoding: .utf8
+    )
+
+    #expect(photoTypes.contains("public struct PhotoID: Sendable, Hashable, Equatable"))
+    #expect(photoTypes.contains("public enum Source: Sendable, Hashable, Equatable { case photos, file }")
+        || (photoTypes.contains("public enum Source: Sendable, Hashable, Equatable")
+            && photoTypes.contains("case photos")
+            && photoTypes.contains("case file")))
+    #expect(photoTypes.contains("public var source: Source"))
+    #expect(photoTypes.contains("public var id: String"))
+    #expect(photoTypes.contains("public init(source: Source, id: String)"))
+
+    #expect(videoTypes.contains("public struct VideoID: Sendable, Hashable, Equatable"))
+    #expect(photoTypes.contains("public var id: PhotoID"))
+    #expect(photoTypes.contains("public var assetIDs: Set<PhotoID>?"))
+    #expect(photoTypes.contains("case assetIDs([PhotoID])"))
+    #expect(photoTypes.contains("public var photoID: PhotoID"))
+
+    let photo = PhotoID(source: .file, id: "receipt-1")
+    let photosLibrary = PhotoID(source: .photos, id: "receipt-1")
+    let video = VideoID(source: .file, id: "receipt-1")
+    #expect(photo != photosLibrary)
+    #expect(photo.id == video.id)
+    #expect(Set([photo, photo]).count == 1)
+}
+
+@Test
+func photoMemoryDeleteRequiresPhotoIDNotStringOrVideoID() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let photoMemory = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoMemory.swift"),
+        encoding: .utf8
+    )
+    let orchestrator = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        encoding: .utf8
+    )
+
+    #expect(photoMemory.contains("public func delete(photoID: PhotoID)"))
+    #expect(!photoMemory.contains("public func delete(assetID: String)"))
+    #expect(orchestrator.contains("package func delete(photoID: PhotoID)"))
+    #expect(!orchestrator.contains("package func delete(assetID: String)"))
+}
+
+@Test
+func publicAPINamesPhotoIDForExperimentalPhotoIdentity() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let publicAPI = try String(
+        contentsOf: repoRoot.appendingPathComponent("Resources/skills/public/wax/references/public-api.md"),
+        encoding: .utf8
+    )
+    #expect(publicAPI.contains("`PhotoID`"))
+    #expect(publicAPI.contains("PhotoID(source:"))
 }
 
 @Test

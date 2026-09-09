@@ -18,8 +18,9 @@ import Foundation
 ///     embedder: embedder,
 ///     ocr: VisionOCRProvider()
 /// )
-/// try await photos.ingest(files: [PhotoFile(id: "receipt-1", url: imageURL)])
+/// try await photos.ingest(files: [PhotoFile(id: PhotoID(source: .file, id: "receipt-1"), url: imageURL)])
 /// let context = try await photos.recall(PhotoQuery(text: "coffee receipt"))
+/// try await photos.delete(photoID: PhotoID(source: .file, id: "receipt-1"))
 /// try await photos.close()
 /// ```
 public actor PhotoMemory {
@@ -58,10 +59,11 @@ public actor PhotoMemory {
         try await orchestrator.syncLibrary(scope: scope)
     }
 
-    /// Ingest Photos-library assets by local identifier.
+    /// Ingest Photos-library assets by ``PhotoID``.
     ///
-    /// Requires Photos authorization.
-    public func ingest(assetIDs: [String]) async throws {
+    /// Requires Photos authorization. Wrap `PHAsset.localIdentifier` as
+    /// `PhotoID(source: .photos, id:)`.
+    public func ingest(assetIDs: [PhotoID]) async throws {
         try await orchestrator.ingest(assetIDs: assetIDs)
     }
     #endif
@@ -77,8 +79,8 @@ public actor PhotoMemory {
     }
 
     /// Delete a photo and all derived frames (OCR, caption, tags, regions) plus vectors.
-    public func delete(assetID: String) async throws {
-        try await orchestrator.delete(assetID: assetID)
+    public func delete(photoID: PhotoID) async throws {
+        try await orchestrator.delete(photoID: photoID)
     }
 
     /// Force pending writes to durable storage.

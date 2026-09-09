@@ -64,7 +64,7 @@ func photoRAGDeleteRemovesRootVectorFromCommittedVecBytes() async throws {
         #expect(beforeBytes != nil, "setup: committed vec must exist after flush")
         #expect(try photoDeleteCommittedVecFrameIds(from: beforeBytes!).contains(rootId))
 
-        try await orchestrator.delete(assetID: "delete-me")
+        try await orchestrator.delete(photoID: PhotoID(source: .file, id: "delete-me"))
 
         let afterBytes = try await wax.readCommittedVecIndexBytes()
         #expect(afterBytes != nil, "committed vec bytes must be non-nil after delete")

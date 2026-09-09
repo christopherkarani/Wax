@@ -110,7 +110,7 @@ private func firstAssetIDForPhotoBlendWeight(_ textEmbeddingWeight: Float) async
         guard let first = result.items.first else {
             throw WaxError.io("Expected at least one PhotoRAG result")
         }
-        return first.assetID
+        return first.photoID.id
     }
 }
 

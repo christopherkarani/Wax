@@ -125,6 +125,7 @@ func publicAPINamesBuiltInMultimodalEmbeddingsForPhotoVideoFacades() throws {
     )
     #expect(publicAPI.contains("PhotoMemory"))
     #expect(publicAPI.contains("VideoMemory"))
+    #expect(publicAPI.contains("PhotoID"))
     #expect(publicAPI.contains("BuiltInMultimodalEmbeddings"))
     #expect(publicAPI.contains("BuiltInMultimodalEmbeddings.make"))
     #expect(!publicAPI.contains("wait for a facade"))

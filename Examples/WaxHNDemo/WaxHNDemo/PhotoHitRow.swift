@@ -11,7 +11,7 @@ struct PhotoHitRow: View {
                 Text(item.summaryText)
                     .font(.body)
                     .lineLimit(3)
-                Text(item.assetID)
+                Text(item.photoID.id)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -19,6 +19,6 @@ struct PhotoHitRow: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.summaryText), asset \(item.assetID)")
+        .accessibilityLabel("\(item.summaryText), asset \(item.photoID.id)")
     }
 }
