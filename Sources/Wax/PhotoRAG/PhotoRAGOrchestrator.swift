@@ -189,7 +189,7 @@ package actor PhotoRAGOrchestrator {
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
     package func ingest(assetIDs: [PhotoID]) async throws {
-        let uniqueAssetIDs = Self.dedupePhotoIDs(assetIDs)
+        let uniqueAssetIDs = Self.photosLibraryIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
         // Throttled concurrency: the actor's executor serializes state mutations, while
@@ -559,11 +559,12 @@ package actor PhotoRAGOrchestrator {
     }
 
     private func ingestOne(photoID: PhotoID) async throws {
-        guard inFlightPhotoIDs.insert(photoID).inserted else { return }
-        defer { inFlightPhotoIDs.remove(photoID) }
+        let libraryID = PhotoID(source: .photos, id: photoID.id)
+        guard inFlightPhotoIDs.insert(libraryID).inserted else { return }
+        defer { inFlightPhotoIDs.remove(libraryID) }
 
         #if canImport(Photos)
-        let metadata = try await PhotosAssetMetadata.load(photoID: photoID)
+        let metadata = try await PhotosAssetMetadata.load(photoID: libraryID)
         let resolvedID = metadata.photoID
 
         let captureMs = metadata.captureMs
@@ -1308,6 +1309,11 @@ package actor PhotoRAGOrchestrator {
             unique.append(photoID)
         }
         return unique
+    }
+
+    /// Photos-library ingest seam: wrap `localIdentifier` as ``PhotoID`` with `source: .photos`.
+    static func photosLibraryIDs(_ photoIDs: [PhotoID]) -> [PhotoID] {
+        dedupePhotoIDs(photoIDs.map { PhotoID(source: .photos, id: $0.id) })
     }
 
     static func dedupePhotoFiles(_ files: [PhotoFile]) -> [PhotoFile] {

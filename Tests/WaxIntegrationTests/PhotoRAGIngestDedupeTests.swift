@@ -29,3 +29,17 @@ func photoRAGIngestDedupeTreatsSourceAsPartOfIdentity() {
     ]
     #expect(PhotoRAGOrchestrator.dedupePhotoIDs(mixed) == mixed)
 }
+
+@Test
+func photoLibraryIngestWrapsIdentifiersAsPhotosSourceBeforeDedupe() {
+    let mixed = [
+        PhotoID(source: .file, id: "A"),
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .file, id: "B"),
+        PhotoID(source: .photos, id: "B"),
+    ]
+    #expect(PhotoRAGOrchestrator.photosLibraryIDs(mixed) == [
+        PhotoID(source: .photos, id: "A"),
+        PhotoID(source: .photos, id: "B"),
+    ])
+}
