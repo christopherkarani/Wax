@@ -31,6 +31,7 @@ public extension EmbeddingProvider {
         var vectors: [[Float]] = []
         vectors.reserveCapacity(texts.count)
         for text in texts {
+            try Task.checkCancellation()
             vectors.append(try await embed(text))
         }
         return vectors

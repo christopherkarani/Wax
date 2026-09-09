@@ -26,6 +26,12 @@ public protocol MultimodalEmbeddingProvider: Sendable {
     func embed(image: CGImage) async throws -> [Float]
 }
 
+extension MultimodalEmbeddingProvider {
+    public func embedQuery(text: String) async throws -> [Float] {
+        try await embed(text: text)
+    }
+}
+
 // MARK: - Deprecated Default (migration aid)
 
 extension MultimodalEmbeddingProvider {
@@ -33,10 +39,6 @@ extension MultimodalEmbeddingProvider {
     /// Provide an explicit `executionMode` property on your conformance.
     @available(*, deprecated, message: "Provide an explicit 'executionMode' on your MultimodalEmbeddingProvider conformance.")
     public var executionMode: ProviderExecutionMode { .onDeviceOnly }
-
-    public func embedQuery(text: String) async throws -> [Float] {
-        try await embed(text: text)
-    }
 }
 
 #endif // canImport(ImageIO)

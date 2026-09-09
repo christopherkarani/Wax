@@ -35,6 +35,19 @@ struct QueryAwareEmbeddingProtocolTests {
         }
         #expect(batch == mapped)
     }
+
+    @Test
+    func defaultBatchEmbedChecksCancellationBetweenItems() async {
+        let erased: any EmbeddingProvider = CancellationIgnoringEmbedder()
+        let task = Task {
+            try await erased.embed(batch: ["a", "b", "c", "d"])
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await task.value
+        }
+    }
 }
 
 private struct PrefixQueryEmbedder: EmbeddingProvider, Sendable {
@@ -58,6 +71,20 @@ private struct PlainCountEmbedder: EmbeddingProvider, Sendable {
 
     func embed(_ text: String) async throws -> [Float] {
         [Float(text.utf8.count), 0]
+    }
+}
+
+/// `embed(_:)` swallows cancellation so only the protocol default's
+/// `Task.checkCancellation()` can abort the sequential batch loop.
+private struct CancellationIgnoringEmbedder: EmbeddingProvider, Sendable {
+    let dimensions = 2
+    let normalize = false
+    let identity: EmbeddingIdentity? = nil
+
+    func embed(_ text: String) async throws -> [Float] {
+        _ = text
+        try? await Task.sleep(for: .milliseconds(50))
+        return [1, 0]
     }
 }
 

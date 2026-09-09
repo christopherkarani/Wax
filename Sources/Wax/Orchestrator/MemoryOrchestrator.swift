@@ -30,16 +30,6 @@ package actor MemoryOrchestrator {
         case always
     }
 
-    /// Provider captured at attach. Ingest uses ``EmbeddingProvider/embed(batch:)``;
-    /// query uses ``EmbeddingProvider/embedQuery`` so Arctic prefixes survive erasure.
-    private struct AttachedEmbedder: Sendable {
-        let provider: any EmbeddingProvider
-
-        init(provider: any EmbeddingProvider) {
-            self.provider = provider
-        }
-    }
-
     /// Total lifecycle of the embedding provider. Replaces the former
     /// `(embedder?, embeddingStatus, text-only-write flag)` triple so illegal
     /// combinations are unrepresentable.
@@ -49,7 +39,7 @@ package actor MemoryOrchestrator {
         /// without vectors while waiting, forcing the first attach to report degraded.
         case loading(wroteTextOnly: Bool)
         case ready(
-            attached: AttachedEmbedder,
+            attached: any EmbeddingProvider,
             degradedReason: String?
         )
         case unavailable(reason: String)
@@ -268,9 +258,9 @@ package actor MemoryOrchestrator {
             .loading
         case .ready(let attached, let degradedReason):
             if let degradedReason {
-                .degraded(attached.provider.identity, reason: degradedReason)
+                .degraded(attached.identity, reason: degradedReason)
             } else {
-                .active(attached.provider.identity)
+                .active(attached.identity)
             }
         case .unavailable(let reason):
             .unavailable(reason: reason)
@@ -279,7 +269,9 @@ package actor MemoryOrchestrator {
 
     /// Atomic snapshot of the ready provider so a concurrent attach cannot
     /// pair one generation's provider with another's.
-    private var readyEmbedderSnapshot: AttachedEmbedder? {
+    /// Ingest uses ``EmbeddingProvider/embed(batch:)``; query uses
+    /// ``EmbeddingProvider/embedQuery`` so Arctic prefixes survive erasure.
+    private var readyEmbedderSnapshot: (any EmbeddingProvider)? {
         if case .ready(let attached, _) = embedderLifecycle {
             return attached
         }
@@ -397,7 +389,7 @@ package actor MemoryOrchestrator {
             )
         } else if let embedder {
             lifecycle = .ready(
-                attached: AttachedEmbedder(provider: embedder),
+                attached: embedder,
                 degradedReason: nil
             )
         } else if resolvedConfig.enableVectorSearch {
@@ -498,7 +490,7 @@ package actor MemoryOrchestrator {
         degradedReason: String?
     ) -> EmbedderLifecycle {
         guard let provider else { return .unavailable(reason: "no embedding provider") }
-        return .ready(attached: AttachedEmbedder(provider: provider), degradedReason: degradedReason)
+        return .ready(attached: provider, degradedReason: degradedReason)
     }
 
 
@@ -538,7 +530,7 @@ package actor MemoryOrchestrator {
         let contentHash = ContentHasher.hash(contentData).hexString
         let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
         let attached = readyEmbedderSnapshot
-        let localEmbedder = attached?.provider
+        let localEmbedder = attached
 
         var docMeta = Metadata(metadata)
         docMeta.entries[Self.contentHashMetadataKey] = contentHash
@@ -852,7 +844,7 @@ package actor MemoryOrchestrator {
                 guard let attached = readyEmbedderSnapshot else {
                     throw WaxError.missingEmbedder
                 }
-                let localEmbedder = attached.provider
+                let localEmbedder = attached
                 let embedding = try await Self.embedOne(
                     text,
                     attached: attached,
@@ -995,14 +987,14 @@ package actor MemoryOrchestrator {
     /// Minimizes cache lookups and maximizes batch embedding efficiency.
     private static func prepareEmbeddingsBatchOptimized(
         chunks: [String],
-        attached: AttachedEmbedder,
+        attached: any EmbeddingProvider,
         cache: EmbeddingMemoizer?,
         timeout: Duration? = nil
     ) async throws -> [[Float]] {
 #if DEBUG
         Self._recordBatchPreparationPathCallForTests()
 #endif
-        let embedder = attached.provider
+        let embedder = attached
         var results: [[Float]] = Array(repeating: [], count: chunks.count)
         let cacheKeys: [UInt64]? = if cache != nil {
             chunks.map {
@@ -1081,7 +1073,7 @@ package actor MemoryOrchestrator {
     /// Legacy method for backward compatibility
     private static func prepareEmbeddingsBatch(
         chunks: [String],
-        attached: AttachedEmbedder,
+        attached: any EmbeddingProvider,
         cache: EmbeddingMemoizer?,
         timeout: Duration? = nil
     ) async throws -> [[Float]] {
@@ -1384,7 +1376,7 @@ package actor MemoryOrchestrator {
         guard config.enableVectorSearch, let attached = readyEmbedderSnapshot else {
             throw WaxError.missingEmbedder
         }
-        let embedder = attached.provider
+        let embedder = attached
 
         let missing = try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
@@ -2420,7 +2412,7 @@ package actor MemoryOrchestrator {
         }
         guard !isClosed else { return }
         embedderLifecycle = .ready(
-            attached: AttachedEmbedder(provider: provider),
+            attached: provider,
             degradedReason: lacksVectors ? "some saved frames have no vectors" : nil
         )
         finishReadinessWaiters()
@@ -2484,7 +2476,7 @@ package actor MemoryOrchestrator {
     private func queryEmbeddingResult(
         for query: String,
         policy: QueryEmbeddingPolicy,
-        attached: AttachedEmbedder?
+        attached: (any EmbeddingProvider)?
     ) async throws -> QueryEmbeddingResult {
         switch policy {
         case .never:
@@ -2552,12 +2544,12 @@ package actor MemoryOrchestrator {
 
     private static func embedOne(
         _ text: String,
-        attached: AttachedEmbedder,
+        attached: any EmbeddingProvider,
         cache: EmbeddingMemoizer?,
         timeout: Duration? = nil,
         isQuery: Bool = false
     ) async throws -> [Float] {
-        let embedder = attached.provider
+        let embedder = attached
         let key = EmbeddingKey.make(
             text: text,
             identity: embedder.identity,
@@ -2602,10 +2594,10 @@ package actor MemoryOrchestrator {
 
     private static func prepareEmbeddings(
         chunks: [String],
-        attached: AttachedEmbedder,
+        attached: any EmbeddingProvider,
         cache: EmbeddingMemoizer?
     ) async throws -> [Int: [Float]] {
-        let embedder = attached.provider
+        let embedder = attached
         var out: [Int: [Float]] = [:]
         out.reserveCapacity(chunks.count)
 
