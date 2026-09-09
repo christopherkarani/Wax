@@ -154,6 +154,11 @@ func photoIDMatchesVideoIDShapeInPublicTypes() throws {
     #expect(photo != photosLibrary)
     #expect(photo.id == video.id)
     #expect(Set([photo, photo]).count == 1)
+
+    let fileURL = URL(fileURLWithPath: "/tmp/receipt-1.png")
+    #expect(PhotoFile(id: photo, url: fileURL).id == photo)
+    #expect(PhotoFile(id: photosLibrary, url: fileURL).id == photo)
+    #expect(PhotoFile(id: "receipt-1", url: fileURL).id == photo)
 }
 
 @Test
@@ -174,8 +179,11 @@ func photoMemoryDeleteRequiresPhotoIDNotStringOrVideoID() throws {
 
     #expect(photoMemory.contains("public func delete(photoID: PhotoID)"))
     #expect(!photoMemory.contains("public func delete(assetID: String)"))
+    #expect(!photoMemory.contains("func delete(photoID: VideoID)"))
+    #expect(!photoMemory.contains("func delete(videoID:"))
     #expect(orchestrator.contains("package func delete(photoID: PhotoID)"))
     #expect(!orchestrator.contains("package func delete(assetID: String)"))
+    #expect(!orchestrator.contains("func delete(photoID: VideoID)"))
 }
 
 @Test

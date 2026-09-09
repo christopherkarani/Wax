@@ -142,8 +142,9 @@ public struct PhotoFile: Sendable, Equatable {
 
     public init(id: PhotoID, url: URL, captureDate: Date? = nil) {
         let trimmed = id.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        // File ingest always records source `.file`.
         self.id = PhotoID(
-            source: id.source,
+            source: .file,
             id: trimmed.isEmpty ? url.standardizedFileURL.absoluteString : trimmed
         )
         self.url = url
