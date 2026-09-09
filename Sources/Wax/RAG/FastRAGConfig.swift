@@ -116,10 +116,9 @@ package struct FastRAGConfig: Sendable, Equatable {
     /// Enable query-aware tier selection (boosts tier for specific queries)
     package var enableQueryAwareTierSelection: Bool = true
     
-    /// Optional fixed "now" timestamp used for deterministic tier selection.
-    /// When nil, the builder resolves "now" as the max candidate frame timestamp;
-    /// if that is also unavailable, "now" is unknown and no access-recency signals
-    /// are produced (never wall clock time).
+    /// Fixed evaluation clock (ms since epoch) for ranking and tier selection.
+    /// Required by `FastRAGContextBuilder.build` — nil throws (no wall clock or zero).
+    /// `MemoryOrchestrator.ragConfigForRecall()` always fills this.
     package var deterministicNowMs: Int64? = nil
 
     package init(

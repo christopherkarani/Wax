@@ -297,7 +297,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         let judge = TokenF1AnswerJudge()
         let ragBuilder = FastRAGContextBuilder()
         let answerExtractor = DeterministicAnswerExtractor()
-        let ragConfig = FastRAGConfig(
+        var ragConfig = FastRAGConfig(
             maxContextTokens: 180,
             expansionMaxTokens: 120,
             snippetMaxTokens: 45,
@@ -305,6 +305,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
             searchTopK: max(config.topK, 12),
             searchMode: config.includeVectors ? .hybrid(alpha: config.searchAlpha) : .textOnly
         )
+        ragConfig.deterministicNowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
         var outcomes: [LongMemoryQueryOutcome] = []
         outcomes.reserveCapacity(fixture.queries.count)

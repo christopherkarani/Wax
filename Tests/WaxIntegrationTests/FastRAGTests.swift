@@ -3,6 +3,8 @@ import Testing
 @testable import Wax
 import WaxCore
 
+private let fastRAGTestNowMs: Int64 = 1_700_000_000_000
+
 @Test
 func fastRAGProducesSnippetsAndSingleExpansionWhenAvailable() async throws {
     try await TempFiles.withTempFile { url in
@@ -17,7 +19,8 @@ func fastRAGProducesSnippetsAndSingleExpansionWhenAvailable() async throws {
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(maxContextTokens: 40, expansionMaxTokens: 20, snippetMaxTokens: 10, maxSnippets: 5, searchTopK: 4)
+        var config = FastRAGConfig(maxContextTokens: 40, expansionMaxTokens: 20, snippetMaxTokens: 10, maxSnippets: 5, searchTopK: 4)
+        config.deterministicNowMs = fastRAGTestNowMs
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
 
         #expect(!ctx.items.isEmpty)
@@ -49,7 +52,7 @@ func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             maxContextTokens: 40,
             expansionMaxTokens: 15,
             snippetMaxTokens: 8,
@@ -57,6 +60,7 @@ func fastRAGIsDeterministicAndEnforcesTokenBudgets() async throws {
             searchTopK: 10,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = fastRAGTestNowMs
 
         let ctxA = try await builder.build(query: "Swift", wax: wax, config: config)
         let ctxB = try await builder.build(query: "Swift", wax: wax, config: config)
@@ -107,7 +111,7 @@ func fastRAGUsingSessionMatchesWaxSearchDeterministically() async throws {
             searchTopK: 6,
             searchMode: .textOnly
         )
-        config.deterministicNowMs = 1_700_000_000_000
+        config.deterministicNowMs = fastRAGTestNowMs
 
         let session = try await wax.openSession(.readOnly)
         let viaSessionA = try await builder.build(
@@ -153,7 +157,8 @@ func fastRAGSkipsNonUTF8ExpansionCandidates() async throws {
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(maxContextTokens: 40, expansionMaxTokens: 20, snippetMaxTokens: 10, maxSnippets: 5, searchTopK: 4, searchMode: .textOnly)
+        var config = FastRAGConfig(maxContextTokens: 40, expansionMaxTokens: 20, snippetMaxTokens: 10, maxSnippets: 5, searchTopK: 4, searchMode: .textOnly)
+        config.deterministicNowMs = fastRAGTestNowMs
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
 
         let expanded = ctx.items.filter { $0.kind == .expanded }
@@ -185,6 +190,7 @@ func fastRAGSkipsExpansionWhenBytesExceedCap() async throws {
             searchTopK: 4,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = fastRAGTestNowMs
         config.expansionMaxBytes = 64
 
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
@@ -240,7 +246,7 @@ func denseCachedSkipsInvalidSurrogateAndFallsBackToSnippet() async throws {
         try await wax.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             mode: .denseCached,
             maxContextTokens: 40,
             expansionMaxTokens: 0,
@@ -251,6 +257,7 @@ func denseCachedSkipsInvalidSurrogateAndFallsBackToSnippet() async throws {
             searchTopK: 5,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = fastRAGTestNowMs
 
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
         #expect(ctx.items.contains { $0.kind == .snippet })
@@ -298,7 +305,7 @@ func denseCachedSkipsSurrogateWhenFrameContentThrowsAndStillReturnsSnippets() as
         try handle.close()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             mode: .denseCached,
             maxContextTokens: 40,
             expansionMaxTokens: 0,
@@ -309,6 +316,7 @@ func denseCachedSkipsSurrogateWhenFrameContentThrowsAndStillReturnsSnippets() as
             searchTopK: 5,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = fastRAGTestNowMs
 
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
         #expect(ctx.items.contains { $0.kind == .snippet })
@@ -356,7 +364,7 @@ func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
         try await wax.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             mode: .denseCached,
             maxContextTokens: 30,
             expansionMaxTokens: 0,
@@ -367,6 +375,7 @@ func denseCachedEnforcesSurrogateLimitsAndSkipsSourceSnippets() async throws {
             searchTopK: 10,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = fastRAGTestNowMs
 
         let ctx = try await builder.build(query: "Swift", wax: wax, config: config)
         let surrogates = ctx.items.filter { $0.kind == .surrogate }
@@ -414,6 +423,7 @@ func queryAwareRerankPrefersIntentAlignedPreviewOverHigherBaseScore() {
         ),
     ]
     var config = FastRAGConfig()
+    config.deterministicNowMs = fastRAGTestNowMs
     config.enableAnswerFocusedRanking = true
 
     let ordered = FastRAGContextBuilder.orderCandidatesForAnswer(

@@ -23,7 +23,7 @@ func fastRAGDeterministicAcrossRepeatedBuildsWithMixedCorpus() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await makeDeterminismWax(at: url)
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             maxContextTokens: 140,
             expansionMaxTokens: 56,
             snippetMaxTokens: 24,
@@ -31,6 +31,7 @@ func fastRAGDeterministicAcrossRepeatedBuildsWithMixedCorpus() async throws {
             searchTopK: 24,
             searchMode: .textOnly
         )
+        config.deterministicNowMs = 1_700_000_000_000
 
         let contextA = try await builder.build(query: "Swift concurrency", wax: wax, config: config)
         let contextB = try await builder.build(query: "Swift concurrency", wax: wax, config: config)

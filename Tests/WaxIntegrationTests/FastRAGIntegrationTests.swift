@@ -3,6 +3,8 @@ import Testing
 import Wax
 import WaxCore
 
+private let fastRAGIntegrationNowMs: Int64 = 1_700_000_000_000
+
 @Test
 func fastRAGIntegrationCreateRecallReopen() async throws {
     try await TempFiles.withTempFile { url in
@@ -15,7 +17,9 @@ func fastRAGIntegrationCreateRecallReopen() async throws {
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
-        let ctx1 = try await builder.build(query: "concurrency", wax: wax)
+        var config = FastRAGConfig()
+        config.deterministicNowMs = fastRAGIntegrationNowMs
+        let ctx1 = try await builder.build(query: "concurrency", wax: wax, config: config)
         #expect(!ctx1.items.isEmpty)
 
         let baseName = url.deletingPathExtension().lastPathComponent
@@ -28,7 +32,7 @@ func fastRAGIntegrationCreateRecallReopen() async throws {
         try await wax.close()
 
         let reopened = try await Wax.open(at: url)
-        let ctx2 = try await builder.build(query: "concurrency", wax: reopened)
+        let ctx2 = try await builder.build(query: "concurrency", wax: reopened, config: config)
         #expect(!ctx2.items.isEmpty)
         try await reopened.close()
     }

@@ -239,10 +239,11 @@ func readmeExampleFastRAG() async throws {
         try await text.commit()
 
         let builder = FastRAGContextBuilder()
-        let config = FastRAGConfig(
+        var config = FastRAGConfig(
             maxContextTokens: 800,
             searchMode: .hybrid(alpha: 0.5)
         )
+        config.deterministicNowMs = 1_700_000_000_000
 
         let context = try await builder.build(query: "swift concurrency", wax: wax, config: config)
         #expect(context.totalTokens >= 0)

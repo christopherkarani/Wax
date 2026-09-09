@@ -163,17 +163,16 @@ struct EvaluationClockTests {
             )
             let config = FastRAGConfig(searchMode: .textOnly)
             #expect(config.deterministicNowMs == nil)
-            let context = try await FastRAGContextBuilder().build(
-                query: "Waxfile ranking-clock",
-                wax: orchestrator.wax,
-                session: orchestrator.session,
-                config: config
-            )
-            let item = try #require(context.items.first)
-            // Wall clock (~2026) would mark a 2023 handoff stale. SearchRequest.nowMs
-            // is non-optional, so the nil-clock path passes 0, which looks recent.
-            #expect(item.explanations.contains("recent handoff"))
-            #expect(item.explanations.contains("stale handoff") == false)
+            // Missing clock must not fall back to wall time or epoch/zero
+            // (zero looks "recent" in MemorySemantics). Build requires an explicit nowMs.
+            await #expect(throws: WaxError.self) {
+                _ = try await FastRAGContextBuilder().build(
+                    query: "Waxfile ranking-clock",
+                    wax: orchestrator.wax,
+                    session: orchestrator.session,
+                    config: config
+                )
+            }
         }
     }
 

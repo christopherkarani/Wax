@@ -4,6 +4,8 @@ import Testing
 @testable import Wax
 import WaxCore
 
+private let ragClampTestNowMs: Int64 = 1_700_000_000_000
+
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 private let tinyPhotoQueryImage = PhotoQueryImage(data: tinyPNGData, format: .png)
 
@@ -235,6 +237,7 @@ func fastRAGRrfKZeroOrNegativeDoesNotCrash() async throws {
 
         for value in [0, -1, -100] {
             var config = FastRAGConfig(searchMode: .textOnly)
+            config.deterministicNowMs = ragClampTestNowMs
             config.rrfK = value
             let context = try await builder.build(query: "Swift", wax: wax, config: config)
             #expect(!context.items.isEmpty)
@@ -252,6 +255,7 @@ func fastRAGExpansionBudgetIsBoundedByContextBudget() async throws {
         let counter = try await TokenCounter()
 
         var config = FastRAGConfig(searchMode: .textOnly)
+        config.deterministicNowMs = ragClampTestNowMs
         config.maxContextTokens = 32
         config.expansionMaxTokens = 512
 
@@ -272,6 +276,7 @@ func fastRAGMaxSnippetsZeroProducesNoSnippets() async throws {
         let builder = FastRAGContextBuilder()
 
         var config = FastRAGConfig(searchMode: .textOnly)
+        config.deterministicNowMs = ragClampTestNowMs
         config.maxSnippets = 0
         config.expansionMaxTokens = 0
         config.maxContextTokens = 128
@@ -290,6 +295,7 @@ func fastRAGNegativeBudgetsClampToZeroAtBuildTime() async throws {
         let builder = FastRAGContextBuilder()
 
         var config = FastRAGConfig(searchMode: .textOnly)
+        config.deterministicNowMs = ragClampTestNowMs
         config.maxContextTokens = -1
         config.snippetMaxTokens = -100
         config.maxSnippets = -5
@@ -312,6 +318,7 @@ func fastRAGSearchTopKZeroReturnsEmptyResults() async throws {
         let builder = FastRAGContextBuilder()
 
         var config = FastRAGConfig(searchMode: .textOnly)
+        config.deterministicNowMs = ragClampTestNowMs
         config.searchTopK = 0
         let context = try await builder.build(query: "Swift", wax: wax, config: config)
         #expect(context.items.isEmpty)
@@ -328,6 +335,7 @@ func fastRAGPreviewMaxBytesZeroStillBuildsContext() async throws {
         let builder = FastRAGContextBuilder()
 
         var config = FastRAGConfig(searchMode: .textOnly)
+        config.deterministicNowMs = ragClampTestNowMs
         config.previewMaxBytes = 0
         let context = try await builder.build(query: "Swift", wax: wax, config: config)
         #expect(!context.items.isEmpty)

@@ -28,25 +28,27 @@ package struct FastRAGContextBuilder: Sendable {
     ) async throws -> RAGContext {
         let clamped = clamp(config)
         let counter = try await TokenCounter.shared()
-        // One evaluation clock for this build. Do not invent wall time.
-        // SearchRequest.nowMs is non-optional; 0 is not recency-neutral
-        // (MemorySemantics ageDays uses max(0, now - created), so a missing
-        // clock looks "recent" and does not expire). Ranking callers must set
-        // deterministicNowMs; MemoryOrchestrator.recall always does.
-        let nowMs = clamped.deterministicNowMs
+        // One evaluation clock for this build. Do not invent wall time or
+        // epoch/zero (MemorySemantics ageDays treats 0 as "recent").
+        // MemoryOrchestrator.ragConfigForRecall() always fills this; other
+        // callers must set FastRAGConfig.deterministicNowMs.
+        guard let nowMs = clamped.deterministicNowMs else {
+            throw WaxError.io(
+                "FastRAGContextBuilder.build requires FastRAGConfig.deterministicNowMs"
+            )
+        }
 
         // 1) Run unified search
         // Access-aware ranking needs a little headroom so a stale top result can
         // be displaced by a recently/frequently used candidate just outside the
         // normal context window. The bound keeps enabled-mode work predictable.
-        let searchTopK: Int
-        if accessStatsManager == nil {
-            searchTopK = clamped.searchTopK
-        } else if clamped.searchTopK <= 24 {
-            searchTopK = clamped.searchTopK * 2
-        } else {
-            searchTopK = clamped.searchTopK
-        }
+        let accessEnabled = accessStatsManager != nil
+        let searchTopK = AccessRankingWindow.candidateCount(
+            requestedTopK: clamped.searchTopK,
+            accessEnabled: accessEnabled,
+            multiplier: 2,
+            applyWhenRequestedTopKAtMost: 24
+        )
         let request = SearchRequest(
             query: query,
             embedding: embedding,
@@ -56,7 +58,7 @@ package struct FastRAGContextBuilder: Sendable {
             topK: searchTopK,
             timeRange: timeRange,
             frameFilter: frameFilter,
-            nowMs: nowMs ?? 0,
+            nowMs: nowMs,
             scopeContext: scopeContext,
             rrfK: clamped.rrfK,
             previewMaxBytes: clamped.previewMaxBytes
@@ -77,19 +79,14 @@ package struct FastRAGContextBuilder: Sendable {
         } else {
             [:]
         }
-        let accessRankedResults: [SearchResponse.Result] = if accessStatsManager == nil {
-            response.results
-        } else if let nowMs {
-            AccessFrequencyRanker.rerank(
-                results: response.results,
-                query: query,
-                accessStats: accessStatsMap,
-                nowMs: nowMs,
-                maxWindow: searchTopK
-            )
-        } else {
-            response.results
-        }
+        let accessRankedResults = RankedSearch.applyAccessRanking(
+            results: response.results,
+            query: query,
+            accessStats: accessStatsMap,
+            nowMs: nowMs,
+            maxWindow: searchTopK,
+            enabled: accessEnabled
+        )
         let queryAnalyzer = QueryAnalyzer()
         let rankedResults = clamped.enableAnswerFocusedRanking
             ? Self.orderCandidatesForAnswer(
@@ -219,20 +216,14 @@ package struct FastRAGContextBuilder: Sendable {
                     group.addTask {
                         guard let data = surrogateContents[item.surrogateFrameId] else { return (index, nil) }
 
-                        let selectedTier: SurrogateTier
-                        if let nowMs {
-                            let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
-                            let context = TierSelectionContext(
-                                frameTimestamp: frameTimestamp,
-                                accessStats: accessStatsMap[item.result.frameId],
-                                querySignals: querySignals,
-                                nowMs: nowMs
-                            )
-                            selectedTier = tierSelector.selectTier(context: context)
-                        } else {
-                            // Unknown "now": no age/recency basis for compression.
-                            selectedTier = .full
-                        }
+                        let frameTimestamp = frameMetaMap[item.result.frameId]?.timestamp ?? nowMs
+                        let context = TierSelectionContext(
+                            frameTimestamp: frameTimestamp,
+                            accessStats: accessStatsMap[item.result.frameId],
+                            querySignals: querySignals,
+                            nowMs: nowMs
+                        )
+                        let selectedTier = tierSelector.selectTier(context: context)
                         guard let text = SurrogateTierSelector.extractTier(from: data, tier: selectedTier),
                               !text.isEmpty else { return (index, nil) }
 

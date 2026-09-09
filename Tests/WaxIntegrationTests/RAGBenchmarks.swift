@@ -365,7 +365,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 snippetMaxTokens: 160,
                 maxSnippets: 20,
                 searchTopK: scale.searchTopK,
-                searchMode: .hybrid(alpha: 0.7)
+                searchMode: .hybrid(alpha: 0.7),
+                deterministicNowMs: 1_700_000_000_000
             )
 
             _ = try await builder.build(
@@ -403,7 +404,8 @@ final class RAGPerformanceBenchmarks: XCTestCase {
                 maxSurrogates: 8,
                 surrogateMaxTokens: 80,
                 searchTopK: scale.searchTopK,
-                searchMode: .hybrid(alpha: 0.7)
+                searchMode: .hybrid(alpha: 0.7),
+                deterministicNowMs: 1_700_000_000_000
             )
 
             _ = try await builder.build(
