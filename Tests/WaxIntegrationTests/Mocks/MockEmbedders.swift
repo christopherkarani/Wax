@@ -55,6 +55,67 @@ final class WrongCountBatchEmbedder: BatchEmbeddingProvider, @unchecked Sendable
     }
 }
 
+/// Query-aware provider that does not conform to `QueryAwareEmbeddingProvider`.
+/// Used to prove `embedQuery` dispatches through `any EmbeddingProvider`.
+actor RecordingPrefixQueryEmbedder: EmbeddingProvider {
+    let dimensions: Int = 2
+    let normalize: Bool = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Test",
+        model: "PrefixQuery",
+        dimensions: 2,
+        normalized: true
+    )
+
+    private(set) var embedCallCount = 0
+    private(set) var embedQueryCallCount = 0
+    private(set) var batches: [[String]] = []
+
+    func embed(_ text: String) async throws -> [Float] {
+        embedCallCount += 1
+        return Self.vector(for: text, query: false)
+    }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        embedQueryCallCount += 1
+        return Self.vector(for: text, query: true)
+    }
+
+    func embed(batch texts: [String]) async throws -> [[Float]] {
+        batches.append(texts)
+        return texts.map { Self.vector(for: $0, query: false) }
+    }
+
+    private static func vector(for text: String, query: Bool) -> [Float] {
+        let a = Float(text.utf8.count % 97) / 97.0
+        let b = Float(text.unicodeScalars.count % 89) / 89.0
+        let offset: Float = query ? 0.01 : 0
+        return VectorMath.normalizeL2([a + offset, b])
+    }
+}
+
+struct ConfigurableIdentityEmbedder: EmbeddingProvider, Sendable {
+    let dimensions: Int
+    let normalize: Bool
+    let identity: EmbeddingIdentity?
+
+    init(
+        dimensions: Int = 2,
+        normalize: Bool = true,
+        identity: EmbeddingIdentity?
+    ) {
+        self.dimensions = dimensions
+        self.normalize = normalize
+        self.identity = identity
+    }
+
+    func embed(_ text: String) async throws -> [Float] {
+        let a = Float(text.utf8.count % 97) / 97.0
+        let b = Float(text.unicodeScalars.count % 89) / 89.0
+        return VectorMath.normalizeL2([a, b])
+    }
+}
+
 struct WrongDimensionTextEmbedder: EmbeddingProvider, Sendable {
     let dimensions: Int = 4
     let normalize: Bool = false

@@ -30,16 +30,13 @@ package actor MemoryOrchestrator {
         case always
     }
 
-    /// Provider plus refined batch/query existentials, probed once at attach.
+    /// Provider captured at attach. Ingest uses ``EmbeddingProvider/embed(batch:)``;
+    /// query uses ``EmbeddingProvider/embedQuery`` so Arctic prefixes survive erasure.
     private struct AttachedEmbedder: Sendable {
         let provider: any EmbeddingProvider
-        let batch: (any BatchEmbeddingProvider)?
-        let queryAware: (any QueryAwareEmbeddingProvider)?
 
         init(provider: any EmbeddingProvider) {
             self.provider = provider
-            self.batch = provider as? BatchEmbeddingProvider
-            self.queryAware = provider as? QueryAwareEmbeddingProvider
         }
     }
 
@@ -280,8 +277,8 @@ package actor MemoryOrchestrator {
         }
     }
 
-    /// Atomic snapshot of the ready provider and its attach-time refined existentials,
-    /// so a concurrent attach cannot pair one generation's provider with another's.
+    /// Atomic snapshot of the ready provider so a concurrent attach cannot
+    /// pair one generation's provider with another's.
     private var readyEmbedderSnapshot: AttachedEmbedder? {
         if case .ready(let attached, _) = embedderLifecycle {
             return attached
@@ -1039,36 +1036,16 @@ package actor MemoryOrchestrator {
             missingTexts = chunks
         }
 
-        // Compute missing embeddings using batch API when available
         if !missingTexts.isEmpty {
             let vectors: [[Float]]
             let textsToEmbed = missingTexts // let-bind for @Sendable capture
 
-            // Prefer batch embedding for significantly better throughput
-            if let batchEmbedder = attached.batch {
-                if let timeout {
-                    vectors = try await AsyncTimeout.run(timeout: timeout, operation: "batch ingest embed") {
-                        try await batchEmbedder.embed(batch: textsToEmbed)
-                    }
-                } else {
-                    vectors = try await batchEmbedder.embed(batch: textsToEmbed)
+            if let timeout {
+                vectors = try await AsyncTimeout.run(timeout: timeout, operation: "batch ingest embed") {
+                    try await embedder.embed(batch: textsToEmbed)
                 }
             } else {
-                var sequentialVectors: [[Float]] = []
-                sequentialVectors.reserveCapacity(textsToEmbed.count)
-                for text in textsToEmbed {
-                    let vector: [Float]
-                    if let timeout {
-                        let textCopy = text
-                        vector = try await AsyncTimeout.run(timeout: timeout, operation: "ingest embed") {
-                            try await embedder.embed(textCopy)
-                        }
-                    } else {
-                        vector = try await embedder.embed(text)
-                    }
-                    sequentialVectors.append(vector)
-                }
-                vectors = sequentialVectors
+                vectors = try await embedder.embed(batch: textsToEmbed)
             }
 
             guard vectors.count == missingIndices.count else {
@@ -2581,31 +2558,40 @@ package actor MemoryOrchestrator {
         isQuery: Bool = false
     ) async throws -> [Float] {
         let embedder = attached.provider
-        let queryAware = isQuery ? attached.queryAware : nil
-        let useQueryEmbed = queryAware != nil
         let key = EmbeddingKey.make(
             text: text,
             identity: embedder.identity,
             dimensions: embedder.dimensions,
             normalized: embedder.normalize,
-            queryAware: useQueryEmbed
+            queryAware: isQuery
         )
         if let cached = await cache?.get(key) {
             return cached
         }
 
+        let produce: @Sendable () async throws -> [Float] = {
+            if isQuery {
+                return try await embedder.embedQuery(text)
+            }
+            let vectors = try await embedder.embed(batch: [text])
+            guard vectors.count == 1, let vector = vectors.first else {
+                throw WaxError.encodingError(
+                    reason: "batch embedding returned \(vectors.count) vectors for 1 inputs"
+                )
+            }
+            return vector
+        }
+
         var vector: [Float]
         if let timeout {
-            vector = try await AsyncTimeout.run(timeout: timeout, operation: "embedder.embed") {
-                if let queryAware {
-                    return try await queryAware.embedQuery(text)
-                }
-                return try await embedder.embed(text)
+            vector = try await AsyncTimeout.run(
+                timeout: timeout,
+                operation: isQuery ? "embedder.embedQuery" : "batch ingest embed"
+            ) {
+                try await produce()
             }
-        } else if let queryAware {
-            vector = try await queryAware.embedQuery(text)
         } else {
-            vector = try await embedder.embed(text)
+            vector = try await produce()
         }
         if embedder.normalize {
             vector = normalizedL2(vector)
@@ -2647,35 +2633,23 @@ package actor MemoryOrchestrator {
             return out
         }
 
-        if let batch = attached.batch {
-            let vectors = try await batch.embed(batch: missingTexts)
-            guard vectors.count == missingTexts.count else {
-                throw WaxError.io("batch embedding count mismatch: expected \(missingTexts.count), got \(vectors.count)")
+        let vectors = try await embedder.embed(batch: missingTexts)
+        guard vectors.count == missingTexts.count else {
+            throw WaxError.io("batch embedding count mismatch: expected \(missingTexts.count), got \(vectors.count)")
+        }
+        for (position, idx) in missingIndices.enumerated() {
+            var vector = vectors[position]
+            if embedder.normalize {
+                vector = normalizedL2(vector)
             }
-            for (position, idx) in missingIndices.enumerated() {
-                var vector = vectors[position]
-                if embedder.normalize {
-                    vector = normalizedL2(vector)
-                }
-                out[idx] = vector
-                let key = EmbeddingKey.make(
-                    text: chunks[idx],
-                    identity: embedder.identity,
-                    dimensions: embedder.dimensions,
-                    normalized: embedder.normalize
-                )
-                await cache?.set(key, value: vector)
-            }
-        } else {
-            for (position, idx) in missingIndices.enumerated() {
-                let chunk = missingTexts[position]
-                let vector = try await embedOne(
-                    chunk,
-                    attached: attached,
-                    cache: cache
-                )
-                out[idx] = vector
-            }
+            out[idx] = vector
+            let key = EmbeddingKey.make(
+                text: chunks[idx],
+                identity: embedder.identity,
+                dimensions: embedder.dimensions,
+                normalized: embedder.normalize
+            )
+            await cache?.set(key, value: vector)
         }
 
         return out
