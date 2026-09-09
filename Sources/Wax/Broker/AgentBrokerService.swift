@@ -874,8 +874,7 @@ extension AgentBrokerService {
     }
 
     func memoryGet(_ command: BrokerCommand.MemoryGet) async throws -> AgentBrokerValue {
-        let reference = try parseMemoryReference(command.memoryID)
-        let hit = try await layeredMemoryGet(reference: reference)
+        let hit = try await layeredMemoryGet(reference: command.memoryID)
         return .object([
             "memory_id": .string(hit.reference),
             "horizon": .string(hit.horizon.rawValue),
@@ -1105,7 +1104,7 @@ extension AgentBrokerService {
         let predicate = command.predicate
         let kind = command.kind
         let aliases = command.aliases
-        let parsedObject = try command.object.map { try parseFactValue($0) }
+        let parsedObject = try command.object.map { try BrokerCommand.parseFactValue($0) }
 
         let isSessionTaskState =
             metadata[MemoryMetadataKeys.type] == MemoryType.taskState.rawValue
@@ -2397,7 +2396,7 @@ extension AgentBrokerService {
 
     func entityUpsert(_ command: BrokerCommand.EntityUpsert) async throws -> AgentBrokerValue {
         let entityID = try await longTermMemory.upsertEntity(
-            key: EntityKey(command.key),
+            key: command.key,
             kind: command.kind,
             aliases: command.aliases,
             commit: true
@@ -2405,7 +2404,7 @@ extension AgentBrokerService {
         return .object([
             "status": .string("ok"),
             "entity_id": .from(entityID.rawValue),
-            "key": .string(command.key),
+            "key": .string(command.key.rawValue),
             "committed": .bool(true),
         ])
     }
@@ -2413,10 +2412,10 @@ extension AgentBrokerService {
     func factAssert(_ command: BrokerCommand.FactAssert) async throws -> AgentBrokerValue {
         let evidence = try parseStructuredEvidence(command.evidence)
         let factID = try await longTermMemory.assertFact(
-            subject: EntityKey(command.subject),
-            predicate: PredicateKey(command.predicate),
-            object: try parseFactValue(command.object),
-            relation: try parseVersionRelation(command.relation),
+            subject: command.subject,
+            predicate: command.predicate,
+            object: command.object,
+            relation: command.relation,
             validFromMs: command.validFromMs,
             validToMs: command.validToMs,
             evidence: evidence,
@@ -2432,13 +2431,13 @@ extension AgentBrokerService {
 
     func factRetract(_ command: BrokerCommand.FactRetract) async throws -> AgentBrokerValue {
         try await longTermMemory.retractFact(
-            factId: FactRowID(rawValue: command.factID),
+            factId: command.factID,
             atMs: command.atMs,
             commit: true
         )
         return .object([
             "status": .string("ok"),
-            "fact_id": .from(command.factID),
+            "fact_id": .from(command.factID.rawValue),
             "at_ms": .from(command.atMs),
             "committed": .bool(true),
         ])
@@ -2446,14 +2445,12 @@ extension AgentBrokerService {
 
     func factsQuery(_ command: BrokerCommand.FactsQuery) async throws -> AgentBrokerValue {
         let limit = command.limit
-        let subject = command.subject.map { EntityKey($0) }
-        let predicate = command.predicate.map { PredicateKey($0) }
         let asOfMs = command.asOfMs
         let systemAsOfMs = command.systemAsOfMs
         let validAsOfMs = command.validAsOfMs
         let result = try await longTermMemory.facts(
-            about: subject,
-            predicate: predicate,
+            about: command.subject,
+            predicate: command.predicate,
             asOfMs: asOfMs ?? Int64.max,
             systemAsOfMs: systemAsOfMs,
             validAsOfMs: validAsOfMs,
@@ -3314,66 +3311,6 @@ extension AgentBrokerService {
         ])
     }
 
-    func parseFactValue(_ value: AgentBrokerValue) throws -> FactValue {
-        switch value {
-        case .string(let raw):
-            return .string(raw)
-        case .bool(let raw):
-            return .bool(raw)
-        case .int(let raw):
-            return .int(raw)
-        case .double(let raw):
-            return .double(raw)
-        case .object(let raw):
-            if raw.count == 2,
-               let type = raw["type"]?.stringValue,
-               let genericValue = raw["value"] {
-                switch type {
-                case "entity":
-                    guard let entity = genericValue.stringValue else {
-                        throw BrokerValidationError.invalid("entity typed object value must be a string")
-                    }
-                    return .entity(EntityKey(entity))
-                case "time_ms":
-                    guard let time = genericValue.intValue else {
-                        throw BrokerValidationError.invalid("time_ms typed object value must be an integer")
-                    }
-                    return .timeMs(time)
-                case "data_base64":
-                    guard let data = genericValue.stringValue, let decoded = Data(base64Encoded: data) else {
-                        throw BrokerValidationError.invalid("data_base64 typed object value must be a base64 string")
-                    }
-                    return .data(decoded)
-                default:
-                    throw BrokerValidationError.invalid("typed object type must be one of: entity, time_ms, data_base64")
-                }
-            }
-            if let entity = raw["entity"]?.stringValue, raw.count == 1 {
-                return .entity(EntityKey(entity))
-            }
-            if let time = raw["time_ms"]?.intValue, raw.count == 1 {
-                return .timeMs(time)
-            }
-            if let data = raw["data_base64"]?.stringValue, raw.count == 1, let decoded = Data(base64Encoded: data) {
-                return .data(decoded)
-            }
-            throw BrokerValidationError.invalid("typed object values must be one of {entity}, {time_ms}, or {data_base64}")
-        default:
-            throw BrokerValidationError.invalid("object must be a string, number, bool, or typed object")
-        }
-    }
-
-    func parseVersionRelation(_ raw: String) throws -> VersionRelation {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "sets": return .sets
-        case "updates": return .updates
-        case "extends": return .extends
-        case "retracts": return .retracts
-        default:
-            throw BrokerValidationError.invalid("relation must be one of: sets, updates, extends, retracts")
-        }
-    }
-
     func parseStructuredEvidence(_ value: AgentBrokerValue?) throws -> [StructuredEvidence] {
         guard let value else { return [] }
         guard let array = value.arrayValue else {
@@ -3489,10 +3426,6 @@ extension AgentBrokerService {
         case .data(let data):
             return .object(["data_base64": .string(data.base64EncodedString())])
         }
-    }
-
-    func parseMemoryReference(_ raw: String) throws -> MemoryReference {
-        try MemoryID.parse(raw)
     }
 
     static func itemKindLabel(_ kind: RAGContext.ItemKind) -> String {

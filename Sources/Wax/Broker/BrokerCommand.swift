@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 /// Typed broker command decoded from the wire (`command` + `arguments`).
 ///
@@ -125,7 +126,7 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct MemoryGet: Sendable, Equatable {
-        package var memoryID: String
+        package var memoryID: MemoryID
     }
 
     package struct Stats: Sendable, Equatable {
@@ -143,7 +144,7 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct EntityUpsert: Sendable, Equatable {
-        package var key: String
+        package var key: EntityKey
         package var kind: String
         package var aliases: [String]
     }
@@ -154,7 +155,7 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct FactRetract: Sendable, Equatable {
-        package var factID: Int64
+        package var factID: FactRowID
         package var atMs: Int64?
     }
 
@@ -229,8 +230,8 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct FactsQuery: Sendable, Equatable {
-        package var subject: String?
-        package var predicate: String?
+        package var subject: EntityKey?
+        package var predicate: PredicateKey?
         package var asOfMs: Int64?
         package var systemAsOfMs: Int64?
         package var validAsOfMs: Int64?
@@ -251,10 +252,10 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct FactAssert: Sendable, Equatable {
-        package var subject: String
-        package var predicate: String
-        package var object: AgentBrokerValue
-        package var relation: String
+        package var subject: EntityKey
+        package var predicate: PredicateKey
+        package var object: FactValue
+        package var relation: VersionRelation
         package var validFromMs: Int64?
         package var validToMs: Int64?
         package var evidence: AgentBrokerValue?
@@ -543,7 +544,8 @@ extension BrokerCommand.HandoffLatest {
 
 extension BrokerCommand.MemoryGet {
     package static func decode(_ args: BrokerArguments) throws -> Self {
-        Self(memoryID: try args.requiredString("memory_id", maxBytes: BrokerLimits.maxMemoryIDBytes))
+        let raw = try args.requiredString("memory_id", maxBytes: BrokerLimits.maxMemoryIDBytes)
+        return Self(memoryID: try MemoryID.parse(raw))
     }
 }
 
@@ -576,7 +578,7 @@ extension BrokerCommand.MarkdownSync {
 extension BrokerCommand.EntityUpsert {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(
-            key: try args.requiredString("key", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
+            key: EntityKey(try args.requiredString("key", maxBytes: BrokerLimits.maxGraphIdentifierBytes)),
             kind: try args.requiredString("kind", maxBytes: BrokerLimits.maxGraphKindBytes),
             aliases: try args.optionalStringArray("aliases") ?? []
         )
@@ -601,7 +603,7 @@ extension BrokerCommand.EntityResolve {
 extension BrokerCommand.FactRetract {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(
-            factID: try args.requiredInt64("fact_id"),
+            factID: FactRowID(rawValue: try args.requiredInt64("fact_id")),
             atMs: try args.optionalInt64("at_ms")
         )
     }
@@ -762,8 +764,8 @@ extension BrokerCommand.FactsQuery {
             throw BrokerValidationError.invalid("limit must be between 1 and \(BrokerLimits.maxGraphLimit)")
         }
         return Self(
-            subject: try args.optionalString("subject"),
-            predicate: try args.optionalString("predicate"),
+            subject: try args.optionalString("subject").map { EntityKey($0) },
+            predicate: try args.optionalString("predicate").map { PredicateKey($0) },
             asOfMs: try args.optionalInt64("as_of"),
             systemAsOfMs: try args.optionalInt64("system_as_of"),
             validAsOfMs: try args.optionalInt64("valid_as_of"),
@@ -796,10 +798,10 @@ extension BrokerCommand.MemoryPromote {
 extension BrokerCommand.FactAssert {
     package static func decode(_ args: BrokerArguments) throws -> Self {
         Self(
-            subject: try args.requiredString("subject", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
-            predicate: try args.requiredString("predicate", maxBytes: BrokerLimits.maxGraphIdentifierBytes),
-            object: try args.requiredValue("object"),
-            relation: try args.optionalString("relation") ?? "sets",
+            subject: EntityKey(try args.requiredString("subject", maxBytes: BrokerLimits.maxGraphIdentifierBytes)),
+            predicate: PredicateKey(try args.requiredString("predicate", maxBytes: BrokerLimits.maxGraphIdentifierBytes)),
+            object: try BrokerCommand.parseFactValue(try args.requiredValue("object")),
+            relation: try BrokerCommand.parseVersionRelation(try args.optionalString("relation") ?? "sets"),
             validFromMs: try args.optionalInt64("valid_from"),
             validToMs: try args.optionalInt64("valid_to"),
             evidence: try args.optionalValue("evidence")
