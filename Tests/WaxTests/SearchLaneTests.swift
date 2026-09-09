@@ -19,6 +19,28 @@ struct SearchLaneTests {
         }
     }
 
+    @Test(arguments: [[Float](), nil])
+    func compatibilityInitDoesNotStoreVectorOnlyWithoutEmbedding(embedding: [Float]?) {
+        let request = SearchRequest(query: "q", embedding: embedding, mode: .vectorOnly, nowMs: 0)
+        #expect(request.lane == .textOnly)
+        #expect(request.mode == .textOnly)
+        #expect(request.embedding == nil)
+
+        let plan = SearchPlan.make(request)
+        #expect(plan.includeText)
+        #expect(plan.includeVector == false)
+    }
+
+    @Test
+    func compatibilityInitKeepsVectorOnlyWhenEmbeddingIsNonEmpty() {
+        let embedding: [Float] = [1, 0]
+        let request = SearchRequest(embedding: embedding, mode: .vectorOnly, nowMs: 0)
+        #expect(request.lane == .vectorOnly(embedding: embedding))
+        #expect(request.mode == .vectorOnly)
+        #expect(request.embedding == embedding)
+        #expect(SearchPlan.make(request).includeVector)
+    }
+
     @Test
     func searchRequestFactoryRejectsEmptyVectorOnlyEmbedding() {
         do {

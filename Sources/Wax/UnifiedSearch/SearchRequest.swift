@@ -5,8 +5,9 @@ import WaxVectorSearch
 /// Retrieval lane paired with the query embedding that lane needs.
 ///
 /// `vectorOnly` without a non-empty embedding is rejected by ``from(mode:embedding:)``
-/// and by the throwing `SearchRequest` factory. Hybrid with a nil embedding stays
-/// legal (text degradation).
+/// and by the throwing `SearchRequest` factory. The source-compatible `mode` +
+/// `embedding` initializer maps that case to `textOnly` instead of storing an
+/// empty vector-only lane. Hybrid with a nil embedding stays legal (text degradation).
 package enum SearchLane: Sendable, Equatable {
     case textOnly
     case vectorOnly(embedding: [Float])
@@ -73,19 +74,23 @@ package enum SearchLane: Sendable, Equatable {
         }
     }
 
-    /// Source-compatible mapping used by the `mode` + `embedding` initializer.
-    fileprivate init(mode: SearchMode, embedding: [Float]?) {
+    /// Source-compatible mapping used by the non-throwing `mode` + `embedding`
+    /// initializer. `vectorOnly` without a non-empty embedding becomes `textOnly`
+    /// so that illegal empty vector-only state is never stored.
+    fileprivate static func compatible(mode: SearchMode, embedding: [Float]?) -> SearchLane {
         switch mode {
         case .textOnly:
-            self = .textOnly
+            return .textOnly
         case .vectorOnly:
-            self = .vectorOnly(embedding: embedding ?? [])
+            if let embedding, !embedding.isEmpty {
+                return .vectorOnly(embedding: embedding)
+            }
+            return .textOnly
         case .hybrid(let alpha):
             if let embedding, !embedding.isEmpty {
-                self = .hybrid(alpha: alpha, embedding: embedding)
-            } else {
-                self = .hybrid(alpha: alpha, embedding: nil)
+                return .hybrid(alpha: alpha, embedding: embedding)
             }
+            return .hybrid(alpha: alpha, embedding: nil)
         }
     }
 }
@@ -93,7 +98,7 @@ package enum SearchLane: Sendable, Equatable {
 /// Unified search request.
 package struct SearchRequest: Sendable, Equatable {
     package var query: String?
-    package var lane: SearchLane
+    package let lane: SearchLane
     package var vectorEnginePreference: VectorEnginePreference
     package var vectorSearchTimeout: Duration?
     package var topK: Int
@@ -193,7 +198,7 @@ package struct SearchRequest: Sendable, Equatable {
     ) {
         self.init(
             query: query,
-            uncheckedLane: SearchLane(mode: mode, embedding: embedding),
+            uncheckedLane: SearchLane.compatible(mode: mode, embedding: embedding),
             vectorEnginePreference: vectorEnginePreference,
             vectorSearchTimeout: vectorSearchTimeout,
             topK: topK,
