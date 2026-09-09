@@ -20,8 +20,16 @@ public protocol MultimodalEmbeddingProvider: Sendable {
 
     /// Compute a text embedding in the same space as image embeddings.
     func embed(text: String) async throws -> [Float]
+    /// Retrieval-optimized text embedding. Default calls ``embed(text:)``.
+    func embedQuery(text: String) async throws -> [Float]
     /// Compute an image embedding in the same space as text embeddings.
     func embed(image: CGImage) async throws -> [Float]
+}
+
+extension MultimodalEmbeddingProvider {
+    public func embedQuery(text: String) async throws -> [Float] {
+        try await embed(text: text)
+    }
 }
 
 // MARK: - Deprecated Default (migration aid)

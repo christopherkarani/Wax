@@ -27,13 +27,19 @@ enum MemoryBindingCompatibility {
            expected != actual {
             return "provider expected '\(expected)' got '\(actual)'"
         }
-        if let expected = binding.embeddingModel,
-           let actual = identity.model,
-           canonicalModel(expected) != canonicalModel(actual) {
-            return "model expected '\(expected)' got '\(actual)'"
+        if let expected = binding.embeddingModel {
+            guard let actual = identity.model else {
+                return "model expected '\(expected)' got nil"
+            }
+            if canonicalModel(expected) != canonicalModel(actual) {
+                return "model expected '\(expected)' got '\(actual)'"
+            }
         }
         if let expected = binding.embeddingDimensions {
-            guard let actual = identity.dimensions.flatMap({ UInt32(exactly: $0) }) else {
+            guard let raw = identity.dimensions else {
+                return "dimensions expected \(expected) got nil"
+            }
+            guard let actual = UInt32(exactly: raw) else {
                 return "dimensions could not be represented as UInt32"
             }
             if expected != actual {

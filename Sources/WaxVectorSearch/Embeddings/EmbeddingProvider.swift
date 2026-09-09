@@ -14,10 +14,28 @@ public protocol EmbeddingProvider: Sendable {
     var identity: EmbeddingIdentity? { get }
     var executionMode: ProviderExecutionMode { get }
     func embed(_ text: String) async throws -> [Float]
+    /// Retrieval-optimized query embedding. Default calls ``embed(_:)``.
+    func embedQuery(_ text: String) async throws -> [Float]
+    /// Batch embedding. Default maps ``embed(_:)`` sequentially.
+    func embed(batch texts: [String]) async throws -> [[Float]]
 }
 
 public extension EmbeddingProvider {
     var executionMode: ProviderExecutionMode { .onDeviceOnly }
+
+    func embedQuery(_ text: String) async throws -> [Float] {
+        try await embed(text)
+    }
+
+    func embed(batch texts: [String]) async throws -> [[Float]] {
+        var vectors: [[Float]] = []
+        vectors.reserveCapacity(texts.count)
+        for text in texts {
+            try Task.checkCancellation()
+            vectors.append(try await embed(text))
+        }
+        return vectors
+    }
 }
 
 public protocol BatchEmbeddingProvider: EmbeddingProvider {

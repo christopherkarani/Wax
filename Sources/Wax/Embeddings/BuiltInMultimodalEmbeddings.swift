@@ -58,6 +58,10 @@ package struct TextBridgedMultimodalEmbedder: MultimodalEmbeddingProvider, Senda
         try await base.embed(text)
     }
 
+    package func embedQuery(text: String) async throws -> [Float] {
+        try await base.embedQuery(text)
+    }
+
     package func embed(image: CGImage) async throws -> [Float] {
         let description = await Self.describe(image: image)
         return try await base.embed(description)
