@@ -54,6 +54,19 @@ package enum SessionOpenAssembly {
         return result
     }
 
+    /// True only when compacting a found handoff that still has content or tasks.
+    /// Empty `found=true` bodies hide without a tokenizer, matching the pre-peel early return.
+    package static func needsTokenizer(_ value: AgentBrokerValue) -> Bool {
+        guard let handoff = value.objectValue,
+              handoff["found"]?.boolValue == true
+        else {
+            return false
+        }
+        let content = handoff["content"]?.stringValue ?? ""
+        let tasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !tasks.isEmpty
+    }
+
     package static func compactHandoff(
         _ value: AgentBrokerValue,
         recallQuery: String?,
@@ -68,8 +81,7 @@ package enum SessionOpenAssembly {
         let originalContent = handoff["content"]?.stringValue ?? ""
         let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let trimmedQuery = recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let emptyBody = originalContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && originalTasks.isEmpty
+        let emptyBody = !needsTokenizer(value)
         if emptyBody {
             return .object([
                 "found": .bool(false),

@@ -34,6 +34,34 @@ func sessionOpenAssemblyHidesEmptyHandoffBody() async throws {
 }
 
 @Test
+func sessionOpenAssemblyNeedsTokenizerOnlyWhenHandoffHasBody() {
+    #expect(
+        SessionOpenAssembly.needsTokenizer(.object(["found": .bool(false)])) == false
+    )
+    #expect(
+        SessionOpenAssembly.needsTokenizer(.object([
+            "found": .bool(true),
+            "content": .string("   "),
+            "pending_tasks": .array([]),
+        ])) == false
+    )
+    #expect(
+        SessionOpenAssembly.needsTokenizer(.object([
+            "found": .bool(true),
+            "content": .string("keep"),
+            "pending_tasks": .array([]),
+        ])) == true
+    )
+    #expect(
+        SessionOpenAssembly.needsTokenizer(.object([
+            "found": .bool(true),
+            "content": .string(""),
+            "pending_tasks": .array([.string("task")]),
+        ])) == true
+    )
+}
+
+@Test
 func sessionOpenAssemblyTruncatesHandoffToTokenBudget() async throws {
     let content = String(repeating: "a", count: BrokerLimits.maxSessionOpenHandoffContentTokens + 40)
     let compacted = await SessionOpenAssembly.compactHandoff(

@@ -1764,7 +1764,7 @@ extension AgentBrokerService {
 
         let rebound = SessionOpenDecision.rebound(returnedSessionID: sessionUUID, facts: openFacts)
         let tokenizer: SessionOpenAssembly.Tokenizer
-        if handoffPayload.objectValue?["found"]?.boolValue == true {
+        if SessionOpenAssembly.needsTokenizer(handoffPayload) {
             let counter = try await TokenCounter.shared()
             tokenizer = SessionOpenAssembly.Tokenizer(count: { text in await counter.count(text) })
         } else {
