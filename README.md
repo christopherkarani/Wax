@@ -1,4 +1,3 @@
-
 <!-- HEADER:START -->
 
 <div align="center">
@@ -9,16 +8,18 @@
 <div style="height: 16px;"></div>
 
 <p align="center">
-  <strong>Single File Memory layer memory for every agent that runs on Apple Silicon </strong><br/>
-  One <code>.wax</code> file. Foundation Models, Claude, Cursor, Codex, Hermes — same store.<br/>
-  Sync with iCloud, or AirDrop the file.
+  <strong>Chat dies. Wax does not.</strong><br/>
+  One local <code>.wax</code> file for Claude, Codex, Hermes, Cursor, and Apple Foundation Models.<br/>
+  Searchable memory on disk. No account. No hosted vector DB.
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/waxmcp"><img src="https://img.shields.io/npm/v/waxmcp?style=flat-square&logo=npm&label=waxmcp" alt="npm waxmcp" /></a>
   <a href="https://github.com/christopherkarani/Wax/releases"><img src="https://img.shields.io/github/v/release/christopherkarani/Wax?style=flat-square&logo=swift&logoColor=white&label=Swift" alt="Swift" /></a>
-  <a href="https://developer.apple.com/ios/"><img src="https://img.shields.io/badge/platform-iOS%20%7C%20macOS-lightgrey?style=flat-square" alt="Platforms" /></a>
+  <a href="https://developer.apple.com/"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" /></a>
   <a href="https://github.com/christopherkarani/Wax/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License" /></a>
   <a href="https://github.com/christopherkarani/Wax/stargazers"><img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat-square&logo=github" alt="Stars" /></a>
+  <a href="https://discord.gg/NHgNh7HJ6M"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 
 <p align="center">
@@ -26,298 +27,48 @@
 </p>
 <!-- HEADER:END -->
 
----
-
-## What is Wax?
-
-Wax is a **local-first shared memory layer**. It allows any AI to have a single file memory engine with access to vector search, photo and video rag, optimized for Apple Silicon
-
-That store is one file: `~/.wax/memory.wax`. No hosted vector DB. Memory, Decisions, facts survive the chat, the app, and the reboot.
-
-**Same Mac, many agents.** For those using multiple different agents, Wax points each host at the file (or at one local HTTP server). They share memory instead of each keeping a private brain.
-
-**Another Mac Or iPhone Device** Put the file in iCloud Drive and both machines see the same store, or AirDrop `memory.wax` like any other document.
-
-```text
-~/Library/Mobile Documents/com~apple~CloudDocs/Wax/memory.wax   # iCloud
-# or
-AirDrop  memory.wax  →  ~/.wax/memory.wax
+```bash
+npx -y waxmcp@latest install
 ```
 
-Agent setup: [Agent Quick Start](#agent-quick-start) · host snippets: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md)
+That stages the MCP server, MiniLM runtime, and operator skill on Apple Silicon. Wire one host, paste the [playbook](#2-teach-the-model-when-to-use-wax), and the next session can `remember` / `recall`. If this is the memory layer you wanted, [star the repo](https://github.com/christopherkarani/Wax) so other agents find it.
 
 <p align="center">
   <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
 </p>
 
-### Also a Swift engine
-
-The Engine is Swift Native. Embed it in an iOS or macOS app when you want on-device RAG without standing up a server.
-
-```swift
-import Wax
-
-let memory = try await Memory(at: url)
-try await memory.save("The user prefers dark mode and uses Vim keybindings.")
-let results = try await memory.search("What editor does the user like?")
-// → "The user prefers dark mode and uses Vim keybindings."
-```
-
-<p align="center">
-  <img src="Resources/docs/assets/wax-cli-demo.gif" width="720" alt="Wax CLI demo TUI — live retrieval time, memory, FrameStore, concurrency, volume, errors, and exclusive lock">
-</p>
-
-### What you can build
-
-- **Shared agent memory** — one store across every MCP client on the machine.
-- **Carry it** — iCloud the file between Macs, or AirDrop it.
-- **Personal knowledge** — semantic search over notes and clips, still on disk.
-- **On-device RAG** — ship memory inside an app, no cloud dependency.
-
 ---
 
-## Choose Your Path
+## What Wax is
 
-| 🤖 Every agent on this Mac | ⌨️ CLI | 🛠️ Swift app |
-|:---------------------------|:-------|:-------------|
-| **You want:** Claude, Cursor, Codex, Hermes sharing one local memory. Sync the file with iCloud or AirDrop. | **You want:** A command-line store you can script. | **You want:** The same engine inside an iOS/macOS app. |
-| **Get started:** [Agent Quick Start](#agent-quick-start) ↓ | **Get started:** [CLI Quick Start](#cli-quick-start) ↓ | **Get started:** [Swift Quick Start](#swift-quick-start) ↓ |
+Wax is a **shared memory file** for agents and on-device models.
 
----
-
-## Swift Quick Start
-
-### 1. Add Wax to your project
-
-**Swift Package Manager**
-
-```swift
-// Package.swift
-dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.2.22")
-]
+```text
+Claude Code ─┐
+Codex ───────┤
+Cursor ──────┼─ MCP ─→  one HTTP writer  ─→  ~/.wax/memory.wax
+Grok ────────┤
+OpenClaw ────┘
+Hermes ──────── native wax-memory provider ─↗
+iPhone / Mac app ── Memory + Foundation Models tools ─↗
 ```
 
-Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
+The store is one file. Documents, FTS5 text search, CoreML vectors, and a WAL live inside it. iCloud or AirDrop the file to another Mac or iPhone. A second MCP process on the same path will lock, so two or more hosts share `http://127.0.0.1:3000/mcp`.
 
-### 2. Copy-paste this into your app
+**What you get that a host scratchpad does not:**
 
-```swift
-import Foundation
-import Wax
+- Claude, Codex, Cursor, and Hermes read and write the **same** memories.
+- `remember` does not call an LLM to extract facts. You store a sentence; hybrid search finds it later.
+- Apple Foundation Models get `waxRemember` / `waxRecall` / `waxSearch` as on-device tools.
+- Hermes can drop `MEMORY.md` curation and use the native `wax-memory` provider (handoffs, turn sync, `wax_remember` / `wax_recall`).
 
-let url = URL.documentsDirectory.appending(path: "agent.wax")
-
-// Open a memory store
-let memory = try await Memory(at: url)
-
-// Save something
-try await memory.save("The user is building a habit tracker in SwiftUI.")
-
-// Recall it later — works even if the app was killed
-let results = try await memory.search("What is the user building?")
-if let best = results.items.first {
-    print("Found: \(best.text)")
-    // → "Found: The user is building a habit tracker in SwiftUI."
-}
-
-try await memory.close()
-```
-
-<details>
-<summary><strong>SwiftUI example</strong></summary>
-
-```swift
-import SwiftUI
-import Wax
-
-struct ContentView: View {
-    @State private var result = "Searching…"
-
-    var body: some View {
-        Text(result)
-            .task {
-                do {
-                    let url = URL.documentsDirectory.appending(path: "agent.wax")
-                    let memory = try await Memory(at: url)
-
-                    try await memory.save("The user is building a habit tracker in SwiftUI.")
-                    let context = try await memory.search("What is the user building?")
-
-                    result = context.items.first?.text ?? "Nothing found"
-                    try await memory.close()
-                } catch {
-                    result = "Error: \(error.localizedDescription)"
-                }
-            }
-    }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>CLI tool (<code>main.swift</code>)</strong></summary>
-
-```swift
-import Foundation
-import Wax
-
-@main
-struct AgentMemory {
-    static func main() async throws {
-        let url = URL.documentsDirectory.appending(path: "agent.wax")
-        let memory = try await Memory(at: url)
-
-        try await memory.save("The user is building a habit tracker in SwiftUI.")
-
-        let results = try await memory.search("What is the user building?")
-        if let best = results.items.first {
-            print("Found: \(best.text)")
-        }
-
-        try await memory.close()
-    }
-}
-```
-
-</details>
-
-Prefer a checked-in harness over pasting snippets? [Run the demo](#run-the-demo) — `Resources/WaxDemo` exercises the public `Memory` APIs on macOS 26.
-
-Looking to store persistent facts and long-term reasoning? Structured memory (entities and facts) is available today through the MCP server tools (`entity_upsert`, `fact_assert`, `facts_query`, …) described in the [Agent Quick Start](#agent-quick-start). The Swift-level structured memory API is package-internal for now; see [Structured Memory](Sources/WaxCore/WaxCore.docc/Articles/StructuredMemory.md) (contributor documentation).
-
----
-
-## Run the demo
-
-`Resources/WaxDemo` is a small Swift package that stress-tests the public Wax APIs (save/search durability, embeddings, Foundation Models, error paths).
-
-**Requires macOS 26** (the demo package declares that platform; Foundation Models mode needs Apple Intelligence where available).
-
-```bash
-cd Resources/WaxDemo
-swift run WaxDemo --mode all
-```
-
-Useful modes:
-
-| Mode | What it runs |
-|:-----|:-------------|
-| `memory` | Save → search → close → reopen → search |
-| `framestore` | Low-level frame create/put/read/delete |
-| `embeddings` | Built-in MiniLM + hybrid/vector search |
-| `fm` | Foundation Models memory session (or a clear unavailable message) |
-| `errors` | Validation / `WaxError` paths |
-| `all` | Everything above (default) |
-
-```bash
-swift run WaxDemo --mode memory
-swift run WaxDemo --mode fm --keep --store /tmp/wax-demo.wax
-```
-
-`--keep` leaves the `.wax` file on disk; `--store PATH` picks the file location.
-
-Source: [`Resources/WaxDemo`](Resources/WaxDemo).
-
----
-
-## CLI Quick Start
-
-### 1. Install
-
-```bash
-# Build from source (requires Swift 6+)
-git clone https://github.com/christopherkarani/Wax.git
-cd Wax
-swift build -c release
-
-# The binary is now at .build/release/wax-cli
-cp .build/release/wax-cli /usr/local/bin/
-```
-
-### 2. Remember and recall from the terminal
-
-```bash
-# Save a memory
-wax-cli remember "An automobile needs periodic maintenance."
-
-# Search it back
-wax-cli search "car service" --mode hybrid --topK 3
-
-# Simple text-only search (no setup required)
-wax-cli search "car service" --mode text
-
-# Linux / cloud TUI demo + public-API stress (text-only; no MiniLM claim)
-wax-cli demo --run
-wax-cli demo --stress --run
-```
-
-The dashboard tracks **retrieval time** live (`last` / `p50` / `p95` / `n`) on every successful `Memory.search`.
-
-On Linux, build `wax-cli` **without** `-DGRDBCUSTOMSQLITE` (that flag breaks GRDB's system SQLite overlay):
-
-```bash
-swift build --product wax-cli --traits default,MCPServer
-BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)/wax-cli"
-"$BIN" demo --run
-"$BIN" demo --stress --run
-# Hold each TUI frame for a recording or live walkthrough
-"$BIN" demo --run --pace-ms 1500 --hold-ms 4000
-```
-
-For long-running sessions, start the daemon:
-
-```bash
-wax-cli daemon --store-path ~/.wax/memory.wax
-```
-
-Then send JSON-line commands:
-
-```json
-{"id":"1","command":"remember","content":"An automobile needs periodic maintenance."}
-{"id":"2","command":"search","query":"car service","mode":"hybrid","topK":3}
-{"id":"3","command":"shutdown"}
-```
-
-> [!NOTE]
-> Vector search requires the embedder. If it's unavailable, hybrid/vector commands fail loudly instead of silently falling back to text-only mode.
-
-### Repair a store safely
-
-The offline maintenance commands always require an explicit source, destination,
-and direct-file opt-in. They take a locked, byte-verified copy of the source,
-perform the work in a staging file, deep-verify it, and atomically publish the
-destination. The source is not modified. A destination that already exists must
-be a regular, unlocked file and requires `--overwrite`; symlink and live-store
-aliases are rejected.
-
-```bash
-# Compact a degraded or legacy store without touching the source.
-wax-cli compact-store \
-  --direct-store \
-  --no-embedder \
-  --store-path /path/to/source.wax \
-  --output /path/to/compacted.wax
-
-# Backfill missing vectors on a verified copy (requires an embedder build).
-wax-cli embed-backfill \
-  --direct-store \
-  --store-path /path/to/source.wax \
-  --output /path/to/backfilled.wax
-```
-
-Use `--overwrite` only when replacing an existing destination is intentional.
-Do not point either command at `~/.wax/memory.wax` or another broker-managed
-live-store path; stop attached writers first and use `--format json` when the
-result is consumed by automation. The commands report `sourceUnchanged` and
-`deepVerified` on successful JSON output.
+Host playbook: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md)
 
 ---
 
 ## Agent Quick Start
 
-Give your AI coding assistant (Claude Code, Cursor, Codex, Hermes, OpenClaw, Windsurf) a persistent memory that survives across sessions.
+Give Claude Code, Cursor, Codex, Hermes, OpenClaw, or Windsurf a memory that survives the chat.
 
 Installing the server is not enough. Hosts ignore MCP tool descriptions unless an always-on file says **when** to write. Paste a block below after you wire the host.
 
@@ -327,7 +78,7 @@ Installing the server is not enough. Hosts ignore MCP tool descriptions unless a
 npx -y waxmcp@latest install
 ```
 
-**Claude-only** can use stdio. **Two or more clients must share one HTTP server** on `http://127.0.0.1:3000/mcp` — a second process on `~/.wax/memory.wax` will lock.
+**Claude-only** can use stdio. **Two or more clients must share one HTTP server** on `http://127.0.0.1:3000/mcp`. A second process on `~/.wax/memory.wax` will lock.
 
 <details>
 <summary><strong>Host wire-up (Claude, Codex, Cursor, Hermes, OpenClaw)</strong></summary>
@@ -341,11 +92,11 @@ npx -y waxmcp@latest install
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into the workspace `SOUL.md`; replace an existing `## Memory (Wax)` section |
 | Anything else | HTTP URL + paste the AGENTS.md block into project `AGENTS.md` |
 
-Keep HTTP up with `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` or LaunchAgent `ai.wax.mcp-http`. Prove it with `npx -y waxmcp@latest vector-health`, `npx -y waxmcp@latest doctor` (`wax-cli mcp doctor`), `hermes wax-memory doctor`, and `hermes plugins doctor wax-memory`. Native recall defaults to the current project; pass `scope=global` for person facts — global is not an authorization boundary.
+Keep HTTP up with `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` or LaunchAgent `ai.wax.mcp-http`. Prove it with `npx -y waxmcp@latest vector-health`, `npx -y waxmcp@latest doctor` (`wax-cli mcp doctor`), `hermes wax-memory doctor`, and `hermes plugins doctor wax-memory`. Native recall defaults to the current project; pass `scope=global` for person facts. Global is not an authorization boundary.
 
 Full snippets, LaunchAgent `ai.wax.mcp-http`, `vector-health`, Hermes doctors, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 
-The **wax-mcp** skill is the operator playbook. The **wax** skill is Swift framework integration — different audience.
+The **wax-mcp** skill is the operator playbook. The **wax** skill is Swift framework integration. Different audience.
 
 </details>
 
@@ -431,7 +182,7 @@ pass a Wax `session_id`. Omit `scope` for current-project recall; pass
 <details>
 <summary><strong>Grokbot (xAI) — paste this into your Bot after wiring the server</strong></summary>
 
-Grokbot runs locally on your Mac, so Wax serves it over loopback — no tunnel, no cloud copy of your memory.
+Grokbot runs locally on your Mac, so Wax serves it over loopback. No tunnel. No cloud copy of your memory.
 
 One-time setup:
 
@@ -450,7 +201,7 @@ Then in Grokbot: **Settings → Plugins → Add MCP server**
 | Name | `wax` |
 | URL | `http://127.0.0.1:3000/mcp` |
 
-Finally, paste this prompt into your **main (coordinator) bot** — it sets up its own memory and rolls Wax out to every bot on the team:
+Finally, paste this prompt into your **main (coordinator) bot**. It sets up its own memory and rolls Wax out to every bot on the team:
 
 ```text
 You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
@@ -467,7 +218,7 @@ Roll out to the team:
 3. Save this whole policy in wax as memory_type user_preference with session_id so you keep enforcing it across sessions.
 ```
 
-Wax stays 100% local: the `.wax` file never leaves your machine, and the loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+The `.wax` file stays on the machine. The loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 
 </details>
 
@@ -475,69 +226,196 @@ Host install path (LaunchAgent `ai.wax.mcp-http`, `vector-health`, Hermes
 doctors, recovery): [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 Claude/doctor details: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
 
+<p align="center">
+  <img src="Resources/docs/assets/wax-cli-demo.gif" width="720" alt="Wax CLI demo TUI — live retrieval time, memory, FrameStore, concurrency, volume, errors, and exclusive lock">
+</p>
+
 ---
 
-## Why Wax?
+## Foundation Models (iOS 26 / macOS 26)
 
-| Feature          | Wax                    | SQLite (FTS5)          | Cloud Vector DBs       |
-|:-----------------|:-----------------------|:-----------------------|:-----------------------|
-| **Search**       | Hybrid (Text + Vector) | Text Only*             | Vector Only*           |
-| **Latency**      | **~6ms (p95)**         | ~10ms (p95)            | 150ms - 500ms+         |
-| **Privacy**      | 100% Local             | 100% Local             | Cloud-hosted           |
-| **Setup**        | Zero Config¹           | Low                    | Complex (API Keys)     |
-| **Architecture** | Apple Silicon Native   | Generic                | Varies                 |
+Apple's on-device `LanguageModelSession` generates text. It does not keep a store across launches. Wax is that store: recall into the prompt, register memory tools, optionally write turns back.
 
-¹ Text search works out of the box everywhere. Semantic (vector) search auto-configures the on-device MiniLM embedder on iOS 18/macOS 15+; on older OS versions, pass a custom `EmbeddingProvider` or search text-only. `results.diagnostics` and `memory.stats()` always report which retrieval mode actually ran — Wax never silently pretends a text-only result is semantic.
+Requires Apple Intelligence where the system model is available. Guard with `#if canImport(FoundationModels)` and `WaxFoundationModelsAvailability.current()`. Compilation on a machine without Apple Intelligence is not a successful `respond`.
 
-### Why a single `.wax` file?
+```swift
+import Foundation
+import FoundationModels
+import Wax
 
-Most RAG setups end up with a database, a vector store, and a file server. Wax keeps the moving pieces smaller by bundling documents, metadata, and indexes into one binary.
+@available(iOS 26.0, macOS 26.0, *)
+func chatWithMemory() async throws {
+    let url = URL.documentsDirectory.appending(path: "assistant.wax")
+    let memory = try await Memory(at: url)
 
-- **Less setup** — no Docker stack and no separate database to babysit.
-- **Portable** — move the file with AirDrop, iCloud, or whatever sync layer you already use.
-- **Atomic** — backup, copy, or delete one file instead of chasing state across services.
+    let session = memory.foundationModelsSession(
+        instructions: "You are a helpful assistant with durable on-device memory."
+    )
+
+    switch WaxFoundationModelsAvailability.current() {
+    case .available:
+        let answer = try await session.respond(
+            to: "I prefer dark mode and Vim keybindings."
+        )
+        print(answer)
+    case .unavailable(let reason):
+        print("Foundation Models unavailable: \(reason)")
+    }
+
+    try await session.close() // does not close `memory`
+    try await memory.close()
+}
+```
+
+`foundationModelsSession` is synchronous. It captures the `Memory` handle. Closing the session leaves the store open so other screens can share it.
+
+Default config is hybrid:
+
+| Piece | Behavior |
+| --- | --- |
+| Prompt | Recalls related memory and injects a `<wax_memory>` block |
+| Tools | `waxRemember`, `waxRecall`, `waxSearch` (`.focused` kit) |
+| Turns | Writes user and assistant turns when `persistencePolicy` allows it |
+
+Attach tools to your own `LanguageModelSession`:
+
+```swift
+let tools = memory.foundationModelsTools(kit: .focused)
+let session = LanguageModelSession(tools: tools) {
+    "You have long-term memory via waxRemember / waxRecall / waxSearch."
+}
+```
+
+Kits: `.focused` (default), `.compact`, `.combined`, `.focusedWithForget`. Full walkthrough: [Foundation Models](Resources/website/docs/ios/foundation-models.md).
+
+---
+
+## Swift app
+
+Same engine inside an iOS or macOS app. No MCP process required.
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.41")
+]
+```
+
+Or in Xcode: **File → Add Package Dependencies →** `https://github.com/christopherkarani/Wax.git`
+
+```swift
+import Foundation
+import Wax
+
+let url = URL.documentsDirectory.appending(path: "agent.wax")
+let memory = try await Memory(at: url)
+
+try await memory.save("The user is building a habit tracker in SwiftUI.")
+let results = try await memory.search("What is the user building?")
+if let best = results.items.first {
+    print("Found: \(best.text)")
+}
+
+try await memory.close()
+```
+
+`Memory(at:)` auto-configures the on-device MiniLM embedder on iOS 18 / macOS 15+ (default `MiniLMEmbeddings` trait). Hybrid search is text until the embedder attaches; `vectorOnly` throws. Check `results.diagnostics` and `memory.stats()`.
+
+<details>
+<summary><strong>SwiftUI</strong></summary>
+
+```swift
+import SwiftUI
+import Wax
+
+struct ContentView: View {
+    @State private var result = "Searching…"
+
+    var body: some View {
+        Text(result)
+            .task {
+                do {
+                    let url = URL.documentsDirectory.appending(path: "agent.wax")
+                    let memory = try await Memory(at: url)
+
+                    try await memory.save("The user is building a habit tracker in SwiftUI.")
+                    let context = try await memory.search("What is the user building?")
+
+                    result = context.items.first?.text ?? "Nothing found"
+                    try await memory.close()
+                } catch {
+                    result = "Error: \(error.localizedDescription)"
+                }
+            }
+    }
+}
+```
+
+</details>
+
+Experimental Darwin facades: `PhotoMemory` / `VideoMemory` (OCR, keyframes, host-supplied transcripts; video does not store media bytes). Structured entities and facts are MCP/broker tools today (`entity_upsert`, `fact_assert`, `facts_query`). The Swift CRUD API for that graph is package-internal.
+
+Public surface: [public-api.md](Resources/skills/public/wax/references/public-api.md). iOS docs: [christopherkarani.github.io/Wax](https://christopherkarani.github.io/Wax/).
+
+### Run the demo
+
+`Resources/WaxDemo` stress-tests `Memory` (save/search durability, embeddings, Foundation Models, errors). **macOS 26** for the demo package; Foundation Models mode needs Apple Intelligence.
+
+```bash
+cd Resources/WaxDemo
+swift run WaxDemo --mode all
+```
+
+| Mode | What it runs |
+|:-----|:-------------|
+| `memory` | Save → search → close → reopen → search |
+| `embeddings` | Built-in MiniLM + hybrid/vector search |
+| `fm` | Foundation Models memory session (or a clear unavailable message) |
+| `all` | Default |
+
+```bash
+swift run WaxDemo --mode fm --keep --store /tmp/wax-demo.wax
+```
+
+---
+
+## Why this instead of what you already have
+
+| Job | Typical option | Wax |
+|:----|:---------------|:----|
+| Scratchpad the host already has | `MEMORY.md` / `USER.md` / CLAUDE.md | Searchable across sessions and projects. Agents write lessons as they happen. You do not maintain the markdown by hand. |
+| Hosted memory API | Mem0, SuperMemory, and similar | One file on disk. No account. `remember` does not call a cloud LLM to extract facts. |
+| Markdown MCP | Basic Memory and similar | Binary store with FTS5 + CoreML vectors + WAL. AirDrop the file. Same MCP session loop. |
+| Knowledge graph platform | Graphiti, Cognee | Different product: those want Neo4j/Postgres and an LLM for ingest. Wax is a local file plus an agent session loop. |
+| Single-file RAG | Memvid `.mv2` and similar | Wax adds MCP `session_open` / `remember` / `recall` / `session_close`, a native Hermes provider, and Foundation Models tools. |
+| Cloud vector DB | Pinecone, hosted Qdrant | Hybrid text + vector on Apple Silicon. p95 hybrid recall **6.1 ms** on the 2026-03-06 M-series sweep. |
+
+Wax is the shared local store. It does not replace a temporal knowledge graph, and it does not claim LoCoMo numbers it has not published.
 
 ---
 
 ## Performance
 
-Wax is tuned for M-series hardware and local recall.
-
-### Recall Latency (p95)
-
-*Lower is better. Measured in milliseconds.*
+Measured on Apple Silicon, 2026-03-06. Full report: [Resources/docs/benchmarks/2026-03-06-performance-results.md](Resources/docs/benchmarks/2026-03-06-performance-results.md).
 
 ```text
-Wax (Hybrid)  |██ 6.1ms
-SQLite (Text) |████ 12ms
-Cloud RAG     |██████████████████████████████████████████████████ 150ms+
+Hybrid recall p95     6.1 ms
+Hybrid recall p99     6.5 ms
+Cold open p95         9.2 ms
 ```
 
-### Cold Open Time (p95)
+Cold open is store open only. The built-in embedder's first CoreML compile is a separate one-time cost; later launches reuse the cached compiled model.
 
-*Lower is better. Measured in milliseconds.*
-
-```text
-Wax           |███ 9.2ms
-Traditional   |██████████████████████████████████████ 120ms+
-```
-
-> Cold open measures store open only. The built-in embedder's first-ever CoreML compile is a separate one-time cost; later launches reuse the cached compiled model.
-
-> [!TIP]
-> **Ingest Throughput:** Wax handles **85.9 docs/s** with full hybrid indexing on an M3 Max.
-> Full benchmark report: [Resources/docs/benchmarks/2026-03-06-performance-results.md](Resources/docs/benchmarks/2026-03-06-performance-results.md)
+Text search works with no embedder. Semantic search auto-configures MiniLM on iOS 18 / macOS 15+. The CLI and MCP server fail loud when hybrid/vector is requested without an embedder. The Swift SDK reports the mode that ran via `results.diagnostics`.
 
 ---
 
 ## Architecture
 
 <details>
-<summary><strong>How Wax works under the hood (click to expand)</strong></summary>
+<summary><strong>How the file is laid out</strong></summary>
 
-Wax uses a frame-based container format and embeds the search engines it needs inside the main file: SQLite FTS5 for text and a Metal-accelerated HNSW index for vectors. The Metal HNSW engine activates automatically once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with identical recall.
-
-### Internal File Layout
+Wax bundles documents, metadata, and indexes in one binary. SQLite FTS5 for text. Metal-accelerated HNSW for vectors once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with the same recall.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -564,49 +442,73 @@ Wax uses a frame-based container format and embeds the search engines it needs i
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Atomic resilience:** dual headers and the WAL keep the store consistent even if the process dies mid-write.
-2. **Unified retrieval:** one query fans out to both the BM25 text index and the HNSW vector index.
-3. **Structured knowledge:** built-in EAV (Entity-Attribute-Value) storage handles durable facts and long-term reasoning. (Exposed today via the MCP server tools; the Swift-level API is package-internal.)
+Dual headers and the WAL keep the store consistent if the process dies mid-write. One query fans out to BM25 and HNSW. EAV facts ship through MCP tools.
 
 </details>
 
 ---
 
-## Ecosystem Tools
-
-### 🤖 MCP Server
-
-Wax provides a first-class **Model Context Protocol (MCP)** server. Connect your local memory to Claude Code or any MCP-compatible agent.
+## CLI
 
 ```bash
-npx -y waxmcp@latest install
+git clone https://github.com/christopherkarani/Wax.git
+cd Wax
+swift build -c release
+cp .build/release/wax-cli /usr/local/bin/
 ```
 
-Then [wire the host](#agent-quick-start) and paste the AGENTS.md or SOUL.md block so the model actually writes. Snippets: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+```bash
+wax-cli remember "An automobile needs periodic maintenance."
+wax-cli search "car service" --mode hybrid --topK 3
+wax-cli search "car service" --mode text
+wax-cli demo --run
+```
+
+On Linux, build **without** `-DGRDBCUSTOMSQLITE` (that flag breaks GRDB's system SQLite overlay). MiniLM/vector search is Darwin; Linux is text-only unless you bring your own embedder:
+
+```bash
+swift build --product wax-cli --traits default,MCPServer
+```
+
+The npm package (`waxmcp`) is **darwin / arm64**. Linux and Intel Macs build from source.
 
 <details>
-<summary><strong>HTTP, OpenClaw, and Markdown extras</strong></summary>
-
-Claude registrar and doctor: [Resources/docs/wax-mcp-setup.md](Resources/docs/wax-mcp-setup.md).
-
-OpenClaw adapter check: [`scripts/verify-openclaw-adapter.sh`](scripts/verify-openclaw-adapter.sh). Native-memory operator guide: [docs/openclaw-native-memory.md](docs/openclaw-native-memory.md).
-
-The MCP surface supports `markdown_export` / `markdown_sync` (`MEMORY.md`, daily notes, `DREAMS.md`). `markdown_sync` accepts `dry_run`. Promotion thresholds can be overridden on `session_synthesize` / `memory_promote`.
-
-Local HTTP (when this process is the only writer):
+<summary><strong>Daemon, compact, embed-backfill</strong></summary>
 
 ```bash
-./.build/debug/wax-mcp --no-embedder --transport http --http-host 127.0.0.1 --http-port 3000
+wax-cli daemon --store-path ~/.wax/memory.wax
 ```
+
+```json
+{"id":"1","command":"remember","content":"An automobile needs periodic maintenance."}
+{"id":"2","command":"search","query":"car service","mode":"hybrid","topK":3}
+{"id":"3","command":"shutdown"}
+```
+
+Offline maintenance always takes an explicit source, destination, and `--direct-store`. Work happens on a locked, byte-verified copy, then a staging file, then an atomic publish. The source is not modified.
+
+```bash
+wax-cli compact-store \
+  --direct-store \
+  --no-embedder \
+  --store-path /path/to/source.wax \
+  --output /path/to/compacted.wax
+
+wax-cli embed-backfill \
+  --direct-store \
+  --store-path /path/to/source.wax \
+  --output /path/to/backfilled.wax
+```
+
+Do not point these at a live broker store such as `~/.wax/memory.wax`. Stop attached writers first.
 
 </details>
 
-### 🔍 WaxRepo
+### WaxRepo
 
-A semantic search TUI for your git history. Index any repository and find code or commits using natural language.
+Semantic search TUI for git history (macOS):
 
 ```bash
-# From within any git repo
 wax-repo index
 wax-repo search "where did we implement the WAL?"
 ```
@@ -615,38 +517,38 @@ wax-repo search "where did we implement the WAL?"
 
 ## FAQ
 
-**Q: Do I need an internet connection?**  
-A: No. Wax is 100% on-device. No cloud APIs, no network calls.
+**Do I need the internet?**  
+No. Memory stays on device. The npm installer fetches the staged binaries once.
 
-**Q: How big does the `.wax` file get?**  
-A: It depends on your data, but the file stays compact thanks to LZ4 compression. Typical usage: a few MB for thousands of documents.
+**How big is the file?**  
+LZ4-compressed frames. Typical use is a few MB for thousands of documents.
 
-**Q: Can I sync the `.wax` file across devices?**  
-A: Yes. It's a single file. iCloud Drive, Dropbox, AirDrop — whatever you already use.
+**Can I sync across devices?**  
+Yes. iCloud Drive, Dropbox, AirDrop. One file.
 
-**Q: What happens if the app crashes during a write?**  
-A: Wax uses a write-ahead log (WAL) and dual headers. The store recovers automatically on the next open.
+**What if the app crashes during a write?**  
+WAL plus dual headers. The next open recovers.
 
-**Q: Does Wax work on Intel Macs?**  
-A: Wax is optimized for Apple Silicon (M-series). It may run on Intel via Rosetta but vector acceleration requires Metal performance shaders best supported on Apple Silicon.
+**Does this run on Intel Macs?**  
+The engine can run via Rosetta. Metal vector acceleration and the `waxmcp` npm package target Apple Silicon. Build `wax-cli` from source on Intel.
 
-**Q: I get "embedder unavailable" when using hybrid search.**  
-A: Hybrid and vector search require a local embedding model. In Swift, `Memory(at:)` auto-configures the built-in MiniLM embedder on iOS 18/macOS 15+ (default `MiniLMEmbeddings` trait), or you can select any custom `EmbeddingProvider` via `Memory.Config.embedding = .custom(...)`. On older OS versions, use text-only search or provide a custom embedder. The CLI/MCP server fail loudly when the embedder is unavailable; the Swift SDK reports the effective retrieval mode via `results.diagnostics` and `memory.stats()`.
+**I get "embedder unavailable" on hybrid search.**  
+Hybrid and vector need a local embedding model. Swift `Memory(at:)` loads MiniLM on iOS 18 / macOS 15+, or set `Memory.Config.embedding = .custom(...)`. Older OS: text-only or bring your own embedder. CLI/MCP fail loud; Swift reports the effective mode on `diagnostics`.
+
+**Two agents time out on the same store.**  
+One writer. Start `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` and point every host at `http://127.0.0.1:3000/mcp`.
 
 ---
 
-## Community & Support
+## Community
 
-- 💬 **Questions & bug reports:** [GitHub Issues](https://github.com/christopherkarani/Wax/issues)
-- ⭐ **Star the repo** to follow releases
-- 📖 **Full documentation:** [iOS developer docs](https://christopherkarani.github.io/Wax/) · [DocC sources](Sources/Wax/Wax.docc)
+- [GitHub Issues](https://github.com/christopherkarani/Wax/issues)
+- [Discord](https://discord.gg/NHgNh7HJ6M)
+- [Star the repo](https://github.com/christopherkarani/Wax/stargazers)
+- Docs: [iOS / Foundation Models](https://christopherkarani.github.io/Wax/) · [DocC](Sources/Wax/Wax.docc)
 
 ---
 
 ## License
 
-Wax is released under the Apache License 2.0. See [LICENSE](LICENSE) for details.
-
-<div align="center">
-<sub>Built for developers who believe user data belongs on the user's device</sub>
-</div>
+Apache License 2.0. See [LICENSE](LICENSE).
