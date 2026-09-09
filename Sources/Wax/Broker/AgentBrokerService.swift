@@ -25,6 +25,8 @@ package actor AgentBrokerService {
     // A remember may wait for deferred embedding readiness. Keep that wait
     // from blocking unrelated reads while still serializing concurrent writes.
     private let rememberMutex = AsyncMutex()
+    private var cachedSessionDisk: (atMs: Int64, stats: SessionDiskStats)?
+    private static let sessionDiskCacheTTLMs: Int64 = 15_000
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -623,7 +625,8 @@ extension AgentBrokerService {
             explicitRepo: explicitRepo,
             clientCWD: clientCWD,
             frameFilter: parsedFilters.frameFilter,
-            timeRange: parsedFilters.timeRange
+            timeRange: parsedFilters.timeRange,
+            memoryTypes: command.memoryTypes
         )
         // Session stores attach on their own follow task. After MiniLM is ready,
         // wait for that attach here so a session-scoped first recall is hybrid.
@@ -1057,12 +1060,7 @@ extension AgentBrokerService {
             accessStats: accessStats,
             facts: facts
         )
-        let sessionDisk = SessionReclaim.diskStats(
-            rootURL: sessionRootURL,
-            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
-            liveIDs: Set(activeSessions.keys),
-            nowMs: Self.nowMs()
-        )
+        let sessionDisk = currentSessionDiskStats()
         return .object([
             "total_documents": .from(report.totalDocuments),
             "typed_counts": .object(report.typedCounts.mapValues { .from($0) }),
@@ -1177,6 +1175,21 @@ extension AgentBrokerService {
         ])
     }
 
+    private func currentSessionDiskStats() -> SessionDiskStats {
+        let nowMs = Self.nowMs()
+        if let cached = cachedSessionDisk, nowMs - cached.atMs < Self.sessionDiskCacheTTLMs {
+            return cached.stats
+        }
+        let stats = SessionReclaim.diskStats(
+            rootURL: sessionRootURL,
+            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
+            liveIDs: Set(activeSessions.keys),
+            nowMs: nowMs
+        )
+        cachedSessionDisk = (nowMs, stats)
+        return stats
+    }
+
     func stats(_ command: BrokerCommand.Stats = .init(sessionID: nil)) async throws -> AgentBrokerValue {
         let requestedSessionID = command.sessionID
         let stats = await longTermMemory.runtimeStats()
@@ -1221,12 +1234,7 @@ extension AgentBrokerService {
                 "normalized": .from(identity.normalized),
             ])
         }()
-        let sessionDisk = SessionReclaim.diskStats(
-            rootURL: sessionRootURL,
-            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
-            liveIDs: Set(activeSessions.keys),
-            nowMs: Self.nowMs()
-        )
+        let sessionDisk = currentSessionDiskStats()
 
         return .object([
             "frameCount": .from(stats.frameCount),
@@ -1457,7 +1465,17 @@ extension AgentBrokerService {
 
     /// Atomic handoff then end for one `session_id` (C6). Idempotent when already ended.
     func sessionClose(_ command: BrokerCommand.SessionClose) async throws -> AgentBrokerValue {
-        let sessionID = command.sessionID
+        let sessionID: UUID
+        if let requested = command.sessionID {
+            sessionID = requested
+        } else {
+            guard let target = try virtualSessions.peekEndTarget(sessionID: nil) else {
+                throw BrokerValidationError.invalid(
+                    "session_id is required when no active session is available; pass the UUID from session_open (this MCP connection has no bound session)"
+                )
+            }
+            sessionID = target
+        }
         let content = command.content
         let pendingTasks = command.pendingTasks
 
@@ -1514,7 +1532,7 @@ extension AgentBrokerService {
         reclaimed: Bool = false
     ) -> AgentBrokerValue {
         let display =
-            "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions remaining_active=\(remainingActive > 0) count=\(remainingActive)."
+            "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions other_sessions_active=\(remainingActive > 0) remaining_active=\(remainingActive > 0) count=\(remainingActive)."
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .string(sessionID.uuidString),
@@ -1522,6 +1540,7 @@ extension AgentBrokerService {
             "active": .bool(false),
             "already_ended": .bool(alreadyEnded),
             "remaining_active": .from(remainingActive > 0),
+            "other_sessions_active": .from(remainingActive > 0),
             "active_session_count": .from(remainingActive),
             "harvested": .bool(harvest.harvested),
             "promoted_count": .from(harvest.promotedCount),
@@ -1802,17 +1821,48 @@ extension AgentBrokerService {
         }
 
         let originalContent = handoff["content"]?.stringValue ?? ""
+        let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let trimmedQuery = recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedQuery.isEmpty,
-           MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
-        {
+        let emptyBody = originalContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && originalTasks.isEmpty
+        if emptyBody {
             return .object([
-                "found": .bool(true),
+                "found": .bool(false),
                 "relevance": .string("low"),
                 "content": .string(""),
                 "pending_tasks": .array([]),
                 "truncated": .bool(false),
                 "content_truncated": .bool(false),
+                "pending_tasks_truncated": .from(0),
+                "pending_tasks_omitted": .from(0),
+                "content_bytes": .from(0),
+                "content_tokens": .from(0),
+            ])
+        }
+        if !trimmedQuery.isEmpty,
+           MemorySemantics.similarity(lhs: trimmedQuery, rhs: originalContent) < 0.15
+        {
+            if originalTasks.isEmpty {
+                return .object([
+                    "found": .bool(false),
+                    "relevance": .string("low"),
+                    "content": .string(""),
+                    "pending_tasks": .array([]),
+                    "truncated": .bool(false),
+                    "content_truncated": .bool(false),
+                    "pending_tasks_truncated": .from(0),
+                    "pending_tasks_omitted": .from(0),
+                    "content_bytes": .from(0),
+                    "content_tokens": .from(0),
+                ])
+            }
+            return .object([
+                "found": .bool(true),
+                "relevance": .string("low"),
+                "content": .string(""),
+                "pending_tasks": .array(originalTasks.map { .string($0) }),
+                "truncated": .bool(false),
+                "content_truncated": .bool(true),
                 "pending_tasks_truncated": .from(0),
                 "pending_tasks_omitted": .from(0),
                 "content_bytes": .from(0),
@@ -1832,7 +1882,6 @@ extension AgentBrokerService {
         )
         let contentTruncated = compactContent != originalContent
 
-        let originalTasks = handoff["pending_tasks"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let boundedTasks = originalTasks
             .prefix(BrokerLimits.maxSessionOpenPendingTasks)
             .map { task in
@@ -1913,9 +1962,9 @@ extension AgentBrokerService {
         let display: String
         switch result {
         case .idle:
-            display = "No live session to end. This session active=false. Other live sessions remaining_active=false count=0."
+            display = "No live session to end. This session active=false. Other live sessions other_sessions_active=false remaining_active=false count=0."
         case .ended(let endedID, _, _):
-            display = "Session \(endedID.uuidString) ended. This session active=false. Other live sessions remaining_active=\(remaining > 0) count=\(remaining)."
+            display = "Session \(endedID.uuidString) ended. This session active=false. Other live sessions other_sessions_active=\(remaining > 0) remaining_active=\(remaining > 0) count=\(remaining)."
         }
         return .object([
             "status": .string("ok"),
@@ -1923,6 +1972,7 @@ extension AgentBrokerService {
             "ended": .bool(result.ended),
             "active": .bool(false),
             "remaining_active": .from(result.remainingActive),
+            "other_sessions_active": .from(result.remainingActive),
             "active_session_count": .from(result.activeCount),
             "harvested": .bool(harvest.harvested),
             "promoted_count": .from(harvest.promotedCount),

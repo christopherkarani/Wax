@@ -75,6 +75,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var explicitRepo: String?
         package var clientCWD: String?
         package var verbosity: String = "compact"
+        package var memoryTypes: [MemoryType] = []
     }
 
     package struct Search: Sendable, Equatable {
@@ -187,7 +188,7 @@ package enum BrokerCommand: Sendable, Equatable {
     }
 
     package struct SessionClose: Sendable, Equatable {
-        package var sessionID: UUID
+        package var sessionID: UUID?
         package var content: String
         package var project: String?
         package var pendingTasks: [String]
@@ -426,7 +427,8 @@ extension BrokerCommand.Recall {
             explicitProject: try args.optionalString("project"),
             explicitRepo: try args.optionalString("repo"),
             clientCWD: try args.optionalString("cwd"),
-            verbosity: try BrokerCommand.parseResponseVerbosity(args)
+            verbosity: try BrokerCommand.parseResponseVerbosity(args),
+            memoryTypes: try BrokerCommand.parseMemoryTypes(args)
         )
     }
 }
@@ -668,11 +670,8 @@ extension BrokerCommand.KnowledgeCapture {
 
 extension BrokerCommand.SessionClose {
     package static func decode(_ args: BrokerArguments) throws -> Self {
-        guard let sessionID = try BrokerCommand.parseOptionalSessionID(args) else {
-            throw BrokerValidationError.invalid("session_id is required for session_close")
-        }
-        return Self(
-            sessionID: sessionID,
+        Self(
+            sessionID: try BrokerCommand.parseOptionalSessionID(args),
             content: try args.requiredStringPreservingWhitespace(
                 "content",
                 maxBytes: BrokerLimits.maxContentBytes
@@ -976,6 +975,19 @@ extension BrokerCommand {
             reviewed: try args.optionalBool("reviewed") ?? false,
             lock: try args.optionalBool("locked") ?? false
         )
+    }
+
+    package static func parseMemoryTypes(_ args: BrokerArguments) throws -> [MemoryType] {
+        guard let raw = try args.optionalStringArray("memory_types") else { return [] }
+        return try raw.map { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let type = MemoryType(rawValue: trimmed) else {
+                throw BrokerValidationError.invalid(
+                    "memory_types must be one of: \(MemoryType.allCases.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            return type
+        }
     }
 
     package static func parseSearchFilters(_ args: BrokerArguments) throws -> ParsedSearchFilters {

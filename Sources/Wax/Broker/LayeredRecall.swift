@@ -116,6 +116,7 @@ package enum LayeredRecall {
         package var clientCWD: String?
         package var frameFilter: FrameFilter?
         package var timeRange: SearchTimeRange?
+        package var memoryTypes: [MemoryType]
 
         package init(
             query: String,
@@ -128,7 +129,8 @@ package enum LayeredRecall {
             explicitRepo: String? = nil,
             clientCWD: String? = nil,
             frameFilter: FrameFilter? = nil,
-            timeRange: SearchTimeRange? = nil
+            timeRange: SearchTimeRange? = nil,
+            memoryTypes: [MemoryType] = []
         ) {
             self.query = query
             self.scope = scope
@@ -141,6 +143,7 @@ package enum LayeredRecall {
             self.clientCWD = clientCWD
             self.frameFilter = frameFilter
             self.timeRange = timeRange
+            self.memoryTypes = memoryTypes
         }
     }
 
@@ -334,6 +337,15 @@ package enum LayeredRecall {
         return hits.filter { matchesProjectScope($0, identity: identity) }
     }
 
+    package static func filterHitsByMemoryTypes(_ hits: [Hit], types: [MemoryType]) -> [Hit] {
+        guard !types.isEmpty else { return hits }
+        let wanted = Set(types.map(\.rawValue))
+        return hits.filter { hit in
+            guard let raw = hit.metadata[MemoryMetadataKeys.type] else { return false }
+            return wanted.contains(raw)
+        }
+    }
+
     /// Unresolved project keeps the live working lane and unstamped durable/episodic
     /// hits. Stamped foreign durable is dropped so we never auto-widen. Resolved
     /// identity keeps unstamped hits (they are not a different project).
@@ -423,11 +435,36 @@ package enum LayeredRecall {
         )
     }
 
+    /// Single-type `memory_types` is a retrieval hard-filter. Multiple types stay
+    /// post-filter because metadata entries are exact AND matches, not OR.
+    package static func frameFilterForMemoryTypes(
+        base: FrameFilter?,
+        types: [MemoryType]
+    ) -> FrameFilter? {
+        let unique = Set(types)
+        guard unique.count == 1, let type = unique.first else { return base }
+        var entries = base?.metadataFilter?.requiredEntries ?? [:]
+        entries[MemoryMetadataKeys.type] = type.rawValue
+        let metadataFilter = MetadataFilter(
+            requiredEntries: entries,
+            requiredTags: base?.metadataFilter?.requiredTags ?? [],
+            requiredLabels: base?.metadataFilter?.requiredLabels ?? []
+        )
+        return FrameFilter(
+            includeDeleted: base?.includeDeleted ?? false,
+            includeSuperseded: base?.includeSuperseded ?? false,
+            includeSurrogates: base?.includeSurrogates ?? false,
+            frameIds: base?.frameIds,
+            metadataFilter: metadataFilter
+        )
+    }
+
     package static func mergeHits(
         sessionHits: [Hit],
         durableHits: [Hit],
         limit: Int,
-        nowMs: Int64
+        nowMs: Int64,
+        query: String? = nil
     ) -> [Hit] {
         func identity(_ hit: Hit) -> String {
             if let hash = hit.metadata["wax.content.hash"] {
@@ -438,10 +475,15 @@ package enum LayeredRecall {
 
         func adjustFreshness(_ hit: Hit) -> Hit {
             var copy = hit
-            let adjusted = freshnessAdjustedScore(hit, nowMs: nowMs)
+            let adjusted = rankingAdjustedScore(hit, nowMs: nowMs, query: query)
             if adjusted != hit.score {
                 copy.score = adjusted
-                copy.explanations.append("freshness adjusted operational memory")
+                if freshnessAdjustedScore(hit, nowMs: nowMs) != hit.score {
+                    copy.explanations.append("freshness adjusted operational memory")
+                }
+                if adjusted != freshnessAdjustedScore(hit, nowMs: nowMs) {
+                    copy.explanations.append("query-aware recency ranking")
+                }
             }
             return copy
         }
@@ -526,6 +568,42 @@ package enum LayeredRecall {
         let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
         let penalty = min(0.18, max(0, ageDays / 30) * 0.18)
         return hit.score - penalty
+    }
+
+    /// Query-aware ranking on top of operational freshness.
+    ///
+    /// Locked "do not follow / stale frames" lists stay out of today's work
+    /// queries. Unlocked standing corrections that happen to use those phrases
+    /// keep their semantic score. Fresh standing facts get a small recency
+    /// boost so they can beat week-old locked constraints when both match.
+    package static func rankingAdjustedScore(_ hit: Hit, nowMs: Int64, query: String?) -> Float {
+        var score = freshnessAdjustedScore(hit, nowMs: nowMs)
+        let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedQuery.isEmpty else { return score }
+
+        let queryLooksLikeStaleLookup = isStaleIgnoreList(trimmedQuery)
+        let isLocked = hit.metadata[MemoryMetadataKeys.durability] == MemoryDurability.locked.rawValue
+        if isLocked, isStaleIgnoreList(hit.text), !queryLooksLikeStaleLookup {
+            score -= 0.28
+        }
+
+        let type = MemoryType(rawValue: hit.metadata[MemoryMetadataKeys.type] ?? "")
+        let isStanding = switch type {
+        case .userPreference, .decision, .lesson, .constraint, .fact: true
+        case .note, .taskState, .handoff, nil: false
+        }
+        if isStanding, hit.timestampMs > 0, nowMs > hit.timestampMs {
+            let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
+            if ageDays < 2 {
+                score += 0.08
+            }
+        }
+        return score
+    }
+
+    package static func isStaleIgnoreList(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return lowered.contains("do not follow") || lowered.contains("stale frames")
     }
 
     /// Scope selection after merge (project hard-filter + miss messaging).
@@ -725,10 +803,15 @@ package enum LayeredRecall {
             : MemoryScopeContext(repoName: identity.repo, projectName: identity.project)
         // Project scope injects identity into the frame filter so foreign hits
         // cannot crowd the lane. Global and session leave the caller filter alone.
-        let scopedFrameFilter = Self.frameFilterForScopedRetrieval(
-            base: request.frameFilter,
-            scope: request.scope,
-            identity: identity
+        // A single memory_type is also a retrieval hard-filter so person-lane
+        // recall cannot lose to higher-scoring lessons at merge time.
+        let scopedFrameFilter = Self.frameFilterForMemoryTypes(
+            base: Self.frameFilterForScopedRetrieval(
+                base: request.frameFilter,
+                scope: request.scope,
+                identity: identity
+            ),
+            types: request.memoryTypes
         )
 
         var sessionHits: [Hit] = []
@@ -834,18 +917,20 @@ package enum LayeredRecall {
         let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
         let identity = lanes.identity
 
+        let typedWorking = filterHitsByMemoryTypes(lanes.working, types: request.memoryTypes)
+        let typedDurable = filterHitsByMemoryTypes(lanes.durable, types: request.memoryTypes)
         let merged: [Hit]
         if request.scope == .session {
-            merged = Array(lanes.working.prefix(request.limit))
+            merged = Array(typedWorking.prefix(request.limit))
         } else if request.scope == .project {
             // Filter before merge so foreign ranks cannot consume the result budget.
             let scopedSession = Self.filterHitsByProject(
-                lanes.working,
+                typedWorking,
                 project: identity.project,
                 repo: identity.repo
             )
             let scopedDurable = Self.filterHitsByProject(
-                lanes.durable,
+                typedDurable,
                 project: identity.project,
                 repo: identity.repo
             )
@@ -853,15 +938,17 @@ package enum LayeredRecall {
                 sessionHits: scopedSession,
                 durableHits: scopedDurable,
                 limit: request.limit,
-                nowMs: stores.nowMs()
+                nowMs: stores.nowMs(),
+                query: request.query
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
             merged = mergeHits(
-                sessionHits: lanes.working,
-                durableHits: lanes.durable,
+                sessionHits: typedWorking,
+                durableHits: typedDurable,
                 limit: request.limit,
-                nowMs: stores.nowMs()
+                nowMs: stores.nowMs(),
+                query: request.query
             )
         }
 

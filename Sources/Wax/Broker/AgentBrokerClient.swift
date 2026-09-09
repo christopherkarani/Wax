@@ -80,10 +80,11 @@ package enum AgentBrokerClient {
         configuration: AgentBrokerConfiguration,
         startTimeoutSecondsOverride: TimeInterval? = nil
     ) async throws -> Bool {
+        let pingTimeout = min(5.0, responseTimeoutSeconds)
         if let response = try sendIfAvailable(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath,
-            timeoutSeconds: min(5.0, responseTimeoutSeconds),
+            timeoutSeconds: pingTimeout,
             treatTimeoutAsUnavailable: true
         ), response.ok {
             return false
@@ -93,12 +94,13 @@ package enum AgentBrokerClient {
             if let response = try sendIfAvailable(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath,
+                timeoutSeconds: pingTimeout,
                 treatTimeoutAsUnavailable: true
             ), response.ok {
                 return false
             }
             throw BrokerClientError(
-                "Broker socket is live at \(configuration.socketPath) but did not answer; not starting a second daemon."
+                "Broker socket is live at \(configuration.socketPath) but did not answer; not starting a second daemon. Restart wax-mcp or `launchctl kickstart -k gui/$(id -u)/ai.wax.mcp-http`."
             )
         }
 

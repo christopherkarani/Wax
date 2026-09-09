@@ -271,6 +271,17 @@ enum ToolSchemas {
                 "description": "Recall scope. project (default) hard-filters to the resolved project/repo; session skips durable merge when a session_id is supplied; global searches the complete trusted local store without current-project boost (it is not an authorization boundary).",
                 "enum": ["project", "session", "global"],
             ],
+            "memory_types": [
+                "type": "array",
+                "description": "Optional hard-filter to these memory_type values (e.g. user_preference for person-lane global recall).",
+                "items": [
+                    "type": "string",
+                    "enum": [
+                        "note", "task_state", "user_preference", "decision",
+                        "lesson", "handoff", "constraint", "fact",
+                    ],
+                ],
+            ],
             "mode": [
                 "type": "string",
                 "description": "Optional search mode override for recall retrieval.",
@@ -515,7 +526,7 @@ enum ToolSchemas {
             "project": ["type": "string", "description": "Optional project stamped onto the new session manifest (overrides cwd inference)."],
             "repo": ["type": "string", "description": "Optional repo stamped onto the new session manifest (overrides cwd inference)."],
             "cwd": ["type": "string", "description": "Optional client working directory used to infer project/repo when not explicit."],
-            "conversation_id": ["type": "string", "description": "Optional host conversation identifier. A unique active match can be resumed; omitted or whitespace-only is ignored."],
+            "conversation_id": ["type": "string", "description": "Host chat/session id. A unique active match is resumed across compaction and reconnect. Grok should pass its session UUID. Omitted or whitespace-only is ignored."],
             "verbosity": responseVerbositySchema,
         ],
         required: []
@@ -544,7 +555,7 @@ enum ToolSchemas {
         properties: [
             "session_id": [
                 "type": "string",
-                "description": "Session UUID to close. Omit after session_open on this connection; do not invent one.",
+                "description": "Session UUID to close. Omit after session_open on this connection. After reconnect, pass the saved UUID or call session_open first; do not invent one.",
             ],
             "content": [
                 "type": "string",
@@ -592,7 +603,7 @@ enum ToolSchemas {
             ],
             "conversation_id": [
                 "type": "string",
-                "description": "Optional host conversation identifier. A unique active match can be resumed; omitted or whitespace-only is ignored.",
+                "description": "Host chat/session id. A unique active match is resumed across compaction and reconnect. Grok should pass its session UUID. Omitted or whitespace-only is ignored.",
             ],
             "verbosity": responseVerbositySchema,
         ],

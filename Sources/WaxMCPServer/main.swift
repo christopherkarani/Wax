@@ -152,7 +152,8 @@ struct WaxMCPServerCommand: ParsableCommand {
             let server = await makeServer(
                 version: serverVersion,
                 brokerConfiguration: brokerConfiguration,
-                structuredMemoryEnabled: structuredMemoryEnabled
+                structuredMemoryEnabled: structuredMemoryEnabled,
+                connectionKey: "stdio"
             )
             let signalSources = installSignalHandlers {
                 await server.stop()
@@ -183,11 +184,12 @@ struct WaxMCPServerCommand: ParsableCommand {
                     maxRequestBodyBytes: httpMaxBodyBytes,
                     authToken: normalizedHTTPAuthToken()
                 ),
-                serverFactory: { _, transport in
+                serverFactory: { sessionID, transport in
                     let server = await makeServer(
                         version: serverVersion,
                         brokerConfiguration: brokerConfiguration,
-                        structuredMemoryEnabled: structuredMemoryEnabled
+                        structuredMemoryEnabled: structuredMemoryEnabled,
+                        connectionKey: sessionID
                     )
                     return server
                 }
@@ -209,7 +211,8 @@ struct WaxMCPServerCommand: ParsableCommand {
     private func makeServer(
         version: String,
         brokerConfiguration: AgentBrokerConfiguration,
-        structuredMemoryEnabled: Bool
+        structuredMemoryEnabled: Bool,
+        connectionKey: String?
     ) async -> Server {
         let server = Server(
             name: "wax-mcp",
@@ -221,7 +224,8 @@ struct WaxMCPServerCommand: ParsableCommand {
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,
-            structuredMemoryEnabled: structuredMemoryEnabled
+            structuredMemoryEnabled: structuredMemoryEnabled,
+            connectionKey: connectionKey
         )
         return server
     }

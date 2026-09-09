@@ -206,5 +206,45 @@ struct MCPConnectionRecoveryTests {
             #expect(payload["resumable"] as? Bool == false)
         }
     }
+
+    @Test func sessionCloseWithoutIdUsesBoundHintAmongMultipleActiveSessions() async throws {
+        try await withBroker { broker in
+            let hint = MCPClientSessionHint()
+            let firstID = try await open(broker, hint: hint)
+            _ = try await open(broker, hint: MCPClientSessionHint())
+            let closed = await WaxMCPTools.handleCall(
+                params: .init(name: "session_close", arguments: [
+                    "content": .string("close bound session without repeating uuid"),
+                ]),
+                broker: broker,
+                sessionHint: hint
+            )
+            #expect(closed.isError != true)
+            #expect(try json(closed)["session_id"] as? String == firstID)
+            #expect(hint.current() == nil)
+        }
+    }
+
+    @Test func sessionCloseWithoutIdSurvivesHintDropViaConnectionRegistry() async throws {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        defer { MCPBoundSessionRegistry.shared.resetForTests() }
+        try await withBroker { broker in
+            let key = "http-\(UUID().uuidString)"
+            let firstHint = MCPClientSessionHint(connectionKey: key)
+            let sessionID = try await open(broker, hint: firstHint)
+            _ = try await open(broker, hint: MCPClientSessionHint())
+            let recoveredHint = MCPClientSessionHint(connectionKey: key)
+            #expect(recoveredHint.current() == sessionID)
+            let closed = await WaxMCPTools.handleCall(
+                params: .init(name: "session_close", arguments: [
+                    "content": .string("close after HTTP server recreate"),
+                ]),
+                broker: broker,
+                sessionHint: recoveredHint
+            )
+            #expect(closed.isError != true)
+            #expect(try json(closed)["session_id"] as? String == sessionID)
+        }
+    }
 }
 #endif

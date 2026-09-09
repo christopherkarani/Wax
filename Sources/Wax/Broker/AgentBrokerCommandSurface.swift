@@ -57,7 +57,7 @@ package enum AgentBrokerCommandSurface {
             canonicalName: "recall",
             acceptedArgumentKeys: [
                 "query", "limit", "session_id", "mode", "alpha", "search_top_k", "topK", "filters",
-                "project", "repo", "scope", "cwd", "verbosity",
+                "project", "repo", "scope", "cwd", "verbosity", "memory_types",
             ]
         ),
         Entry(canonicalName: "search", acceptedArgumentKeys: ["query", "mode", "topK", "session_id", "alpha", "filters"]),
