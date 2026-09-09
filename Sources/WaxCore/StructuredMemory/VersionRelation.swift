@@ -27,4 +27,12 @@ package enum VersionRelation: UInt8, Sendable, Equatable, CaseIterable {
             return "retracts"
         }
     }
+
+    package init?(wireName: String) {
+        let normalized = wireName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let match = Self.allCases.first(where: { $0.wireName == normalized }) else {
+            return nil
+        }
+        self = match
+    }
 }

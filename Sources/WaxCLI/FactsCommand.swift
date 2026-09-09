@@ -314,18 +314,10 @@ private func parseObjectValue(_ raw: String) -> FactValue {
 }
 
 private func parseVersionRelation(_ raw: String) throws -> VersionRelation {
-    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "sets":
-        return .sets
-    case "updates":
-        return .updates
-    case "extends":
-        return .extends
-    case "retracts":
-        return .retracts
-    default:
+    guard let relation = VersionRelation(wireName: raw) else {
         throw CLIError("--relation must be one of: sets, updates, extends, retracts")
     }
+    return relation
 }
 
 /// Serialize a FactValue to a JSON-compatible `Any` for `printJSON`.

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 @testable import Wax
 
 struct BrokerCommandDecodeTests {
@@ -354,7 +355,21 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected memory_get")
             return
         }
-        #expect(memoryGet.memoryID == "durable:42")
+        #expect(memoryGet.memoryID == .durable(frameID: 42))
+    }
+
+    @Test
+    func memoryGetDecodeRejectsBareFrameIDBeforeHandle() {
+        #expect(
+            throws: BrokerValidationError.invalid(
+                "memory_id must be in the form '<horizon>:<frame>' or '<horizon>:<session_id>:<frame>'"
+            )
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "memory_get",
+                arguments: ["memory_id": .string("12")]
+            )
+        }
     }
 
     @Test
@@ -371,7 +386,7 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected entity_upsert")
             return
         }
-        #expect(entity.key == "project:wax")
+        #expect(entity.key == EntityKey("project:wax"))
         #expect(entity.aliases == ["Wax"])
 
         let resolve = try BrokerCommand.decode(
@@ -393,7 +408,7 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected fact_retract")
             return
         }
-        #expect(fact.factID == 9)
+        #expect(fact.factID == FactRowID(rawValue: 9))
         #expect(fact.atMs == 100)
 
         let sync = try BrokerCommand.decode(
@@ -468,7 +483,7 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected facts_query")
             return
         }
-        #expect(query.subject == "project:wax")
+        #expect(query.subject == EntityKey("project:wax"))
         #expect(query.limit == 5)
     }
 
@@ -558,9 +573,9 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected fact_assert")
             return
         }
-        #expect(fact.subject == "project:wax")
+        #expect(fact.subject == EntityKey("project:wax"))
         #expect(fact.object == .string("broker memory"))
-        #expect(fact.relation == "sets")
+        #expect(fact.relation == .sets)
 
         let corpus = try BrokerCommand.decode(
             command: "corpus_search",
@@ -583,6 +598,25 @@ struct BrokerCommandDecodeTests {
                 arguments: [
                     "subject": .string("project:wax"),
                     "predicate": .string("owns"),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func factAssertDecodeRejectsUnknownRelation() {
+        #expect(
+            throws: BrokerValidationError.invalid(
+                "relation must be one of: sets, updates, extends, retracts"
+            )
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("owns"),
+                    "object": .string("broker memory"),
+                    "relation": .string("nope"),
                 ]
             )
         }
