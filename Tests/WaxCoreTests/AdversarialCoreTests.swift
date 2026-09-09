@@ -446,6 +446,14 @@ func validateEvidenceRejectsBadConfidence(_ confidence: Double) {
     #expect(VersionRelation(rawValue: 99) == nil)
 }
 
+@Test func versionRelationParsesWireNamesAndRejectsUnknown() {
+    for relation in VersionRelation.allCases {
+        #expect(VersionRelation(wireName: relation.wireName) == relation)
+    }
+    #expect(VersionRelation(wireName: " SETS ") == .sets)
+    #expect(VersionRelation(wireName: "nope") == nil)
+}
+
 // MARK: - AsyncTimeout adversarial / boundary
 
 @Test func asyncTimeoutReturnsWhenOperationCompletesFirst() async throws {

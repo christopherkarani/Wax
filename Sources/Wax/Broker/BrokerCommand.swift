@@ -801,7 +801,7 @@ extension BrokerCommand.FactAssert {
             subject: EntityKey(try args.requiredString("subject", maxBytes: BrokerLimits.maxGraphIdentifierBytes)),
             predicate: PredicateKey(try args.requiredString("predicate", maxBytes: BrokerLimits.maxGraphIdentifierBytes)),
             object: try BrokerCommand.parseFactValue(try args.requiredValue("object")),
-            relation: try BrokerCommand.parseVersionRelation(try args.optionalString("relation") ?? "sets"),
+            relation: try args.optionalString("relation").map { try BrokerCommand.parseVersionRelation($0) } ?? .sets,
             validFromMs: try args.optionalInt64("valid_from"),
             validToMs: try args.optionalInt64("valid_to"),
             evidence: try args.optionalValue("evidence")

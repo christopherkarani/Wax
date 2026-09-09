@@ -359,6 +359,20 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func memoryGetDecodeRejectsBareFrameIDBeforeHandle() {
+        #expect(
+            throws: BrokerValidationError.invalid(
+                "memory_id must be in the form '<horizon>:<frame>' or '<horizon>:<session_id>:<frame>'"
+            )
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "memory_get",
+                arguments: ["memory_id": .string("12")]
+            )
+        }
+    }
+
+    @Test
     func stage2aGraphAndMarkdownSyncDecode() throws {
         let upsert = try BrokerCommand.decode(
             command: "entity_upsert",
@@ -584,6 +598,25 @@ struct BrokerCommandDecodeTests {
                 arguments: [
                     "subject": .string("project:wax"),
                     "predicate": .string("owns"),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func factAssertDecodeRejectsUnknownRelation() {
+        #expect(
+            throws: BrokerValidationError.invalid(
+                "relation must be one of: sets, updates, extends, retracts"
+            )
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("owns"),
+                    "object": .string("broker memory"),
+                    "relation": .string("nope"),
                 ]
             )
         }
