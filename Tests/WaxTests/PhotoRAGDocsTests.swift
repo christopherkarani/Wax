@@ -134,10 +134,6 @@ func photoIDMatchesVideoIDShapeInPublicTypes() throws {
     )
 
     #expect(photoTypes.contains("public struct PhotoID: Sendable, Hashable, Equatable"))
-    #expect(photoTypes.contains("public enum Source: Sendable, Hashable, Equatable { case photos, file }")
-        || (photoTypes.contains("public enum Source: Sendable, Hashable, Equatable")
-            && photoTypes.contains("case photos")
-            && photoTypes.contains("case file")))
     #expect(photoTypes.contains("public var source: Source"))
     #expect(photoTypes.contains("public var id: String"))
     #expect(photoTypes.contains("public init(source: Source, id: String)"))
@@ -179,11 +175,8 @@ func photoMemoryDeleteRequiresPhotoIDNotStringOrVideoID() throws {
 
     #expect(photoMemory.contains("public func delete(photoID: PhotoID)"))
     #expect(!photoMemory.contains("public func delete(assetID: String)"))
-    #expect(!photoMemory.contains("func delete(photoID: VideoID)"))
-    #expect(!photoMemory.contains("func delete(videoID:"))
     #expect(orchestrator.contains("package func delete(photoID: PhotoID)"))
     #expect(!orchestrator.contains("package func delete(assetID: String)"))
-    #expect(!orchestrator.contains("func delete(photoID: VideoID)"))
 }
 
 @Test

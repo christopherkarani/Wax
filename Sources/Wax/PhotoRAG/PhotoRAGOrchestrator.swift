@@ -1311,7 +1311,7 @@ package actor PhotoRAGOrchestrator {
         return unique
     }
 
-    /// Photos-library ingest seam: wrap `localIdentifier` as ``PhotoID`` with `source: .photos`.
+    /// Rewrites source to `.photos`, then order-preserving-dedupes.
     static func photosLibraryIDs(_ photoIDs: [PhotoID]) -> [PhotoID] {
         dedupePhotoIDs(photoIDs.map { PhotoID(source: .photos, id: $0.id) })
     }
