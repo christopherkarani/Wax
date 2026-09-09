@@ -346,6 +346,21 @@ package enum LayeredRecall {
         }
     }
 
+    /// Person-lane (`user_preference` only) drops other-project/other-repo prefs
+    /// when identity is resolved. Unscoped prefs stay. Unresolved identity is a no-op.
+    package static func filterHitsForGlobalPersonLane(
+        _ hits: [Hit],
+        memoryTypes: [MemoryType],
+        identity: Identity
+    ) -> [Hit] {
+        guard memoryTypes == [.userPreference],
+              identity.project != nil || identity.repo != nil
+        else {
+            return hits
+        }
+        return filterHitsByProject(hits, project: identity.project, repo: identity.repo)
+    }
+
     /// Unresolved project keeps the live working lane and unstamped durable/episodic
     /// hits. Stamped foreign durable is dropped so we never auto-widen. Resolved
     /// identity keeps unstamped hits (they are not a different project).
@@ -943,9 +958,20 @@ package enum LayeredRecall {
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
+            // Person-lane still drops other-project prefs when identity is resolved.
+            let personLaneWorking = filterHitsForGlobalPersonLane(
+                typedWorking,
+                memoryTypes: request.memoryTypes,
+                identity: identity
+            )
+            let personLaneDurable = filterHitsForGlobalPersonLane(
+                typedDurable,
+                memoryTypes: request.memoryTypes,
+                identity: identity
+            )
             merged = mergeHits(
-                sessionHits: typedWorking,
-                durableHits: typedDurable,
+                sessionHits: personLaneWorking,
+                durableHits: personLaneDurable,
                 limit: request.limit,
                 nowMs: stores.nowMs(),
                 query: request.query
