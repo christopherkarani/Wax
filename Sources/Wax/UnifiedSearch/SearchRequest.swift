@@ -2,13 +2,100 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
+/// Retrieval lane paired with the query embedding that lane needs.
+///
+/// `vectorOnly` without a non-empty embedding is rejected by ``from(mode:embedding:)``
+/// and by the throwing `SearchRequest` factory. Hybrid with a nil embedding stays
+/// legal (text degradation).
+package enum SearchLane: Sendable, Equatable {
+    case textOnly
+    case vectorOnly(embedding: [Float])
+    case hybrid(alpha: Float, embedding: [Float]?)
+
+    package static let missingVectorOnlyEmbeddingMessage =
+        "vectorOnly search requires a non-empty query embedding"
+
+    package var mode: SearchMode {
+        switch self {
+        case .textOnly: .textOnly
+        case .vectorOnly: .vectorOnly
+        case .hybrid(let alpha, _): .hybrid(alpha: alpha)
+        }
+    }
+
+    package var embedding: [Float]? {
+        switch self {
+        case .textOnly:
+            nil
+        case .vectorOnly(let embedding):
+            embedding
+        case .hybrid(_, let embedding):
+            embedding
+        }
+    }
+
+    package var hasNonEmptyEmbedding: Bool {
+        switch self {
+        case .textOnly:
+            false
+        case .vectorOnly(let embedding):
+            !embedding.isEmpty
+        case .hybrid(_, let embedding):
+            embedding.map { !$0.isEmpty } ?? false
+        }
+    }
+
+    /// Maps public ``SearchMode`` × embedding availability onto a lane.
+    /// Throws ``WaxError/io(_:)`` when `vectorOnly` has a missing or empty embedding.
+    package static func from(mode: SearchMode, embedding: [Float]?) throws -> SearchLane {
+        switch mode {
+        case .textOnly:
+            return .textOnly
+        case .vectorOnly:
+            guard let embedding, !embedding.isEmpty else {
+                throw WaxError.io(missingVectorOnlyEmbeddingMessage)
+            }
+            return .vectorOnly(embedding: embedding)
+        case .hybrid(let alpha):
+            let value: [Float]?
+            if let embedding, !embedding.isEmpty {
+                value = embedding
+            } else {
+                value = nil
+            }
+            return .hybrid(alpha: alpha, embedding: value)
+        }
+    }
+
+    fileprivate func validateVectorOnlyEmbedding() throws {
+        if case .vectorOnly(let embedding) = self, embedding.isEmpty {
+            throw WaxError.io(Self.missingVectorOnlyEmbeddingMessage)
+        }
+    }
+
+    /// Source-compatible mapping used by the `mode` + `embedding` initializer.
+    fileprivate init(mode: SearchMode, embedding: [Float]?) {
+        switch mode {
+        case .textOnly:
+            self = .textOnly
+        case .vectorOnly:
+            self = .vectorOnly(embedding: embedding ?? [])
+        case .hybrid(let alpha):
+            if let embedding, !embedding.isEmpty {
+                self = .hybrid(alpha: alpha, embedding: embedding)
+            } else {
+                self = .hybrid(alpha: alpha, embedding: nil)
+            }
+        }
+    }
+}
+
 /// Unified search request.
 package struct SearchRequest: Sendable, Equatable {
     package var query: String?
-    package var embedding: [Float]?
+    package var lane: SearchLane
     package var vectorEnginePreference: VectorEnginePreference
     package var vectorSearchTimeout: Duration?
-    package var mode: SearchMode
     package var topK: Int
     package var minScore: Float?
     package var timeRange: SearchTimeRange?
@@ -30,6 +117,58 @@ package struct SearchRequest: Sendable, Equatable {
     package var enableRankingDiagnostics: Bool
     package var rankingDiagnosticsTopK: Int
 
+    /// Diagnostics / fusion view of the stored lane. Not an independent stored field.
+    package var mode: SearchMode { lane.mode }
+
+    /// Query embedding carried by the stored lane, if any.
+    package var embedding: [Float]? { lane.embedding }
+
+    package init(
+        query: String? = nil,
+        lane: SearchLane,
+        vectorEnginePreference: VectorEnginePreference = .auto,
+        vectorSearchTimeout: Duration? = .seconds(10),
+        topK: Int = 10,
+        minScore: Float? = nil,
+        timeRange: SearchTimeRange? = nil,
+        frameFilter: FrameFilter? = nil,
+        asOfMs: Int64 = Int64.max,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        structuredMemory: StructuredMemorySearchOptions = .init(),
+        scopeContext: MemoryScopeContext? = nil,
+        rrfK: Int = 60,
+        previewMaxBytes: Int = 512,
+        metadataLoadingThreshold: Int = 50,
+        allowTimelineFallback: Bool = false,
+        timelineFallbackLimit: Int = 10,
+        enableRankingDiagnostics: Bool = false,
+        rankingDiagnosticsTopK: Int = 10
+    ) throws {
+        try lane.validateVectorOnlyEmbedding()
+        self.init(
+            query: query,
+            uncheckedLane: lane,
+            vectorEnginePreference: vectorEnginePreference,
+            vectorSearchTimeout: vectorSearchTimeout,
+            topK: topK,
+            minScore: minScore,
+            timeRange: timeRange,
+            frameFilter: frameFilter,
+            asOfMs: asOfMs,
+            nowMs: nowMs,
+            structuredMemory: structuredMemory,
+            scopeContext: scopeContext,
+            rrfK: rrfK,
+            previewMaxBytes: previewMaxBytes,
+            metadataLoadingThreshold: metadataLoadingThreshold,
+            allowTimelineFallback: allowTimelineFallback,
+            timelineFallbackLimit: timelineFallbackLimit,
+            enableRankingDiagnostics: enableRankingDiagnostics,
+            rankingDiagnosticsTopK: rankingDiagnosticsTopK
+        )
+    }
+
+    /// Source-compatible constructor. Prefer the throwing `lane:` factory.
     package init(
         query: String? = nil,
         embedding: [Float]? = nil,
@@ -52,11 +191,54 @@ package struct SearchRequest: Sendable, Equatable {
         enableRankingDiagnostics: Bool = false,
         rankingDiagnosticsTopK: Int = 10
     ) {
+        self.init(
+            query: query,
+            uncheckedLane: SearchLane(mode: mode, embedding: embedding),
+            vectorEnginePreference: vectorEnginePreference,
+            vectorSearchTimeout: vectorSearchTimeout,
+            topK: topK,
+            minScore: minScore,
+            timeRange: timeRange,
+            frameFilter: frameFilter,
+            asOfMs: asOfMs,
+            nowMs: nowMs,
+            structuredMemory: structuredMemory,
+            scopeContext: scopeContext,
+            rrfK: rrfK,
+            previewMaxBytes: previewMaxBytes,
+            metadataLoadingThreshold: metadataLoadingThreshold,
+            allowTimelineFallback: allowTimelineFallback,
+            timelineFallbackLimit: timelineFallbackLimit,
+            enableRankingDiagnostics: enableRankingDiagnostics,
+            rankingDiagnosticsTopK: rankingDiagnosticsTopK
+        )
+    }
+
+    private init(
+        query: String?,
+        uncheckedLane: SearchLane,
+        vectorEnginePreference: VectorEnginePreference,
+        vectorSearchTimeout: Duration?,
+        topK: Int,
+        minScore: Float?,
+        timeRange: SearchTimeRange?,
+        frameFilter: FrameFilter?,
+        asOfMs: Int64,
+        nowMs: Int64,
+        structuredMemory: StructuredMemorySearchOptions,
+        scopeContext: MemoryScopeContext?,
+        rrfK: Int,
+        previewMaxBytes: Int,
+        metadataLoadingThreshold: Int,
+        allowTimelineFallback: Bool,
+        timelineFallbackLimit: Int,
+        enableRankingDiagnostics: Bool,
+        rankingDiagnosticsTopK: Int
+    ) {
         self.query = query
-        self.embedding = embedding
+        self.lane = uncheckedLane
         self.vectorEnginePreference = vectorEnginePreference
         self.vectorSearchTimeout = vectorSearchTimeout
-        self.mode = mode
         self.topK = topK
         self.minScore = minScore
         self.timeRange = timeRange

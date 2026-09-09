@@ -29,8 +29,10 @@ struct VectorLaneDiagnosticsTests {
             let wax = try await Wax.create(at: url)
             do {
                 let frameID = try await wax.put(Data("A candidate document with no lexical query overlap".utf8))
-                let request = SearchRequest(
-                    query: "vehicle stopping system", embedding: [1, 0], mode: .hybrid(), topK: 4
+                let request = try SearchRequest(
+                    query: "vehicle stopping system",
+                    lane: .hybrid(alpha: 0.5, embedding: [1, 0]),
+                    topK: 4
                 )
                 let relevant = try await wax.search(request, engineOverrides: .init(
                     vectorEngine: DiagnosticVectorEngine(hang: false, hits: [(frameID, 0.95)])
@@ -78,11 +80,15 @@ struct VectorLaneDiagnosticsTests {
             do {
                 // Hang uses a tight budget. The empty lane must use a wide one so
                 // actor scheduling under parallel `swift test` cannot look like a timeout.
-                let response = try await wax.search(.init(
-                    query: "memory reliability", embedding: [1, 0],
-                    vectorSearchTimeout: hang ? .milliseconds(40) : .seconds(2),
-                    mode: .hybrid(), topK: 4
-                ), engineOverrides: .init(vectorEngine: DiagnosticVectorEngine(hang: hang)))
+                let response = try await wax.search(
+                    SearchRequest(
+                        query: "memory reliability",
+                        lane: .hybrid(alpha: 0.5, embedding: [1, 0]),
+                        vectorSearchTimeout: hang ? .milliseconds(40) : .seconds(2),
+                        topK: 4
+                    ),
+                    engineOverrides: .init(vectorEngine: DiagnosticVectorEngine(hang: hang))
+                )
                 #expect(response.vectorSearchTimedOut == hang)
                 try await wax.close()
             } catch {

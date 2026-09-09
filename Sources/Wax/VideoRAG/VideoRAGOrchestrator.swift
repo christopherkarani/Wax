@@ -200,7 +200,7 @@ package actor VideoRAGOrchestrator {
         let queryEmbedding = try await buildQueryEmbedding(text: queryText)
         let isConstraintOnly = (queryText == nil && queryEmbedding == nil)
 
-        let mode: SearchMode = {
+        let resolvedMode: SearchMode = {
             switch (queryText, queryEmbedding) {
             case (nil, nil):
                 return .textOnly
@@ -212,6 +212,7 @@ package actor VideoRAGOrchestrator {
                 return .hybrid(alpha: config.hybridAlpha)
             }
         }()
+        let lane = try SearchLane.from(mode: resolvedMode, embedding: queryEmbedding)
 
         let timeRange = Self.toWaxTimeRange(query.timeRange)
 
@@ -242,11 +243,10 @@ package actor VideoRAGOrchestrator {
         let topK = max(config.searchTopK, query.resultLimit * max(1, query.segmentLimitPerVideo) * 8)
         let timelineFallbackLimit = max(config.timelineFallbackLimit, query.resultLimit * 4)
 
-        let request = SearchRequest(
+        let request = try SearchRequest(
             query: queryText,
-            embedding: queryEmbedding,
+            lane: lane,
             vectorEnginePreference: config.vectorEnginePreference,
-            mode: mode,
             topK: topK,
             timeRange: timeRange,
             frameFilter: frameFilter,

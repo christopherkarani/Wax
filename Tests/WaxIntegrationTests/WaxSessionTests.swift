@@ -125,8 +125,7 @@ import WaxCore
 
         let beforeCommit = try await writer.search(
             SearchRequest(
-                embedding: [1.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0]),
                 topK: 2
             )
         )
@@ -140,8 +139,7 @@ import WaxCore
         let reader = try await reopened.openSession(.readOnly, config: config)
         let afterCommit = try await reader.search(
             SearchRequest(
-                embedding: [1.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0]),
                 topK: 2
             )
         )
@@ -218,8 +216,7 @@ import WaxCore
         let reader = try await reopened.openSession(.readOnly, config: config)
         let response = try await reader.search(
             SearchRequest(
-                embedding: [1.0, 0.0],
-                mode: .vectorOnly,
+                lane: .vectorOnly(embedding: [1.0, 0.0]),
                 topK: 2
             )
         )
@@ -254,8 +251,7 @@ struct WaxSessionCacheIsolationTests {
 
             _ = try await session.search(
                 SearchRequest(
-                    embedding: [1.0, 0.0],
-                    mode: .vectorOnly,
+                    lane: .vectorOnly(embedding: [1.0, 0.0]),
                     topK: 1
                 )
             )

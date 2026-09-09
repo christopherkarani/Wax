@@ -26,7 +26,7 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 10
             )
         )
@@ -63,7 +63,7 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 10
             )
         )
@@ -96,7 +96,7 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "alpha drop",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 10
             )
         )
@@ -127,7 +127,7 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "alpha beta drop",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 10
             )
         )
@@ -158,7 +158,7 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "7f3a91",
-                mode: .textOnly,
+                lane: .textOnly,
                 topK: 10
             )
         )
@@ -192,9 +192,8 @@ import WaxVectorSearch
         let response = try await wax.search(
             SearchRequest(
                 query: "adversarial-fp.md stash-drop deny",
-                embedding: [1.0, 0.0, 0.0, 0.0],
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
-                mode: .hybrid(alpha: 0.5),
                 topK: 10
             ),
             engineOverrides: UnifiedSearchEngineOverrides(

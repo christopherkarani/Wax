@@ -35,34 +35,30 @@ struct SearchPlanTests {
     }
 
     @Test
-    func vectorOnlyWithoutEmbeddingSetsIncludeFlagsAndDoesNotThrow() {
-        let missing = SearchPlan.make(
-            SearchRequest(query: "7f3a91", embedding: nil, mode: .vectorOnly, nowMs: 0)
-        )
-        #expect(missing.includeText == false)
-        #expect(missing.includeVector)
-        #expect(missing.exactIntentWindow == nil)
-        #expect(missing.queryType == .factual)
-
-        let empty = SearchPlan.make(
-            SearchRequest(query: "7f3a91", embedding: [], mode: .vectorOnly, nowMs: 0)
-        )
-        #expect(empty.includeText == false)
-        #expect(empty.includeVector)
-        #expect(empty.exactIntentWindow == nil)
-    }
-
-    @Test
-    func hybridIncludesBothLanesWithoutExactIntentWindow() {
+    func hybridWithoutEmbeddingOmitsVectorLane() {
         let plan = SearchPlan.make(
             SearchRequest(query: "hello world", mode: .hybrid(), nowMs: 0)
         )
         #expect(plan.includeText)
-        #expect(plan.includeVector)
+        #expect(plan.includeVector == false)
         #expect(plan.queryType == .exploratory)
         #expect(plan.exactIntentWindow == nil)
         #expect(plan.candidateLimit == 30)
         #expect(plan.matchPlan != nil)
+    }
+
+    @Test
+    func hybridWithEmbeddingIncludesBothLanes() throws {
+        let plan = SearchPlan.make(
+            try SearchRequest(
+                query: "hello world",
+                lane: .hybrid(alpha: 0.5, embedding: [1, 0, 0, 0]),
+                nowMs: 0
+            )
+        )
+        #expect(plan.includeText)
+        #expect(plan.includeVector)
+        #expect(plan.exactIntentWindow == nil)
     }
 
     @Test(arguments: [(1, 12), (10, 30), (20, 48)])

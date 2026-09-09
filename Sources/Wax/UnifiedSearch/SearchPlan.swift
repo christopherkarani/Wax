@@ -23,16 +23,16 @@ package extension SearchPlan {
 
         let includeText: Bool
         let includeVector: Bool
-        switch request.mode {
+        switch request.lane {
         case .textOnly:
             includeText = true
             includeVector = false
         case .vectorOnly:
             includeText = false
-            includeVector = true
+            includeVector = request.lane.hasNonEmptyEmbedding
         case .hybrid:
             includeText = true
-            includeVector = true
+            includeVector = request.lane.hasNonEmptyEmbedding
         }
 
         let requestedTopK = max(0, request.topK)
