@@ -2,7 +2,7 @@ class Wax < Formula
   desc "On-device memory and RAG framework with MCP server for Claude Code"
   homepage "https://github.com/christopherkarani/Wax"
   url "https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v0.1.43.tar.gz"
-  sha256 "9d837f49e653809a16df6316f60cd1720f12c487ca0b0a643fdc7773fefb0097"
+  sha256 "6fb374dd96dbd7b908912e42f0d4f278cfed28532722cc3a96c004e077c1ecde"
   license "MIT"
 
   depends_on xcode: ["16.3", :build]
