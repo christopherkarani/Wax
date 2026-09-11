@@ -33,11 +33,10 @@ package enum RuleBasedQueryClassifier {
             return .factual
         }
 
-        if q.contains("how ")
-            || q.contains("why ")
-            || q.contains("explain")
-            || q.contains("describe")
-            || q.contains("relate") {
+        // Short how/why questions take the semantic lane. Long agent job
+        // strings that happen to contain "why"/"how" stay exploratory so
+        // hybrid fusion is not vector-dominated.
+        if isShortSemanticQuestion(trimmed) {
             return .semantic
         }
 
@@ -98,5 +97,29 @@ package enum RuleBasedQueryClassifier {
             return true
         }
         return !MatchPlan.rawQuotedPhrases(from: trimmed).isEmpty
+    }
+
+    /// How/why/explain questions stay semantic only when they are short.
+    /// A 12-word cap keeps "How does authentication relate to user privacy?"
+    /// on the vector-biased lane without treating a 20-word `recall_query`
+    /// that starts with or contains "why" as a semantic question.
+    package static func isShortSemanticQuestion(_ query: String) -> Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let wordCount = trimmed.split { $0.isWhitespace || $0.isNewline }.count
+        guard wordCount <= 12 else { return false }
+        let q = trimmed.lowercased()
+        if q.hasPrefix("how ") || q.hasPrefix("how?") || q == "how"
+            || q.hasPrefix("why ") || q.hasPrefix("why?") || q == "why" {
+            return true
+        }
+        if q.hasPrefix("explain") || q.hasPrefix("describe") || q.hasPrefix("relate") {
+            return true
+        }
+        return q.contains("how ")
+            || q.contains("why ")
+            || q.contains("explain")
+            || q.contains("describe")
+            || q.contains("relate")
     }
 }

@@ -64,6 +64,74 @@ package enum UnifiedRanking {
         return combined
     }
 
+    /// Promote previews that share distinctive query tokens, with a recency
+    /// bump when that overlap is recent. Identifier-scale bonus so a lexical
+    /// fact can beat same-repo + lesson + durable + a full RRF vector score.
+    package static func distinctiveTokenRerank(
+        results: [SearchResponse.Result],
+        query: String,
+        nowMs: Int64,
+        maxWindow: Int,
+        analyzer: QueryAnalyzer = QueryAnalyzer()
+    ) -> [SearchResponse.Result] {
+        let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        guard !queryTerms.isEmpty else { return results }
+        let cappedWindow = min(max(0, maxWindow), results.count)
+        guard cappedWindow > 1 else { return results }
+
+        // Larger than same-repo (0.9) + same-project (0.7) + lesson (0.40)
+        // + durable (0.25) + a full published RRF score (1.0).
+        let coverageBonus: Float = 5.0
+        let recentLexicalBonus: Float = 2.0
+        let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
+
+        let scoredHead = results.prefix(cappedWindow).enumerated().map { index, result -> (index: Int, composite: Float, coverage: Float, result: SearchResponse.Result) in
+            let preview = dehighlightedPreviewText(result.previewText ?? "")
+            let previewTerms = Set(analyzer.normalizedTerms(query: preview))
+            let overlap = queryTerms.intersection(previewTerms)
+            let coverage = Float(overlap.count) / Float(queryTerms.count)
+            var bonus: Float = coverage * coverageBonus
+            var updated = result
+            if coverage > 0 {
+                updated.explanations = dedupedExplanations(result.explanations + ["distinctive token overlap"])
+                if let createdAtMs = MemorySemantics.parse(metadata: result.metadata, nowMs: nowMs).createdAtMs {
+                    let age = max(0, nowMs - createdAtMs)
+                    if age <= recentMs {
+                        bonus += recentLexicalBonus
+                        updated.explanations = dedupedExplanations(updated.explanations + ["recent lexical match"])
+                    }
+                }
+            }
+            return (
+                index: index,
+                composite: result.score + bonus,
+                coverage: coverage,
+                result: updated
+            )
+        }
+
+        guard scoredHead.contains(where: { $0.coverage > 0 }) else { return results }
+
+        let rankedHead = scoredHead.sorted { lhs, rhs in
+            if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
+            if lhs.coverage != rhs.coverage { return lhs.coverage > rhs.coverage }
+            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+            return lhs.index < rhs.index
+        }.map { item -> SearchResponse.Result in
+            var result = item.result
+            result.score = item.composite
+            return result
+        }
+
+        if cappedWindow == results.count {
+            return rankedHead
+        }
+        var combined = rankedHead
+        combined.reserveCapacity(results.count)
+        combined.append(contentsOf: results.dropFirst(cappedWindow))
+        return combined
+    }
+
     package static func intentAwareRerank(
         results: [SearchResponse.Result],
         query: String,

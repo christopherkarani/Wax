@@ -48,6 +48,22 @@ struct SearchPlanTests {
     }
 
     @Test
+    func longWhyJobQueryStaysExploratoryHybrid() throws {
+        let plan = SearchPlan.make(
+            try SearchRequest(
+                query: "why agents use text search instead of vector semantic search waxmcp recall mode default",
+                lane: .hybrid(alpha: 0.5, embedding: [1, 0, 0, 0]),
+                nowMs: 0
+            )
+        )
+        #expect(plan.queryType == .exploratory)
+        #expect(plan.includeText)
+        #expect(plan.includeVector)
+        #expect(plan.exactIntentWindow == nil)
+        #expect(plan.weights == FusionWeights(bm25: 0.4, vector: 0.5, temporal: 0.1))
+    }
+
+    @Test
     func hybridWithEmbeddingIncludesBothLanes() throws {
         let plan = SearchPlan.make(
             try SearchRequest(

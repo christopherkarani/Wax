@@ -30,7 +30,7 @@ enum MCPAgentInstructions {
 
         Responses default to one compact JSON content block. verbosity=verbose keeps that JSON in the text block and also sets structuredContent; do not pass verbose expecting the payload to disappear.
 
-        Behavior: read handoffs and recall results before asking the user to restate prior context; keep memory writes concise and task-scoped; cite provenance on cross-session hits. Prefer mode=text for exact names and recent facts.
+        Behavior: read handoffs and recall results before asking the user to restate prior context; keep memory writes concise and task-scoped; cite provenance on cross-session hits. Omit mode unless you need an override; hybrid ranking promotes distinctive tokens and recent lexical matches. Exact identifiers still use the lexical lane.
         """
     }
 }
