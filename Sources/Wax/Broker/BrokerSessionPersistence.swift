@@ -299,6 +299,42 @@ package enum BrokerSessionPersistence {
         return matches[0]
     }
 
+    /// Unique conversation for this host chat. Prefers the live session; otherwise
+    /// the most recently updated ended session that has not been reclaimed.
+    /// Multiple live matches still return nil (do not guess).
+    package static func findConversation(
+        conversationID: String,
+        agentID: String? = nil,
+        project: String? = nil,
+        repo: String? = nil,
+        rootURL: URL
+    ) throws -> BrokerSessionManifest? {
+        if let active = try findActive(
+            conversationID: conversationID,
+            agentID: agentID,
+            project: project,
+            repo: repo,
+            rootURL: rootURL
+        ) {
+            return active
+        }
+        let trimmed = conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let ended = try listManifests(rootURL: rootURL).filter { manifest in
+            guard manifest.status == .ended, manifest.reclaimedAtMs == nil else { return false }
+            guard manifest.conversationID == trimmed else { return false }
+            if let agentID, manifest.agentID != agentID { return false }
+            if let project, manifest.project != project { return false }
+            if let repo, manifest.repo != repo { return false }
+            return true
+        }
+        .sorted { lhs, rhs in
+            if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+            return lhs.sessionID.uuidString < rhs.sessionID.uuidString
+        }
+        return ended.first
+    }
+
     package static func appendEvent(_ event: BrokerSessionEvent, to url: URL) throws {
         let line = try encoder.encode(event) + Data([0x0A])
         if !FileManager.default.fileExists(atPath: url.path) {

@@ -77,6 +77,46 @@ func findActiveReturnsUniqueActiveConversationMatch() throws {
     let found = try #require(match)
     #expect(found.sessionID == uniqueID)
     #expect(found.conversationID == "thread-a")
+    #expect(
+        try BrokerSessionPersistence.findConversation(conversationID: "thread-a", rootURL: rootURL)?
+            .sessionID == uniqueID
+    )
+}
+
+@Test
+func findConversationReturnsLatestEndedWhenNoActiveMatch() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-conversation-ended-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let older = UUID()
+    let newer = UUID()
+    try saveConversationManifest(
+        conversationManifest(
+            sessionID: older,
+            conversationID: "thread-ended",
+            status: .ended,
+            updatedAtMs: 10
+        ),
+        rootURL: rootURL
+    )
+    try saveConversationManifest(
+        conversationManifest(
+            sessionID: newer,
+            runID: "later",
+            conversationID: "thread-ended",
+            status: .ended,
+            updatedAtMs: 20
+        ),
+        rootURL: rootURL
+    )
+
+    #expect(try BrokerSessionPersistence.findActive(conversationID: "thread-ended", rootURL: rootURL) == nil)
+    let match = try #require(
+        try BrokerSessionPersistence.findConversation(conversationID: "thread-ended", rootURL: rootURL)
+    )
+    #expect(match.sessionID == newer)
 }
 
 @Test

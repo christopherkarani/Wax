@@ -526,14 +526,14 @@ enum ToolSchemas {
             "project": ["type": "string", "description": "Optional project stamped onto the new session manifest (overrides cwd inference)."],
             "repo": ["type": "string", "description": "Optional repo stamped onto the new session manifest (overrides cwd inference)."],
             "cwd": ["type": "string", "description": "Optional client working directory used to infer project/repo when not explicit."],
-            "conversation_id": ["type": "string", "description": "Host chat/session id. A unique active match is resumed across compaction and reconnect. Grok should pass its session UUID. Omitted or whitespace-only is ignored."],
+            "conversation_id": ["type": "string", "description": "Host chat/session id. The unique match is resumed across compaction, reconnect, and close. Grok should pass its session UUID. Omitted or whitespace-only is ignored."],
             "verbosity": responseVerbositySchema,
         ],
         required: []
     )
     static let waxSessionResume: Value = objectSchema(
         properties: [
-            "session_id": ["type": "string", "description": "Optional session UUID to reopen. Omit on a bound MCP connection unless selecting another session; after reconnecting, supply the saved UUID or agent/run selectors."],
+            "session_id": ["type": "string", "description": "Optional session UUID to reopen. Omit on a bound MCP connection. After reconnect, call session_open with conversation_id; do not invent a UUID."],
             "agent_id": ["type": "string", "description": "Optional agent selector when session_id is omitted."],
             "run_id": ["type": "string", "description": "Optional run selector when session_id is omitted."],
             "verbosity": responseVerbositySchema,
@@ -555,7 +555,7 @@ enum ToolSchemas {
         properties: [
             "session_id": [
                 "type": "string",
-                "description": "Session UUID to close. Omit after session_open on this connection. After reconnect, pass the saved UUID or call session_open first; do not invent one.",
+                "description": "Session UUID to close. Omit after session_open on this connection. After reconnect, call session_open with conversation_id; do not invent a UUID.",
             ],
             "content": [
                 "type": "string",
@@ -603,7 +603,7 @@ enum ToolSchemas {
             ],
             "conversation_id": [
                 "type": "string",
-                "description": "Host chat/session id. A unique active match is resumed across compaction and reconnect. Grok should pass its session UUID. Omitted or whitespace-only is ignored.",
+                "description": "Host chat/session id. The unique match is resumed across compaction, reconnect, and close. Grok should pass its session UUID. Omitted or whitespace-only is ignored.",
             ],
             "verbosity": responseVerbositySchema,
         ],

@@ -76,15 +76,30 @@ package enum RecallPresent {
             createdAtMs: hit.timestampMs,
             nowMs: nowMs
         )
-        object["rank"] = .from(rank)
-        object["kind"] = .string(itemKindLabel(hit.kind))
-        object["frameId"] = .from(hit.frameID)
-        object["sources"] = .array(hit.sources.map { .string($0.rawValue) })
         if verbose {
+            object["rank"] = .from(rank)
+            object["kind"] = .string(itemKindLabel(hit.kind))
+            object["frameId"] = .from(hit.frameID)
+            object["sources"] = .array(hit.sources.map { .string($0.rawValue) })
             object["metadata"] = .object(hit.metadata.mapValues(AgentBrokerValue.string))
             object["explanations"] = .array(hit.explanations.map(AgentBrokerValue.string))
         }
         return .object(object)
+    }
+
+    package static let compactRecallEnvelopeKeysToDrop: Set<String> = [
+        "query_embedding_state", "applied_filters", "retrieval_top_k", "search_top_k",
+        "total_tokens", "display_text",
+    ]
+
+    package static func slimCompactRecallEnvelope(
+        _ payload: [String: AgentBrokerValue]
+    ) -> [String: AgentBrokerValue] {
+        var object = payload
+        for key in compactRecallEnvelopeKeysToDrop {
+            object.removeValue(forKey: key)
+        }
+        return object
     }
 
     package static func renderLayeredMemoryHit(

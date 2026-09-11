@@ -146,13 +146,15 @@ package enum SessionOpenAssembly {
         sessionID: String,
         rebound: Bool,
         handoff: AgentBrokerValue,
-        recall: AgentBrokerValue?
+        recall: AgentBrokerValue?,
+        person: AgentBrokerValue? = nil
     ) -> AgentBrokerValue {
         let sharePrompt =
             "This MCP connection remembers session_id (\(sessionID)); "
             + "omit it on subsequent memory calls on this connection. "
-            + "Retain it for reconnects, explicit cross-session calls, "
-            + "and direct broker/CLI use. Host children do not get Wax tools."
+            + "After reconnect, session_open with conversation_id — do not invent a UUID. "
+            + "If remember committed is false, the write did not land; do not spawn children "
+            + "(host children do not get Wax tools)."
         var payload: [String: AgentBrokerValue] = [
             "session_id": .string(sessionID),
             "rebound": .bool(rebound),
@@ -164,6 +166,9 @@ package enum SessionOpenAssembly {
             if let warning = recall.objectValue?["warning"] {
                 payload["warning"] = warning
             }
+        }
+        if let person {
+            payload["person"] = person
         }
         return .object(payload)
     }

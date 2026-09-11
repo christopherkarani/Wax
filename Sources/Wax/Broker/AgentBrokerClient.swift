@@ -99,8 +99,14 @@ package enum AgentBrokerClient {
             ), response.ok {
                 return false
             }
+            if try restartMuteOwnedBroker(configuration: configuration) {
+                return try startBrokerIfNeeded(
+                    configuration: configuration,
+                    timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+                )
+            }
             throw BrokerClientError(
-                "Broker socket is live at \(configuration.socketPath) but did not answer; not starting a second daemon. Restart wax-mcp or `launchctl kickstart -k gui/$(id -u)/ai.wax.mcp-http`."
+                "Broker socket is live at \(configuration.socketPath) but did not answer (socket_live=true answered=false committed=false). Not starting a second daemon. Restart wax-mcp or `launchctl kickstart -k gui/$(id -u)/ai.wax.mcp-http`, then session_open with conversation_id. Do not invent a session_id."
             )
         }
 
@@ -300,6 +306,67 @@ package enum AgentBrokerClient {
         }
         return connectResult == 0
     }
+
+    /// Kill a mute `wax-cli` broker we can identify, then let `startBrokerIfNeeded` relaunch it.
+    /// Foreign listeners (tests, other apps) are left alone.
+    private static func restartMuteOwnedBroker(configuration: AgentBrokerConfiguration) throws -> Bool {
+        #if canImport(Darwin)
+        guard let pid = peerPID(socketPath: configuration.socketPath) else { return false }
+        guard isWaxCLIProcess(pid: pid) else { return false }
+        kill(pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            let stillRunning = kill(pid, 0) == 0
+            if !stillRunning, !isSocketLive(socketPath: configuration.socketPath) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        kill(pid, SIGKILL)
+        Thread.sleep(forTimeInterval: 0.15)
+        return !isSocketLive(socketPath: configuration.socketPath)
+        #else
+        return false
+        #endif
+    }
+
+    #if canImport(Darwin)
+    private static func peerPID(socketPath: String) -> pid_t? {
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var address = sockaddr_un()
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return nil }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+        let connected = withUnsafePointer(to: &address) { pointer -> Bool in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
+        guard connected else { return nil }
+        var pid: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        let result = getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length)
+        return result == 0 && pid > 1 ? pid : nil
+    }
+
+    private static func isWaxCLIProcess(pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let count = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard count > 0 else { return false }
+        let path = String(decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name == "wax-cli"
+    }
+    #endif
 
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,

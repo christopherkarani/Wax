@@ -888,7 +888,7 @@ struct LayeredRecallTests {
         )
         #expect(
             LayeredRecall.rankingAdjustedScore(unlocked, nowMs: nowMs, query: query)
-                == LayeredRecall.freshnessAdjustedScore(unlocked, nowMs: nowMs)
+                > LayeredRecall.freshnessAdjustedScore(unlocked, nowMs: nowMs)
         )
         #expect(
             LayeredRecall.rankingAdjustedScore(locked, nowMs: nowMs, query: query)

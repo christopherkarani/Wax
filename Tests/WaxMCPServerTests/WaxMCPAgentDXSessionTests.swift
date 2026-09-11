@@ -526,6 +526,9 @@ func sessionClosePayloadListsPromotedAndLeftoverReasons() async throws {
         let reasons = payload["leftover_reasons"]?.arrayValue?.compactMap(\.stringValue) ?? []
         #expect(reasons.contains("note_low_recall"))
         #expect(reasons.count == leftoverCount)
+        #expect(
+            (payload["leftover_next_action"]?.stringValue ?? "").localizedCaseInsensitiveContains("ignore")
+        )
     }
 }
 
@@ -662,7 +665,7 @@ func sessionOpenKeepsWorkingMemoryIsolatedAcrossConversations() async throws {
 }
 
 @Test
-func sessionCloseThenReopenConversationMintsNewUUIDPreservingDurableMemory() async throws {
+func sessionCloseThenReopenConversationResumesSameSessionAndKeepsWorkingNotes() async throws {
     try await withAgentDXBroker { service, _ in
         let project = "dx-reopen-\(UUID().uuidString.prefix(8))"
         let workingToken = "WAXDXWORKING-\(UUID().uuidString.prefix(8))"
@@ -718,8 +721,7 @@ func sessionCloseThenReopenConversationMintsNewUUIDPreservingDurableMemory() asy
             conversationID: "conv-reopen"
         )
         let reopenedID = try requireString(reopened, "session_id")
-        #expect(reopenedID != sessionID)
-        #expect(UUID(uuidString: reopenedID) != nil)
+        #expect(reopenedID == sessionID)
 
         let durableRecall = try await projectRecall(
             service,
@@ -741,7 +743,7 @@ func sessionCloseThenReopenConversationMintsNewUUIDPreservingDurableMemory() asy
             query: workingToken,
             project: project
         )
-        #expect(payloadContains(newSessionRecall, workingToken) == false)
+        #expect(payloadContains(newSessionRecall, workingToken) == true)
     }
 }
 

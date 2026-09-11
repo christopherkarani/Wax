@@ -118,7 +118,22 @@ enum WaxMCPTools {
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
         } catch {
-            return errorResult(message: error.localizedDescription, code: "execution_failed")
+            let message = error.localizedDescription
+            if message.contains("did not answer") || message.contains("socket_live=true") {
+                return structuredErrorResult(
+                    message: message,
+                    code: "broker_unresponsive",
+                    fields: [
+                        "committed": .bool(false),
+                        "socket_live": .bool(true),
+                        "answered": .bool(false),
+                        "next_action": .string(
+                            "Restart wax-mcp or launchctl kickstart the HTTP service, then session_open with conversation_id. The write did not land; do not spawn children."
+                        ),
+                    ]
+                )
+            }
+            return errorResult(message: message, code: "execution_failed")
         }
     }
 }

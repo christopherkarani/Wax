@@ -251,14 +251,18 @@ package final class VirtualSessionStore: @unchecked Sendable {
     package func resume(
         explicitSessionID: UUID?,
         agentID: String?,
-        runID: String?
+        runID: String?,
+        reopenEnded: Bool = false
     ) async throws -> LifecycleResult {
         let manifest = try resolveManifest(
             explicitSessionID: explicitSessionID,
             agentID: agentID,
             runID: runID
         )
-        guard manifest.status == .active else {
+        let canReopenEnded = reopenEnded
+            && manifest.status == .ended
+            && manifest.reclaimedAtMs == nil
+        guard manifest.status == .active || canReopenEnded else {
             throw BrokerValidationError.invalid("session_id has already been ended and cannot be resumed")
         }
 
@@ -287,6 +291,10 @@ package final class VirtualSessionStore: @unchecked Sendable {
             }
 
             var refreshed = manifest
+            if canReopenEnded {
+                refreshed.status = .active
+                refreshed.endedAtMs = nil
+            }
             refreshed.brokerLeaseOwnerID = brokerInstanceID
             refreshed.leaseExpiresAtMs = timestamp + Int64(leaseSeconds * 1000)
             refreshed.updatedAtMs = timestamp
@@ -939,7 +947,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     private static var requireSessionIDError: BrokerValidationError {
         .invalid(
-            "session_id is required when more than one session is active; pass the UUID from session_open (this MCP connection has no bound session)"
+            "session_id is required when more than one session is active; call session_open with conversation_id (this host chat id). Do not invent a session_id."
         )
     }
 

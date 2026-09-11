@@ -432,6 +432,7 @@ extension AgentBrokerService {
             content: command.content,
             metadata: metadata,
             sessionID: sessionID,
+            echoedSessionID: stampSessionID,
             inferredScope: inferredScope
         )
     }
@@ -463,6 +464,7 @@ extension AgentBrokerService {
         content: String,
         metadata: [String: String],
         sessionID: UUID?,
+        echoedSessionID: UUID? = nil,
         inferredScope: MemoryScopeContext = MemoryScopeContext()
     ) async throws -> AgentBrokerValue {
         let rememberResult = try await memory.remember(content, metadata: metadata)
@@ -493,6 +495,7 @@ extension AgentBrokerService {
             frameCount: after.frameCount,
             pendingFrames: after.pendingFrames,
             sessionID: sessionID,
+            echoedSessionID: echoedSessionID ?? sessionID,
             metadata: metadata,
             inferredScope: inferredScope,
             deduplicated: rememberResult.deduplicated,
@@ -500,7 +503,7 @@ extension AgentBrokerService {
         )
     }
 
-    /// Same-project Jaccard ≥ 0.88 retires prior unsuperseded durable twins. Locked stays live.
+    /// Same-project Jaccard ≥ threshold retires prior unsuperseded durable twins. Locked stays live.
     /// Selection policy lives in ``RememberAssembly``; this method still owns corpus I/O + supersede + flush.
     private func autoSupersedeSimilarDurableFrames(
         memory: MemoryOrchestrator,
@@ -686,6 +689,9 @@ extension AgentBrokerService {
             queryEmbeddingState: result.queryEmbeddingState
         ) {
             payload["warning"] = .string(warning)
+        }
+        if !verbose {
+            payload = RecallPresent.slimCompactRecallEnvelope(payload)
         }
         if let scopeMissMessage = result.scopeMissMessage {
             payload["scope_miss_message"] = .string(scopeMissMessage)
@@ -874,7 +880,7 @@ extension AgentBrokerService {
             if activeSessions.count > 1 {
                 throw BrokerValidationError.invalid("session_id is required when more than one session is active")
             }
-            throw BrokerValidationError.invalid("session_id is required when no active session is available")
+            throw BrokerValidationError.invalid("session_id is required when no active session is available; call session_open with conversation_id")
         }
         _ = try await memory(for: resolvedSessionID)
         guard let session = activeSessions[resolvedSessionID] else {
@@ -1448,7 +1454,7 @@ extension AgentBrokerService {
         } else {
             guard let target = try virtualSessions.peekEndTarget(sessionID: nil) else {
                 throw BrokerValidationError.invalid(
-                    "session_id is required when no active session is available; pass the UUID from session_open (this MCP connection has no bound session)"
+                    "session_id is required when no active session is available; call session_open with conversation_id (this host chat id). Do not invent a session_id."
                 )
             }
             sessionID = target
@@ -1525,7 +1531,7 @@ extension AgentBrokerService {
         reclaimed: Bool = false
     ) -> AgentBrokerValue {
         let display =
-            "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions other_sessions_active=\(remainingActive > 0) remaining_active=\(remainingActive > 0) count=\(remainingActive)."
+            "Session \(sessionID.uuidString) \(alreadyEnded ? "already ended" : "closed"). This session active=false. Other live sessions other_sessions_active=\(remainingActive > 0) remaining_active=\(remainingActive > 0) count=\(remainingActive). leftover_reasons are harvest skips — ignore them. Same conversation_id reopens this session."
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
             "session_id": .string(sessionID.uuidString),
@@ -1535,6 +1541,11 @@ extension AgentBrokerService {
             "remaining_active": .from(remainingActive > 0),
             "other_sessions_active": .from(remainingActive > 0),
             "active_session_count": .from(remainingActive),
+            "leftover_next_action": .string(
+                harvest.leftoverReasons.isEmpty
+                    ? "nothing to do"
+                    : "ignore leftover_reasons; they are harvest skips, not errors. remaining_active is other sessions, not this one."
+            ),
             "harvested": .bool(harvest.harvested),
             "promoted_count": .from(harvest.promotedCount),
             "promoted": .array(harvest.promoted.map { item in
@@ -1648,7 +1659,7 @@ extension AgentBrokerService {
 
         var conversationMatch: SessionOpenDecision.Match?
         if let conversationID {
-            if let match = try BrokerSessionPersistence.findActive(
+            if let match = try BrokerSessionPersistence.findConversation(
                 conversationID: conversationID,
                 agentID: requestedAgentID,
                 project: inferredScope.projectName,
@@ -1677,7 +1688,8 @@ extension AgentBrokerService {
             lifecycle = try await virtualSessions.resume(
                 explicitSessionID: resumeSessionID,
                 agentID: nil,
-                runID: nil
+                runID: nil,
+                reopenEnded: conversationMatch?.sessionID == resumeSessionID
             )
             if let conversationMatch,
                conversationMatch.sessionID == resumeSessionID,
@@ -1762,6 +1774,24 @@ extension AgentBrokerService {
             recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
         }
 
+        var personPayload: AgentBrokerValue?
+        do {
+            var personArgs: [String: AgentBrokerValue] = [
+                "query": .string("facts about this person standing corrections"),
+                "scope": .string("global"),
+                "limit": .from(3),
+                "mode": .string("text"),
+                "memory_types": .array([.string(MemoryType.userPreference.rawValue)]),
+                "session_id": .string(sessionID),
+            ]
+            if let resolvedProject { personArgs["project"] = .string(resolvedProject) }
+            if let resolvedRepo { personArgs["repo"] = .string(resolvedRepo) }
+            if let cwd { personArgs["cwd"] = .string(cwd) }
+            personPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(personArgs)))
+        } catch {
+            personPayload = nil
+        }
+
         let rebound = SessionOpenDecision.rebound(returnedSessionID: sessionUUID, facts: openFacts)
         let tokenizer: SessionOpenAssembly.Tokenizer
         if SessionOpenAssembly.needsTokenizer(handoffPayload) {
@@ -1779,7 +1809,8 @@ extension AgentBrokerService {
             sessionID: sessionID,
             rebound: rebound,
             handoff: handoff,
-            recall: recallPayload
+            recall: recallPayload,
+            person: personPayload
         )
     }
 
@@ -1817,6 +1848,11 @@ extension AgentBrokerService {
             }),
             "leftover_count": .from(harvest.leftoverCount),
             "leftover_reasons": .array(harvest.leftoverReasons.map { .string($0) }),
+            "leftover_next_action": .string(
+                harvest.leftoverReasons.isEmpty
+                    ? "nothing to do"
+                    : "ignore leftover_reasons; they are harvest skips, not errors. remaining_active is other sessions, not this one."
+            ),
             "reclaim_after_ms": .from(harvest.reclaimAfterMs),
             "reclaimed": .bool(reclaimed),
             "display_text": .string(display),

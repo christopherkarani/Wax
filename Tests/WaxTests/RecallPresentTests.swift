@@ -97,13 +97,12 @@ func recallPresentRenderRecallHitKeepsWireShape() throws {
     )
     #expect(Set(compact.keys) == [
         "id", "text", "score", "created_at_ms", "age_days", "project", "memory_type",
-        "rank", "kind", "frameId", "sources",
     ])
     #expect(compact["id"]?.stringValue == "working:\(sessionID.uuidString):42")
-    #expect(compact["rank"]?.intValue == 3)
-    #expect(compact["kind"]?.stringValue == "expanded")
-    #expect(compact["frameId"]?.intValue == 42)
-    #expect(compact["sources"]?.arrayValue?.compactMap(\.stringValue) == ["text", "vector"])
+    #expect(compact["rank"] == nil)
+    #expect(compact["kind"] == nil)
+    #expect(compact["frameId"] == nil)
+    #expect(compact["sources"] == nil)
     #expect(compact["preview"] == nil)
     #expect(compact["metadata"] == nil)
     #expect(compact["explanations"] == nil)
@@ -111,6 +110,10 @@ func recallPresentRenderRecallHitKeepsWireShape() throws {
     let verbose = try #require(
         RecallPresent.renderRecallHit(hit, rank: 3, verbose: true, nowMs: nowMs).objectValue
     )
+    #expect(verbose["rank"]?.intValue == 3)
+    #expect(verbose["kind"]?.stringValue == "expanded")
+    #expect(verbose["frameId"]?.intValue == 42)
+    #expect(verbose["sources"]?.arrayValue?.compactMap(\.stringValue) == ["text", "vector"])
     #expect(verbose["metadata"]?.objectValue?[MemoryMetadataKeys.project]?.stringValue == "Wax")
     #expect(verbose["explanations"]?.arrayValue?.compactMap(\.stringValue) == ["why-a", "why-b"])
 }

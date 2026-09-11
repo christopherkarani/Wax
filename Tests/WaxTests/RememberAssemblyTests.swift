@@ -54,11 +54,12 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
     )
     let object = try #require(payload.objectValue)
     #expect(Set(object.keys) == [
-        "status", "frame_id", "memory_id", "framesAdded", "frameCount", "pendingFrames",
+        "status", "committed", "frame_id", "memory_id", "framesAdded", "frameCount", "pendingFrames",
         "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable",
         "unresolved_project", "display_text", "project", "repo",
     ])
     #expect(object["status"]?.stringValue == "ok")
+    #expect(object["committed"]?.boolValue == true)
     #expect(object["frame_id"]?.intValue == 42)
     #expect(object["memory_id"]?.stringValue == "durable:42")
     #expect(object["framesAdded"]?.intValue == 1)
@@ -93,6 +94,7 @@ func rememberAssemblyPayloadUsesWorkingMemoryIDForSession() throws {
     )
     let object = try #require(payload.objectValue)
     #expect(object["scope"]?.stringValue == "session")
+    #expect(object["committed"]?.boolValue == true)
     #expect(object["session_id"]?.stringValue == sessionID.uuidString)
     #expect(object["memory_id"]?.stringValue == "working:\(sessionID.uuidString):7")
     #expect(object["memory_type"]?.stringValue == "note")
@@ -145,6 +147,28 @@ func rememberAssemblyPayloadFallsBackToInferredScope() throws {
     #expect(object["project"]?.stringValue == "from-cwd")
     #expect(object["repo"]?.stringValue == "from-repo")
     #expect(object["unresolved_project"]?.boolValue == false)
+}
+
+@Test
+func rememberAssemblyPayloadEchoesBoundSessionOnDurableWrite() throws {
+    let bound = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let payload = RememberAssembly.payload(
+        frameId: 42,
+        framesAdded: 1,
+        frameCount: 9,
+        pendingFrames: 0,
+        sessionID: nil,
+        echoedSessionID: bound,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: false,
+        searchable: true
+    )
+    let object = try #require(payload.objectValue)
+    #expect(object["scope"]?.stringValue == "durable")
+    #expect(object["memory_id"]?.stringValue == "durable:42")
+    #expect(object["committed"]?.boolValue == true)
+    #expect(object["session_id"]?.stringValue == bound.uuidString)
 }
 
 @Test

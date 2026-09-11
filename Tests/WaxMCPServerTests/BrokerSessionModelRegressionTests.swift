@@ -1470,7 +1470,7 @@ func sessionEndRequiresSessionIDWhenMultipleSessionsAreActive() async throws {
         let ended = await service.handle(.init(command: "session_end"))
         #expect(ended.ok == false)
         #expect((ended.error ?? "").contains("session_id is required"))
-        #expect((ended.error ?? "").contains("pass the UUID from session_open"))
+        #expect((ended.error ?? "").contains("conversation_id"))
     }
 }
 
@@ -1520,7 +1520,7 @@ func sessionCloseOmitsSessionIDFailsHelpfullyWhenMultipleSessionsAreActive() asy
         ))
         #expect(closed.ok == false)
         #expect((closed.error ?? "").contains("session_id is required when more than one session is active"))
-        #expect((closed.error ?? "").contains("pass the UUID from session_open"))
+        #expect((closed.error ?? "").contains("conversation_id"))
     }
 }
 

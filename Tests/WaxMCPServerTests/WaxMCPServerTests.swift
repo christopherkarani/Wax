@@ -270,7 +270,10 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
         let elapsed = Date().timeIntervalSince(startedAt)
         #expect(elapsed < 15)
         #expect(error.localizedDescription.contains("did not answer"))
-        #expect(error.localizedDescription.contains("not starting a second daemon"))
+        #expect(error.localizedDescription.contains("not starting a second daemon")
+            || error.localizedDescription.contains("Not starting a second daemon"))
+        #expect(error.localizedDescription.contains("committed=false"))
+        #expect(error.localizedDescription.contains("conversation_id"))
         #expect(error.localizedDescription.contains("Restart wax-mcp") || error.localizedDescription.contains("launchctl"))
     }
 }

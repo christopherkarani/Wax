@@ -76,7 +76,6 @@ func hybridRecallWaitsForLoadingEmbedderThenUsesHybrid() async throws {
     let payload = try parseDXJSON(in: result)
     #expect((payload["requested_mode"] as? String)?.hasPrefix("hybrid") == true)
     #expect((payload["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
-    #expect((payload["query_embedding_state"] as? String) == "available")
 }
 
 @Test
@@ -279,7 +278,6 @@ func sessionOpenRecallQueryWaitsForLoadingEmbedderThenUsesHybrid() async throws 
         let recall = try #require(payload["recall"] as? [String: Any])
         #expect((recall["requested_mode"] as? String)?.hasPrefix("hybrid") == true)
         #expect((recall["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
-        #expect((recall["query_embedding_state"] as? String) == "available")
         try await service.close()
     } catch {
         await gate.open()

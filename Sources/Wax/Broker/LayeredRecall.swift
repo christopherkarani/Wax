@@ -616,8 +616,10 @@ package enum LayeredRecall {
         }
         if isStanding, hit.timestampMs > 0, nowMs > hit.timestampMs {
             let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
-            if ageDays < 2 {
-                score += 0.08
+            if ageDays < 7 {
+                score += 0.20
+            } else if ageDays > 14 {
+                score -= 0.12
             }
         }
         return score

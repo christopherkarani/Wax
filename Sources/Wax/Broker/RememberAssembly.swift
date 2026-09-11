@@ -6,7 +6,7 @@ package enum RememberAssembly {
     package static let autoSupersedeSimilarityThreshold: Float = 0.88
     package static let autoSupersedeMaxMatches = 32
     package static let autoSupersedeTypes: Set<MemoryType> = [
-        .decision, .lesson, .constraint, .fact,
+        .decision, .lesson, .constraint, .fact, .userPreference,
     ]
 
     /// Corpus row shape for pure supersede selection (no orchestrator dependency).
@@ -23,12 +23,16 @@ package enum RememberAssembly {
     }
 
     /// Wire payload for a completed remember. Keys stay stable for MCP/CLI clients.
+    ///
+    /// `sessionID` is the destination store (nil = durable). `echoedSessionID` is the
+    /// bound connection session so durable writes do not look failed (`session_id: null`).
     package static func payload(
         frameId: UInt64,
         framesAdded: UInt64,
         frameCount: UInt64,
         pendingFrames: UInt64,
         sessionID: UUID?,
+        echoedSessionID: UUID? = nil,
         metadata: [String: String],
         inferredScope: MemoryScopeContext = MemoryScopeContext(),
         deduplicated: Bool,
@@ -47,13 +51,14 @@ package enum RememberAssembly {
         }
         var payload: [String: AgentBrokerValue] = [
             "status": .string("ok"),
+            "committed": .bool(true),
             "frame_id": .from(frameId),
             "memory_id": .string(memoryID),
             "framesAdded": .from(framesAdded),
             "frameCount": .from(frameCount),
             "pendingFrames": .from(pendingFrames),
             "scope": .string(scope),
-            "session_id": .from(sessionID?.uuidString),
+            "session_id": .from((echoedSessionID ?? sessionID)?.uuidString),
             "memory_type": .string(metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue),
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "deduplicated": .bool(deduplicated),

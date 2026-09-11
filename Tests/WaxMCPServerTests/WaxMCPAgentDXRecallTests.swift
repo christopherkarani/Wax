@@ -121,8 +121,8 @@ struct WaxMCPAgentDXRecallTests {
             #expect(text.contains(token))
             let id = try requireString(hit, "id")
             #expect(id.hasPrefix("durable:"))
-            let frameId = try #require(hit["frameId"]?.intValue)
-            #expect(id == "durable:\(frameId)")
+            #expect(hit["frameId"] == nil)
+            #expect(hit["rank"] == nil)
             #expect(try requireString(hit, "project") == project)
             #expect(try requireString(hit, "repo") == project)
             #expect(try requireString(hit, "memory_type") == "decision")
@@ -259,7 +259,7 @@ struct WaxMCPAgentDXRecallTests {
 
             #expect(payload["scope_dropped"] == nil)
             #expect(payload["project_miss"]?.boolValue == false)
-            #expect(payload["retrieval_top_k"]?.intValue == 15)
+            #expect(payload["retrieval_top_k"] == nil)
         }
     }
 
@@ -1061,7 +1061,8 @@ struct WaxMCPAgentDXRecallTests {
             #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
             let payload = try requireObject(remembered.payload)
             #expect(payload["scope"]?.stringValue == "durable")
-            #expect(payload["session_id"]?.stringValue == nil)
+            #expect(payload["committed"]?.boolValue == true)
+            #expect(payload["session_id"]?.stringValue == sessionID)
             let frameID = UInt64(try #require(payload["frame_id"]?.intValue))
 
             let documents = try await service.longTermMemory.corpusSourceDocuments()
