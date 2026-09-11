@@ -154,6 +154,34 @@ struct UnifiedRankingTests {
     }
 
     @Test
+    func distinctiveTokenRerankDoesNotLiftOneTokenORFallbackOverVectorNeighbor() {
+        let query = "adversarial-fp.md stash-drop deny"
+        let vectorNeighbor = SearchResponse.Result(
+            frameId: 1,
+            score: 0.95,
+            previewText: "unrelated vector neighbor filler",
+            sources: [.vector]
+        )
+        let dropOnly = SearchResponse.Result(
+            frameId: 2,
+            score: 0.16,
+            previewText: "please drop unused temporary files",
+            sources: [.text]
+        )
+
+        let ranked = UnifiedRanking.distinctiveTokenRerank(
+            results: [vectorNeighbor, dropOnly],
+            query: query,
+            nowMs: Self.nowMs,
+            maxWindow: 10
+        )
+
+        #expect(ranked.map(\.frameId) == [1, 2])
+        #expect(ranked[0].score == 0.95)
+        #expect(ranked[1].score == 0.16)
+    }
+
+    @Test
     func identifierExactMatchRerankPromotesTokenBoundaryHit() {
         let neighbor = SearchResponse.Result(
             frameId: 1,

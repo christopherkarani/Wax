@@ -64,9 +64,10 @@ package enum UnifiedRanking {
         return combined
     }
 
-    /// Promote previews that share distinctive query tokens, with a recency
-    /// bump when that overlap is recent. Identifier-scale bonus so a lexical
-    /// fact can beat same-repo + lesson + durable + a full RRF vector score.
+    /// Lift a strong lexical hit above a vector-only neighbor that shares no
+    /// distinctive query tokens. Order-only: published scores stay on the fused
+    /// scale except a `nextUp` bump so later score-sorts keep the new order.
+    /// One-token OR-fallback hits stay put; two text-lane hits are not reordered.
     package static func distinctiveTokenRerank(
         results: [SearchResponse.Result],
         query: String,
@@ -79,48 +80,80 @@ package enum UnifiedRanking {
         let cappedWindow = min(max(0, maxWindow), results.count)
         guard cappedWindow > 1 else { return results }
 
-        // Larger than same-repo (0.9) + same-project (0.7) + lesson (0.40)
-        // + durable (0.25) + a full published RRF score (1.0).
-        let coverageBonus: Float = 5.0
-        let recentLexicalBonus: Float = 2.0
         let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
+        struct Scored {
+            var index: Int
+            var coverage: Float
+            var overlapCount: Int
+            var isRecent: Bool
+            var isText: Bool
+            var isVectorOnly: Bool
+            var result: SearchResponse.Result
+        }
 
-        let scoredHead = results.prefix(cappedWindow).enumerated().map { index, result -> (index: Int, composite: Float, coverage: Float, result: SearchResponse.Result) in
+        let scoredHead: [Scored] = results.prefix(cappedWindow).enumerated().map { index, result in
             let preview = dehighlightedPreviewText(result.previewText ?? "")
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
             let overlap = queryTerms.intersection(previewTerms)
-            let coverage = Float(overlap.count) / Float(queryTerms.count)
-            var bonus: Float = coverage * coverageBonus
-            var updated = result
-            if coverage > 0 {
-                updated.explanations = dedupedExplanations(result.explanations + ["distinctive token overlap"])
-                if let createdAtMs = MemorySemantics.parse(metadata: result.metadata, nowMs: nowMs).createdAtMs {
-                    let age = max(0, nowMs - createdAtMs)
-                    if age <= recentMs {
-                        bonus += recentLexicalBonus
-                        updated.explanations = dedupedExplanations(updated.explanations + ["recent lexical match"])
-                    }
-                }
-            }
-            return (
+            let createdAtMs = MemorySemantics.parse(metadata: result.metadata, nowMs: nowMs).createdAtMs
+            let isRecent = createdAtMs.map { max(0, nowMs - $0) <= recentMs } ?? false
+            let isText = result.sources.contains(.text)
+            let isVectorOnly = result.sources.contains(.vector) && !isText
+            return Scored(
                 index: index,
-                composite: result.score + bonus,
-                coverage: coverage,
-                result: updated
+                coverage: Float(overlap.count) / Float(queryTerms.count),
+                overlapCount: overlap.count,
+                isRecent: isRecent,
+                isText: isText,
+                isVectorOnly: isVectorOnly,
+                result: result
             )
         }
 
-        guard scoredHead.contains(where: { $0.coverage > 0 }) else { return results }
+        func isStrongLexical(_ item: Scored) -> Bool {
+            item.isText && (item.overlapCount >= 2 || item.coverage >= 0.35)
+        }
 
-        let rankedHead = scoredHead.sorted { lhs, rhs in
-            if lhs.composite != rhs.composite { return lhs.composite > rhs.composite }
-            if lhs.coverage != rhs.coverage { return lhs.coverage > rhs.coverage }
-            if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
-            return lhs.index < rhs.index
-        }.map { item -> SearchResponse.Result in
-            var result = item.result
-            result.score = item.composite
-            return result
+        guard let vectorIndex = scoredHead.firstIndex(where: { $0.isVectorOnly && $0.overlapCount == 0 }),
+              scoredHead.contains(where: { isStrongLexical($0) && $0.index > vectorIndex })
+        else {
+            return results
+        }
+
+        let vectorScore = scoredHead[vectorIndex].result.score
+        let lifted = scoredHead.filter { isStrongLexical($0) && $0.index > vectorIndex }
+            .sorted { lhs, rhs in
+                if lhs.overlapCount != rhs.overlapCount { return lhs.overlapCount > rhs.overlapCount }
+                if lhs.coverage != rhs.coverage { return lhs.coverage > rhs.coverage }
+                if lhs.isRecent != rhs.isRecent { return lhs.isRecent && !rhs.isRecent }
+                return lhs.index < rhs.index
+            }
+
+        var head = Array(scoredHead)
+        let liftIDs = Set(lifted.map(\.result.frameId))
+        head.removeAll { liftIDs.contains($0.result.frameId) }
+        let insertAt = head.firstIndex(where: { $0.index == vectorIndex }) ?? vectorIndex
+        var nextScore = vectorScore
+        let promoted: [Scored] = lifted.reversed().map { item in
+            nextScore = nextScore.nextUp
+            var updated = item.result
+            updated.score = nextScore
+            updated.explanations = dedupedExplanations(updated.explanations + ["distinctive token overlap"])
+            if item.isRecent {
+                updated.explanations = dedupedExplanations(updated.explanations + ["recent lexical match"])
+            }
+            var copy = item
+            copy.result = updated
+            return copy
+        }.reversed()
+        head.insert(contentsOf: promoted, at: insertAt)
+
+        var rankedHead = head.map(\.result)
+        // Keep published scores descending after the lift.
+        for index in 1..<rankedHead.count {
+            if rankedHead[index].score > rankedHead[index - 1].score {
+                rankedHead[index].score = rankedHead[index - 1].score
+            }
         }
 
         if cappedWindow == results.count {
