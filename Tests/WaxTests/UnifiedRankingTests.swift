@@ -83,7 +83,7 @@ struct UnifiedRankingTests {
         let query = "why agents use text search instead of vector waxmcp recall"
         let oldLesson = SearchResponse.Result(
             frameId: 1,
-            score: 1.0,
+            score: 0.9,
             previewText: "MiniLM reciprocal rank fusion blends embedding neighbors for session memory.",
             sources: [.vector],
             metadata: [

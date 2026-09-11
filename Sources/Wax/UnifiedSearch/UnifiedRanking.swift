@@ -111,7 +111,9 @@ package enum UnifiedRanking {
         }
 
         func isStrongLexical(_ item: Scored) -> Bool {
-            item.isText && (item.overlapCount >= 2 || item.coverage >= 0.35)
+            // Two distinctive tokens, not a 1-of-N OR-fallback or a lone identifier
+            // (identifiers already have identifierExactMatchRerank).
+            item.isText && item.overlapCount >= 2
         }
 
         guard let vectorIndex = scoredHead.firstIndex(where: { $0.isVectorOnly && $0.overlapCount == 0 }),
@@ -135,7 +137,7 @@ package enum UnifiedRanking {
         let insertAt = head.firstIndex(where: { $0.index == vectorIndex }) ?? vectorIndex
         var nextScore = vectorScore
         let promoted: [Scored] = lifted.reversed().map { item in
-            nextScore = nextScore.nextUp
+            nextScore = min(1, nextScore.nextUp)
             var updated = item.result
             updated.score = nextScore
             updated.explanations = dedupedExplanations(updated.explanations + ["distinctive token overlap"])
