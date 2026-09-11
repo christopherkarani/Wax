@@ -64,6 +64,109 @@ package enum UnifiedRanking {
         return combined
     }
 
+    /// Lift a strong lexical hit above a vector-only neighbor that shares no
+    /// distinctive query tokens. Order-only: published scores stay on the fused
+    /// scale except a `nextUp` bump so later score-sorts keep the new order.
+    /// One-token OR-fallback hits stay put; two text-lane hits are not reordered.
+    package static func distinctiveTokenRerank(
+        results: [SearchResponse.Result],
+        query: String,
+        nowMs: Int64,
+        maxWindow: Int,
+        analyzer: QueryAnalyzer = QueryAnalyzer()
+    ) -> [SearchResponse.Result] {
+        let queryTerms = Set(analyzer.normalizedTerms(query: query))
+        guard !queryTerms.isEmpty else { return results }
+        let cappedWindow = min(max(0, maxWindow), results.count)
+        guard cappedWindow > 1 else { return results }
+
+        let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
+        struct Scored {
+            var index: Int
+            var coverage: Float
+            var overlapCount: Int
+            var isRecent: Bool
+            var isText: Bool
+            var isVectorOnly: Bool
+            var result: SearchResponse.Result
+        }
+
+        let scoredHead: [Scored] = results.prefix(cappedWindow).enumerated().map { index, result in
+            let preview = dehighlightedPreviewText(result.previewText ?? "")
+            let previewTerms = Set(analyzer.normalizedTerms(query: preview))
+            let overlap = queryTerms.intersection(previewTerms)
+            let createdAtMs = MemorySemantics.parse(metadata: result.metadata, nowMs: nowMs).createdAtMs
+            let isRecent = createdAtMs.map { max(0, nowMs - $0) <= recentMs } ?? false
+            let isText = result.sources.contains(.text)
+            let isVectorOnly = result.sources.contains(.vector) && !isText
+            return Scored(
+                index: index,
+                coverage: Float(overlap.count) / Float(queryTerms.count),
+                overlapCount: overlap.count,
+                isRecent: isRecent,
+                isText: isText,
+                isVectorOnly: isVectorOnly,
+                result: result
+            )
+        }
+
+        func isStrongLexical(_ item: Scored) -> Bool {
+            // Two distinctive tokens, not a 1-of-N OR-fallback or a lone identifier
+            // (identifiers already have identifierExactMatchRerank).
+            item.isText && item.overlapCount >= 2
+        }
+
+        guard let vectorIndex = scoredHead.firstIndex(where: { $0.isVectorOnly && $0.overlapCount == 0 }),
+              scoredHead.contains(where: { isStrongLexical($0) && $0.index > vectorIndex })
+        else {
+            return results
+        }
+
+        let vectorScore = scoredHead[vectorIndex].result.score
+        let lifted = scoredHead.filter { isStrongLexical($0) && $0.index > vectorIndex }
+            .sorted { lhs, rhs in
+                if lhs.overlapCount != rhs.overlapCount { return lhs.overlapCount > rhs.overlapCount }
+                if lhs.coverage != rhs.coverage { return lhs.coverage > rhs.coverage }
+                if lhs.isRecent != rhs.isRecent { return lhs.isRecent && !rhs.isRecent }
+                return lhs.index < rhs.index
+            }
+
+        var head = Array(scoredHead)
+        let liftIDs = Set(lifted.map(\.result.frameId))
+        head.removeAll { liftIDs.contains($0.result.frameId) }
+        let insertAt = head.firstIndex(where: { $0.index == vectorIndex }) ?? vectorIndex
+        var nextScore = vectorScore
+        let promoted: [Scored] = lifted.reversed().map { item in
+            nextScore = min(1, nextScore.nextUp)
+            var updated = item.result
+            updated.score = nextScore
+            updated.explanations = dedupedExplanations(updated.explanations + ["distinctive token overlap"])
+            if item.isRecent {
+                updated.explanations = dedupedExplanations(updated.explanations + ["recent lexical match"])
+            }
+            var copy = item
+            copy.result = updated
+            return copy
+        }.reversed()
+        head.insert(contentsOf: promoted, at: insertAt)
+
+        var rankedHead = head.map(\.result)
+        // Keep published scores descending after the lift.
+        for index in 1..<rankedHead.count {
+            if rankedHead[index].score > rankedHead[index - 1].score {
+                rankedHead[index].score = rankedHead[index - 1].score
+            }
+        }
+
+        if cappedWindow == results.count {
+            return rankedHead
+        }
+        var combined = rankedHead
+        combined.reserveCapacity(results.count)
+        combined.append(contentsOf: results.dropFirst(cappedWindow))
+        return combined
+    }
+
     package static func intentAwareRerank(
         results: [SearchResponse.Result],
         query: String,

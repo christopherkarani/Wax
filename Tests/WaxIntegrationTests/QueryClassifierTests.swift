@@ -7,6 +7,21 @@ import Wax
 
 @Test func semanticQueryClassification() {
     #expect(RuleBasedQueryClassifier.classify("How does authentication relate to user privacy?") == .semantic)
+    #expect(RuleBasedQueryClassifier.classify("Why did the broker rebind?") == .semantic)
+    #expect(RuleBasedQueryClassifier.classify("Explain the session handoff") == .semantic)
+}
+
+@Test func longJobQueryContainingWhyStaysExploratory() {
+    #expect(
+        RuleBasedQueryClassifier.classify(
+            "why agents use text search instead of vector semantic search waxmcp recall mode default"
+        ) == .exploratory
+    )
+    #expect(
+        RuleBasedQueryClassifier.classify(
+            "Agents mostly use text search instead of vector; why hybrid ranks old lessons first in waxmcp recall"
+        ) == .exploratory
+    )
 }
 
 @Test func temporalQueryClassification() {

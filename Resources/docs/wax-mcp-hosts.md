@@ -302,7 +302,7 @@ block:
 
 ### Pitfalls that show up on a real store
 
-- Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid/vector can rank old embedder-test frames first.
+- Omit `mode` unless you need an override. Hybrid ranking promotes distinctive tokens and recent lexical matches; exact identifiers still route to text. `mode: vector` throws without an embedder.
 - `memory_get` IDs look like `durable:1695` or `episodic:<session-uuid>:0`. A bare frame number fails.
 - Do not invent a `session_id`. Omit it after `session_open`. If omit-id fails, call `session_open` with the same `conversation_id`.
 - Do not manage `--store-path` or `flush` in normal agent flows.

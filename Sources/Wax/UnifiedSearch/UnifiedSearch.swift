@@ -623,6 +623,14 @@ extension Wax {
             nowMs: semanticNowMs,
             maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 3), 12), 48)
         )
+        if let trimmedQuery, !trimmedQuery.isEmpty {
+            filtered = UnifiedRanking.distinctiveTokenRerank(
+                results: filtered,
+                query: trimmedQuery,
+                nowMs: semanticNowMs,
+                maxWindow: min(max(SearchPlan.boundedMultiply(request.topK, by: 3), 12), 48)
+            )
+        }
         if let exactIntentWindow, let trimmedQuery {
             filtered = UnifiedRanking.identifierExactMatchRerank(
                 results: filtered,

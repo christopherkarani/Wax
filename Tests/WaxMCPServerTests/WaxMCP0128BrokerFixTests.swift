@@ -180,6 +180,7 @@ func hintedSessionInjectsIntoTaskStateRememberAndRecall() async throws {
                     "query": "HINT-TASK-STATE plan locked",
                     "mode": "text",
                     "limit": 5,
+                    "verbosity": "verbose",
                 ]
             ),
             broker: service,

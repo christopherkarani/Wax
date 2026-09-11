@@ -6497,6 +6497,7 @@ func defaultRecallUsesHybridWhenVectorCoverageIsPartial() async throws {
                 "query": .string("hybrid default query marker"),
                 "scope": .string("global"),
                 "limit": .int(5),
+                "verbosity": .string("verbose"),
             ]
         ))
         let payload = try #require(recalled.payload?.objectValue)
