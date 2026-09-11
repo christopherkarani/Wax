@@ -292,7 +292,7 @@ Same engine inside an iOS or macOS app. No MCP process required.
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.41")
+    .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.42")
 ]
 ```
 
