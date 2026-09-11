@@ -39,12 +39,12 @@ enum ToolSchemas {
         ),
         Tool(
             name: "recall",
-            description: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
+            description: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Omit mode unless you need an override. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
             inputSchema: waxRecall
         ),
         Tool(
             name: "search",
-            description: "Raw ranked search hits (not assembled RAG). Prefer mode hybrid when the embedder is ready; otherwise use mode text.",
+            description: "Raw ranked search hits (not assembled RAG). Omit mode unless you need an override; hybrid is the default. Exact identifiers still use the lexical lane.",
             inputSchema: waxSearch
         ),
         Tool(

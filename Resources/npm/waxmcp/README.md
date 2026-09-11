@@ -107,9 +107,9 @@ MCP clients lives in
 Hermes is one native surface: `memory.provider: wax-memory`. Do not add
 `wax-memory` to `plugins.enabled`. Do not also register `mcp_servers.wax`.
 Native tools are `wax_remember` / `wax_recall` / `wax_stats` with no
-model-visible Wax UUID. Omit `scope` for current-project recall; pass
-`scope=global` for person facts. Empty project recall is a miss. Global is
-not an authorization boundary.
+model-visible Wax UUID. Omit `mode` unless you need an override. Omit `scope`
+for current-project recall; pass `scope=global` for person facts. Empty
+project recall is a miss. Global is not an authorization boundary.
 
 ### Claude Code
 

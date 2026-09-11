@@ -587,6 +587,8 @@ func agentInstructionsDescribeSessionLifecycle() {
     #expect(text.contains("durable types stay durable even if session_id is present"))
     #expect(!text.contains("durable types must omit session_id"))
     #expect(text.contains("remember and memory_append inherit session_id unless scope=durable"))
+    #expect(text.contains("Omit mode unless you need an override"))
+    #expect(!text.contains("Prefer mode hybrid"))
 }
 
 @Test
@@ -604,8 +606,11 @@ func coreToolDescriptionsIncludeOperatorHints() {
     #expect(tools["remember"]?.contains("session_id") == true)
     #expect(tools["recall"]?.contains("Preferred read path") == true)
     #expect(tools["recall"]?.contains("session_open") == true)
+    #expect(tools["recall"]?.contains("Omit mode unless you need an override") == true)
     #expect(tools["recall"]?.contains("Default scope is the current project") == true)
     #expect(tools["recall"]?.contains("scope=global") == true)
+    #expect(tools["search"]?.contains("Omit mode unless you need an override") == true)
+    #expect(tools["search"]?.contains("Prefer mode hybrid") != true)
     #expect(tools["recall"]?.localizedCaseInsensitiveContains("optional session_id") == true)
     #expect(tools["recall"]?.localizedCaseInsensitiveContains("required uuid") != true)
     #expect(tools["remember"]?.localizedCaseInsensitiveContains("required uuid") != true)

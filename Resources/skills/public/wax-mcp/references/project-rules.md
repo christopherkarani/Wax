@@ -4,11 +4,7 @@ Paste **AGENTS.md** after installing the Wax MCP server. For OpenClaw,
 append the **SOUL.md** stanza if missing. If `## Memory (Wax)` already
 exists, replace that section — do not leave two manuals.
 
-Native Hermes is not this MCP playbook. Set `memory.provider: wax-memory`
-only, call `wax_remember` / `wax_recall` / `wax_stats`, and do not pass a
-Wax `session_id`. Omit `scope` for current-project recall; pass
-`scope=global` for person facts. Do not add `wax-memory` to
-`plugins.enabled`.
+Native Hermes is not this MCP playbook. Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`.
 
 The inner `text` fences are what you copy. Keep them in lockstep with
 `WaxMCPAgentPlaybook` in `Sources/WaxCLI/WaxCLICommand.swift` and the README
@@ -29,7 +25,7 @@ Skip only empty chit-chat. Store one or two sentences. Do not store chats, test 
 
 Open once per host chat: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes this chat even after close. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
-session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
+session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
 
 Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
 
@@ -38,11 +34,11 @@ This job only (not the default write): `remember` with `memory_type: task_state`
 Close is a checkpoint, not a new life: `session_close` with a short state `content` and `pending_tasks` when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. `remaining_active` is other sessions. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
 ```
 
-## Hermes / OpenClaw SOUL.md
+## OpenClaw SOUL.md
 
 SOUL.md is identity. Append this section if missing. If `## Memory (Wax)`
 already exists, replace that section. Do not turn the whole soul into a tool
-manual.
+manual. Native Hermes does not use this MCP paste.
 
 ```text
 ## Memory (Wax)
@@ -59,7 +55,7 @@ Store one or two sentences. Do not store chats, status, or secrets.
 
 On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Do not open per message. Same `conversation_id` resumes this chat even after close.
 
-session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed.
+session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
 
 Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
 

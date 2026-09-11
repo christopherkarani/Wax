@@ -122,7 +122,7 @@ Skip only empty chit-chat. Store one or two sentences. Do not store chats, test 
 
 Open once per host chat: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes this chat even after close. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
-session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
+session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
 
 Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
 
@@ -134,11 +134,9 @@ Close is a checkpoint, not a new life: `session_close` with a short state `conte
 </details>
 
 <details>
-<summary><strong>Paste into Hermes / OpenClaw SOUL.md</strong></summary>
+<summary><strong>Paste into OpenClaw SOUL.md</strong></summary>
 
-OpenClaw: the workspace `SOUL.md`. Native Hermes (`memory.provider: wax-memory`)
-already owns session lifecycle — do not paste the MCP `session_open` loop
-below into Hermes. Call `wax_remember` / `wax_recall` instead.
+OpenClaw: the workspace `SOUL.md`. Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`.
 
 SOUL.md is identity. **Append** this section if missing. If `## Memory (Wax)` already exists, **replace that section**. Do not replace the rest of the soul.
 
@@ -157,7 +155,7 @@ Store one or two sentences. Do not store chats, status, or secrets.
 
 On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Do not open per message. Same `conversation_id` resumes this chat even after close.
 
-session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed.
+session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
 
 Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
 
@@ -166,11 +164,7 @@ This job only: `remember` with `memory_type: task_state`, `durability: working`.
 Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
 ```
 
-Native Hermes (`memory.provider: wax-memory`) does **not** use that MCP paste
-as its tool surface. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not
-pass a Wax `session_id`. Omit `scope` for current-project recall; pass
-`scope=global` for person facts. Empty project recall is a miss. Do not add
-`wax-memory` to `plugins.enabled`. OpenClaw still pastes the SOUL.md stanza.
+Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`. OpenClaw still pastes the SOUL.md stanza.
 
 </details>
 
@@ -202,7 +196,7 @@ Finally, paste this prompt into your **main (coordinator) bot**. It sets up its 
 You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
 
 Your own memory:
-- Starting a host chat: call session_open (project set to my name, stable agent_id/run_id, conversation_id = this chat id, recall_query = this job). The connection remembers session_id; omit it after that. Do not invent one. session_open with recall_query is enough — do not recall again on follow-ups unless the job changed. Person prefs come back in person.
+- Starting a host chat: call session_open (project set to my name, stable agent_id/run_id, conversation_id = this chat id, recall_query = this job). The connection remembers session_id; omit it after that. Do not invent one. session_open with recall_query is enough — do not recall again on follow-ups unless the job changed. Omit mode unless you need an override. Person prefs come back in person.
 - While working: write lessons, user_preference, and facts the moment they show up (including a one-line correction). Do not pass scope durable. A successful save has status ok and committed true. If committed is false or the call errors, the write did not land — do not spawn children. task_state is only for this job (plan, failed path, landmine) and must commit before you spawn.
 - Finishing: session_close with a short summary and pending_tasks when the host conversation is done. leftover_reasons are harvest skips — ignore them. Same conversation_id resumes this chat even after close.
 - Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.

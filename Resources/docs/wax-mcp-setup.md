@@ -76,7 +76,7 @@ Do not invent a third playbook. Copy the fences from
 
 - **AGENTS.md / CLAUDE.md / Cursor rules** — full operator block
 - **OpenClaw `SOUL.md`** — short Memory section; append, do not replace the soul
-- **Native Hermes** — do not paste the MCP `session_open` loop. `memory.provider: wax-memory` owns lifecycle; call `wax_remember` / `wax_recall`.
+- **Native Hermes** — do not paste the MCP `session_open` loop. `memory.provider: wax-memory` owns lifecycle; call `wax_remember` / `wax_recall`. Omit `mode` unless you need an override.
 
 The README [Agent Quick Start](../../README.md#agent-quick-start) shows both as copy-paste `<details>`.
 

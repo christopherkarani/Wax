@@ -879,7 +879,7 @@ enum WaxMCPAgentPlaybook {
 
         Open once per host chat: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes this chat even after close. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
 
-        session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
+        session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
 
         Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
 
@@ -888,7 +888,12 @@ enum WaxMCPAgentPlaybook {
         Close is a checkpoint, not a new life: `session_close` with a short state `content` and `pending_tasks` when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. `remaining_active` is other sessions. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
         """
 
-    /// Pasteable Hermes / OpenClaw SOUL.md stanza. Append if missing;
+    /// Native Hermes identity. Not an MCP session_open paste.
+    static let hermesRules = """
+        Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`.
+        """
+
+    /// Pasteable OpenClaw SOUL.md stanza. Append if missing;
     /// replace an existing `## Memory (Wax)` section.
     static let soulRules = """
         ## Memory (Wax)
@@ -905,7 +910,7 @@ enum WaxMCPAgentPlaybook {
 
         On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Do not open per message. Same `conversation_id` resumes this chat even after close.
 
-        session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed.
+        session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
 
         Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
 
